@@ -1,0 +1,81 @@
+# Baseline clippy config. Copy to a project as clippy.toml at the workspace root.
+# Pin to a tagged release of this repo and bump deliberately.
+#
+# clippy.toml only configures lints — it cannot enable them. Enable the lint groups in the
+# workspace Cargo.toml (see the [workspace.lints.clippy] block reproduced at the bottom of this
+# file) and run with `-D warnings`:
+#
+#   cargo clippy --all-targets --all-features -- -D warnings
+
+# Match the project's Cargo.toml `rust-version`. Clippy then flags uses of APIs newer than the MSRV
+# instead of letting them break the CI matrix. REPLACE with this project's MSRV. 1.85 is the floor for
+# edition 2024 (standards/rust.md).
+msrv = "1.85.0"
+
+# `unwrap`/`expect` are banned outside tests by standards/rust.md; these thresholds catch the
+# adjacent smells that a lint can actually measure.
+too-many-arguments-threshold = 5      # past this, use a builder or a params struct
+too-many-lines-threshold = 100
+type-complexity-threshold = 250
+cognitive-complexity-threshold = 20
+
+# Enum variants whose size differs wildly cost memory on every value of the enum.
+enum-variant-size-threshold = 200
+
+# Doc comments: treat these as prose, not identifiers needing backticks.
+# ".." appends to clippy's default list rather than replacing it.
+doc-valid-idents = ["CommonMark", "OpenAPI", "PostgreSQL", "TimescaleDB", "WebAssembly", ".."]
+
+# Boundary-crossing APIs that are easy to reach for and usually wrong. Extend per project.
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "process-global mutation; not thread-safe. Inject config instead." },
+    { path = "std::env::remove_var", reason = "process-global mutation; not thread-safe." },
+]
+
+# Empty by default — a baseline that fires on every project on day one teaches people to edit the
+# config rather than follow it. Add per project, e.g.
+#   { path = "std::collections::HashMap", reason = "untrusted keys: unspecified hasher is DoS-prone — use an explicit hasher" },
+#   { path = "std::time::Instant", reason = "inject the Clock trait so tests are deterministic" },
+disallowed-types = []
+
+# ---------------------------------------------------------------------------------------------
+# Reproduce this in the workspace Cargo.toml — clippy.toml cannot turn lints on, only tune them.
+#
+# [workspace.lints.rust]
+# unsafe_code = "deny"            # not "forbid" — forbid can't be locally downgraded for the FFI module
+# missing_docs = "warn"           # library crates; drop for a binary
+# missing_debug_implementations = "warn"
+# rust_2018_idioms = { level = "warn", priority = -1 }
+#
+# [workspace.lints.rustdoc]
+# broken_intra_doc_links = "deny"
+#
+# [workspace.lints.clippy]
+# all = { level = "warn", priority = -1 }
+# pedantic = { level = "warn", priority = -1 }
+# unwrap_used = "warn"            # standards/rust.md: banned outside tests, main, const
+# expect_used = "warn"            # allowed with an invariant message; the lint keeps them visible
+# panic = "warn"
+# todo = "warn"
+# unimplemented = "warn"
+# dbg_macro = "warn"
+# print_stdout = "warn"           # use tracing; drop this line for a CLI
+# float_cmp = "warn"              # pedantic already covers it; kept visible. The fix is a documented
+#                                 # tolerance, NOT f64::EPSILON — see standards/rust.md § Design
+# mem_forget = "deny"
+# await_holding_lock = "deny"     # standards/rust.md: never hold a lock across an await
+# lossy_float_literal = "deny"
+#
+# Then in each crate: cargo add nothing — just `[lints] workspace = true`.
+#
+# Release builds disable overflow checks by default; standards/rust.md § Design requires turning them
+# back on:
+#
+# [profile.release]
+# overflow-checks = true
+#
+# Tests legitimately unwrap; scope the exception rather than weakening the lint:
+#   #[cfg(test)]
+#   #[allow(clippy::unwrap_used, clippy::expect_used)]
+#   mod tests { ... }
+# ---------------------------------------------------------------------------------------------

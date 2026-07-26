@@ -1,0 +1,16 @@
+[package]
+name = "mdedit-markers"
+version = "0.1.0"
+description = "Partitions Markdown source into syntax-marker and content spans for live-preview editing"
+keywords = ["markdown", "commonmark", "editor", "syntax"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pulldown-cmark.workspace = true
+
+[lints]
+workspace = true

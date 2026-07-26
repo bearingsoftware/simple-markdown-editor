@@ -1,0 +1,66 @@
+# Baseline cargo-deny config. Copy to a project as deny.toml at the workspace root.
+# Pin to a tagged release of this repo and bump deliberately.
+#
+#   cargo install cargo-deny
+#   cargo deny check
+#
+# This is the Rust equivalent of `govulncheck` + a licence gate, and belongs in CI as a required job.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisory database. Anything unpatched fails the build.
+version = 2
+yanked = "deny"
+# Add an ID here only with a comment giving the reason and a tracking ticket, e.g.
+# ignore = [
+#     { id = "RUSTSEC-0000-0000", reason = "no upgrade path yet — tracked in ABC-123" },
+# ]
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences plus the weak-copyleft ones that are safe to link. Deliberately excludes
+# GPL/AGPL — a GPL dependency relicenses the whole binary, which is a product decision, not a
+# dependency-bump decision. Add one here only after that decision is made explicitly.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "MPL-2.0",          # file-level copyleft; safe to link, but modifications to MPL files stay MPL
+]
+confidence-threshold = 0.9
+
+# Crates whose licence metadata is wrong or absent get an explicit clarification here rather than a
+# blanket exception, e.g.
+# [[licenses.clarify]]
+# name = "ring"
+# expression = "MIT AND ISC AND OpenSSL"
+# license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"     # duplicate versions bloat the binary; "deny" once the tree is clean
+wildcards = "deny"              # no `foo = "*"` — unreproducible builds
+deny = [
+    { crate = "openssl", reason = "prefer rustls — avoids a system OpenSSL dependency and its CVE cadence" },
+    { crate = "openssl-sys", reason = "prefer rustls" },
+]
+# Crates legitimately appearing at two versions during a migration go here with a reason.
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# A git dependency is a supply-chain and reproducibility risk: no registry checksum, no yank
+# signal, no advisory matching. Allow one only with a pinned rev and a ticket to move to a
+# published version.
+# allow-git = ["https://github.com/org/repo"]
