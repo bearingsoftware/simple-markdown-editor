@@ -35,49 +35,10 @@ pub(crate) fn segment(source: &str) -> Vec<Segment> {
         fill(&mut marks, range, None);
     }
 
-    // A newline is never syntax to conceal — concealing one would join two lines.
-    for (i, byte) in source.bytes().enumerate() {
-        if byte == b'\n' || byte == b'\r' {
-            marks[i] = None;
-        }
-    }
-
-    reattribute_line_prefixes(source, &mut marks);
-    release_implausible_container_syntax(source, &mut marks);
-    mark_escapes(source, &verbatim, &mut marks);
+    normalise_line_syntax(source, &mut marks);
+    mark_escapes(source, verbatim, &mut marks);
 
     coalesce(source, &marks)
-}
-
-/// Gives each `>` in a line's opening syntax run back to [`Marker::BlockQuote`].
-///
-/// Range containment cannot express this. A list item legitimately spans the continuation lines of a
-/// quote nested inside it, so in `> > 1. one\n>>\n>>   two` the item's range covers the `>>`
-/// prefixes — and because the item starts later than the quotes, it is filled last and wins bytes
-/// that are quote syntax.
-///
-/// Confined to the leading run of syntax on each line, so it cannot touch a `>` that closes an
-/// autolink: there, content precedes the `>` and the scan has already stopped.
-fn reattribute_line_prefixes(source: &str, marks: &mut [Option<Marker>]) {
-    let bytes = source.as_bytes();
-    let line_starts = std::iter::once(0).chain(
-        bytes
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| **b == b'\n')
-            .map(|(i, _)| i + 1),
-    );
-
-    for start in line_starts {
-        for (i, byte) in bytes.iter().enumerate().skip(start) {
-            if marks[i].is_none() {
-                break;
-            }
-            if *byte == b'>' {
-                marks[i] = Some(Marker::BlockQuote);
-            }
-        }
-    }
 }
 
 struct Walk {
@@ -89,8 +50,11 @@ struct Walk {
 
 /// Collects construct ranges and the content ranges that will be subtracted from them.
 fn walk(source: &str) -> Walk {
-    let mut constructs = Vec::new();
-    let mut contents = Vec::new();
+    // Reserving up front matters more than it looks: on a 310 KiB document these reach five figures,
+    // and growth reallocation made overhead scale superlinearly with document size.
+    let estimate = source.len() / 24 + 16;
+    let mut constructs = Vec::with_capacity(estimate);
+    let mut contents = Vec::with_capacity(estimate);
     let mut verbatim = Vec::new();
 
     for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
@@ -158,39 +122,63 @@ fn backtick_run(text: &str) -> usize {
     text.bytes().take_while(|b| *b == b'`').count()
 }
 
-/// Returns bytes a block container claimed but cannot own to [`SegmentKind::Content`].
+/// One left-to-right pass applying the three line-oriented corrections.
 ///
-/// Subtracting content from a construct's range assumes the parser reports content for everything
-/// that is not syntax — but it emits no events at all for a link reference definition, so
-/// `- item\n\n  [ref]: /url` leaves the definition inside the item's range and unclaimed, and it
-/// would be concealed as list syntax.
-///
-/// A quote or list marker is only ever drawn from `>`, a bullet, digits and whitespace. Anything
-/// else was never this construct's syntax, so it degrades to content with its bytes intact.
-fn release_implausible_container_syntax(source: &str, marks: &mut [Option<Marker>]) {
+/// Each is described where it is applied below. They were three separate walks; fused because they
+/// are all line-aware and each reads only positions at or before the one it writes, so a single pass
+/// gives identical results for a third of the memory traffic.
+fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
     let bytes = source.as_bytes();
+    let mut in_prefix = true;
     let mut content_started = false;
 
-    for (i, byte) in bytes.iter().enumerate() {
-        if *byte == b'\n' {
+    for i in 0..bytes.len() {
+        let byte = bytes[i];
+
+        // A newline is never syntax to conceal — concealing one would join two lines.
+        if byte == b'\n' || byte == b'\r' {
+            marks[i] = None;
+            in_prefix = true;
             content_started = false;
             continue;
         }
-        if !matches!(marks[i], Some(Marker::BlockQuote | Marker::ListItem)) {
-            content_started |= marks[i].is_none();
+
+        if marks[i].is_none() {
+            in_prefix = false;
+            content_started = true;
             continue;
         }
 
-        let plausible = *byte == b'>'
-            || byte.is_ascii_whitespace()
-            || byte.is_ascii_digit()
-            || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')');
+        // A `>` in a line's opening syntax run is always block-quote syntax. Range containment
+        // cannot express this: a list item legitimately spans the continuation lines of a quote
+        // nested inside it, so in `> > 1. one\n>>\n>>   two` the item's range covers the `>>`
+        // prefixes and, starting later, is filled last and wins bytes that are the quote's.
+        //
+        // Confined to the prefix so it cannot touch the `>` closing an autolink — content precedes
+        // that one, and `in_prefix` is already false.
+        if in_prefix && byte == b'>' {
+            marks[i] = Some(Marker::BlockQuote);
+        }
 
-        // Container syntax is always a line prefix, so anything after this line's content began is
-        // content too — the space in `[ref]: /url` is not a list indent.
-        if content_started || !plausible {
-            marks[i] = None;
-            content_started = true;
+        if matches!(marks[i], Some(Marker::BlockQuote | Marker::ListItem)) {
+            // Subtracting content from a construct's range assumes the parser reports content for
+            // everything that is not syntax — but it emits no events at all for a link reference
+            // definition, so `- item\n\n  [ref]: /url` leaves the definition inside the item's range
+            // and unclaimed, and it would be concealed as list syntax.
+            //
+            // A quote or list marker is only ever drawn from `>`, a bullet, digits and whitespace,
+            // and only ever appears before the line's content — the space in `[ref]: /url` is not a
+            // list indent. Anything else degrades to content with its bytes intact.
+            let plausible = byte == b'>'
+                || byte.is_ascii_whitespace()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')');
+
+            if content_started || !plausible {
+                marks[i] = None;
+                in_prefix = false;
+                content_started = true;
+            }
         }
     }
 }
@@ -200,24 +188,26 @@ fn release_implausible_container_syntax(source: &str, marks: &mut [Option<Marker
 /// The parser reports no event for one, and it can open a block (`\\> not a quote`) so it cannot be
 /// found by looking between adjacent content runs. Scanned directly instead, skipping code spans and
 /// code blocks where a backslash is a literal character.
-fn mark_escapes(source: &str, verbatim: &[Range<usize>], marks: &mut [Option<Marker>]) {
-    let mut literal = vec![false; source.len()];
-    for range in verbatim {
-        let end = range.end.min(literal.len());
-        if range.start < end {
-            literal[range.start..end].fill(true);
-        }
-    }
+fn mark_escapes(source: &str, mut verbatim: Vec<Range<usize>>, marks: &mut [Option<Marker>]) {
+    // Code spans and code blocks never nest, so the ranges are disjoint and a merge walk suffices —
+    // previously a byte-per-source-byte bitmap.
+    verbatim.sort_unstable_by_key(|r| r.start);
+    let mut next = 0;
 
     let bytes = source.as_bytes();
     let mut i = 0;
     while i + 1 < bytes.len() {
+        while next < verbatim.len() && verbatim[next].end <= i {
+            next += 1;
+        }
+        let literal = verbatim.get(next).is_some_and(|r| r.contains(&i));
+
         // CommonMark escapes ASCII punctuation only; a backslash before anything else is literal.
         // The escaped character must also be content: an escape inside a link destination or title
         // is already concealed as part of that construct, and splitting the run would gain nothing.
         if bytes[i] == b'\\'
             && bytes[i + 1].is_ascii_punctuation()
-            && !literal[i]
+            && !literal
             && marks[i + 1].is_none()
         {
             marks[i] = Some(Marker::Escape);
@@ -238,7 +228,8 @@ fn fill(marks: &mut [Option<Marker>], range: &Range<usize>, value: Option<Marker
 /// Groups equal-classification bytes into segments, stepping by character so a returned range can
 /// never split a multi-byte character.
 fn coalesce(source: &str, marks: &[Option<Marker>]) -> Vec<Segment> {
-    let mut out: Vec<Segment> = Vec::new();
+    // Prose alternates long content runs with short markers; this is a floor, not a bound.
+    let mut out: Vec<Segment> = Vec::with_capacity(source.len() / 32 + 8);
 
     for (offset, ch) in source.char_indices() {
         let kind = match marks[offset] {

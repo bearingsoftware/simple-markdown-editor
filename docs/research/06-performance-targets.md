@@ -133,7 +133,38 @@ Failures in the incumbents that a viewport-virtualized design makes irrelevant:
 | Baseline RSS | **≤50 MB** | ≤25 MB | Vim's implied ~40 MB; VS Code idles at 30× that |
 | Memory per open file | ≤1.2× file bytes | ≤1.05× | Vim: 240 MB for a 200 MB file |
 | 100 open notes (~50 KB each) | ≤80 MB | ≤60 MB | **No published data exists** — you would set the benchmark |
-| Markdown parse, 60 KB | ≤3 ms | — | Measured: pulldown-cmark full parse = 2.99 ms ([04](04-parsing-benchmarks.md)) |
+| Markdown parse + segment, **viewport** | ≤1 ms | ≤0.5 ms | Measured at 6 KB: 0.42 ms total, 0.11 ms of it segmentation ([04](04-parsing-benchmarks.md)) |
+| Markdown parse + segment, whole 60 KB document | ≤16 ms (one frame) | — | Background/indexing path, not the keystroke path — see below |
+
+### The 3 ms budget is viewport-scoped
+
+**Decision, MDEDIT-4 (2026-07-26).** The keystroke budget cannot be met by parsing and segmenting the
+whole document, and no optimisation will change that: `pulldown-cmark` alone takes 1.6–3.6 ms on a
+60 KB document, so the ≤3 ms p50 target is already spent before segmentation starts. MDEDIT-4 cut
+segmentation overhead by ~60% and the arithmetic still does not work.
+
+The target is not wrong. Its **scope** was.
+
+- **Keystroke path — viewport only.** Parse and segment the visible region plus enough context to
+  resolve open blocks, not the document. At 6 KB — a generous viewport — that is 0.42 ms total, well
+  inside 3 ms with room for layout and paint.
+- **Whole-document — background.** Full segmentation is an indexing concern (outline, search, link
+  resolution), runs off the keystroke path, and gets a one-frame budget rather than a 3 ms one.
+
+This is not a new constraint. [03](03-architecture.md#virtualization-is-non-negotiable) already
+requires that a document is never materialised whole and that `file open → first paint` is O(1) via
+viewport parsing. This decision just states the consequence for the *editing* path, which had been
+left implicit — and which the measurements would otherwise appear to contradict.
+
+**Consequence for MDEDIT-4's acceptance criterion,** which asked for parse + segment of 60 KB inside
+3 ms: unachievable as written, closed via its own "or a written decision that the budget moves"
+clause. This is that decision.
+
+**What would change it:** if viewport-scoped segmentation turns out to be impractical — because open
+blocks force too much context, say — the fallback is block-level incremental parsing, which
+[03](03-architecture.md#block-level-incrementality) already sketches and
+[04](04-parsing-benchmarks.md) deliberately deferred. Do not reach for it before the renderer exists
+to prove the need.
 
 ### Two rules for using these
 
