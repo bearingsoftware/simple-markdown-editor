@@ -12,5 +12,15 @@ repository.workspace = true
 [dependencies]
 pulldown-cmark.workspace = true
 
+[dev-dependencies]
+criterion = "0.7"
+pulldown-cmark.workspace = true
+proptest = "1.11.0"
+serde_json = "1"
+
+[[bench]]
+name = "segment"
+harness = false
+
 [lints]
 workspace = true
