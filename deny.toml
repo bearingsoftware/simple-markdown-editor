@@ -48,7 +48,7 @@ confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"     # duplicate versions bloat the binary; "deny" once the tree is clean
-wildcard = "deny"              # no `foo = "*"` — unreproducible builds
+wildcards = "deny"              # no `foo = "*"` — unreproducible builds
 deny = [
     { crate = "openssl", reason = "prefer rustls — avoids a system OpenSSL dependency and its CVE cadence" },
     { crate = "openssl-sys", reason = "prefer rustls" },
