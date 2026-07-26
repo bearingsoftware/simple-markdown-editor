@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/markers"]
+# Spikes are throwaway probes, deliberately outside the workspace so they stay out of CI.
+exclude = ["spikes/*"]
 
 [workspace.package]
 edition = "2024"
