@@ -4,22 +4,31 @@
 was built and run against the current crates: `tree-sitter` 0.26.11,
 `tree-sitter-md` 0.5.3, `pulldown-cmark` 0.13.4.
 
-> **Addendum, MDEDIT-3 (2026-07-26).** These figures measure the **parse only**. The editor also has
-> to segment the result into marker and content spans, which roughly doubles the cost. Measured with
-> criterion on the same machine, `crates/markers/benches/segment.rs`:
+> **Addendum, MDEDIT-3/4 (2026-07-26).** These figures measure the **parse only**. The editor also
+> has to segment the result into marker and content spans. Measured with criterion,
+> `crates/markers/benches/segment.rs`, reporting **overhead = segment − parse measured in the same
+> run** (see the caveat below for why not absolute times):
 >
-> | Document | parse only | parse + segment |
+> | Document | segmentation overhead, initial | after MDEDIT-4 |
 > |---|---:|---:|
-> | 6 KiB | 184 µs | 957 µs |
-> | 60 KiB | **3.17 ms** | **6.67 ms** |
-> | 310 KiB | 18.2 ms | 22.0 ms |
+> | 6 KiB | 0.24 ms | **0.11 ms** |
+> | 60 KiB | 2.69 ms | **1.03 ms** |
+> | 310 KiB | 13.40 ms | **2.37 ms** |
 >
-> The parse-only 60 KiB figure independently corroborates the 2.99 ms below on a different document.
-> The conclusion still holds — full re-parse per keystroke is viable — but the honest bound is
-> **inside a 16 ms frame up to roughly 60–100 KB**, not the ≤3 ms p50 keystroke target
-> ([06](06-performance-targets.md)), and **not at 310 KB**, where 22 ms exceeds a frame outright.
-> There is obvious headroom (two per-call `O(n)` allocations) before incremental parsing is the
-> answer; tracked separately.
+> MDEDIT-4 fused three per-byte passes into one, replaced an `O(n)` bitmap with a merge walk, and
+> reserved the collection capacities — the last of which removed superlinear scaling with document
+> size. Criterion's paired comparison reported a significant improvement on total 60 KiB time in two
+> independent runs (−38.7% and −25.4%, both p = 0.00).
+>
+> **Measurement caveat.** Absolute times on the development machine vary by more than 2× between
+> runs — one run measured `segment` *faster* than `parse-only`, which is impossible. Only
+> same-run overhead figures and criterion's paired verdicts are trustworthy here. Re-measure on a
+> quiet machine before treating any absolute number as a budget.
+>
+> **What this does not change:** full re-parse per keystroke stays the v1 decision. What it changes
+> is the *scope* — see [06](06-performance-targets.md#the-3-ms-budget-is-viewport-scoped). Parse plus
+> segment of a whole 60 KB document cannot fit a 3 ms budget, because the parse alone does not. The
+> keystroke path must segment the viewport, not the document.
 
 ## Conclusion first
 
