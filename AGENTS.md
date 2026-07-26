@@ -1,0 +1,200 @@
+# simple-markdown-editor — agent & contributor guide
+
+Native WYSIWYG Markdown editor in Rust. Windows first, portable later.
+
+This project follows the Bearing Software baseline at
+[`bearingsoftware/code-standards`](https://github.com/bearingsoftware/code-standards), pinned to
+**`v1.1.0`**. Read the baseline first — it owns the generic rules (git/PR workflow, work tracking,
+error handling, testing, security, observability). This file holds **only** project specifics.
+Don't duplicate baseline rules here.
+
+## Baseline (read these)
+
+- Cross-cutting: `code-standards/standards/_cross-cutting.md`
+- Architecture: `code-standards/standards/architecture.md`
+- Reviewing a PR: `code-standards/review/_template.md`
+
+> **Rust is not in the pinned baseline yet.** `standards/rust.md` + `review/rust.md` are proposed in
+> [code-standards#20](https://github.com/bearingsoftware/code-standards/pull/20) (MDEDIT-1), open at
+> time of writing. Until that merges and a tag is cut, apply cross-cutting + architecture and treat
+> the [Rust conventions](#rust-conventions-interim) below as the interim standard.
+>
+> **On merge:** bump the pin above to the new tag, add
+> `code-standards/standards/rust.md` · review: `code-standards/review/rust.md` to the list above,
+> vendor `configs/rustfmt.toml`, `clippy.toml` and `deny.toml`, and **delete the interim section** —
+> keeping both would duplicate baseline rules, which this overlay forbids.
+
+## Work tracking
+
+- **Jira project:** `MDEDIT` — https://chattersley.atlassian.net/browse/MDEDIT
+- **Confluence space:** `MDEDIT` — https://chattersley.atlassian.net/wiki/spaces/MDEDIT/overview
+  (`Features` and `Bugs` parent pages)
+
+Commit scope is the ticket key: `feat(MDEDIT-12): add marker locator`. Statuses are
+`To Do → In Progress → In Review → Done` (this project's board adds `In Review` over the baseline
+flow).
+
+## Repo state
+
+**Greenfield — no Cargo project yet.** Currently research only:
+
+```
+docs/research/          # 7 briefs; read README.md first
+  README.md             # verdicts, recommended stack, top 3 risks
+  01-editor-landscape.md
+  02-gui-toolkits.md    # why not Slint; toolkit comparison
+  03-architecture.md    # THE design decision + marker locator spec
+  04-parsing-benchmarks.md
+  05-windows-platform.md
+  06-performance-targets.md
+```
+
+Read `docs/research/README.md` before proposing architecture — the major decisions are already made
+and evidenced. Don't relitigate them without new evidence.
+
+## Stack
+
+Decided in [`docs/research/02-gui-toolkits.md`](docs/research/02-gui-toolkits.md). No GUI toolkit —
+none of them has a rich-text editing widget, so the text view is ours regardless.
+
+```
+Window/input      winit + muda (native menus) + rfd (dialogs)
+Renderer          wgpu, hand-written quad + glyph pipeline    [NOT vello]
+Text layout       parley + harfrust + fontique + skrifa       [layout only, NOT parley's editor]
+Buffer            ropey 1.x                                   [pin 1.x; 2.0 has been beta ~21 months]
+Markdown parse    pulldown-cmark                              [full re-parse; no incremental]
+Code fences       syntect + two-face, lazy, per-block cached
+Accessibility     accesskit
+```
+
+Rejected, with evidence, so nobody re-proposes them: **Slint** (plain-text-only `TextEdit`, rich
+text explicitly display-only, unusable past ~5k lines, broken text rendering at fractional DPI),
+**Tauri/webview** (webview typing latency ~20–31 ms vs a ≤3 ms target; open CJK IME freeze on
+Windows), **GPUI** (unresolved GPL-contamination issue against its Apache-2.0 claim; publicly
+deprioritized by Zed), **Xilem/Vello** (alpha; Vello mandates compute shaders), **iced** (no
+per-run font size — no variable heading sizes), **tree-sitter-md** (self-disclaims correctness;
+open stack-corrupting overflow in `serialize()`).
+
+## Build & test
+
+No `Cargo.toml` yet. Intended gates once it exists:
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+cargo deny check                 # licences + advisories
+cargo test --release -- --ignored  # perf assertions (see Performance below)
+```
+
+## Rust conventions (interim)
+
+Until the baseline gains `standards/rust.md`. Anchored to the
+[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) and
+[Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/).
+
+- `rustfmt` default profile, non-negotiable — formatting is never a review topic.
+- `clippy` with `-D warnings`. Silence a lint with `#[allow]` **plus a why-comment**, never blanket
+  crate-level allows.
+- **Errors:** `thiserror` for library error types, `anyhow` only at the binary boundary. Wrap with
+  context crossing a boundary. Never `unwrap()`/`expect()` outside tests and `main` — except where a
+  panic is genuinely a programmer bug, and then `expect()` carries the invariant as its message.
+- **`unsafe` needs a `// SAFETY:` comment stating the invariant upheld**, and is confined to the
+  platform layer. Any `unsafe` in the editor core is a review block.
+- Newtypes over bare `usize` for the offsets that matter (`ByteOffset`, `LineIndex`, `BlockId`) —
+  this codebase has several coordinate spaces and mixing them silently is the likely bug class.
+- Distinguish "missing" from "zero" with `Option`, not sentinel values.
+- No `async` in the editor core. The UI thread is a synchronous frame loop; I/O goes to a worker.
+- Public items carry a doc comment only where the *why* isn't obvious. No restating the signature.
+- Tests: `#[test]` with table-driven cases via a slice of structs when there are ≥3 of the same
+  shape. Property tests (`proptest`) for the marker locator — see below.
+
+## Project-specific rules
+
+**The byte-preservation invariant — the one rule that outranks everything:**
+
+- **The buffer is the source of truth. Never re-serialize the document.** Opening a file and saving
+  it must produce an identical byte sequence. MarkText's six-year-old
+  [#2189](https://github.com/marktext/marktext/issues/2189) is what happens if this slips.
+- Inline content is **never** serialized — it is decorated in place. Emphasis token (`*` vs `_`) and
+  hard-break style are lost by every Rust Markdown parser; we sidestep that by not rewriting those
+  bytes.
+- Only the block under the cursor may be re-serialized, and only on exit, spliced back at its span.
+- A diff that introduces a whole-document serializer needs an explicit design decision on the ticket.
+
+**Marker locator (`crate::markdown::markers`):**
+
+- No Rust Markdown parser emits delimiter nodes, so we compute them. This is the highest-risk
+  component — see [`docs/research/03-architecture.md`](docs/research/03-architecture.md).
+- **Property-tested against the CommonMark spec suite with one invariant: concatenating all marker
+  and content spans, in order, reproduces the source byte-for-byte.** If that test is red, nothing
+  else in the editor is trustworthy. It is the gate, not a nicety.
+- Known-wrong upstream spans to work around: nested emphasis, escapes, collapsed links
+  (`pulldown-cmark#1077`), image titles with no recoverable offset (`#441`), fence info strings
+  (`#271`).
+
+**Rendering & virtualization:**
+
+- **Never materialize the whole document.** Render visible blocks only. `file open → first paint`
+  is O(1): mmap plus viewport parse. Every large-file failure in the competition comes from
+  violating this.
+- **A tab is a lightweight handle until it becomes visible.** Session restore persists handles, not
+  content. Copy Obsidian's `DeferredView` model — it is the only implementation in this category.
+- Make the **renderer** incremental, not the parser. Diff the block list, patch changed blocks.
+- Tables and code fences are **model-backed block widgets**, not decorations. Pure decoration over a
+  linear character stream cannot do 2D layout; Obsidian's forums are a five-year record of that
+  failure.
+
+**Text layer:**
+
+- Text layout sits behind a narrow internal trait with **two implementations: DirectWrite (Windows)
+  and parley (portable).** This de-risks parley's release churn (five breaking releases in seven
+  months, no 1.0) and its open Windows CJK-fallback bug, and gives a correctness oracle.
+- Pin parley to an exact version. Wrap it; don't leak its types into the editor core.
+- IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an
+  `ITextStoreACP`** — retrofitting TSF's offsets and lock protocol onto a buffer not designed for it
+  is expensive.
+
+**Windows integration:**
+
+- **Opening N files from Explorer must reuse one process.** Register a **DropTarget verb**
+  (CLSID + `LocalServer32`), not a command-line verb — command-line verbs default to
+  `MultiSelectModel=Document`, which spawns one process per file and silently drops the verb past
+  15 items. Notepad++'s shell extension gets this wrong and has since 2023.
+- **Declare Per-Monitor DPI v2 in the manifest**, via `embed-manifest` — winit deliberately won't.
+  Re-run glyph rasterisation and hit-testing on `WM_DPICHANGED`, and use the suggested rectangle.
+- Read the dark-mode setting from the **registry**, not `ShouldAppsUseDarkMode()` (unreliable from
+  1903+). Refresh on `WM_SETTINGCHANGE` / `ImmersiveColorSet`.
+- **Per-user install. Never elevate.** Elevation breaks drag-drop from a non-elevated Explorer, and
+  the documented mitigation is one Microsoft says isn't safe.
+
+**Security (this project's specific threat model):**
+
+- **Any auto-updater verifies signatures, pinned.** Notepad++ shipped an unverified updater, got its
+  host compromised for ~6 months, and landed on CISA KEV with a nation-state actor delivering Cobalt
+  Strike through it. This is the single highest-consequence design decision in the project.
+- **Treat our own config and session files as untrusted input.** Never route a config string into a
+  process launch; normalise every path before a prefix check. Notepad++ shipped three consecutive
+  bypasses in 2026 by patching symptoms instead of the boundary.
+- File parsing is a trust boundary. The 2023 Notepad++ CVEs were all heap overflows in hand-rolled
+  encoding detection — the class Rust removes, provided we don't reintroduce it in `unsafe`.
+
+**Performance ([`docs/research/06-performance-targets.md`](docs/research/06-performance-targets.md)):**
+
+- Targets are commitments, not aspirations: cold start ≤100 ms, keystroke→pixel p50 ≤3 ms,
+  **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size, baseline RSS ≤50 MB.
+- **Measure p99 and measure on battery.** Every published editor benchmark is a mean on AC power,
+  which is the least informative condition — Emacs goes 5.3 ms → 50.5 ms on power-save.
+- A change that regresses a target needs a number in the PR body, not an assurance.
+
+## High-signal findings to watch for in review
+
+- **Whole-document serialization** sneaking in — breaks byte preservation.
+- **Marker-locator property test weakened or skipped** to make a case pass.
+- **A block materialized outside the viewport** — reintroduces the large-file freeze.
+- **parley or DirectWrite types leaking past the text trait.**
+- `unwrap()` / `expect()` on a path reachable from user input or file contents.
+- `unsafe` outside the platform layer, or without a `// SAFETY:` comment.
+- Offsets passed as bare `usize` between coordinate spaces.
+- An updater or plugin path that loads code without signature verification.
+- `async` creeping into the editor core.
