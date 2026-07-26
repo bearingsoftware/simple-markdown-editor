@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/markers"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/bearingsoftware/simple-markdown-editor"
+
+[workspace.dependencies]
+pulldown-cmark = { version = "0.13.4", default-features = false }
+
+# Lint levels live here because clippy.toml can tune lints but cannot enable them.
+# Vendored from code-standards v1.2.0 `configs/clippy.toml`.
+[workspace.lints.rust]
+unsafe_code = "deny"          # not "forbid" — forbid can't be locally downgraded for a future FFI module
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+float_cmp = "warn"
+mem_forget = "deny"
+await_holding_lock = "deny"
+lossy_float_literal = "deny"
+
+# Overflow wraps silently in release by default, so the panic that catches a bad offset in tests
+# would be absent in production. standards/rust.md requires turning it back on.
+[profile.release]
+overflow-checks = true

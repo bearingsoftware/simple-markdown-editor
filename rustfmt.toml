@@ -1,0 +1,17 @@
+# Baseline rustfmt config. Copy to a project as rustfmt.toml at the workspace root.
+# Pin to a tagged release of this repo and bump deliberately.
+#
+# Deliberately near-default: the standard is "rustfmt default profile, non-negotiable".
+# Every option below is stable on stable Rust — nightly-only options are not used, so `cargo fmt`
+# behaves identically for every contributor and in CI.
+
+# Must match `edition` in Cargo.toml. `cargo fmt` passes the manifest's edition on the command line,
+# which overrides this — the value here only applies when `rustfmt` is invoked directly.
+edition = "2024"
+
+# 100 is the rustfmt default and the de-facto ecosystem norm; stated explicitly so a project
+# doesn't drift it silently.
+max_width = 100
+
+# Keep a trailing newline and normalise line endings so diffs stay clean across platforms.
+newline_style = "Unix"
