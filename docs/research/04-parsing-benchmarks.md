@@ -4,6 +4,23 @@
 was built and run against the current crates: `tree-sitter` 0.26.11,
 `tree-sitter-md` 0.5.3, `pulldown-cmark` 0.13.4.
 
+> **Addendum, MDEDIT-3 (2026-07-26).** These figures measure the **parse only**. The editor also has
+> to segment the result into marker and content spans, which roughly doubles the cost. Measured with
+> criterion on the same machine, `crates/markers/benches/segment.rs`:
+>
+> | Document | parse only | parse + segment |
+> |---|---:|---:|
+> | 6 KiB | 184 µs | 957 µs |
+> | 60 KiB | **3.17 ms** | **6.67 ms** |
+> | 310 KiB | 18.2 ms | 22.0 ms |
+>
+> The parse-only 60 KiB figure independently corroborates the 2.99 ms below on a different document.
+> The conclusion still holds — full re-parse per keystroke is viable — but the honest bound is
+> **inside a 16 ms frame up to roughly 60–100 KB**, not the ≤3 ms p50 keystroke target
+> ([06](06-performance-targets.md)), and **not at 310 KB**, where 22 ms exceeds a frame outright.
+> There is obvious headroom (two per-call `O(n)` allocations) before incremental parsing is the
+> answer; tracked separately.
+
 ## Conclusion first
 
 **Skip incremental parsing entirely for v1. Full re-parse with `pulldown-cmark`
