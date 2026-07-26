@@ -4,7 +4,7 @@ Native WYSIWYG Markdown editor in Rust. Windows first, portable later.
 
 This project follows the Bearing Software baseline at
 [`bearingsoftware/code-standards`](https://github.com/bearingsoftware/code-standards), pinned to
-**`v1.1.0`**. Read the baseline first — it owns the generic rules (git/PR workflow, work tracking,
+**`v1.2.0`**. Read the baseline first — it owns the generic rules (git/PR workflow, work tracking,
 error handling, testing, security, observability). This file holds **only** project specifics.
 Don't duplicate baseline rules here.
 
@@ -12,17 +12,12 @@ Don't duplicate baseline rules here.
 
 - Cross-cutting: `code-standards/standards/_cross-cutting.md`
 - Architecture: `code-standards/standards/architecture.md`
+- Rust: `code-standards/standards/rust.md` · review: `code-standards/review/rust.md`
 - Reviewing a PR: `code-standards/review/_template.md`
 
-> **Rust is not in the pinned baseline yet.** `standards/rust.md` + `review/rust.md` are proposed in
-> [code-standards#20](https://github.com/bearingsoftware/code-standards/pull/20) (MDEDIT-1), open at
-> time of writing. Until that merges and a tag is cut, apply cross-cutting + architecture and treat
-> the [Rust conventions](#rust-conventions-interim) below as the interim standard.
->
-> **On merge:** bump the pin above to the new tag, add
-> `code-standards/standards/rust.md` · review: `code-standards/review/rust.md` to the list above,
-> vendor `configs/rustfmt.toml`, `clippy.toml` and `deny.toml`, and **delete the interim section** —
-> keeping both would duplicate baseline rules, which this overlay forbids.
+Rust landed in the baseline at `v1.2.0` ([#20](https://github.com/bearingsoftware/code-standards/pull/20),
+[#21](https://github.com/bearingsoftware/code-standards/pull/21), MDEDIT-1). Tool configs are vendored
+from that tag — see [Configs](#configs).
 
 ## Work tracking
 
@@ -87,27 +82,19 @@ cargo deny check                 # licences + advisories
 cargo test --release -- --ignored  # perf assertions (see Performance below)
 ```
 
-## Rust conventions (interim)
+## Rust, beyond the baseline
 
-Until the baseline gains `standards/rust.md`. Anchored to the
-[Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) and
-[Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/).
+`standards/rust.md` owns the general rules. Only these are project decisions:
 
-- `rustfmt` default profile, non-negotiable — formatting is never a review topic.
-- `clippy` with `-D warnings`. Silence a lint with `#[allow]` **plus a why-comment**, never blanket
-  crate-level allows.
-- **Errors:** `thiserror` for library error types, `anyhow` only at the binary boundary. Wrap with
-  context crossing a boundary. Never `unwrap()`/`expect()` outside tests and `main` — except where a
-  panic is genuinely a programmer bug, and then `expect()` carries the invariant as its message.
-- **`unsafe` needs a `// SAFETY:` comment stating the invariant upheld**, and is confined to the
-  platform layer. Any `unsafe` in the editor core is a review block.
-- Newtypes over bare `usize` for the offsets that matter (`ByteOffset`, `LineIndex`, `BlockId`) —
-  this codebase has several coordinate spaces and mixing them silently is the likely bug class.
-- Distinguish "missing" from "zero" with `Option`, not sentinel values.
-- No `async` in the editor core. The UI thread is a synchronous frame loop; I/O goes to a worker.
-- Public items carry a doc comment only where the *why* isn't obvious. No restating the signature.
-- Tests: `#[test]` with table-driven cases via a slice of structs when there are ≥3 of the same
-  shape. Property tests (`proptest`) for the marker locator — see below.
+- **No `async` in the editor core.** The UI thread is a synchronous frame loop; I/O goes to a worker
+  thread. Adding a runtime to the core needs a design decision on the ticket.
+- **`unsafe` anywhere outside the platform layer is a review block**, not a discussion — stricter than
+  the baseline's `deny` + scoped-allow. The platform layer is the only place it is expected, and only
+  for Win32/DirectWrite FFI.
+- **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
+  codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
+  positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the
+  whole project.
 
 ## Project-specific rules
 
@@ -198,3 +185,21 @@ Until the baseline gains `standards/rust.md`. Anchored to the
 - Offsets passed as bare `usize` between coordinate spaces.
 - An updater or plugin path that loads code without signature verification.
 - `async` creeping into the editor core.
+
+## Configs
+
+Vendored from the baseline tag `v1.2.0`:
+
+| Tool | Project file | Baseline source |
+|------|--------------|-----------------|
+| rustfmt | `rustfmt.toml` | `configs/rustfmt.toml` |
+| clippy | `clippy.toml` + `[workspace.lints]` in `Cargo.toml` | `configs/clippy.toml` |
+| cargo-deny | `deny.toml` | `configs/deny.toml` |
+
+`clippy.toml` tunes lints but cannot enable them — the lint set lives in `[workspace.lints]`, copied
+from the comment block at the foot of the baseline config. Set `msrv` to match `rust-version`.
+
+Layer enforcement needs no config: workspace crate `[dependencies]` are the allow-list and Cargo
+rejects cyclic crate deps at build time (`standards/architecture.md`).
+
+Bump the pinned tag deliberately; re-vendor the configs when it changes.
