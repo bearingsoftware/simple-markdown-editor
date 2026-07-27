@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/markers"]
+members = ["crates/markers", "crates/document"]
 # Spikes are throwaway probes, deliberately outside the workspace so they stay out of CI.
 exclude = ["spikes/*"]
 
@@ -12,6 +12,11 @@ repository = "https://github.com/bearingsoftware/simple-markdown-editor"
 
 [workspace.dependencies]
 pulldown-cmark = { version = "0.13.4", default-features = false }
+ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
+thiserror = "2"
+# `version` alongside `path` is not redundant: without it this is a wildcard dependency,
+# which deny.toml rejects.
+mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 
 # Lint levels live here because clippy.toml can tune lints but cannot enable them.
 # Vendored from code-standards v1.2.0 `configs/clippy.toml`.

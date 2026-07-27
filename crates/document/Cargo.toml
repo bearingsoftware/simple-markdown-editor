@@ -1,0 +1,21 @@
+[package]
+name = "mdedit-document"
+version = "0.1.0"
+description = "Rope-backed Markdown buffer that keeps its marker/content segmentation current across edits"
+keywords = ["markdown", "editor", "rope", "text"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdedit-markers.workspace = true
+ropey.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true
