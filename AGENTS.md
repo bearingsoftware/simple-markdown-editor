@@ -95,11 +95,14 @@ cargo deny check                   # licences + advisories
 cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
 ```
 
-CI runs the first four on Linux and Windows, plus an MSRV check pinned to `rust-version`.
+CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
+pinned to `rust-version` run on Linux only — neither is platform-sensitive. The bench is not a CI
+job; it is run by hand when touching segmentation.
 
 `cargo test --release -- --ignored` is reserved for the perf assertions described under
-**Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised and on AC power, which is the condition the research says
-is least informative. They belong in a local harness whose numbers go in the PR body.
+**Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised
+and on AC power, which is the condition the research says is least informative. They belong in a
+local harness whose numbers go in the PR body.
 
 Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 `newline_style = "Unix"` and Windows checkouts default to `core.autocrlf=true`.
