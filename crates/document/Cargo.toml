@@ -11,6 +11,7 @@ repository.workspace = true
 
 [dependencies]
 mdedit-markers.workspace = true
+mdedit-offsets.workspace = true
 ropey.workspace = true
 thiserror.workspace = true
 

@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_markers::{Marker, Segment, SegmentKind, segment};
+use mdedit_offsets::ByteOffset;
 
 /// Everything the partition promises, in one place.
 ///
@@ -17,33 +18,35 @@ use mdedit_markers::{Marker, Segment, SegmentKind, segment};
 fn assert_partitions(source: &str, context: &str) -> Vec<Segment> {
     let segments = segment(source);
 
-    let mut expected_start = 0;
+    let mut expected_start = ByteOffset::ZERO;
     for (i, seg) in segments.iter().enumerate() {
-        let range = seg.range();
+        let span = seg.span();
         assert!(
-            range.start < range.end,
-            "{context}: segment {i} is empty at {range:?}"
+            !span.is_empty(),
+            "{context}: segment {i} is empty at {span}"
         );
         assert_eq!(
-            range.start, expected_start,
+            span.start(),
+            expected_start,
             "{context}: segment {i} starts at {} but the previous ended at {expected_start} \
              — a gap or overlap",
-            range.start
+            span.start()
         );
         assert!(
-            source.is_char_boundary(range.start) && source.is_char_boundary(range.end),
-            "{context}: segment {i} range {range:?} splits a character"
+            source.is_char_boundary(span.start().get())
+                && source.is_char_boundary(span.end().get()),
+            "{context}: segment {i} span {span} splits a character"
         );
-        expected_start = range.end;
+        expected_start = span.end();
     }
     assert_eq!(
-        expected_start,
+        expected_start.get(),
         source.len(),
         "{context}: segments cover {expected_start} of {} bytes",
         source.len()
     );
 
-    let rebuilt: String = segments.iter().map(|s| &source[s.range()]).collect();
+    let rebuilt: String = segments.iter().map(|s| s.span().slice(source)).collect();
     assert_eq!(rebuilt, source, "{context}: source not reproduced");
 
     segments
@@ -58,7 +61,7 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
         let SegmentKind::Marker(marker) = seg.kind() else {
             continue;
         };
-        let text = &source[seg.range()];
+        let text = seg.span().slice(source);
         let plausible = match marker {
             Marker::Emphasis | Marker::Strong => text.chars().all(|c| c == '*' || c == '_'),
             Marker::Strikethrough => text.chars().all(|c| c == '~'),

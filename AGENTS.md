@@ -35,6 +35,7 @@ flow).
 platform-agnostic.
 
 ```
+crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex
 crates/markers/         # mdedit-markers: partitions source into marker and content spans
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection and the reveal-on-cursor predicate
@@ -54,8 +55,8 @@ and evidenced. Don't relitigate them without new evidence.
 
 Known gaps, so nobody assumes they are done:
 
-- **Offsets are bare `usize`.** The newtype rule below is not yet implemented; it is the next change,
-  ahead of a third coordinate space arriving with layout.
+- **`BlockId` and `LayoutPos` do not exist.** The newtype rule below is implemented for the three
+  coordinate spaces that exist today; the other two arrive with the block model and the renderer.
 - **No block extents.** `mdedit-markers` reports marker spans only, so `Document::is_revealed`
   approximates "the block" as "the line" — exact for headings, quotes and list items, wrong for
   multi-line fenced code. Shape the block model against what the renderer actually needs.
@@ -119,7 +120,13 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 - **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
   codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
   positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the
-  whole project.
+  whole project. They live in `mdedit-offsets`, which depends on nothing: the text layer needs
+  `ByteOffset` to back an `ITextStoreACP` and must not reach a Markdown parser to get it.
+- **A byte range is a `ByteSpan`, not a `Range`.** `Range<ByteOffset>` cannot index a `str` — the
+  orphan rule bars `impl Index<Range<ByteOffset>> for str` — so spans carry their own type and slice
+  via `ByteSpan::slice`. `Range<LineIndex>` is fine, because nothing is indexed by a line range.
+  Converting raw offsets in or out (`ByteSpan::from`, `ByteSpan::range`) is deliberate and confined
+  to boundaries: `pulldown-cmark` event ranges, `ropey`'s character indices, and test fixtures.
 
 ## Project-specific rules
 

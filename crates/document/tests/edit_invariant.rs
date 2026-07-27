@@ -8,6 +8,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_document::Document;
+use mdedit_offsets::ByteOffset;
 use proptest::prelude::*;
 
 /// Asserts everything the partition promises, against the buffer's current contents.
@@ -15,32 +16,33 @@ fn assert_partitions(doc: &Document, context: &str) {
     let text = doc.to_string();
     let segments = doc.segments();
 
-    let mut expected_start = 0;
+    let mut expected_start = ByteOffset::ZERO;
     for (i, seg) in segments.iter().enumerate() {
-        let range = seg.range();
+        let span = seg.span();
         assert!(
-            range.start < range.end,
-            "{context}: segment {i} is empty at {range:?}"
+            !span.is_empty(),
+            "{context}: segment {i} is empty at {span}"
         );
         assert_eq!(
-            range.start, expected_start,
+            span.start(),
+            expected_start,
             "{context}: segment {i} starts at {} but the previous ended at {expected_start}",
-            range.start
+            span.start()
         );
         assert!(
-            text.is_char_boundary(range.start) && text.is_char_boundary(range.end),
-            "{context}: segment {i} range {range:?} splits a character"
+            text.is_char_boundary(span.start().get()) && text.is_char_boundary(span.end().get()),
+            "{context}: segment {i} span {span} splits a character"
         );
-        expected_start = range.end;
+        expected_start = span.end();
     }
     assert_eq!(
-        expected_start,
+        expected_start.get(),
         text.len(),
         "{context}: segments cover {expected_start} of {} bytes",
         text.len()
     );
 
-    let rebuilt: String = segments.iter().map(|s| &text[s.range()]).collect();
+    let rebuilt: String = segments.iter().map(|s| s.span().slice(&text)).collect();
     assert_eq!(rebuilt, text, "{context}: source not reproduced");
 }
 
@@ -107,7 +109,7 @@ proptest! {
             let start = snap(&text, edit.start);
             let end = snap(&text, start.saturating_add(edit.len));
 
-            doc.replace(start..end, &edit.replacement)
+            doc.replace((start..end).into(), &edit.replacement)
                 .expect("range was snapped to a valid char boundary within the buffer");
 
             assert_partitions(&doc, &format!("after edit {i}: {edit:?}"));
@@ -134,7 +136,7 @@ proptest! {
             let start = snap(&reference, edit.start);
             let end = snap(&reference, start.saturating_add(edit.len));
 
-            doc.replace(start..end, &edit.replacement).unwrap();
+            doc.replace((start..end).into(), &edit.replacement).unwrap();
             reference.replace_range(start..end, &edit.replacement);
 
             prop_assert_eq!(doc.to_string(), reference.clone());
@@ -174,7 +176,7 @@ fn partitions_after_edits_that_break_constructs() {
 
     for (source, range, replacement, name) in cases {
         let mut doc = Document::from(*source);
-        doc.replace(range.clone(), replacement)
+        doc.replace(range.clone().into(), replacement)
             .unwrap_or_else(|e| panic!("{name}: edit rejected: {e}"));
         assert_partitions(&doc, name);
     }

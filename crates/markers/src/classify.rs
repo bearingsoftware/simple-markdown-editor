@@ -5,9 +5,15 @@
 
 use std::ops::Range;
 
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 
 use crate::{Marker, Segment, SegmentKind};
+
+// Ranges inside this module are raw `usize`, deliberately. There is exactly one coordinate space
+// here — offsets into `source`, as `pulldown-cmark` reports them — and the scratch array is indexed
+// by them directly. Typing them would add conversions at every index without separating anything.
+// The boundary is `coalesce`, where offsets become the `ByteSpan`s the crate hands out.
 
 /// Extensions we classify. GFM tables, footnotes and task lists are deliberately absent — they are
 /// out of scope until the renderer handles them, and degrade to content.
@@ -236,10 +242,11 @@ fn coalesce(source: &str, marks: &[Option<Marker>]) -> Vec<Segment> {
             Some(marker) => SegmentKind::Marker(marker),
             None => SegmentKind::Content,
         };
+        let end = ByteOffset::new(offset + ch.len_utf8());
         match out.last_mut() {
-            Some(last) if last.kind == kind => last.range.end = offset + ch.len_utf8(),
+            Some(last) if last.kind == kind => last.span = ByteSpan::new(last.span.start(), end),
             _ => out.push(Segment {
-                range: offset..offset + ch.len_utf8(),
+                span: ByteSpan::new(ByteOffset::new(offset), end),
                 kind,
             }),
         }

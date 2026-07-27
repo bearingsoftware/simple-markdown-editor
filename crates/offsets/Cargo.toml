@@ -1,0 +1,13 @@
+[package]
+name = "mdedit-offsets"
+version = "0.1.0"
+description = "Distinct offset types for the coordinate spaces a Markdown editor carries at once"
+keywords = ["editor", "text", "offset", "newtype"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

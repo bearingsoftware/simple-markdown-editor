@@ -11,11 +11,12 @@ No renderer yet. What exists is the document core, built and tested headlessly:
 
 | Crate | What it does |
 |---|---|
+| [`mdedit-offsets`](crates/offsets) | Distinct types for the coordinate spaces the editor carries at once |
 | [`mdedit-markers`](crates/markers) | Partitions Markdown source into syntax-marker and content spans |
 | [`mdedit-document`](crates/document) | Rope buffer that keeps that partition current across edits, plus selection and the reveal-on-cursor predicate |
 
 ```bash
-cargo test          # 36 tests
+cargo test          # 42 tests
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo bench -p mdedit-markers

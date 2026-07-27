@@ -12,7 +12,7 @@ fn markers(source: &str) -> Vec<(&str, Marker)> {
     segment(source)
         .into_iter()
         .filter_map(|s| match s.kind() {
-            SegmentKind::Marker(m) => Some((&source[s.range()], m)),
+            SegmentKind::Marker(m) => Some((s.span().slice(source), m)),
             SegmentKind::Content => None,
         })
         .collect()
@@ -23,7 +23,7 @@ fn visible(source: &str) -> String {
     segment(source)
         .into_iter()
         .filter(|s| !s.is_marker())
-        .map(|s| &source[s.range()])
+        .map(|s| s.span().slice(source))
         .collect()
 }
 
@@ -221,10 +221,11 @@ fn concealing_markers_leaves_the_prose() {
 fn multibyte_characters_are_never_split() {
     for source in ["héllo *wörld*", "🎉 **emoji** 🎉", "日本語 `コード` です"] {
         for seg in segment(source) {
-            let range = seg.range();
+            let span = seg.span();
             assert!(
-                source.is_char_boundary(range.start) && source.is_char_boundary(range.end),
-                "{source:?}: {range:?} splits a character"
+                source.is_char_boundary(span.start().get())
+                    && source.is_char_boundary(span.end().get()),
+                "{source:?}: {span} splits a character"
             );
         }
     }

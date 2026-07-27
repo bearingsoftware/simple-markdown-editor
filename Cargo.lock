@@ -313,6 +313,7 @@ name = "mdedit-document"
 version = "0.1.0"
 dependencies = [
  "mdedit-markers",
+ "mdedit-offsets",
  "proptest",
  "ropey",
  "thiserror",
@@ -323,10 +324,15 @@ name = "mdedit-markers"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mdedit-offsets",
  "proptest",
  "pulldown-cmark",
  "serde_json",
 ]
+
+[[package]]
+name = "mdedit-offsets"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"
