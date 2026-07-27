@@ -91,9 +91,11 @@ fn main() -> ExitCode {
     let mut font_cx = FontContext::new();
     let mut layout_cx: LayoutContext<[u8; 4]> = LayoutContext::new();
     let mut failures = 0usize;
+    let mut all_tofu: BTreeSet<String> = BTreeSet::new();
 
     for sample in SAMPLES {
         let report = probe(&mut font_cx, &mut layout_cx, sample.text);
+        all_tofu.extend(report.tofu.iter().cloned());
 
         let verdict = if report.tofu.is_empty() {
             "OK  "
@@ -116,11 +118,12 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         println!(
-            "FAIL — {failures} of {} samples produced .notdef glyphs.",
+            "FAIL — {failures} of {} samples produced .notdef glyphs.\n",
             SAMPLES.len()
         );
+        audit_coverage(&mut font_cx, &all_tofu);
         println!(
-            "This is the parley#644 failure mode. See the spike write-up for what it implies."
+            "\nThis is the parley#644 failure mode. See the spike write-up for what it implies."
         );
         ExitCode::FAILURE
     }
@@ -159,15 +162,12 @@ fn probe(font_cx: &mut FontContext, layout_cx: &mut LayoutContext<[u8; 4]>, text
                 .unwrap_or_else(|| "<unnamed>".to_owned());
             fonts.insert(name);
 
-            for glyph in glyph_run.glyphs() {
-                if glyph.id == 0 {
-                    // Map back to the source text so the report names the character, not an index.
-                    let cluster = run
-                        .clusters()
-                        .find(|c| c.glyphs().any(|g| g.id == 0))
-                        .map(|c| text[c.text_range()].to_owned())
-                        .unwrap_or_else(|| "<unknown>".to_owned());
-                    tofu.insert(cluster);
+            // Walk clusters rather than glyphs: a cluster knows its own source range, so each
+            // failing character is named correctly. Searching clusters per failing glyph instead
+            // reports whichever cluster failed *first*, which under-reports when a run has several.
+            for cluster in run.clusters() {
+                if cluster.glyphs().any(|g| g.id == 0) {
+                    tofu.insert(text[cluster.text_range()].to_owned());
                 }
             }
         }
@@ -187,5 +187,67 @@ fn join(set: &BTreeSet<String>) -> String {
         "<none>".to_owned()
     } else {
         set.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+}
+
+/// Names the installed fonts that *do* cover each failed character.
+///
+/// Without this the result is ambiguous: a font missing from the machine and a fallback chain that
+/// never consults it produce identical tofu. If a family here covers the character, the glyph was
+/// available all along and fontique simply did not reach for it — which is the defect, not the
+/// machine's font set.
+fn audit_coverage(font_cx: &mut FontContext, tofu: &BTreeSet<String>) {
+    let FontContext {
+        collection,
+        source_cache,
+    } = font_cx;
+
+    let families: Vec<String> = collection.family_names().map(str::to_owned).collect();
+    println!(
+        "Coverage audit — {} font families installed:",
+        families.len()
+    );
+
+    for cluster in tofu {
+        let Some(ch) = cluster.chars().next() else {
+            continue;
+        };
+
+        let mut covering: Vec<String> = Vec::new();
+        for name in &families {
+            let Some(family) = collection.family_by_name(name) else {
+                continue;
+            };
+            let Some(info) = family.default_font() else {
+                continue;
+            };
+            let Some(blob) = info.load(Some(source_cache)) else {
+                continue;
+            };
+            let Ok(font) = skrifa::FontRef::from_index(blob.as_ref(), info.index()) else {
+                continue;
+            };
+            if font.charmap().map(ch).is_some() {
+                covering.push(name.clone());
+            }
+        }
+
+        println!("  {cluster:?} (U+{:04X})", u32::from(ch));
+        if covering.is_empty() {
+            println!("      NOT COVERED by any installed font — a missing-font problem rather");
+            println!("      than a fallback defect. Install a font for this script and re-run.");
+        } else {
+            let sample = covering
+                .iter()
+                .take(4)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!(
+                "      covered by {} installed families, e.g. {sample}",
+                covering.len()
+            );
+            println!("      => the glyph was available; fallback did not reach it.");
+        }
     }
 }
