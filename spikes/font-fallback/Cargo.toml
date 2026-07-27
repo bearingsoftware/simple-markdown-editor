@@ -12,3 +12,11 @@ skrifa = "0.35"
 
 # Standalone: kept out of the main workspace so the spike never enters CI.
 [workspace]
+
+# Uncomment to test linebender/parley#689 ("Fontique: 3-tier font fallback"), which claims to fix
+# #644. Both crates come from the PR branch together — patching fontique alone version-mismatches
+# against the released parley.
+#
+# [patch.crates-io]
+# parley   = { git = "https://github.com/nicoburns/parley", branch = "rigorous-font-fallback" }
+# fontique = { git = "https://github.com/nicoburns/parley", branch = "rigorous-font-fallback" }
