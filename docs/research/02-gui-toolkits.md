@@ -561,18 +561,26 @@ argument for the DirectWrite-first path.
 > not rejected — its layout side stays the portable implementation behind the
 > trait, which exists so this is revisitable when #644 closes.
 >
-> **A fix is proposed but has not landed.**
+> **The fix works, but has not landed.**
 > [parley#689](https://github.com/linebender/parley/pull/689), *"Fontique: 3-tier
 > font fallback"*, targets this directly. Notably its Windows tier delegates to
 > `IDWriteFontFallback::MapCharacters` — the same API the DirectWrite-first plan
 > calls directly, so the upstream fix and our workaround converge on the same
 > mechanism rather than diverging.
 >
-> As of 2026-07-27 it is **open, unmerged, conflicted with main, and
+> **Verified on Windows 2026-07-27:** with the PR branch patched in, the probe
+> passes all eight samples, including the mixed-script line. Han now resolves to
+> *two* families — Microsoft JhengHei UI alongside Yu Gothic UI — which is the
+> multi-font fallback working as designed.
+>
+> But as of 2026-07-27 the PR is **open, unmerged, conflicted with main, and
 > unapproved**, with one AI-generated commit and a supportive-but-cautious
 > maintainer response questioning the char lookup and cache design. Nothing has
-> shipped, so the decision above stands unchanged. `spikes/font-fallback` has an
-> opt-in `[patch.crates-io]` block for testing the PR branch.
+> shipped, so **the decision above stands unchanged** — there is no released
+> fontique to depend on. What has changed is certainty about the endgame: the
+> fix is known to work, so this is now a waiting problem rather than an open
+> question. `spikes/font-fallback` carries the `[patch.crates-io]` block and the
+> MSRV note needed to reproduce this.
 >
 > The IME half remains unrun: it needs a human at a Windows keyboard and a
 > renderer to type into. Tracked as MDEDIT-6.

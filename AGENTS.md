@@ -141,12 +141,17 @@ cargo test --release -- --ignored  # perf assertions (see Performance below)
   ([parley#644](https://github.com/linebender/parley/issues/644), open, cause is architectural).
   A Markdown editor that cannot render 汉 is not shippable. The trait also de-risks parley's release
   churn (five breaking releases in seven months, no 1.0) and gives a correctness oracle.
-- **Do not use parley for text layout on Windows** until `spikes/font-fallback` passes there. Its
-  layout side remains the portable implementation for macOS and Linux.
-  [parley#689](https://github.com/linebender/parley/pull/689) proposes the fix and its Windows tier
-  delegates to `IDWriteFontFallback::MapCharacters` — the same API we call directly, so the two paths
-  converge rather than diverge. As of 2026-07-27 it is unmerged, conflicted and unapproved, so it
-  changes nothing yet. Re-run the probe when it lands in a fontique release.
+- **Do not use parley for text layout on Windows** until `spikes/font-fallback` passes there against a
+  *released* fontique — passing against a patched branch does not count, since there is nothing to
+  depend on. Its layout side remains the portable implementation for macOS and Linux.
+  [parley#689](https://github.com/linebender/parley/pull/689) is the fix, and **it has been verified
+  to work**: with its branch patched in, the probe passes all eight samples on Windows including the
+  mixed-script line. Its Windows tier delegates to `IDWriteFontFallback::MapCharacters` — the same API
+  we call directly — so the two paths converge rather than diverge.
+  **The requirement stands only until that PR ships.** As of 2026-07-27 it is unmerged, conflicted
+  with main and unapproved, so nothing is available to depend on. When it lands in a released
+  fontique, re-run the probe against the release and, if green, parley becomes viable on Windows and
+  this restriction lifts.
 - Pin parley to an exact version. Wrap it; don't leak its types into the editor core.
 - IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an
   `ITextStoreACP`** — retrofitting TSF's offsets and lock protocol onto a buffer not designed for it
