@@ -10,9 +10,16 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Windows is the primary target, so it gates every PR rather than being a nightly afterthought.
+  # It also catches what Linux cannot: line endings, path handling, and the platform layer once
+  # DirectWrite lands.
   check:
-    name: fmt · clippy · test
-    runs-on: ubuntu-latest
+    name: fmt · clippy · test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
