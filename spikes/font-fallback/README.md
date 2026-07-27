@@ -65,13 +65,25 @@ AI-generated commit, no approving review. The only maintainer response is suppor
 dfrg finds the char lookup and cache "iffy" and wants to avoid an exhaustive search, so the design is
 not settled.
 
-To test it, uncomment the `[patch.crates-io]` block in `Cargo.toml`, then:
+To test it, uncomment the `[patch.crates-io]` block in `Cargo.toml` **and raise `rust-version` to
+1.88**, then:
 
 ```powershell
-cargo update          # a stale Cargo.lock will silently keep the crates.io resolution
+cargo update             # a stale Cargo.lock silently keeps the crates.io resolution
 cargo tree -i fontique   # MUST show a github.com/nicoburns/parley source
 cargo run --release
 ```
+
+The MSRV bump is not optional. The PR branch requires Rust 1.88, and cargo's MSRV-aware resolver will
+otherwise hold transitive dependencies at 1.85-compatible versions, producing:
+
+```
+error[E0015]: cannot call non-const associated function
+              `PropertyNamesShort::<Script>::new` in statics
+   --> parley_core/src/itemize.rs:216
+```
+
+That reads like a defect in the PR and is not one — it is an artefact of this crate's own MSRV pin.
 
 **Confirm the second command before trusting the third.** A patched and an unpatched run look
 identical in the probe's own output, so without checking provenance a "still fails" result is
