@@ -31,9 +31,14 @@ flow).
 
 ## Repo state
 
-**Greenfield — no Cargo project yet.** Currently research only:
+**Document core only — no renderer, no window, no file I/O.** Everything that exists is headless and
+platform-agnostic.
 
 ```
+crates/markers/         # mdedit-markers: partitions source into marker and content spans
+crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
+                        #   selection and the reveal-on-cursor predicate
+spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
   01-editor-landscape.md
@@ -46,6 +51,16 @@ docs/research/          # 7 briefs; read README.md first
 
 Read `docs/research/README.md` before proposing architecture — the major decisions are already made
 and evidenced. Don't relitigate them without new evidence.
+
+Known gaps, so nobody assumes they are done:
+
+- **Offsets are bare `usize`.** The newtype rule below is not yet implemented; it is the next change,
+  ahead of a third coordinate space arriving with layout.
+- **No block extents.** `mdedit-markers` reports marker spans only, so `Document::is_revealed`
+  approximates "the block" as "the line" — exact for headings, quotes and list items, wrong for
+  multi-line fenced code. Shape the block model against what the renderer actually needs.
+- **No perf assertions.** The bench in `crates/markers/benches` measures; nothing gates a regression.
+- **CI does not build any platform code**, because none exists yet.
 
 ## Stack
 
@@ -72,15 +87,25 @@ open stack-corrupting overflow in `serialize()`).
 
 ## Build & test
 
-No `Cargo.toml` yet. Intended gates once it exists:
-
 ```bash
-cargo fmt --check
+cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo deny check                 # licences + advisories
-cargo test --release -- --ignored  # perf assertions (see Performance below)
+cargo test --all-features
+cargo deny check                   # licences + advisories
+cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
 ```
+
+CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
+pinned to `rust-version` run on Linux only — neither is platform-sensitive. The bench is not a CI
+job; it is run by hand when touching segmentation.
+
+`cargo test --release -- --ignored` is reserved for the perf assertions described under
+**Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised
+and on AC power, which is the condition the research says is least informative. They belong in a
+local harness whose numbers go in the PR body.
+
+Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
+`newline_style = "Unix"` and Windows checkouts default to `core.autocrlf=true`.
 
 ## Rust, beyond the baseline
 

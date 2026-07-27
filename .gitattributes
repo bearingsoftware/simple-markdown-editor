@@ -1,0 +1,3 @@
+# rustfmt pins newline_style = "Unix", and Windows checkouts default to core.autocrlf=true.
+# Without this, `cargo fmt --check` fails on every file on Windows — locally and on CI.
+* text=auto eol=lf
