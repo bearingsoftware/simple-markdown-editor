@@ -83,10 +83,10 @@ fn main() -> ExitCode {
         std::env::consts::OS,
         std::env::consts::ARCH
     );
-    println!(
-        "parley 0.11 · fontique via parley::FontContext\n{}",
-        "-".repeat(78)
-    );
+    // Deliberately not a hardcoded version string: this probe gets run against patched builds, and
+    // a banner claiming "parley 0.11" while linked to a git branch made one result unreadable.
+    println!("fontique build: run `cargo tree -i fontique` to confirm which source is linked");
+    println!("{}", "-".repeat(78));
 
     let mut font_cx = FontContext::new();
     let mut layout_cx: LayoutContext<[u8; 4]> = LayoutContext::new();
