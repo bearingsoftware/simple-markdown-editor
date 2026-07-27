@@ -6,11 +6,22 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_document::{Document, Selection};
+use mdedit_offsets::ByteOffset;
 use proptest::prelude::*;
+
+/// These tests are about byte positions as numbers, so the two constructors take raw offsets and
+/// convert here — the only conversion in the file.
+fn caret_at(offset: usize) -> Selection {
+    Selection::caret(ByteOffset::new(offset))
+}
+
+fn selection(anchor: usize, head: usize) -> Selection {
+    Selection::new(ByteOffset::new(anchor), ByteOffset::new(head))
+}
 
 /// The marker text revealed for a given caret position, in document order.
 fn revealed_at(source: &str, caret: usize) -> Vec<String> {
-    revealed(source, Selection::caret(caret))
+    revealed(source, caret_at(caret))
 }
 
 fn revealed(source: &str, selection: Selection) -> Vec<String> {
@@ -19,7 +30,7 @@ fn revealed(source: &str, selection: Selection) -> Vec<String> {
     doc.segments()
         .iter()
         .filter(|s| s.is_marker() && doc.is_revealed(s, selection))
-        .map(|s| text[s.range()].to_owned())
+        .map(|s| s.span().slice(&text).to_owned())
         .collect()
 }
 
@@ -70,25 +81,25 @@ fn adjacency_counts_so_a_delimiter_can_be_deleted() {
         .expect("has a marker")
         .clone();
 
-    assert_eq!(&text[opener.range()], "**");
-    assert!(doc.is_revealed(&opener, Selection::caret(2)));
+    assert_eq!(opener.span().slice(&text), "**");
+    assert!(doc.is_revealed(&opener, caret_at(2)));
 }
 
 #[test]
 fn a_selection_spanning_a_marker_reveals_it() {
     let source = "a **bold** b";
     assert_eq!(
-        revealed(source, Selection::new(0, 12)),
+        revealed(source, selection(0, 12)),
         vec!["**", "**"],
         "select-all reveals every marker"
     );
     assert_eq!(
-        revealed(source, Selection::new(0, 1)),
+        revealed(source, selection(0, 1)),
         Vec::<String>::new(),
         "a selection clear of the markers reveals none"
     );
     assert_eq!(
-        revealed(source, Selection::new(4, 6)),
+        revealed(source, selection(4, 6)),
         Vec::<String>::new(),
         "selecting inside the content reveals none"
     );
@@ -98,8 +109,8 @@ fn a_selection_spanning_a_marker_reveals_it() {
 fn a_backwards_selection_behaves_the_same() {
     let source = "a **bold** b";
     assert_eq!(
-        revealed(source, Selection::new(12, 0)),
-        revealed(source, Selection::new(0, 12)),
+        revealed(source, selection(12, 0)),
+        revealed(source, selection(0, 12)),
         "anchor and head order must not matter"
     );
 }
@@ -141,11 +152,7 @@ fn each_quoted_line_reveals_its_own_marker() {
         vec!["> "],
         "caret on the second line"
     );
-    assert_eq!(
-        revealed(source, Selection::new(0, 11)).len(),
-        2,
-        "spanning both"
-    );
+    assert_eq!(revealed(source, selection(0, 11)).len(), 2, "spanning both");
 }
 
 #[test]
@@ -171,7 +178,7 @@ fn content_is_always_visible() {
         for segment in doc.segments() {
             if !segment.is_marker() {
                 assert!(
-                    doc.is_revealed(segment, Selection::caret(caret)),
+                    doc.is_revealed(segment, caret_at(caret)),
                     "content hidden at caret {caret}"
                 );
             }
@@ -187,8 +194,8 @@ fn a_stale_caret_past_the_end_does_not_panic() {
     // A caret left over from a longer document must clamp, not crash a render. It clamps to the end
     // of the buffer, which is the line *after* the heading, so the marker is correctly hidden —
     // what matters here is that asking does not panic.
-    assert!(!doc.is_revealed(&segment, Selection::caret(9_999)));
-    assert!(!doc.is_revealed(&segment, Selection::new(9_999, 10_000)));
+    assert!(!doc.is_revealed(&segment, caret_at(9_999)));
+    assert!(!doc.is_revealed(&segment, selection(9_999, 10_000)));
 }
 
 /// The gap this design knowingly carries — asserted so it changes deliberately rather than by
@@ -227,7 +234,7 @@ proptest! {
 
         for caret in 0..=source.len() {
             for segment in &segments {
-                let _ = doc.is_revealed(segment, Selection::caret(caret));
+                let _ = doc.is_revealed(segment, caret_at(caret));
             }
         }
     }
@@ -242,12 +249,12 @@ proptest! {
         let segments = doc.segments().to_vec();
 
         for segment in segments.iter().filter(|s| s.is_marker()) {
-            let range = segment.range();
-            for caret in range.clone() {
+            let span = segment.span();
+            for caret in span.range() {
                 prop_assert!(
-                    doc.is_revealed(segment, Selection::caret(caret)),
+                    doc.is_revealed(segment, caret_at(caret)),
                     "marker {:?} hidden with the caret at {caret} inside it",
-                    &source[range.clone()]
+                    span.slice(&source)
                 );
             }
         }

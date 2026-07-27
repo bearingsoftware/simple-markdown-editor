@@ -11,20 +11,25 @@
 //!
 //! ```
 //! # use mdedit_document::Document;
+//! # use mdedit_offsets::{ByteOffset, ByteSpan};
 //! let mut doc = Document::from("# Title\n\nSome **bold** text.\n");
-//! doc.replace(9..13, "Other")?;
+//! doc.replace(
+//!     ByteSpan::new(ByteOffset::new(9), ByteOffset::new(13)),
+//!     "Other",
+//! )?;
 //!
 //! let text = doc.to_string();
-//! let rebuilt: String = doc.segments().iter().map(|s| &text[s.range()]).collect();
+//! let rebuilt: String = doc.segments().iter().map(|s| s.span().slice(&text)).collect();
 //! assert_eq!(rebuilt, text);
 //! # Ok::<(), mdedit_document::EditError>(())
 //! ```
 //!
 //! # Design notes
 //!
-//! **Offsets are bytes.** Every public range is a byte range into the buffer, matching
-//! [`mdedit_markers`]. `ropey` indexes by character, so the two spaces coexist here — the conversion
-//! is confined to [`Document::replace`] and appears nowhere else.
+//! **Offsets are bytes.** Every public position is a [`ByteOffset`] into the buffer, matching
+//! [`mdedit_markers`]. `ropey` indexes by character, so [`CharOffset`] coexists here — the
+//! conversion is confined to [`Document::replace`] and appears nowhere else, which is the whole
+//! reason the two are different types.
 //!
 //! **Segmentation is recomputed on edit.** [`Document::segments`] is therefore a plain `&self`
 //! read, which matters: a renderer needs the segments and the selection in the same loop, and a
@@ -41,6 +46,7 @@
 use std::ops::Range;
 
 use mdedit_markers::{Segment, SegmentKind};
+use mdedit_offsets::{ByteOffset, ByteSpan, CharOffset, LineIndex};
 use ropey::Rope;
 
 /// Why an edit was rejected.
@@ -50,11 +56,11 @@ use ropey::Rope;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum EditError {
-    /// The range extended past the end of the buffer, or started after it ended.
-    #[error("byte range {range:?} is outside the buffer of {len} bytes")]
+    /// The span extended past the end of the buffer, or started after it ended.
+    #[error("byte span {span} is outside the buffer of {len} bytes")]
     OutOfBounds {
-        /// The offending range.
-        range: Range<usize>,
+        /// The offending span.
+        span: ByteSpan,
         /// Buffer length in bytes at the time of the edit.
         len: usize,
     },
@@ -62,7 +68,7 @@ pub enum EditError {
     #[error("byte offset {offset} is not a character boundary")]
     NotCharBoundary {
         /// The offending endpoint.
-        offset: usize,
+        offset: ByteOffset,
     },
 }
 
@@ -108,30 +114,30 @@ impl Document {
         &self.segments
     }
 
-    /// Replaces the bytes in `range` with `replacement`.
+    /// Replaces the bytes in `span` with `replacement`.
     ///
     /// The single editing primitive — [`insert`](Self::insert) and [`delete`](Self::delete) are
     /// spellings of it, so the bounds checking and cache invalidation live in one place.
     ///
     /// # Errors
     ///
-    /// [`EditError::OutOfBounds`] if the range does not lie within the buffer, or
+    /// [`EditError::OutOfBounds`] if the span does not lie within the buffer, or
     /// [`EditError::NotCharBoundary`] if an endpoint splits a multi-byte character. The buffer is
     /// left untouched in both cases.
-    pub fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), EditError> {
-        self.check(&range)?;
+    pub fn replace(&mut self, span: ByteSpan, replacement: &str) -> Result<(), EditError> {
+        self.check(span)?;
 
-        // The only place character indices exist. ropey addresses by character; every offset in this
-        // crate's API is a byte offset, and mixing the two silently is the bug this containment
-        // exists to prevent.
-        let char_start = self.text.byte_to_char(range.start);
-        let char_end = self.text.byte_to_char(range.end);
+        // The only place [`CharOffset`] exists. ropey addresses by character, this crate's API
+        // addresses by byte, and mixing the two silently is the bug this containment exists to
+        // prevent — now with the type system enforcing that the conversion is written down.
+        let char_start = self.byte_to_char(span.start());
+        let char_end = self.byte_to_char(span.end());
 
         if char_start != char_end {
-            self.text.remove(char_start..char_end);
+            self.text.remove(char_start.get()..char_end.get());
         }
         if !replacement.is_empty() {
-            self.text.insert(char_start, replacement);
+            self.text.insert(char_start.get(), replacement);
         }
 
         self.resegment();
@@ -143,17 +149,17 @@ impl Document {
     /// # Errors
     ///
     /// As [`replace`](Self::replace).
-    pub fn insert(&mut self, at: usize, text: &str) -> Result<(), EditError> {
-        self.replace(at..at, text)
+    pub fn insert(&mut self, at: ByteOffset, text: &str) -> Result<(), EditError> {
+        self.replace(ByteSpan::empty_at(at), text)
     }
 
-    /// Removes the bytes in `range`.
+    /// Removes the bytes in `span`.
     ///
     /// # Errors
     ///
     /// As [`replace`](Self::replace).
-    pub fn delete(&mut self, range: Range<usize>) -> Result<(), EditError> {
-        self.replace(range, "")
+    pub fn delete(&mut self, span: ByteSpan) -> Result<(), EditError> {
+        self.replace(span, "")
     }
 
     /// Recomputes the partition from the current buffer.
@@ -161,16 +167,13 @@ impl Document {
         self.segments = mdedit_markers::segment(&self.text.to_string());
     }
 
-    /// Rejects a range that does not address this buffer.
-    fn check(&self, range: &Range<usize>) -> Result<(), EditError> {
+    /// Rejects a span that does not address this buffer.
+    fn check(&self, span: ByteSpan) -> Result<(), EditError> {
         let len = self.len_bytes();
-        if range.start > range.end || range.end > len {
-            return Err(EditError::OutOfBounds {
-                range: range.clone(),
-                len,
-            });
+        if span.start() > span.end() || span.end().get() > len {
+            return Err(EditError::OutOfBounds { span, len });
         }
-        for offset in [range.start, range.end] {
+        for offset in [span.start(), span.end()] {
             // `Rope::byte_to_char` saturates rather than reporting a split character, so the check
             // has to be explicit or a mid-character edit silently moves the edit point.
             if !self.is_char_boundary(offset) {
@@ -181,12 +184,17 @@ impl Document {
     }
 
     /// Whether a byte offset sits between characters.
-    fn is_char_boundary(&self, offset: usize) -> bool {
-        if offset == 0 || offset == self.len_bytes() {
+    fn is_char_boundary(&self, offset: ByteOffset) -> bool {
+        if offset == ByteOffset::ZERO || offset.get() == self.len_bytes() {
             return true;
         }
-        let char_idx = self.text.byte_to_char(offset);
-        self.text.char_to_byte(char_idx) == offset
+        let char_idx = self.byte_to_char(offset);
+        self.text.char_to_byte(char_idx.get()) == offset.get()
+    }
+
+    /// The rope character index at a byte offset.
+    fn byte_to_char(&self, offset: ByteOffset) -> CharOffset {
+        CharOffset::new(self.text.byte_to_char(offset.get()))
     }
 }
 
@@ -235,14 +243,14 @@ impl std::fmt::Display for Document {
 /// that moves and the two can be in either order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
-    anchor: usize,
-    head: usize,
+    anchor: ByteOffset,
+    head: ByteOffset,
 }
 
 impl Selection {
     /// A collapsed selection — a caret at `at`.
     #[must_use]
-    pub fn caret(at: usize) -> Self {
+    pub fn caret(at: ByteOffset) -> Self {
         Self {
             anchor: at,
             head: at,
@@ -251,29 +259,29 @@ impl Selection {
 
     /// A selection from `anchor` to `head`. Either order is valid.
     #[must_use]
-    pub fn new(anchor: usize, head: usize) -> Self {
+    pub fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
         Self { anchor, head }
     }
 
     /// Where the selection started.
     #[must_use]
-    pub fn anchor(self) -> usize {
+    pub fn anchor(self) -> ByteOffset {
         self.anchor
     }
 
     /// The moving end of the selection.
     #[must_use]
-    pub fn head(self) -> usize {
+    pub fn head(self) -> ByteOffset {
         self.head
     }
 
-    /// The selection as an ordered byte range.
+    /// The selection as an ordered byte span.
     #[must_use]
-    pub fn range(self) -> Range<usize> {
+    pub fn span(self) -> ByteSpan {
         if self.anchor <= self.head {
-            self.anchor..self.head
+            ByteSpan::new(self.anchor, self.head)
         } else {
-            self.head..self.anchor
+            ByteSpan::new(self.head, self.anchor)
         }
     }
 
@@ -314,26 +322,29 @@ impl Document {
             return true;
         };
 
-        let seg = segment.range();
-        let sel = selection.range();
+        let seg = segment.span();
+        let sel = selection.span();
 
         if marker.is_block() {
-            let marker_lines = self.line_span(&seg);
-            let caret_lines = self.line_span(&sel);
+            let marker_lines = self.line_span(seg);
+            let caret_lines = self.line_span(sel);
             marker_lines.start <= caret_lines.end && caret_lines.start <= marker_lines.end
         } else if selection.is_collapsed() {
             // Inclusive, so a caret touching either edge counts as inside.
-            sel.start <= seg.end && seg.start <= sel.end
+            sel.touches(seg)
         } else {
-            sel.start < seg.end && seg.start < sel.end
+            sel.overlaps(seg)
         }
     }
 
-    /// The inclusive range of line indices a byte range covers.
-    fn line_span(&self, range: &Range<usize>) -> Range<usize> {
+    /// The inclusive range of line indices a byte span covers.
+    ///
+    /// A `Range<LineIndex>` needs no span type of its own: nothing is ever indexed by a line range,
+    /// so the orphan-rule problem that [`ByteSpan`] exists to solve does not arise.
+    fn line_span(&self, span: ByteSpan) -> Range<LineIndex> {
         let len = self.len_bytes();
-        let start = self.text.byte_to_line(range.start.min(len));
-        let end = self.text.byte_to_line(range.end.min(len));
-        start..end
+        let start = self.text.byte_to_line(span.start().get().min(len));
+        let end = self.text.byte_to_line(span.end().get().min(len));
+        LineIndex::new(start)..LineIndex::new(end)
     }
 }

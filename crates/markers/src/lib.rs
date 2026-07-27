@@ -15,7 +15,7 @@
 //! ```
 //! # use mdedit_markers::segment;
 //! let src = "## Heading\n\nSome **bold** text.\n";
-//! let rebuilt: String = segment(src).iter().map(|s| &src[s.range()]).collect();
+//! let rebuilt: String = segment(src).iter().map(|s| s.span().slice(src)).collect();
 //! assert_eq!(rebuilt, src);
 //! ```
 //!
@@ -38,26 +38,26 @@
 //!
 //! [pulldown-cmark#441]: https://github.com/pulldown-cmark/pulldown-cmark/issues/441
 
-use std::ops::Range;
+use mdedit_offsets::ByteSpan;
 
 mod classify;
 
 /// A run of bytes with a single role.
 ///
-/// Produced only by [`segment`]; the ranges of a returned slice tile the whole input.
+/// Produced only by [`segment`]; the spans of a returned slice tile the whole input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
-    range: Range<usize>,
+    span: ByteSpan,
     kind: SegmentKind,
 }
 
 impl Segment {
-    /// Byte range within the source this segment was produced from.
+    /// Byte span within the source this segment was produced from.
     ///
     /// Always non-empty and always on UTF-8 character boundaries, so it is safe to slice with.
     #[must_use]
-    pub fn range(&self) -> Range<usize> {
-        self.range.clone()
+    pub fn span(&self) -> ByteSpan {
+        self.span
     }
 
     /// Whether this run is syntax to conceal, or content to show.
@@ -141,7 +141,7 @@ impl Marker {
 
 /// Partitions `source` into ordered marker and content runs.
 ///
-/// The returned segments tile `0..source.len()` exactly — see the [crate docs](crate) for the
+/// The returned segments tile the whole of `source` exactly — see the [crate docs](crate) for the
 /// guarantee and an example. Never panics, and never returns an empty segment.
 ///
 /// Constructs this crate does not yet classify (HTML blocks, entity references, link reference
