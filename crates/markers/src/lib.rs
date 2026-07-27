@@ -117,6 +117,28 @@ pub enum Marker {
     HardBreak,
 }
 
+impl Marker {
+    /// Whether this marker belongs to a block-level construct rather than an inline one.
+    ///
+    /// The distinction drives concealment. Inline syntax is revealed when the caret touches the
+    /// marker itself; block syntax is revealed while the caret is anywhere in the block, which is
+    /// how Typora behaves and why `## ` stays visible while you are editing the heading text.
+    ///
+    /// An unrecognised marker counts as inline: revealing too little is a cosmetic fault, whereas
+    /// revealing a whole block's syntax unexpectedly is a distracting one.
+    #[must_use]
+    pub fn is_block(self) -> bool {
+        matches!(
+            self,
+            Self::CodeBlock
+                | Self::Heading
+                | Self::BlockQuote
+                | Self::ListItem
+                | Self::ThematicBreak
+        )
+    }
+}
+
 /// Partitions `source` into ordered marker and content runs.
 ///
 /// The returned segments tile `0..source.len()` exactly — see the [crate docs](crate) for the

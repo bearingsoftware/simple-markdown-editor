@@ -11,7 +11,7 @@ use mdedit_document::Document;
 use proptest::prelude::*;
 
 /// Asserts everything the partition promises, against the buffer's current contents.
-fn assert_partitions(doc: &mut Document, context: &str) {
+fn assert_partitions(doc: &Document, context: &str) {
     let text = doc.to_string();
     let segments = doc.segments();
 
@@ -100,7 +100,7 @@ proptest! {
         edits in proptest::collection::vec(edit_strategy(), 0..24),
     ) {
         let mut doc = Document::from(initial.as_str());
-        assert_partitions(&mut doc, "initial");
+        assert_partitions(&doc, "initial");
 
         for (i, edit) in edits.iter().enumerate() {
             let text = doc.to_string();
@@ -110,12 +110,12 @@ proptest! {
             doc.replace(start..end, &edit.replacement)
                 .expect("range was snapped to a valid char boundary within the buffer");
 
-            assert_partitions(&mut doc, &format!("after edit {i}: {edit:?}"));
+            assert_partitions(&doc, &format!("after edit {i}: {edit:?}"));
 
             // An edited document must segment identically to one parsed from scratch. This is what
             // a stale cache breaks, and it is stronger than the partition check alone: a cache that
             // was correct-but-outdated could still tile perfectly while describing older text.
-            let mut fresh = Document::from(doc.to_string().as_str());
+            let fresh = Document::from(doc.to_string().as_str());
             prop_assert_eq!(doc.segments(), fresh.segments(), "cache diverged after edit {}", i);
         }
     }
@@ -176,6 +176,6 @@ fn partitions_after_edits_that_break_constructs() {
         let mut doc = Document::from(*source);
         doc.replace(range.clone(), replacement)
             .unwrap_or_else(|e| panic!("{name}: edit rejected: {e}"));
-        assert_partitions(&mut doc, name);
+        assert_partitions(&doc, name);
     }
 }

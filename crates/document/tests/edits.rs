@@ -161,10 +161,7 @@ fn segmentation_reflects_the_current_buffer() {
 }
 
 #[test]
-fn several_edits_resegment_once() {
-    // The cache is lazy so a transaction pays for one re-parse, not one per edit. Observable only
-    // through the result being correct after a burst — timing would be flaky — so this guards
-    // against the cache going stale, which is the failure that laziness risks.
+fn an_edited_document_matches_a_fresh_parse() {
     let mut doc = Document::from("a");
     for _ in 0..10 {
         let end = doc.len_bytes();
@@ -174,7 +171,7 @@ fn several_edits_resegment_once() {
     // The property that matters: an incrementally-edited document segments identically to one
     // parsed from scratch. That is precisely what a stale cache would break, and unlike a marker
     // count it does not depend on guessing how pulldown pairs ambiguous delimiters.
-    let mut fresh = Document::from(doc.to_string().as_str());
+    let fresh = Document::from(doc.to_string().as_str());
     assert_eq!(doc.segments(), fresh.segments());
 }
 
