@@ -26,9 +26,13 @@
 //! [`mdedit_markers`]. `ropey` indexes by character, so the two spaces coexist here — the conversion
 //! is confined to [`Document::replace`] and appears nowhere else.
 //!
-//! **Segmentation is lazy.** [`Document::replace`] marks the segmentation stale;
-//! [`Document::segments`] recomputes it if needed. A transaction of several edits therefore
-//! re-segments once rather than once per edit.
+//! **Segmentation is recomputed on edit.** [`Document::segments`] is therefore a plain `&self`
+//! read, which matters: a renderer needs the segments and the selection in the same loop, and a
+//! lazily-filled cache would borrow the document mutably just to read it.
+//!
+//! A lazy cache would let a multi-edit transaction re-parse once instead of once per edit. That
+//! optimisation is deliberately absent until a benchmark shows a transaction shape that needs it —
+//! the same discipline MDEDIT-4 applied to segmentation itself.
 //!
 //! **Re-segmentation is a full re-parse**, per the measurement in
 //! `docs/research/04-parsing-benchmarks.md`: at 60 KB it costs less than a frame, and incremental
@@ -36,7 +40,7 @@
 
 use std::ops::Range;
 
-use mdedit_markers::Segment;
+use mdedit_markers::{Segment, SegmentKind};
 use ropey::Rope;
 
 /// Why an edit was rejected.
@@ -66,8 +70,8 @@ pub enum EditError {
 #[derive(Debug, Clone)]
 pub struct Document {
     text: Rope,
-    /// `None` once an edit invalidates it; recomputed on the next read.
-    segments: Option<Vec<Segment>>,
+    /// Always current: recomputed by every edit.
+    segments: Vec<Segment>,
 }
 
 impl Document {
@@ -76,7 +80,7 @@ impl Document {
     pub fn new() -> Self {
         Self {
             text: Rope::new(),
-            segments: None,
+            segments: Vec::new(),
         }
     }
 
@@ -98,16 +102,10 @@ impl Document {
         &self.text
     }
 
-    /// The marker/content partition of the current buffer, recomputing it if an edit invalidated it.
-    ///
-    /// Takes `&mut self` because the segmentation is a cache: reading it may have to fill it. That is
-    /// preferred over interior mutability, which would hide the cost.
-    pub fn segments(&mut self) -> &[Segment] {
-        if self.segments.is_none() {
-            self.segments = Some(mdedit_markers::segment(&self.text.to_string()));
-        }
-        // Just populated above if it was absent.
-        self.segments.as_deref().unwrap_or_default()
+    /// The marker/content partition of the current buffer.
+    #[must_use]
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
     }
 
     /// Replaces the bytes in `range` with `replacement`.
@@ -136,7 +134,7 @@ impl Document {
             self.text.insert(char_start, replacement);
         }
 
-        self.segments = None;
+        self.resegment();
         Ok(())
     }
 
@@ -156,6 +154,11 @@ impl Document {
     /// As [`replace`](Self::replace).
     pub fn delete(&mut self, range: Range<usize>) -> Result<(), EditError> {
         self.replace(range, "")
+    }
+
+    /// Recomputes the partition from the current buffer.
+    fn resegment(&mut self) {
+        self.segments = mdedit_markers::segment(&self.text.to_string());
     }
 
     /// Rejects a range that does not address this buffer.
@@ -195,10 +198,12 @@ impl Default for Document {
 
 impl From<&str> for Document {
     fn from(text: &str) -> Self {
-        Self {
+        let mut doc = Self {
             text: Rope::from_str(text),
-            segments: None,
-        }
+            segments: Vec::new(),
+        };
+        doc.resegment();
+        doc
     }
 }
 
@@ -220,5 +225,115 @@ impl std::fmt::Display for Document {
             f.write_str(chunk)?;
         }
         Ok(())
+    }
+}
+
+/// Where the caret is, and what is selected.
+///
+/// Offsets are bytes, as everywhere else in this crate. A caret is a selection whose ends coincide;
+/// `anchor` is where the selection started and `head` is where it currently is, so `head` is the end
+/// that moves and the two can be in either order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    anchor: usize,
+    head: usize,
+}
+
+impl Selection {
+    /// A collapsed selection — a caret at `at`.
+    #[must_use]
+    pub fn caret(at: usize) -> Self {
+        Self {
+            anchor: at,
+            head: at,
+        }
+    }
+
+    /// A selection from `anchor` to `head`. Either order is valid.
+    #[must_use]
+    pub fn new(anchor: usize, head: usize) -> Self {
+        Self { anchor, head }
+    }
+
+    /// Where the selection started.
+    #[must_use]
+    pub fn anchor(self) -> usize {
+        self.anchor
+    }
+
+    /// The moving end of the selection.
+    #[must_use]
+    pub fn head(self) -> usize {
+        self.head
+    }
+
+    /// The selection as an ordered byte range.
+    #[must_use]
+    pub fn range(self) -> Range<usize> {
+        if self.anchor <= self.head {
+            self.anchor..self.head
+        } else {
+            self.head..self.anchor
+        }
+    }
+
+    /// Whether this is a caret rather than a span.
+    #[must_use]
+    pub fn is_collapsed(self) -> bool {
+        self.anchor == self.head
+    }
+}
+
+impl Document {
+    /// Whether a segment's syntax should be shown, given where the caret is.
+    ///
+    /// This predicate is the whole live-preview illusion: markers are concealed until the caret is
+    /// near them, then revealed so they can be edited. Content is always visible.
+    ///
+    /// Two rules, because Typora has two and conflating them is the usual mistake:
+    ///
+    /// - **Inline** markers reveal when the selection meets the marker's own span. A *caret* has no
+    ///   width, so adjacency counts: resting immediately either side of `**` reveals it, and you can
+    ///   delete a delimiter you have just typed past. A *range* selection must genuinely overlap —
+    ///   selecting the word inside `**bold**` should not light up delimiters it does not contain.
+    /// - **Block** markers reveal when the selection is on any line the marker's block occupies, so
+    ///   `## ` stays visible while you edit the heading text rather than vanishing under the cursor.
+    ///
+    /// Total: out-of-range selections are clamped rather than rejected, because a stale caret should
+    /// not be able to crash a render.
+    ///
+    /// # Known approximation
+    ///
+    /// [`mdedit_markers`] reports marker spans but not block extents, so "the block" is approximated
+    /// by "the line". That is exact for headings, block quotes and list items, whose markers sit on
+    /// every line they affect. It is wrong for a multi-line fenced code block: its fences reveal only
+    /// when the caret is on a fence line, where Typora would show them from anywhere inside.
+    #[must_use]
+    pub fn is_revealed(&self, segment: &Segment, selection: Selection) -> bool {
+        let SegmentKind::Marker(marker) = segment.kind() else {
+            return true;
+        };
+
+        let seg = segment.range();
+        let sel = selection.range();
+
+        if marker.is_block() {
+            let marker_lines = self.line_span(&seg);
+            let caret_lines = self.line_span(&sel);
+            marker_lines.start <= caret_lines.end && caret_lines.start <= marker_lines.end
+        } else if selection.is_collapsed() {
+            // Inclusive, so a caret touching either edge counts as inside.
+            sel.start <= seg.end && seg.start <= sel.end
+        } else {
+            sel.start < seg.end && seg.start < sel.end
+        }
+    }
+
+    /// The inclusive range of line indices a byte range covers.
+    fn line_span(&self, range: &Range<usize>) -> Range<usize> {
+        let len = self.len_bytes();
+        let start = self.text.byte_to_line(range.start.min(len));
+        let end = self.text.byte_to_line(range.end.min(len));
+        start..end
     }
 }
