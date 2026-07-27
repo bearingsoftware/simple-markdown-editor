@@ -135,8 +135,14 @@ cargo test --release -- --ignored  # perf assertions (see Performance below)
 **Text layer:**
 
 - Text layout sits behind a narrow internal trait with **two implementations: DirectWrite (Windows)
-  and parley (portable).** This de-risks parley's release churn (five breaking releases in seven
-  months, no 1.0) and its open Windows CJK-fallback bug, and gives a correctness oracle.
+  and parley (portable).** Not a precaution — **DirectWrite is required on Windows today.** MDEDIT-5
+  confirmed on real hardware that fontique resolves `script = Hani` to a single fallback family and
+  stops, so Simplified-Chinese-only characters render as tofu even though SimSun is installed
+  ([parley#644](https://github.com/linebender/parley/issues/644), open, cause is architectural).
+  A Markdown editor that cannot render 汉 is not shippable. The trait also de-risks parley's release
+  churn (five breaking releases in seven months, no 1.0) and gives a correctness oracle.
+- **Do not use parley for text layout on Windows** until #644 closes and `spikes/font-fallback`
+  passes. Its layout side remains the portable implementation for macOS and Linux.
 - Pin parley to an exact version. Wrap it; don't leak its types into the editor core.
 - IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an
   `ITextStoreACP`** — retrofitting TSF's offsets and lock protocol onto a buffer not designed for it

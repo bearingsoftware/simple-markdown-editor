@@ -24,19 +24,33 @@ text editor. This probe confirms or refutes it on real hardware.
 
 ## Result so far
 
-**Windows, 2026-07-27: parley#644 reproduces.** 2 of 8 samples tofu'd. The mechanism is visible in the
-font selection rather than the tofu:
+**Windows, 2026-07-27: parley#644 reproduces. Confirmed, not inferred.** 2 of 8 samples tofu'd:
 
 ```
 TOFU Han (Simplified)   汉字编辑器
        fonts: Arial, Yu Gothic UI
+       .notdef for: 汉, 编, 辑
+
+Coverage audit — 232 font families installed:
+  "汉" (U+6C49)
+      covered by 10 installed families, e.g. SimSun, 新宋体, Microsoft JhengHei UI
+      => the glyph was available; fallback did not reach it.
 ```
 
-**Yu Gothic UI is a Japanese font.** fontique resolved `script = Hani` to one fallback family, got the
-Japanese one, and characters existing only in Simplified Chinese fell through — `汉` is the simplified
-form of `漢`, `编` of `編`. Japanese, Korean, Arabic, Hebrew and emoji all pass, because for those a
-single family per script is sufficient. The model breaks only where one script spans locales with
-disjoint glyph coverage, which is exactly Hani.
+**SimSun — the default Simplified Chinese font on Windows — was installed and never consulted.** That
+is what makes this conclusive rather than a missing-font artefact.
+
+**Yu Gothic UI is a Japanese font.** fontique resolves `script = Hani` to one fallback family and
+stops. `汉`, `编`, `辑` exist only in Simplified Chinese (`漢`, `編`, `輯` traditional) so they fall
+through; `字` and `器` render because those forms are shared with Japanese.
+
+Japanese, Korean, Arabic, Hebrew and emoji all pass — the proof rather than a mitigation. Fallback
+works; it breaks only where one Unicode script spans locales with disjoint glyph coverage. Hani is
+that case.
+
+**Verdict: DirectWrite-first, high confidence.** `IDWriteFontFallback` does multi-font fallback
+natively because it is what Windows itself uses. Re-run this probe when #644 closes; a green run is
+the condition for reconsidering parley on Windows.
 
 Full analysis on the Confluence page linked from MDEDIT-5.
 
