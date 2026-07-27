@@ -527,6 +527,43 @@ with a Japanese IME. This tests fontique#644 and the IMM32 path in one go. If
 fontique fails, `IDWriteFontFallback` is a direct substitute — which is another
 argument for the DirectWrite-first path.
 
+> **Result, MDEDIT-5 (2026-07-27): fontique fails. Confirmed on Windows, not
+> inferred.** Probe at `spikes/font-fallback/`; full analysis on the Confluence
+> page linked from MDEDIT-5.
+>
+> Two of eight samples produced `.notdef` glyphs. The cause is visible in the
+> font fontique selected:
+>
+> ```
+> TOFU Han (Simplified)   汉字编辑器
+>        fonts: Arial, Yu Gothic UI
+>        .notdef for: 汉, 编, 辑
+> ```
+>
+> **Yu Gothic UI is a Japanese font.** fontique resolves `script = Hani` to one
+> fallback family and stops. `汉`, `编` and `辑` exist only in Simplified Chinese
+> (`漢`, `編`, `輯` traditional), so they fall through; `字` and `器` render
+> because those forms are shared with Japanese.
+>
+> **The machine had the right font all along.** The coverage audit found `汉`
+> covered by **10 of 232 installed families, including SimSun** — the default
+> Simplified Chinese font on Windows. fontique never consulted it. This is a
+> defect, not a missing-font artefact, and that distinction is what makes the
+> result conclusive.
+>
+> Japanese, Korean, Arabic, Hebrew and emoji all pass, and that is the proof
+> rather than a mitigation: fallback works, and breaks only where one Unicode
+> script spans locales with disjoint glyph coverage. Hani is that case.
+>
+> **Consequence: DirectWrite-first is confirmed, at high confidence.**
+> `IDWriteFontFallback` handles multi-font fallback natively because it is what
+> Windows itself uses to render this text correctly everywhere else. parley is
+> not rejected — its layout side stays the portable implementation behind the
+> trait, which exists so this is revisitable when #644 closes.
+>
+> The IME half remains unrun: it needs a human at a Windows keyboard and a
+> renderer to type into. Tracked as MDEDIT-6.
+
 ## Explicitly unverified
 
 - **No independent benchmarks of Slint exist** for startup, binary size, memory
