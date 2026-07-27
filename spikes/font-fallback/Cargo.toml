@@ -17,6 +17,11 @@ skrifa = "0.35"
 # #644. Both crates come from the PR branch together — patching fontique alone version-mismatches
 # against the released parley.
 #
+# ALSO raise `rust-version` above to 1.88 before resolving. The PR branch requires 1.88, and cargo's
+# MSRV-aware resolver will otherwise hold transitive deps at 1.85-compatible versions — which fails
+# to build with `PropertyNamesShort::new()` not being const in the older icu_properties it picks.
+# That error looks like a defect in the PR and is not one.
+#
 # [patch.crates-io]
 # parley   = { git = "https://github.com/nicoburns/parley", branch = "rigorous-font-fallback" }
 # fontique = { git = "https://github.com/nicoburns/parley", branch = "rigorous-font-fallback" }
