@@ -54,6 +54,20 @@ the condition for reconsidering parley on Windows.
 
 Full analysis on the Confluence page linked from MDEDIT-5.
 
+## Testing the proposed fix (parley#689)
+
+[linebender/parley#689] *"Fontique: 3-tier font fallback"* claims to fix #644. Its Windows tier
+delegates to `IDWriteFontFallback::MapCharacters` — the same API the DirectWrite-first plan calls
+directly — so the fix and our workaround converge, which is reassuring for both.
+
+**Status as of 2026-07-27:** open, not merged, `mergeable_state: dirty` (conflicts with main), one
+AI-generated commit, no approving review. The only maintainer response is supportive-with-caveats:
+dfrg finds the char lookup and cache "iffy" and wants to avoid an exhaustive search, so the design is
+not settled.
+
+To test it, uncomment the `[patch.crates-io]` block in `Cargo.toml` and run the probe. A clean PASS on
+Windows is a useful datapoint for that PR — nobody has posted one.
+
 ## Running it
 
 **On Windows** — this is the run that matters:
@@ -115,3 +129,4 @@ Step 7 failing is expected and acceptable for v1 — it is why
 
 [linebender/parley#644]: https://github.com/linebender/parley/issues/644
 [wezterm#7791]: https://github.com/wezterm/wezterm/issues/7791
+[linebender/parley#689]: https://github.com/linebender/parley/pull/689
