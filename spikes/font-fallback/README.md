@@ -22,6 +22,24 @@ the cause as architectural rather than incidental:
 A wrong assumption in the fallback model is not a one-line fix, and CJK is not an edge case for a
 text editor. This probe confirms or refutes it on real hardware.
 
+## Result so far
+
+**Windows, 2026-07-27: parley#644 reproduces.** 2 of 8 samples tofu'd. The mechanism is visible in the
+font selection rather than the tofu:
+
+```
+TOFU Han (Simplified)   汉字编辑器
+       fonts: Arial, Yu Gothic UI
+```
+
+**Yu Gothic UI is a Japanese font.** fontique resolved `script = Hani` to one fallback family, got the
+Japanese one, and characters existing only in Simplified Chinese fell through — `汉` is the simplified
+form of `漢`, `编` of `編`. Japanese, Korean, Arabic, Hebrew and emoji all pass, because for those a
+single family per script is sufficient. The model breaks only where one script spans locales with
+disjoint glyph coverage, which is exactly Hani.
+
+Full analysis on the Confluence page linked from MDEDIT-5.
+
 ## Running it
 
 **On Windows** — this is the run that matters:
