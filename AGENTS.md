@@ -44,6 +44,7 @@ crates/document/        # mdedit-document: rope buffer keeping that partition cu
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; the only
                         #   place `unsafe` is permitted. Compiles to nothing elsewhere.
+crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, and the keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
@@ -66,8 +67,11 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **The renderer draws one hardcoded document.** No file I/O, no scrolling, no virtualization, no
-  tabs, no undo, no mouse. Editing is printable characters, backspace, delete and arrows.
+- **No virtualization, tabs, undo or mouse.** The whole document is laid out every frame, so
+  `mdedit big.md` will not meet the file-open target until blocks are rendered on demand.
+- **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
+  calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
+  error rather than as text until there is UI to choose.
 - **Blocks are extents, not a tree.** `Document::blocks` is a flat list with a depth on each entry.
   Nothing walks parent or child links because nothing has needed to; `block_at` scans the list.
   Fine at present sizes, and the thing to revisit when virtualization needs to diff block lists.
