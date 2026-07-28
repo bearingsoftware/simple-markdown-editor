@@ -1,0 +1,35 @@
+[package]
+name = "mdedit-app"
+version = "0.1.0"
+description = "The editor window: winit, wgpu, and the decoration that turns a document into glyphs"
+keywords = ["markdown", "editor", "wgpu", "winit"]
+categories = ["text-editors"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "mdedit"
+path = "src/main.rs"
+
+[dependencies]
+mdedit-document.workspace = true
+mdedit-markers.workspace = true
+mdedit-offsets.workspace = true
+mdedit-text.workspace = true
+# 0.30, not 0.31: that line is still beta, and AGENTS.md rejects depending on unreleased churn.
+winit = "0.30"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
+thiserror.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+mdedit-text-dwrite.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+embed-manifest = "1.5"
+
+[lints]
+workspace = true

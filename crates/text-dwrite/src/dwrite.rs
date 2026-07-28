@@ -213,6 +213,9 @@ struct CollectedRun {
     glyphs: Vec<(u16, f32)>,
     /// UTF-16 index in the layout string that each glyph's cluster starts at.
     text_positions: Vec<usize>,
+    /// Odd means right-to-left. DirectWrite places an RTL run's origin at its *right* edge and
+    /// advances leftward, so ignoring this draws Arabic on top of whatever follows it.
+    right_to_left: bool,
 }
 
 /// Collects glyph runs out of `IDWriteTextLayout::Draw`.
@@ -284,7 +287,7 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
         // SAFETY: DirectWrite guarantees `glyph_run` points at a valid structure for the duration
         // of this callback, and that `glyphIndices` and `glyphAdvances` each address `glyphCount`
         // elements. We only read, and only within that count.
-        let (face, em_size, indices, advances) = unsafe {
+        let (face, em_size, right_to_left, indices, advances) = unsafe {
             let run = &*glyph_run;
             let Some(face) = run.fontFace.as_ref() else {
                 return Ok(());
@@ -293,6 +296,7 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
             (
                 face.clone(),
                 run.fontEmSize,
+                run.bidiLevel % 2 == 1,
                 std::slice::from_raw_parts(run.glyphIndices, count),
                 std::slice::from_raw_parts(run.glyphAdvances, count),
             )
@@ -330,6 +334,7 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
                 .map(|(id, adv)| (*id, *adv))
                 .collect(),
             text_positions,
+            right_to_left,
         });
 
         Ok(())
@@ -639,6 +644,13 @@ fn assemble(
             // to hang a caret on, not an exact extent.
             let end = ByteOffset::new(start.get());
 
+            // A right-to-left run's origin is its *right* edge and the pen moves leftward, so the
+            // decrement has to happen before placing rather than after. Accumulating rightward
+            // instead draws Arabic on top of whatever follows it on the line.
+            if run.right_to_left {
+                pen_x -= advance;
+            }
+
             glyphs.push(PositionedGlyph {
                 key: GlyphKey {
                     font,
@@ -649,7 +661,10 @@ fn assemble(
                 advance: *advance,
                 source: ByteSpan::new(start, end),
             });
-            pen_x += advance;
+
+            if !run.right_to_left {
+                pen_x += advance;
+            }
         }
 
         match lines

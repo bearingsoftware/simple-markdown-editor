@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/offsets", "crates/markers", "crates/document", "crates/text", "crates/text-dwrite"]
+members = [
+    "crates/offsets",
+    "crates/markers",
+    "crates/document",
+    "crates/text",
+    "crates/text-dwrite",
+    "crates/app",
+]
 # Spikes are throwaway probes, deliberately outside the workspace so they stay out of CI.
 exclude = ["spikes/*"]
 
@@ -19,6 +26,8 @@ thiserror = "2"
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }
+mdedit-text-dwrite = { path = "crates/text-dwrite", version = "0.1.0" }
+mdedit-document = { path = "crates/document", version = "0.1.0" }
 
 # Lint levels live here because clippy.toml can tune lints but cannot enable them.
 # Vendored from code-standards v1.2.0 `configs/clippy.toml`.
