@@ -10,6 +10,7 @@
 pub mod editor;
 pub mod gpu;
 pub mod latency;
+pub mod tabs;
 pub mod view;
 
 /// The document the slice opens with.

@@ -28,6 +28,8 @@ winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"
+# Native dialogs, per the stack decision in AGENTS.md. Used for the unsaved-changes prompt.
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]

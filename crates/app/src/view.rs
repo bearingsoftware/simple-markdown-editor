@@ -64,6 +64,14 @@ pub struct Theme {
     pub marker: Rgba,
     /// The caret.
     pub caret: Rgba,
+    /// Background of the tab strip behind the tabs.
+    pub strip: Rgba,
+    /// Background of the tab being shown.
+    pub tab_active: Rgba,
+    /// Background of a tab that is not showing.
+    pub tab_inactive: Rgba,
+    /// The dot marking a tab with unsaved changes.
+    pub tab_modified: Rgba,
 }
 
 impl Default for Theme {
@@ -74,6 +82,10 @@ impl Default for Theme {
             text: Rgba::rgb(0xe6, 0xe6, 0xe6),
             marker: Rgba::rgb(0x6a, 0x9c, 0x6a),
             caret: Rgba::rgb(0xff, 0xd7, 0x4a),
+            strip: Rgba::rgb(0x14, 0x14, 0x14),
+            tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
+            tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),
+            tab_modified: Rgba::rgb(0xff, 0xd7, 0x4a),
         }
     }
 }
