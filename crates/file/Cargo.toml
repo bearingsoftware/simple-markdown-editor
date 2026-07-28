@@ -1,0 +1,23 @@
+[package]
+name = "mdedit-file"
+version = "0.1.0"
+description = "Reading and writing Markdown files without changing a byte that was not edited"
+keywords = ["markdown", "encoding", "editor", "io"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The whole point. `AGENTS.md` names hand-rolled encoding detection as the class of defect that put
+# three Notepad++ CVEs in 2023, and Rust only removes it if we do not reintroduce it ourselves.
+encoding_rs = "0.8"
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3"
+
+[lints]
+workspace = true

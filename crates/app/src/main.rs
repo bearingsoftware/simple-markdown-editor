@@ -45,7 +45,21 @@ fn main() {
         // burn a core and distort the very latency numbers this slice exists to measure.
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        let mut editor = Editor::new(SAMPLE, text);
+        // One optional argument: the file to open. No flag parsing, because there are no flags —
+        // adding an argument parser for a single positional would be more code than it saves.
+        let mut editor = match std::env::args_os().nth(1) {
+            Some(argument) => {
+                let path = std::path::PathBuf::from(argument);
+                match mdedit_file::load(&path) {
+                    Ok(loaded) => Editor::open(path, loaded, text),
+                    Err(error) => {
+                        eprintln!("could not open: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            None => Editor::new(SAMPLE, text),
+        };
         if let Err(err) = event_loop.run_app(&mut editor) {
             eprintln!("event loop stopped: {err}");
             std::process::exit(1);

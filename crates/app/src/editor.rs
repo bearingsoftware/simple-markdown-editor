@@ -4,16 +4,18 @@
 //! compiles on Linux CI and the portable backend needs no changes here when it arrives. Only
 //! `main.rs` picks a backend.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mdedit_document::{Document, Selection};
+use mdedit_file::LoadedFile;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{GlyphKey, Layout, TextLayout};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
@@ -439,6 +441,17 @@ pub struct Editor<T: TextLayout> {
     pending_keystroke: Option<Instant>,
     /// Set if the GPU could not be brought up, for `main` to report on exit.
     gpu_error: Option<GpuError>,
+    /// The file being edited, if this is not the built-in sample.
+    file: Option<OpenFile>,
+    /// Held so Ctrl+S can be told apart from a plain `s`.
+    modifiers: ModifiersState,
+}
+
+/// A file on disk, and what it looked like when it was read.
+#[derive(Debug)]
+struct OpenFile {
+    path: PathBuf,
+    loaded: LoadedFile,
 }
 
 impl<T: TextLayout> std::fmt::Debug for Editor<T> {
@@ -468,6 +481,8 @@ impl<T: TextLayout> Editor<T> {
             latency: Latency::new(),
             pending_keystroke: None,
             gpu_error: None,
+            file: None,
+            modifiers: ModifiersState::empty(),
         }
     }
 
@@ -483,6 +498,67 @@ impl<T: TextLayout> Editor<T> {
         self.gpu_error.as_ref()
     }
 
+    /// An editor over a file read from disk.
+    pub fn open(path: PathBuf, loaded: LoadedFile, text: T) -> Self {
+        let mut editor = Self::new(loaded.text(), text);
+        editor.file = Some(OpenFile { path, loaded });
+        editor
+    }
+
+    /// Whether the buffer differs from what is on disk.
+    ///
+    /// Compared by content rather than tracked by a flag: typing a character and deleting it again
+    /// leaves a document that does not need saving, and a flag would say otherwise.
+    #[must_use]
+    pub fn is_modified(&self) -> bool {
+        self.file
+            .as_ref()
+            .is_some_and(|file| self.document.to_string() != file.loaded.text())
+    }
+
+    /// Writes the buffer back to the file it came from.
+    ///
+    /// Reloads afterwards so the in-memory original matches what is now on disk — otherwise the
+    /// next save would compare against stale bytes and take the wrong path.
+    fn save(&mut self) {
+        let Some(file) = self.file.as_mut() else {
+            // The built-in sample has nowhere to go. Not an error; there is just no file.
+            return;
+        };
+
+        let text = self.document.to_string();
+        match mdedit_file::save(&file.path, &text, &file.loaded) {
+            Ok(()) => match mdedit_file::reload(&file.path, &file.loaded) {
+                Ok(reloaded) => file.loaded = reloaded,
+                Err(error) => {
+                    // The bytes are on disk; only our copy of them is stale. Worth saying so,
+                    // because the next save will fall back to re-encoding.
+                    eprintln!(
+                        "saved, but could not re-read {}: {error}",
+                        file.path.display()
+                    );
+                }
+            },
+            Err(error) => eprintln!("could not save {}: {error}", file.path.display()),
+        }
+    }
+
+    /// The window title: the file name, marked when there are unsaved changes.
+    fn title(&self) -> String {
+        let Some(file) = self.file.as_ref() else {
+            return "Simple Markdown Editor".to_owned();
+        };
+        let name = file.path.file_name().map_or_else(
+            || file.path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        if self.is_modified() {
+            format!("{name} • Simple Markdown Editor")
+        } else {
+            format!("{name} — Simple Markdown Editor")
+        }
+    }
+
     /// Applies one key press to the document.
     ///
     /// Returns whether anything changed and a redraw is needed.
@@ -490,6 +566,16 @@ impl<T: TextLayout> Editor<T> {
         if event.state != ElementState::Pressed {
             return false;
         }
+
+        // Ctrl+S before anything else, so it cannot be mistaken for typing an `s`.
+        if self.modifiers.control_key() {
+            if matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s")) {
+                self.save();
+            }
+            // No other chord does anything yet, and a modified key must never insert its letter.
+            return false;
+        }
+
         let caret = self.selection.head();
 
         match &event.logical_key {
@@ -674,6 +760,10 @@ impl<T: TextLayout> Editor<T> {
         let Some(window) = self.window.clone() else {
             return;
         };
+
+        // Cheap, and the only place the modified marker can appear without a status bar to put it in.
+        let title = self.title();
+        window.set_title(&title);
         // winit reports the scale factor as f64; every downstream use is f32 pixel maths.
         #[allow(
             clippy::cast_possible_truncation,
@@ -747,6 +837,7 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                     window.request_redraw();
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } => {
                 // Stamped before any work, so the measurement includes our own handling rather
                 // than starting after it.
