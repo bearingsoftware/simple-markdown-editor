@@ -891,6 +891,7 @@ dependencies = [
  "mdedit-file",
  "mdedit-markers",
  "mdedit-offsets",
+ "mdedit-session",
  "mdedit-text",
  "mdedit-text-dwrite",
  "pollster",
@@ -935,6 +936,19 @@ dependencies = [
 [[package]]
 name = "mdedit-offsets"
 version = "0.1.0"
+
+[[package]]
+name = "mdedit-session"
+version = "0.1.0"
+dependencies = [
+ "mdedit-document",
+ "mdedit-file",
+ "mdedit-offsets",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+]
 
 [[package]]
 name = "mdedit-text"

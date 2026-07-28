@@ -17,11 +17,12 @@ No renderer yet. What exists is the document core, built and tested headlessly:
 | [`mdedit-text`](crates/text) | The text-layout trait — what the editor asks for, independent of who shapes it |
 | [`mdedit-text-dwrite`](crates/text-dwrite) | DirectWrite implementation of that trait. Windows only |
 | [`mdedit-file`](crates/file) | Reads and writes files without changing a byte that was not edited |
+| [`mdedit-session`](crates/session) | Tabs as lightweight handles, and the session file that restores them |
 | [`mdedit-app`](crates/app) | The window: winit + wgpu, the decoration step, and the latency harness |
 
 ```bash
 cargo run -p mdedit-app --release -- FILE.md   # the editor, Windows only
-cargo test          # 116 tests (10 of them Windows-only)
+cargo test          # 138 tests (10 of them Windows-only)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo bench -p mdedit-markers
