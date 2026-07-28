@@ -13,7 +13,7 @@ exclude = ["spikes/*"]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"   # raised from 1.85 by wgpu 30, which requires it. See AGENTS.md.
 license = "MIT"
 repository = "https://github.com/bearingsoftware/simple-markdown-editor"
 

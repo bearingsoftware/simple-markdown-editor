@@ -19,7 +19,10 @@ mdedit-markers.workspace = true
 mdedit-offsets.workspace = true
 mdedit-text.workspace = true
 # 0.30, not 0.31: that line is still beta, and AGENTS.md rejects depending on unreleased churn.
-winit = "0.30"
+# Default features pull in Wayland client-side decorations, which drag in `ttf-parser` — an
+# unmaintained crate (RUSTSEC-2026-0192) that a Windows-first editor has no use for. X11 only
+# keeps Linux compiling without it; a real Wayland backend is a decision for when we ship there.
+winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06"] }
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 pollster = "1"

@@ -108,7 +108,7 @@ cargo bench -p mdedit-markers      # segmentation cost against the keystroke bud
 ```
 
 CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
-pinned to `rust-version` run on Linux only — neither is platform-sensitive. The bench is not a CI
+pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 
 `cargo test --release -- --ignored` is reserved for the perf assertions described under

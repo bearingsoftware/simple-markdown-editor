@@ -7,7 +7,9 @@
 // printing is the right behaviour rather than a stray debug statement.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+#[cfg(windows)]
 use mdedit_app::{SAMPLE, editor::Editor};
+#[cfg(windows)]
 use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
