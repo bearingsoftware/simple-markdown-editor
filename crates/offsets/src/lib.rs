@@ -22,6 +22,13 @@
 //!
 //! [`LineIndex`] needs no such treatment: nothing is ever indexed by a line range, so
 //! `Range<LineIndex>` works as it stands.
+//!
+//! # Layout space is not pixel space
+//!
+//! [`LayoutPos`] is in **device-independent pixels**. The physical pixels a GPU draws to are a
+//! different space, separated by the monitor's scale factor, and on Windows that factor changes
+//! while the program runs — `WM_DPICHANGED` fires when a window is dragged between monitors. Mixing
+//! the two is the same class of bug as mixing bytes with chars, so they are the same kind of type.
 
 use std::fmt;
 use std::ops::Range;
@@ -91,6 +98,46 @@ impl LineIndex {
     #[must_use]
     pub const fn get(self) -> usize {
         self.0
+    }
+}
+
+/// A position in laid-out text, in device-independent pixels.
+///
+/// The origin is the top-left of the laid-out block; `y` grows downward, matching every text layout
+/// API and both graphics APIs this project targets.
+///
+/// **Not physical pixels.** Multiply by the monitor's scale factor at the point of drawing, and
+/// nowhere else — see the [crate docs](crate).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayoutPos {
+    /// Horizontal offset from the left edge of the laid-out block.
+    pub x: f32,
+    /// Vertical offset from the top edge of the laid-out block.
+    pub y: f32,
+}
+
+impl LayoutPos {
+    /// The top-left corner.
+    pub const ORIGIN: Self = Self { x: 0.0, y: 0.0 };
+
+    /// A position at `(x, y)`.
+    #[must_use]
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// This position converted to physical pixels for a monitor at `scale_factor`.
+    ///
+    /// The one place the two spaces are allowed to meet.
+    #[must_use]
+    pub fn to_physical(self, scale_factor: f32) -> (f32, f32) {
+        (self.x * scale_factor, self.y * scale_factor)
+    }
+}
+
+impl fmt::Display for LayoutPos {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
     }
 }
 

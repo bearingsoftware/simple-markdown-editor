@@ -14,9 +14,11 @@ No renderer yet. What exists is the document core, built and tested headlessly:
 | [`mdedit-offsets`](crates/offsets) | Distinct types for the coordinate spaces the editor carries at once |
 | [`mdedit-markers`](crates/markers) | Partitions Markdown source into syntax-marker and content spans |
 | [`mdedit-document`](crates/document) | Rope buffer that keeps that partition current across edits, plus selection and the reveal-on-cursor predicate |
+| [`mdedit-text`](crates/text) | The text-layout trait — what the editor asks for, independent of who shapes it |
+| [`mdedit-text-dwrite`](crates/text-dwrite) | DirectWrite implementation of that trait. Windows only |
 
 ```bash
-cargo test          # 42 tests
+cargo test          # 52 tests (10 of them Windows-only)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo bench -p mdedit-markers

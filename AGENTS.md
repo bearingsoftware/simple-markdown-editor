@@ -35,10 +35,13 @@ flow).
 platform-agnostic.
 
 ```
-crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex
+crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos
 crates/markers/         # mdedit-markers: partitions source into marker and content spans
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection and the reveal-on-cursor predicate
+crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
+crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; the only
+                        #   place `unsafe` is permitted. Compiles to nothing elsewhere.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
@@ -55,8 +58,11 @@ and evidenced. Don't relitigate them without new evidence.
 
 Known gaps, so nobody assumes they are done:
 
-- **`BlockId` and `LayoutPos` do not exist.** The newtype rule below is implemented for the three
-  coordinate spaces that exist today; the other two arrive with the block model and the renderer.
+- **`BlockId` does not exist.** The newtype rule below is implemented for the four coordinate spaces
+  that exist today; `BlockId` arrives with the block model.
+- **No window, and no portable text implementation.** `mdedit-text-dwrite` is the only backend, so
+  the trait has one implementation and therefore no correctness oracle yet. parley fills that in
+  when [parley#689](https://github.com/linebender/parley/pull/689) ships released.
 - **No block extents.** `mdedit-markers` reports marker spans only, so `Document::is_revealed`
   approximates "the block" as "the line" — exact for headings, quotes and list items, wrong for
   multi-line fenced code. Shape the block model against what the renderer actually needs.

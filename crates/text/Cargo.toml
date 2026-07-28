@@ -1,0 +1,17 @@
+[package]
+name = "mdedit-text"
+version = "0.1.0"
+description = "The text-layout boundary: what the editor asks for, independent of who shapes it"
+keywords = ["text", "layout", "glyph", "editor"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdedit-offsets.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
