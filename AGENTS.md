@@ -45,6 +45,7 @@ crates/text/            # mdedit-text: the text-layout trait. No platform types 
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; the only
                         #   place `unsafe` is permitted. Compiles to nothing elsewhere.
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
+crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, and the keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
@@ -67,7 +68,12 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **No virtualization, tabs or mouse.** The whole document is laid out every frame, so
+- **No tab strip, and no mouse.** Tabs exist and switch with Ctrl+Tab, but there is nothing on
+  screen showing them and closing a modified tab is refused rather than prompted — both need UI
+  this has no widgets for yet.
+- **Baseline RSS is around 345 MB, against a 50 MB target.** Measured with one tab open, so it is
+  the renderer rather than anything above it. 200 deferred tabs add nothing measurable on top.
+- **No virtualization or mouse.** The whole document is laid out every frame, so
   `mdedit big.md` will not meet the file-open target until blocks are rendered on demand.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour

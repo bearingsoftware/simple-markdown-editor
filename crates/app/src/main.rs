@@ -45,20 +45,47 @@ fn main() {
         // burn a core and distort the very latency numbers this slice exists to measure.
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        // One optional argument: the file to open. No flag parsing, because there are no flags —
-        // adding an argument parser for a single positional would be more code than it saves.
-        let mut editor = match std::env::args_os().nth(1) {
-            Some(argument) => {
-                let path = std::path::PathBuf::from(argument);
-                match mdedit_file::load(&path) {
-                    Ok(loaded) => Editor::open(path, loaded, text),
-                    Err(error) => {
-                        eprintln!("could not open: {error}");
+        // Arguments are files to open. No flag parsing, because there are no flags.
+        let arguments: Vec<std::path::PathBuf> =
+            std::env::args_os().skip(1).map(Into::into).collect();
+        let session_path = mdedit_session::default_session_path();
+
+        let mut editor = if arguments.is_empty() {
+            // Nothing named, so restore what was open. Only the active tab is read; the rest stay
+            // handles until something displays them.
+            match session_path
+                .as_deref()
+                .map(mdedit_session::Workspace::restore_session)
+            {
+                Some(Ok((workspace, skipped))) if !workspace.tabs().is_empty() => {
+                    for tab in &skipped {
+                        // Reported rather than silently dropped: a tab vanishing without explanation
+                        // looks like data loss.
+                        eprintln!("skipped a session entry: {}", tab.reason);
+                    }
+                    let mut editor = Editor::with_workspace(workspace, text);
+                    editor.activate_saved_tab();
+                    editor
+                }
+                // No session, an unreadable one, or one with nothing in it: show the sample.
+                _ => Editor::new(SAMPLE, text),
+            }
+        } else {
+            let mut workspace = mdedit_session::Workspace::new();
+            for path in arguments {
+                match mdedit_session::path::validate(&path) {
+                    Ok(()) => {
+                        workspace.add(path);
+                    }
+                    Err(reason) => {
+                        eprintln!("could not open: {reason}");
                         std::process::exit(1);
                     }
                 }
             }
-            None => Editor::new(SAMPLE, text),
+            let mut editor = Editor::with_workspace(workspace, text);
+            editor.activate_saved_tab();
+            editor
         };
         if let Err(err) = event_loop.run_app(&mut editor) {
             eprintln!("event loop stopped: {err}");
@@ -67,6 +94,14 @@ fn main() {
         if let Some(err) = editor.gpu_error() {
             eprintln!("could not start the renderer: {err}");
             std::process::exit(1);
+        }
+
+        // Written on the way out so the next launch reopens what was open. Only handles, so this
+        // stays cheap however many tabs there are.
+        if let Some(path) = session_path.as_deref() {
+            if !editor.workspace().tabs().is_empty() {
+                editor.save_session(path);
+            }
         }
 
         // Printed on exit so a manual session doubles as a measurement run, which is how the

@@ -4,13 +4,13 @@
 //! compiles on Linux CI and the portable backend needs no changes here when it arrives. Only
 //! `main.rs` picks a backend.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mdedit_document::{Document, Selection};
-use mdedit_file::LoadedFile;
 use mdedit_offsets::{ByteOffset, ByteSpan};
+use mdedit_session::Workspace;
 use mdedit_text::{GlyphKey, Layout, TextLayout};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -429,7 +429,10 @@ fn make_bind_group(
 
 /// The editor: a document, a caret, a text engine, and a window to put them in.
 pub struct Editor<T: TextLayout> {
-    document: Document,
+    /// Every open tab. The active one supplies the buffer being edited.
+    workspace: Workspace,
+    /// Used only when no file is open, for the built-in sample.
+    scratch: Document,
     theme: Theme,
     text: T,
     atlas: Atlas,
@@ -440,17 +443,8 @@ pub struct Editor<T: TextLayout> {
     pending_keystroke: Option<Instant>,
     /// Set if the GPU could not be brought up, for `main` to report on exit.
     gpu_error: Option<GpuError>,
-    /// The file being edited, if this is not the built-in sample.
-    file: Option<OpenFile>,
     /// Held so Ctrl+S can be told apart from a plain `s`.
     modifiers: ModifiersState,
-}
-
-/// A file on disk, and what it looked like when it was read.
-#[derive(Debug)]
-struct OpenFile {
-    path: PathBuf,
-    loaded: LoadedFile,
 }
 
 impl<T: TextLayout> std::fmt::Debug for Editor<T> {
@@ -458,8 +452,8 @@ impl<T: TextLayout> std::fmt::Debug for Editor<T> {
         // The text backend and the GPU resources have no useful representation, and requiring
         // `T: Debug` would put a bound on the trait for the sake of a derive.
         f.debug_struct("Editor")
-            .field("bytes", &self.document.len_bytes())
-            .field("caret", &self.document.selection().head())
+            .field("bytes", &self.document().len_bytes())
+            .field("caret", &self.document().selection().head())
             .field("glyphs_packed", &self.atlas.len())
             .field("latency_samples", &self.latency.len())
             .finish_non_exhaustive()
@@ -470,7 +464,8 @@ impl<T: TextLayout> Editor<T> {
     /// An editor over `source`, drawn with `text`.
     pub fn new(source: &str, text: T) -> Self {
         Self {
-            document: Document::from(source),
+            workspace: Workspace::new(),
+            scratch: Document::from(source),
             theme: Theme::default(),
             text,
             atlas: Atlas::new(),
@@ -479,7 +474,6 @@ impl<T: TextLayout> Editor<T> {
             latency: Latency::new(),
             pending_keystroke: None,
             gpu_error: None,
-            file: None,
             modifiers: ModifiersState::empty(),
         }
     }
@@ -496,11 +490,52 @@ impl<T: TextLayout> Editor<T> {
         self.gpu_error.as_ref()
     }
 
-    /// An editor over a file read from disk.
-    pub fn open(path: PathBuf, loaded: LoadedFile, text: T) -> Self {
-        let mut editor = Self::new(loaded.text(), text);
-        editor.file = Some(OpenFile { path, loaded });
+    /// An editor over a restored workspace.
+    ///
+    /// Nothing is read until the active tab is displayed, which is the point of the whole type.
+    pub fn with_workspace(workspace: Workspace, text: T) -> Self {
+        let mut editor = Self::new("", text);
+        editor.workspace = workspace;
         editor
+    }
+
+    /// The tabs, for a caller that wants to report on them.
+    #[must_use]
+    pub fn workspace(&self) -> &Workspace {
+        &self.workspace
+    }
+
+    /// Displays whichever tab the session had active, or the first one.
+    ///
+    /// This is the moment a handle becomes a document, and at startup it is the only one.
+    pub fn activate_saved_tab(&mut self) {
+        let index = self.workspace.active().unwrap_or(0);
+        if let Err(error) = self.workspace.activate(index) {
+            eprintln!("could not open tab: {error}");
+        }
+    }
+
+    /// Writes the tab list, for a caller shutting down.
+    ///
+    /// Handles only, never content — that is what makes restoring one cheap.
+    pub fn save_session(&self, path: &Path) {
+        if let Err(error) = self.workspace.save_session(path) {
+            eprintln!("could not save session: {error}");
+        }
+    }
+
+    /// The buffer being edited: the active tab's, or the scratch document if no file is open.
+    fn document(&self) -> &Document {
+        self.workspace
+            .active_open()
+            .map_or(&self.scratch, |open| &open.document)
+    }
+
+    fn document_mut(&mut self) -> &mut Document {
+        match self.workspace.active_open_mut() {
+            Some(open) => &mut open.document,
+            None => &mut self.scratch,
+        }
     }
 
     /// Whether the buffer differs from what is on disk.
@@ -509,9 +544,9 @@ impl<T: TextLayout> Editor<T> {
     /// leaves a document that does not need saving, and a flag would say otherwise.
     #[must_use]
     pub fn is_modified(&self) -> bool {
-        self.file
-            .as_ref()
-            .is_some_and(|file| self.document.to_string() != file.loaded.text())
+        self.workspace
+            .active_open()
+            .is_some_and(|open| open.document.to_string() != open.file.text())
     }
 
     /// Writes the buffer back to the file it came from.
@@ -519,41 +554,89 @@ impl<T: TextLayout> Editor<T> {
     /// Reloads afterwards so the in-memory original matches what is now on disk — otherwise the
     /// next save would compare against stale bytes and take the wrong path.
     fn save(&mut self) {
-        let Some(file) = self.file.as_mut() else {
+        let (Some(path), Some(open)) = (
+            self.workspace.active_path().map(Path::to_path_buf),
+            self.workspace.active_open(),
+        ) else {
             // The built-in sample has nowhere to go. Not an error; there is just no file.
             return;
         };
 
-        let text = self.document.to_string();
-        match mdedit_file::save(&file.path, &text, &file.loaded) {
-            Ok(()) => match mdedit_file::reload(&file.path, &file.loaded) {
-                Ok(reloaded) => file.loaded = reloaded,
-                Err(error) => {
-                    // The bytes are on disk; only our copy of them is stale. Worth saying so,
-                    // because the next save will fall back to re-encoding.
-                    eprintln!(
-                        "saved, but could not re-read {}: {error}",
-                        file.path.display()
-                    );
-                }
-            },
-            Err(error) => eprintln!("could not save {}: {error}", file.path.display()),
+        let text = open.document.to_string();
+        if let Err(error) = mdedit_file::save(&path, &text, &open.file) {
+            eprintln!("could not save {}: {error}", path.display());
+            return;
+        }
+
+        match mdedit_file::reload(&path, &open.file) {
+            Ok(reloaded) => self.workspace.set_active_file(reloaded),
+            // The bytes are on disk; only our copy of them is stale. Worth saying so, because the
+            // next save will fall back to re-encoding.
+            Err(error) => eprintln!("saved, but could not re-read {}: {error}", path.display()),
         }
     }
 
-    /// The window title: the file name, marked when there are unsaved changes.
+    /// Shows the next or previous tab, wrapping.
+    ///
+    /// Unsigned arithmetic throughout: adding `count - 1` is the same as subtracting one, modulo
+    /// `count`, and avoids a signed cast that clippy is right to flag.
+    fn cycle_tab(&mut self, forward: bool) -> bool {
+        let count = self.workspace.tabs().len();
+        if count < 2 {
+            return false;
+        }
+        let current = self.workspace.active().unwrap_or(0);
+        let step = if forward { 1 } else { count - 1 };
+        let next = (current + step) % count;
+        if let Err(error) = self.workspace.activate(next) {
+            eprintln!("could not open tab: {error}");
+            return false;
+        }
+        true
+    }
+
+    /// Closes the visible tab.
+    ///
+    /// Refuses to discard unsaved work silently. There is no dialog yet, so it says so and declines
+    /// rather than losing the edit — a prompt arrives with the tab strip.
+    fn close_tab(&mut self) -> bool {
+        let Some(index) = self.workspace.active() else {
+            return false;
+        };
+        if self.is_modified() {
+            eprintln!("unsaved changes — save with Ctrl+S before closing this tab");
+            return false;
+        }
+        match self.workspace.close(index) {
+            Ok(_) => {
+                if let Some(active) = self.workspace.active() {
+                    let _ = self.workspace.activate(active);
+                }
+                true
+            }
+            Err(error) => {
+                eprintln!("could not close tab: {error}");
+                false
+            }
+        }
+    }
+
+    /// The window title: the file name, marked when there are unsaved changes, with a tab count.
     fn title(&self) -> String {
-        let Some(file) = self.file.as_ref() else {
+        let Some(path) = self.workspace.active_path() else {
             return "Simple Markdown Editor".to_owned();
         };
-        let name = file.path.file_name().map_or_else(
-            || file.path.display().to_string(),
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
-        if self.is_modified() {
-            format!("{name} • Simple Markdown Editor")
+        let marker = if self.is_modified() { "•" } else { "—" };
+        let count = self.workspace.tabs().len();
+        if count > 1 {
+            let position = self.workspace.active().unwrap_or(0) + 1;
+            format!("{name} {marker} {position}/{count} — Simple Markdown Editor")
         } else {
-            format!("{name} — Simple Markdown Editor")
+            format!("{name} {marker} Simple Markdown Editor")
         }
     }
 
@@ -576,13 +659,15 @@ impl<T: TextLayout> Editor<T> {
                     false
                 }
                 // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
-                "z" if !self.modifiers.shift_key() => self.document.undo(),
-                "z" | "Z" | "y" | "Y" => self.document.redo(),
+                "z" if !self.modifiers.shift_key() => self.document_mut().undo(),
+                "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
+                "w" | "W" => self.close_tab(),
+                "	" => self.cycle_tab(!self.modifiers.shift_key()),
                 _ => false,
             };
         }
 
-        let caret = self.document.selection().head();
+        let caret = self.document().selection().head();
 
         match &event.logical_key {
             Key::Named(NamedKey::Backspace) => {
@@ -591,7 +676,7 @@ impl<T: TextLayout> Editor<T> {
                 }
                 let previous = self.previous_boundary(caret);
                 if self
-                    .document
+                    .document_mut()
                     .delete(ByteSpan::new(previous, caret))
                     .is_err()
                 {
@@ -602,29 +687,34 @@ impl<T: TextLayout> Editor<T> {
             }
             Key::Named(NamedKey::Delete) => {
                 let next = self.next_boundary(caret);
-                if next == caret || self.document.delete(ByteSpan::new(caret, next)).is_err() {
+                if next == caret
+                    || self
+                        .document_mut()
+                        .delete(ByteSpan::new(caret, next))
+                        .is_err()
+                {
                     return false;
                 }
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.document
-                    .set_selection(Selection::caret(self.previous_boundary(caret)));
+                let target = self.previous_boundary(caret);
+                self.document_mut().set_selection(Selection::caret(target));
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.document
-                    .set_selection(Selection::caret(self.next_boundary(caret)));
+                let target = self.next_boundary(caret);
+                self.document_mut().set_selection(Selection::caret(target));
                 true
             }
             Key::Named(NamedKey::Home) => {
-                self.document
+                self.document_mut()
                     .set_selection(Selection::caret(ByteOffset::ZERO));
                 true
             }
             Key::Named(NamedKey::End) => {
-                let end = ByteOffset::new(self.document.len_bytes());
-                self.document.set_selection(Selection::caret(end));
+                let end = ByteOffset::new(self.document().len_bytes());
+                self.document_mut().set_selection(Selection::caret(end));
                 true
             }
             Key::Named(NamedKey::Enter) => self.insert("\n"),
@@ -635,8 +725,8 @@ impl<T: TextLayout> Editor<T> {
     }
 
     fn insert(&mut self, text: &str) -> bool {
-        let caret = self.document.selection().head();
-        if self.document.insert(caret, text).is_err() {
+        let caret = self.document().selection().head();
+        if self.document_mut().insert(caret, text).is_err() {
             return false;
         }
         // `insert` leaves the caret after what it inserted.
@@ -645,7 +735,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// The character boundary before `offset`, or the start of the buffer.
     fn previous_boundary(&self, offset: ByteOffset) -> ByteOffset {
-        let text = self.document.to_string();
+        let text = self.document().to_string();
         let mut index = offset.get().min(text.len());
         loop {
             if index == 0 {
@@ -660,7 +750,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// The character boundary after `offset`, or the end of the buffer.
     fn next_boundary(&self, offset: ByteOffset) -> ByteOffset {
-        let text = self.document.to_string();
+        let text = self.document().to_string();
         let mut index = offset.get();
         loop {
             if index >= text.len() {
@@ -675,7 +765,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Lays the document out and turns it into quads.
     fn build_frame(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
-        let runs = view::build_runs(&self.document, self.document.selection(), &self.theme);
+        let runs = view::build_runs(self.document(), self.document().selection(), &self.theme);
         let styled = view::as_styled(&runs);
 
         let available = (width / scale - MARGIN * 2.0).max(1.0);
@@ -722,7 +812,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// A quad for the caret, placed at the glyph the caret addresses.
     fn caret_quad(&self, layout: &Layout, scale: f32) -> Option<QuadInstance> {
-        let caret = self.document.selection().head();
+        let caret = self.document().selection().head();
         let mut best: Option<(&mdedit_text::PositionedGlyph, f32)> = None;
         let mut last: Option<&mdedit_text::PositionedGlyph> = None;
 

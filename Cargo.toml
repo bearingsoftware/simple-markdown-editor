@@ -7,6 +7,7 @@ members = [
     "crates/text",
     "crates/text-dwrite",
     "crates/file",
+    "crates/session",
     "crates/app",
 ]
 # Spikes are throwaway probes, deliberately outside the workspace so they stay out of CI.
@@ -30,6 +31,7 @@ mdedit-text = { path = "crates/text", version = "0.1.0" }
 mdedit-text-dwrite = { path = "crates/text-dwrite", version = "0.1.0" }
 mdedit-document = { path = "crates/document", version = "0.1.0" }
 mdedit-file = { path = "crates/file", version = "0.1.0" }
+mdedit-session = { path = "crates/session", version = "0.1.0" }
 
 # Lint levels live here because clippy.toml can tune lints but cannot enable them.
 # Vendored from code-standards v1.2.0 `configs/clippy.toml`.
