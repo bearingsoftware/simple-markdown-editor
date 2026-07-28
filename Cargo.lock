@@ -903,6 +903,7 @@ dependencies = [
 name = "mdedit-document"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "mdedit-markers",
  "mdedit-offsets",
  "proptest",
