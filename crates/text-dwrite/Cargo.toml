@@ -1,0 +1,25 @@
+[package]
+name = "mdedit-text-dwrite"
+version = "0.1.0"
+description = "DirectWrite implementation of the mdedit-text layout trait. Windows only."
+keywords = ["directwrite", "text", "windows", "layout"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdedit-offsets.workspace = true
+mdedit-text.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Gdi",
+] }
+windows-core = "0.62"
+
+[lints]
+workspace = true
