@@ -96,14 +96,21 @@ impl History {
         // the present.
         self.redo.clear();
 
-        if !self.barrier
-            && let Some(group) = self.undo.last_mut()
-            && let Some(previous) = group.edits.last()
-            && continues(previous, &edit)
-        {
-            group.edits.push(edit);
-            group.selection_after = after;
-            return;
+        // Written without a let-chain on purpose: those stabilised in Rust 1.88 and the workspace
+        // floor is 1.87. The decision is computed first so the immutable borrow of the last edit
+        // ends before the group is pushed to.
+        if !self.barrier {
+            if let Some(group) = self.undo.last_mut() {
+                let joins = group
+                    .edits
+                    .last()
+                    .is_some_and(|previous| continues(previous, &edit));
+                if joins {
+                    group.edits.push(edit);
+                    group.selection_after = after;
+                    return;
+                }
+            }
         }
 
         self.barrier = false;

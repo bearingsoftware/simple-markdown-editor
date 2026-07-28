@@ -116,7 +116,9 @@ cargo bench -p mdedit-markers      # segmentation cost against the keystroke bud
 cargo bench -p mdedit-document     # what an undo group costs against typing the same edits
 ```
 
-CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
+CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
+`cargo +1.87.0 check --all-features` — because the local toolchain is newer and will happily accept
+things the floor rejects. Let-chains are the trap: they stabilised in 1.88. `cargo deny` and the MSRV check
 pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 

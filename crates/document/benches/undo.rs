@@ -49,8 +49,9 @@ fn type_tail(doc: &mut Document, count: usize) {
 }
 
 fn bench(c: &mut Criterion) {
-    let mut group = c.benchmark_group("undo");
     const KEYSTROKES: usize = 20;
+
+    let mut group = c.benchmark_group("undo");
 
     for kib in [6_usize, 60] {
         let source = document(kib * 1024);
