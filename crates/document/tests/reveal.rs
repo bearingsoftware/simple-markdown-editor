@@ -198,21 +198,65 @@ fn a_stale_caret_past_the_end_does_not_panic() {
     assert!(!doc.is_revealed(&segment, selection(9_999, 10_000)));
 }
 
-/// The gap this design knowingly carries — asserted so it changes deliberately rather than by
-/// accident. Typora reveals a fence from anywhere inside the block; the line approximation does not.
+/// The gap MDEDIT-8 knowingly carried, closed by MDEDIT-12's block extents.
+///
+/// A fence is the one block marker that does not repeat on the lines it governs, so the line the
+/// caret is on cannot answer the question. This used to assert the wrong-but-known behaviour; it
+/// now asserts Typora's.
 #[test]
-fn multiline_fences_reveal_only_on_their_own_line() {
+fn a_fence_reveals_from_anywhere_inside_its_block() {
+    //  ```rust \n f n   x ( )   { } \n ```  \n
+    //  0......7    8...............17   18..21
     let source = "```rust\nfn x() {}\n```\n";
-    assert_eq!(
-        revealed_at(source, 2),
-        vec!["```rust"],
-        "caret on the opening fence"
-    );
+    let both = vec!["```rust".to_owned(), "```".to_owned()];
+
+    assert_eq!(revealed_at(source, 2), both, "caret on the opening fence");
     assert_eq!(
         revealed_at(source, 12),
-        Vec::<String>::new(),
-        "caret inside the code body — Typora would still show the fences"
+        both,
+        "caret inside the code body — the case the line approximation got wrong"
     );
+    assert_eq!(revealed_at(source, 19), both, "caret on the closing fence");
+}
+
+/// Closing that gap must not widen the markers that were already exact.
+///
+/// `>` and list bullets are written on every line they affect, so the line *is* the block for them.
+/// Treating a whole quote as one unit would reveal every `>` in it because the caret is on the
+/// first line, which is worse than what it replaced.
+#[test]
+fn quotes_and_lists_still_reveal_one_line_at_a_time() {
+    let quote = "> one\n> two\n> three\n";
+    assert_eq!(
+        revealed_at(quote, 3).len(),
+        1,
+        "a caret in a three-line quote should reveal its own `>`, not all three"
+    );
+
+    let list = "- one\n- two\n- three\n";
+    assert_eq!(revealed_at(list, 3).len(), 1, "same for list bullets");
+}
+
+/// A fence nested in a quote resolves to the fence, not the quote.
+#[test]
+fn the_innermost_block_wins() {
+    let source = "> ```\n> code\n> ```\n";
+    let doc = Document::from(source);
+    let fences: Vec<_> = doc
+        .segments()
+        .iter()
+        .filter(|s| matches!(s.kind(), mdedit_markers::SegmentKind::Marker(m) if m == mdedit_markers::Marker::CodeBlock))
+        .cloned()
+        .collect();
+
+    assert!(!fences.is_empty(), "the nested fence produces markers");
+    // Caret on the middle line, which carries no fence of its own.
+    for fence in &fences {
+        assert!(
+            doc.is_revealed(fence, caret_at(9)),
+            "a fence inside a quote should still reveal from inside the fence"
+        );
+    }
 }
 
 const FRAGMENTS: &[&str] = &[

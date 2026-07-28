@@ -45,7 +45,7 @@
 
 use std::ops::Range;
 
-use mdedit_markers::{Segment, SegmentKind};
+use mdedit_markers::{Block, BlockKind, Segment, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan, CharOffset, LineIndex};
 use ropey::Rope;
 
@@ -78,6 +78,8 @@ pub struct Document {
     text: Rope,
     /// Always current: recomputed by every edit.
     segments: Vec<Segment>,
+    /// Block structure, recomputed alongside the segments by the same parse.
+    blocks: Vec<Block>,
 }
 
 impl Document {
@@ -87,6 +89,7 @@ impl Document {
         Self {
             text: Rope::new(),
             segments: Vec::new(),
+            blocks: Vec::new(),
         }
     }
 
@@ -112,6 +115,40 @@ impl Document {
     #[must_use]
     pub fn segments(&self) -> &[Segment] {
         &self.segments
+    }
+
+    /// The block structure of the current buffer, outermost first, in document order.
+    ///
+    /// Unlike the segments these do not tile the buffer — the blank line between two paragraphs
+    /// belongs to no block.
+    #[must_use]
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    /// The innermost block containing `offset`, if any.
+    ///
+    /// Innermost rather than outermost because callers ask in order to decide how to treat the
+    /// bytes at that position, and the closest enclosing construct is what governs them: a
+    /// paragraph inside a quote inside a list is a paragraph.
+    #[must_use]
+    pub fn block_at(&self, offset: ByteOffset) -> Option<&Block> {
+        self.blocks
+            .iter()
+            .filter(|block| block.span().start() <= offset && offset < block.span().end())
+            .max_by_key(|block| block.depth())
+    }
+
+    /// The innermost code block containing `offset`, if there is one.
+    fn code_block_at(&self, offset: ByteOffset) -> Option<&Block> {
+        self.blocks
+            .iter()
+            .filter(|block| {
+                block.kind() == BlockKind::CodeBlock
+                    && block.span().start() <= offset
+                    && offset < block.span().end()
+            })
+            .max_by_key(|block| block.depth())
     }
 
     /// Replaces the bytes in `span` with `replacement`.
@@ -164,7 +201,11 @@ impl Document {
 
     /// Recomputes the partition from the current buffer.
     fn resegment(&mut self) {
-        self.segments = mdedit_markers::segment(&self.text.to_string());
+        // One parse for both. `analyze` exists precisely so the block list does not cost a second
+        // walk of the parser on every keystroke.
+        let analysis = mdedit_markers::analyze(&self.text.to_string());
+        self.segments = analysis.segments;
+        self.blocks = analysis.blocks;
     }
 
     /// Rejects a span that does not address this buffer.
@@ -209,6 +250,7 @@ impl From<&str> for Document {
         let mut doc = Self {
             text: Rope::from_str(text),
             segments: Vec::new(),
+            blocks: Vec::new(),
         };
         doc.resegment();
         doc
@@ -326,6 +368,17 @@ impl Document {
         let sel = selection.span();
 
         if marker.is_block() {
+            // A fence is the one block marker that does not repeat on the lines it governs: ``` at
+            // the top, ``` at the bottom, and nothing in between. So its reveal extent is the whole
+            // block, which is what MDEDIT-12 added block extents for.
+            //
+            // Every other block marker — `>`, a bullet, an indent — is written on each line it
+            // affects, so the line is already the exact extent. Widening those to the block would
+            // reveal twenty `>` because the caret is on the first line, which is worse than the
+            // approximation it replaced.
+            if let Some(block) = self.code_block_at(seg.start()) {
+                return sel.touches(block.span());
+            }
             let marker_lines = self.line_span(seg);
             let caret_lines = self.line_span(sel);
             marker_lines.start <= caret_lines.end && caret_lines.start <= marker_lines.end

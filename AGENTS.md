@@ -35,8 +35,10 @@ flow).
 platform-agnostic.
 
 ```
-crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos
-crates/markers/         # mdedit-markers: partitions source into marker and content spans
+crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos,
+                        #   BlockId
+crates/markers/         # mdedit-markers: partitions source into marker and content spans, and
+                        #   reports block extents — one parse for both
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection and the reveal-on-cursor predicate
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
@@ -60,19 +62,18 @@ and evidenced. Don't relitigate them without new evidence.
 
 Known gaps, so nobody assumes they are done:
 
-- **`BlockId` does not exist.** The newtype rule below is implemented for the four coordinate spaces
-  that exist today; `BlockId` arrives with the block model.
 - **No portable text implementation.** `mdedit-text-dwrite` is the only backend, so the trait has
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
 - **The renderer draws one hardcoded document.** No file I/O, no scrolling, no virtualization, no
   tabs, no undo, no mouse. Editing is printable characters, backspace, delete and arrows.
-- **No block extents.** `mdedit-markers` reports marker spans only, so `Document::is_revealed`
-  approximates "the block" as "the line" — exact for headings, quotes and list items, wrong for
-  multi-line fenced code. Shape the block model against what the renderer actually needs.
+- **Blocks are extents, not a tree.** `Document::blocks` is a flat list with a depth on each entry.
+  Nothing walks parent or child links because nothing has needed to; `block_at` scans the list.
+  Fine at present sizes, and the thing to revisit when virtualization needs to diff block lists.
 - **No perf assertions.** The bench in `crates/markers/benches` measures; nothing gates a regression.
-- **CI does not build any platform code**, because none exists yet.
+- **CI does not run the app**, only the headless crates. There is no way to open a window on a CI
+  runner, so rendering is verified by hand on Windows.
 
 ## Stack
 

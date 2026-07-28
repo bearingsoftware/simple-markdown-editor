@@ -38,7 +38,7 @@
 //!
 //! [pulldown-cmark#441]: https://github.com/pulldown-cmark/pulldown-cmark/issues/441
 
-use mdedit_offsets::ByteSpan;
+use mdedit_offsets::{BlockId, ByteSpan};
 
 mod classify;
 
@@ -139,6 +139,114 @@ impl Marker {
     }
 }
 
+/// What kind of block a [`Block`] is.
+///
+/// Only the distinctions the editor acts on. Anything else is [`BlockKind::Other`] rather than a
+/// variant nobody reads — the list grows when a renderer needs a case, not before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BlockKind {
+    /// A run of prose.
+    Paragraph,
+    /// An ATX or setext heading, carrying its level, 1–6.
+    Heading(u8),
+    /// A fenced or indented code block.
+    ///
+    /// The one kind whose markers do **not** repeat on every line, which is why block extents had
+    /// to exist at all — see [`Block`].
+    CodeBlock,
+    /// A block quote. Contains other blocks.
+    BlockQuote,
+    /// A bullet or ordered list. Contains items.
+    List,
+    /// One item of a list. Contains other blocks.
+    ListItem,
+    /// A thematic break — `---`, `***`, `___`.
+    ThematicBreak,
+    /// A raw HTML block.
+    Html,
+    /// Anything not distinguished yet. Its bytes are still covered.
+    Other,
+}
+
+/// One block-level construct, and the bytes it spans.
+///
+/// # Why this exists
+///
+/// Most block markers repeat on every line they affect: a block quote writes `>` on each line, a
+/// list item indents each of its continuation lines. For those, the line a marker sits on *is* its
+/// block for every purpose the editor has, and treating the whole construct as one unit would
+/// reveal twenty `>` because the caret is on the first line.
+///
+/// Fenced code is the exception, and the reason for this type: `` ``` `` appears twice, at the top
+/// and the bottom, and everything between belongs to the block without carrying a marker. Deciding
+/// anything about the middle of a fence from its own line is impossible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Block {
+    id: BlockId,
+    kind: BlockKind,
+    span: ByteSpan,
+    depth: u16,
+}
+
+impl Block {
+    pub(crate) fn new(id: BlockId, kind: BlockKind, span: ByteSpan, depth: u16) -> Self {
+        Self {
+            id,
+            kind,
+            span,
+            depth,
+        }
+    }
+
+    /// This block's identity within the analysis that produced it.
+    #[must_use]
+    pub fn id(&self) -> BlockId {
+        self.id
+    }
+
+    /// What kind of block this is.
+    #[must_use]
+    pub fn kind(&self) -> BlockKind {
+        self.kind
+    }
+
+    /// The bytes this block covers, as `pulldown-cmark` reports them.
+    #[must_use]
+    pub fn span(&self) -> ByteSpan {
+        self.span
+    }
+
+    /// How deeply nested this block is. Zero is top level.
+    #[must_use]
+    pub fn depth(&self) -> u16 {
+        self.depth
+    }
+}
+
+/// Everything one parse of a document yields.
+///
+/// Segments and blocks come from a **single** walk of the parser. Producing them separately would
+/// double the parse, and the parse happens on every keystroke — `docs/research/04` measures it at
+/// 2.99 ms for 60 KB against a 3 ms budget, so there is no room for a second one.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Analysis {
+    /// The marker/content partition. Tiles the source exactly.
+    pub segments: Vec<Segment>,
+    /// Block-level structure, outermost first, in document order.
+    ///
+    /// Unlike segments these do **not** tile the source: the blank line between two paragraphs
+    /// belongs to neither. Gaps are expected, overlaps are not, except where a block nests inside
+    /// another and both cover the same bytes at different depths.
+    pub blocks: Vec<Block>,
+}
+
+/// Partitions `source` and reports its block structure, in one parse.
+#[must_use]
+pub fn analyze(source: &str) -> Analysis {
+    classify::analyze(source)
+}
+
 /// Partitions `source` into ordered marker and content runs.
 ///
 /// The returned segments tile the whole of `source` exactly — see the [crate docs](crate) for the
@@ -148,5 +256,5 @@ impl Marker {
 /// definitions) are returned as [`SegmentKind::Content`]; their bytes are still present.
 #[must_use]
 pub fn segment(source: &str) -> Vec<Segment> {
-    classify::segment(source)
+    analyze(source).segments
 }

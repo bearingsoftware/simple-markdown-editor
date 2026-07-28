@@ -8,22 +8,20 @@
 //! Deliberately free of GPU and platform types so it can be tested without a window, which is most
 //! of what makes the renderer's behaviour assertable at all.
 //!
-//! # Two approximations, both from the missing block model
+//! # Where the styling comes from
 //!
-//! [`mdedit_markers`] reports marker spans but not block extents (MDEDIT-12), so:
+//! **Block structure is looked up, not inferred.** Heading size and code-block monospacing come
+//! from [`Document::block_at`], which knows the answer for any byte. They used to be accumulated
+//! while walking segments, and that produced two bugs in a row: a heading's size leaking into the
+//! paragraph after it, then — when that was fixed by resetting at newlines — every fence losing its
+//! monospacing, because a fence spans lines by definition.
 //!
-//! - **Heading size is decided per line.** A `##` marker styles the rest of its own line. Correct
-//!   for ATX headings, which is all of them in practice; a setext heading's underline is styled as
-//!   a marker but does not resize the line above it.
-//! - **Inline styling toggles.** `**` flips bold on, the next `**` flips it off. Markdown's own
-//!   nesting rules make that correct for well-formed input; unclosed emphasis would leak to the
-//!   end of the line, which is why the state resets at every newline rather than running on.
-//!
-//! Both are bounded to one line, so the worst case is a mis-styled line rather than a mis-styled
-//! document. Revisit when blocks exist.
+//! **Inline emphasis still toggles.** `**` flips bold on, the next `**` flips it off. Markdown's
+//! own rules pair delimiters within a line, so the state resets at every newline; without that an
+//! unterminated `**` would embolden the rest of the file.
 
 use mdedit_document::{Document, Selection};
-use mdedit_markers::{Marker, SegmentKind};
+use mdedit_markers::{Block, BlockKind, Marker, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{StyledRun, TextStyle};
 
@@ -116,78 +114,28 @@ pub struct ViewRun {
     pub colour: Rgba,
 }
 
-/// The styling state carried while walking segments.
+/// Inline styling carried while walking segments.
 ///
-/// Split by lifetime, which is the distinction that matters: emphasis and heading size are
-/// line-scoped and must not survive a newline, but a fenced code block spans many lines and must.
-/// Resetting both at once silently un-monospaces every fence.
+/// Only inline emphasis lives here now. Heading size and code-block monospacing used to be tracked
+/// the same way and were the source of two bugs — a heading's size leaking into the next paragraph,
+/// then a fence losing its monospacing when that was fixed. Both are now read from the block
+/// structure (MDEDIT-12), which knows the answer rather than inferring it from what came before.
 #[derive(Debug, Clone, Copy, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "these are independent named flags in a state record; packing them into bitflags to satisfy a count would make the code harder to read, not safer"
-)]
 struct DecorState {
-    // Line-scoped. Cleared at every newline.
     bold: bool,
     italic: bool,
     code_span: bool,
-    heading: Option<u8>,
-    /// An indented code block marks each line's indent separately, so it is per-line too.
-    indented_code: bool,
-
-    // Block-scoped. Survives newlines; cleared by the closing fence.
-    in_fence: bool,
 }
 
 impl DecorState {
-    /// Clears the line-scoped half, leaving block state alone.
+    /// Clears inline state at a newline.
+    ///
+    /// Still needed: Markdown's own rules pair delimiters within a line, so an unterminated `**`
+    /// would otherwise embolden the rest of the file. Block state needs no such guard because it is
+    /// looked up per byte rather than accumulated.
     fn end_line(&mut self) {
-        self.bold = false;
-        self.italic = false;
-        self.code_span = false;
-        self.heading = None;
-        self.indented_code = false;
+        *self = Self::default();
     }
-
-    fn mono(self) -> bool {
-        self.code_span || self.in_fence || self.indented_code
-    }
-
-    fn style(self, theme: &Theme) -> TextStyle {
-        let size = self
-            .heading
-            .map_or(theme.body_size, |level| theme.heading_size(level));
-        let mut style = TextStyle::body(size);
-        if self.bold || self.heading.is_some() {
-            style = style.bold();
-        }
-        if self.italic {
-            style = style.italic();
-        }
-        if self.mono() {
-            style = style.mono();
-        }
-        style
-    }
-}
-
-/// Whether a `CodeBlock` marker is a fence rather than an indent.
-///
-/// Fences open with three backticks or three tildes; an indented block's marker is whitespace.
-fn is_fence(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    trimmed.starts_with("```") || trimmed.starts_with("~~~")
-}
-
-/// How many `#` a heading marker opens with, if it is an ATX opener.
-fn atx_level(text: &str) -> Option<u8> {
-    let hashes = text.chars().take_while(|c| *c == '#').count();
-    // A trailing `###` closing sequence is also a Heading marker but opens nothing, and a setext
-    // underline is `=`/`-`. Only a run of hashes at the very start sets the level.
-    if hashes == 0 || !text.starts_with('#') {
-        return None;
-    }
-    u8::try_from(hashes.min(6)).ok()
 }
 
 /// Builds the runs to draw for `doc` with the caret at `selection`.
@@ -200,6 +148,7 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
     let mut builder = Builder {
         runs: Vec::new(),
         theme,
+        doc,
         state: DecorState::default(),
     };
 
@@ -212,7 +161,7 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
             SegmentKind::Marker(marker) => {
                 // The state change happens whether or not the marker is drawn: concealing `**`
                 // must still embolden what follows, which is the entire point.
-                builder.apply(marker, piece);
+                builder.apply(marker);
                 if revealed {
                     builder.push_split(piece, span, Role::Marker);
                 }
@@ -235,57 +184,69 @@ enum Role {
 struct Builder<'a> {
     runs: Vec<ViewRun>,
     theme: &'a Theme,
+    doc: &'a Document,
     state: DecorState,
 }
 
 impl Builder<'_> {
-    /// Folds one marker into the styling state.
-    fn apply(&mut self, marker: Marker, piece: &str) {
+    /// Folds one marker into the inline styling state.
+    ///
+    /// Block markers do nothing here: what a heading's size is, and whether a byte is inside a code
+    /// block, are answered by [`Document::block_at`] at the point of use.
+    fn apply(&mut self, marker: Marker) {
         match marker {
             Marker::Strong => self.state.bold = !self.state.bold,
             Marker::Emphasis => self.state.italic = !self.state.italic,
             Marker::CodeSpan => self.state.code_span = !self.state.code_span,
-            Marker::CodeBlock => {
-                if is_fence(piece) {
-                    // Opening and closing fences are both `CodeBlock` markers, so toggling is
-                    // correct: on at the opener, off at the closer.
-                    self.state.in_fence = !self.state.in_fence;
-                } else {
-                    // An indented block marks the indent of every line, so toggling here would
-                    // alternate. It is per-line state instead.
-                    self.state.indented_code = true;
-                }
-            }
-            Marker::Heading => {
-                if let Some(level) = atx_level(piece) {
-                    self.state.heading = Some(level);
-                }
-            }
             _ => {}
         }
     }
 
+    /// The style for text at `offset`, combining block structure with inline state.
+    fn style_at(&self, offset: ByteOffset, role: Role) -> TextStyle {
+        // Innermost is what governs: code content has no child blocks, so a byte inside a fence
+        // resolves to the code block, and a heading's bytes resolve to the heading.
+        let kind = self.doc.block_at(offset).map(Block::kind);
+        let heading = match kind {
+            Some(BlockKind::Heading(level)) => Some(level),
+            _ => None,
+        };
+        let in_code_block = kind == Some(BlockKind::CodeBlock);
+
+        // Markers are drawn monospaced at body size even inside a heading: syntax you are editing
+        // reads more clearly when it is not proportionally spaced or enlarged.
+        let size = match heading {
+            // Markers stay at body size even inside a heading: syntax you are editing reads more
+            // clearly when it is not enlarged along with the text it marks up.
+            Some(level) if role == Role::Content => self.theme.heading_size(level),
+            _ => self.theme.body_size,
+        };
+
+        let mut style = TextStyle::body(size);
+        if self.state.bold || (heading.is_some() && role == Role::Content) {
+            style = style.bold();
+        }
+        if self.state.italic {
+            style = style.italic();
+        }
+        if self.state.code_span || in_code_block || role == Role::Marker {
+            style = style.mono();
+        }
+        style
+    }
+
     /// Pushes `piece`, splitting at newlines so line-scoped styling state can be reset.
     ///
-    /// The style is recomputed **per line**, not once per segment. `mdedit_markers::segment`
+    /// The style is looked up **per line**, not once per segment. `mdedit_markers::segment`
     /// coalesces adjacent runs of the same kind, so a single content segment routinely spans a
-    /// heading's text, the blank line after it, and the whole next paragraph. Styling that segment
-    /// once meant the heading size leaked into everything that followed it.
+    /// heading's text, the blank line after it, and the whole next paragraph — three different
+    /// blocks. Styling that segment once drew all of it at heading size.
     fn push_split(&mut self, piece: &str, span: ByteSpan, role: Role) {
         let base = span.start().get();
         let mut cursor = 0usize;
 
         while cursor < piece.len() {
-            let style = match role {
-                // Markers are drawn monospaced at body size even inside a heading: syntax you are
-                // editing reads more clearly when it is not proportionally spaced or enlarged.
-                Role::Marker => self
-                    .state
-                    .style(self.theme)
-                    .mono()
-                    .at_size(self.theme.body_size),
-                Role::Content => self.state.style(self.theme),
-            };
+            let style = self.style_at(ByteOffset::new(base + cursor), role);
             let colour = match role {
                 Role::Marker => self.theme.marker,
                 Role::Content => self.theme.text,
@@ -295,8 +256,6 @@ impl Builder<'_> {
             if let Some(index) = rest.find('\n') {
                 let end = cursor + index + 1;
                 self.push_one(&piece[cursor..end], base + cursor, style, colour);
-                // A newline ends every line-scoped decision: heading size, and any emphasis left
-                // unclosed. Without this an unterminated `**` would embolden the rest of the file.
                 self.state.end_line();
                 cursor = end;
             } else {
