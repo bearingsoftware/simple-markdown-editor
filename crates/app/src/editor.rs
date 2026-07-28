@@ -430,7 +430,6 @@ fn make_bind_group(
 /// The editor: a document, a caret, a text engine, and a window to put them in.
 pub struct Editor<T: TextLayout> {
     document: Document,
-    selection: Selection,
     theme: Theme,
     text: T,
     atlas: Atlas,
@@ -460,7 +459,7 @@ impl<T: TextLayout> std::fmt::Debug for Editor<T> {
         // `T: Debug` would put a bound on the trait for the sake of a derive.
         f.debug_struct("Editor")
             .field("bytes", &self.document.len_bytes())
-            .field("caret", &self.selection.head())
+            .field("caret", &self.document.selection().head())
             .field("glyphs_packed", &self.atlas.len())
             .field("latency_samples", &self.latency.len())
             .finish_non_exhaustive()
@@ -472,7 +471,6 @@ impl<T: TextLayout> Editor<T> {
     pub fn new(source: &str, text: T) -> Self {
         Self {
             document: Document::from(source),
-            selection: Selection::caret(ByteOffset::ZERO),
             theme: Theme::default(),
             text,
             atlas: Atlas::new(),
@@ -567,16 +565,24 @@ impl<T: TextLayout> Editor<T> {
             return false;
         }
 
-        // Ctrl+S before anything else, so it cannot be mistaken for typing an `s`.
+        // Chords first, so a modified key never inserts its own letter.
         if self.modifiers.control_key() {
-            if matches!(&event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("s")) {
-                self.save();
-            }
-            // No other chord does anything yet, and a modified key must never insert its letter.
-            return false;
+            let Key::Character(character) = &event.logical_key else {
+                return false;
+            };
+            return match character.as_str() {
+                "s" | "S" => {
+                    self.save();
+                    false
+                }
+                // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
+                "z" if !self.modifiers.shift_key() => self.document.undo(),
+                "z" | "Z" | "y" | "Y" => self.document.redo(),
+                _ => false,
+            };
         }
 
-        let caret = self.selection.head();
+        let caret = self.document.selection().head();
 
         match &event.logical_key {
             Key::Named(NamedKey::Backspace) => {
@@ -591,7 +597,7 @@ impl<T: TextLayout> Editor<T> {
                 {
                     return false;
                 }
-                self.selection = Selection::caret(previous);
+                // `delete` already leaves the caret at the start of what it removed.
                 true
             }
             Key::Named(NamedKey::Delete) => {
@@ -602,19 +608,23 @@ impl<T: TextLayout> Editor<T> {
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.selection = Selection::caret(self.previous_boundary(caret));
+                self.document
+                    .set_selection(Selection::caret(self.previous_boundary(caret)));
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.selection = Selection::caret(self.next_boundary(caret));
+                self.document
+                    .set_selection(Selection::caret(self.next_boundary(caret)));
                 true
             }
             Key::Named(NamedKey::Home) => {
-                self.selection = Selection::caret(ByteOffset::ZERO);
+                self.document
+                    .set_selection(Selection::caret(ByteOffset::ZERO));
                 true
             }
             Key::Named(NamedKey::End) => {
-                self.selection = Selection::caret(ByteOffset::new(self.document.len_bytes()));
+                let end = ByteOffset::new(self.document.len_bytes());
+                self.document.set_selection(Selection::caret(end));
                 true
             }
             Key::Named(NamedKey::Enter) => self.insert("\n"),
@@ -625,11 +635,11 @@ impl<T: TextLayout> Editor<T> {
     }
 
     fn insert(&mut self, text: &str) -> bool {
-        let caret = self.selection.head();
+        let caret = self.document.selection().head();
         if self.document.insert(caret, text).is_err() {
             return false;
         }
-        self.selection = Selection::caret(ByteOffset::new(caret.get() + text.len()));
+        // `insert` leaves the caret after what it inserted.
         true
     }
 
@@ -665,7 +675,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Lays the document out and turns it into quads.
     fn build_frame(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
-        let runs = view::build_runs(&self.document, self.selection, &self.theme);
+        let runs = view::build_runs(&self.document, self.document.selection(), &self.theme);
         let styled = view::as_styled(&runs);
 
         let available = (width / scale - MARGIN * 2.0).max(1.0);
@@ -712,7 +722,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// A quad for the caret, placed at the glyph the caret addresses.
     fn caret_quad(&self, layout: &Layout, scale: f32) -> Option<QuadInstance> {
-        let caret = self.selection.head();
+        let caret = self.document.selection().head();
         let mut best: Option<(&mdedit_text::PositionedGlyph, f32)> = None;
         let mut last: Option<&mdedit_text::PositionedGlyph> = None;
 

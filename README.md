@@ -21,7 +21,7 @@ No renderer yet. What exists is the document core, built and tested headlessly:
 
 ```bash
 cargo run -p mdedit-app --release -- FILE.md   # the editor, Windows only
-cargo test          # 100 tests (10 of them Windows-only)
+cargo test          # 116 tests (10 of them Windows-only)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo bench -p mdedit-markers

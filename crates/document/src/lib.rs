@@ -35,9 +35,9 @@
 //! read, which matters: a renderer needs the segments and the selection in the same loop, and a
 //! lazily-filled cache would borrow the document mutably just to read it.
 //!
-//! A lazy cache would let a multi-edit transaction re-parse once instead of once per edit. That
-//! optimisation is deliberately absent until a benchmark shows a transaction shape that needs it —
-//! the same discipline MDEDIT-4 applied to segmentation itself.
+//! An undo group is the transaction shape MDEDIT-7 said would justify re-parsing once instead of
+//! once per edit, and MDEDIT-14 built it: undo and redo splice every edit in a group and then
+//! re-parse a single time. Ordinary edits still re-parse each, because each is its own group.
 //!
 //! **Re-segmentation is a full re-parse**, per the measurement in
 //! `docs/research/04-parsing-benchmarks.md`: at 60 KB it costs less than a frame, and incremental
@@ -45,6 +45,9 @@
 
 use std::ops::Range;
 
+mod history;
+
+use history::History;
 use mdedit_markers::{Block, BlockKind, Segment, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan, CharOffset, LineIndex};
 use ropey::Rope;
@@ -80,6 +83,9 @@ pub struct Document {
     segments: Vec<Segment>,
     /// Block structure, recomputed alongside the segments by the same parse.
     blocks: Vec<Block>,
+    /// Where the caret is. Owned here because undo has to put it back where it was.
+    selection: Selection,
+    history: History,
 }
 
 impl Document {
@@ -90,6 +96,8 @@ impl Document {
             text: Rope::new(),
             segments: Vec::new(),
             blocks: Vec::new(),
+            selection: Selection::caret(ByteOffset::ZERO),
+            history: History::default(),
         }
     }
 
@@ -162,6 +170,41 @@ impl Document {
     /// [`EditError::NotCharBoundary`] if an endpoint splits a multi-byte character. The buffer is
     /// left untouched in both cases.
     pub fn replace(&mut self, span: ByteSpan, replacement: &str) -> Result<(), EditError> {
+        let before = self.selection;
+        let removed = self.apply(span, replacement)?;
+
+        // The caret lands after what was inserted, which is where a typist expects it and what
+        // makes a run of insertions coalesce into one undo step.
+        let after = Selection::caret(ByteOffset::new(span.start().get() + replacement.len()));
+        self.selection = after;
+
+        self.history.record(
+            history::Edit {
+                at: span.start(),
+                removed,
+                inserted: replacement.to_owned(),
+            },
+            before,
+            after,
+        );
+        Ok(())
+    }
+
+    /// Applies a replacement and brings the segmentation up to date.
+    fn apply(&mut self, span: ByteSpan, replacement: &str) -> Result<String, EditError> {
+        let removed = self.splice(span, replacement)?;
+        self.resegment();
+        Ok(removed)
+    }
+
+    /// Applies a replacement to the buffer *without* re-parsing, returning the bytes it displaced.
+    ///
+    /// The only path that touches the rope. Undo and redo go through it too, so they cannot drift
+    /// from what an ordinary edit does — but they re-parse once for the whole group rather than
+    /// once per edit in it. Undoing a five-character word is five splices and one parse; doing it
+    /// the other way costs five parses, which at 60 KB is most of the p99 keystroke budget spent
+    /// four times over for nothing.
+    fn splice(&mut self, span: ByteSpan, replacement: &str) -> Result<String, EditError> {
         self.check(span)?;
 
         // The only place [`CharOffset`] exists. ropey addresses by character, this crate's API
@@ -170,15 +213,83 @@ impl Document {
         let char_start = self.byte_to_char(span.start());
         let char_end = self.byte_to_char(span.end());
 
-        if char_start != char_end {
+        let removed = if char_start == char_end {
+            String::new()
+        } else {
+            let text = self
+                .text
+                .slice(char_start.get()..char_end.get())
+                .to_string();
             self.text.remove(char_start.get()..char_end.get());
-        }
+            text
+        };
         if !replacement.is_empty() {
             self.text.insert(char_start.get(), replacement);
         }
 
+        Ok(removed)
+    }
+
+    /// Where the caret is, and what is selected.
+    #[must_use]
+    pub fn selection(&self) -> Selection {
+        self.selection
+    }
+
+    /// Moves the caret or changes the selection.
+    ///
+    /// Ends the current undo group. Moving away from what you were typing is exactly the moment a
+    /// timer-based implementation is trying to detect, and the caret says so without a clock.
+    pub fn set_selection(&mut self, selection: Selection) {
+        if selection != self.selection {
+            self.history.break_group();
+        }
+        self.selection = selection;
+    }
+
+    /// Whether there is anything to undo.
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    /// Whether there is anything to redo.
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Reverses the most recent group of edits, restoring the caret with them.
+    ///
+    /// Returns whether anything was undone.
+    pub fn undo(&mut self) -> bool {
+        let Some(group) = self.history.pop_undo() else {
+            return false;
+        };
+        for (span, text) in group.undo_steps() {
+            // The recorded spans are exactly what was written, so this cannot be out of bounds
+            // unless the history and the buffer have already diverged.
+            let _ = self.splice(span, text);
+        }
+        // Once for the group, not once per edit in it.
         self.resegment();
-        Ok(())
+        self.selection = group.selection_before;
+        true
+    }
+
+    /// Reapplies the most recently undone group.
+    ///
+    /// Returns whether anything was redone.
+    pub fn redo(&mut self) -> bool {
+        let Some(group) = self.history.pop_redo() else {
+            return false;
+        };
+        for (span, text) in group.redo_steps() {
+            let _ = self.splice(span, text);
+        }
+        self.resegment();
+        self.selection = group.selection_after;
+        true
     }
 
     /// Inserts `text` at a byte offset.
@@ -251,6 +362,8 @@ impl From<&str> for Document {
             text: Rope::from_str(text),
             segments: Vec::new(),
             blocks: Vec::new(),
+            selection: Selection::caret(ByteOffset::ZERO),
+            history: History::default(),
         };
         doc.resegment();
         doc

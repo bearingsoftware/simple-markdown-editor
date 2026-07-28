@@ -67,8 +67,11 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **No virtualization, tabs, undo or mouse.** The whole document is laid out every frame, so
+- **No virtualization, tabs or mouse.** The whole document is laid out every frame, so
   `mdedit big.md` will not meet the file-open target until blocks are rendered on demand.
+- **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
+  It means a long pause mid-word still undoes as one step, which is the one place the behaviour
+  differs from editors that use a clock.
 - **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
   calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
   error rather than as text until there is UI to choose.
@@ -110,9 +113,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
 cargo deny check                   # licences + advisories
 cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
+cargo bench -p mdedit-document     # what an undo group costs against typing the same edits
 ```
 
-CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
+CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
+`cargo +1.87.0 check --all-features` — because the local toolchain is newer and will happily accept
+things the floor rejects. Let-chains are the trap: they stabilised in 1.88. `cargo deny` and the MSRV check
 pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 
