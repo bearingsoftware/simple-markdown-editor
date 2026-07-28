@@ -101,6 +101,35 @@ impl LineIndex {
     }
 }
 
+/// Identifies one block within a single analysis of a document.
+///
+/// Stable only for as long as the document is unedited: it is a position in the block list, not a
+/// durable name. That is enough for what it is for — keying a cached layout for the duration of a
+/// frame, and telling two blocks apart — and pretending otherwise would invite a stale id to
+/// address the wrong block after an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlockId(u32);
+
+impl BlockId {
+    /// Wraps a block index.
+    #[must_use]
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// The underlying index.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for BlockId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "block#{}", self.0)
+    }
+}
+
 /// A position in laid-out text, in device-independent pixels.
 ///
 /// The origin is the top-left of the laid-out block; `y` grows downward, matching every text layout

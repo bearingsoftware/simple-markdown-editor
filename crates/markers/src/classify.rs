@@ -5,10 +5,10 @@
 
 use std::ops::Range;
 
-use mdedit_offsets::{ByteOffset, ByteSpan};
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
+use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
-use crate::{Marker, Segment, SegmentKind};
+use crate::{Analysis, Block, BlockKind, Marker, Segment, SegmentKind};
 
 // Ranges inside this module are raw `usize`, deliberately. There is exactly one coordinate space
 // here — offsets into `source`, as `pulldown-cmark` reports them — and the scratch array is indexed
@@ -21,13 +21,14 @@ fn options() -> Options {
     Options::ENABLE_STRIKETHROUGH
 }
 
-pub(crate) fn segment(source: &str) -> Vec<Segment> {
+pub(crate) fn analyze(source: &str) -> Analysis {
     let mut marks: Vec<Option<Marker>> = vec![None; source.len()];
 
     let Walk {
         mut constructs,
         contents,
         verbatim,
+        blocks,
     } = walk(source);
 
     // Outermost first so a nested construct overwrites its parent's classification: in `**a *b* c**`
@@ -44,7 +45,10 @@ pub(crate) fn segment(source: &str) -> Vec<Segment> {
     normalise_line_syntax(source, &mut marks);
     mark_escapes(source, verbatim, &mut marks);
 
-    coalesce(source, &marks)
+    Analysis {
+        segments: coalesce(source, &marks),
+        blocks,
+    }
 }
 
 struct Walk {
@@ -52,6 +56,52 @@ struct Walk {
     contents: Vec<Range<usize>>,
     /// Regions where a backslash is a literal character rather than an escape.
     verbatim: Vec<Range<usize>>,
+    /// Block structure, outermost first, in document order.
+    blocks: Vec<Block>,
+}
+
+/// The block kind a start tag opens, if it opens one at all.
+fn block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
+    Some(match tag {
+        Tag::Paragraph => BlockKind::Paragraph,
+        Tag::Heading { level, .. } => {
+            // `HeadingLevel` is 1-6 by construction, so the cast cannot be wrong; `as u8` on the
+            // enum would depend on its discriminants, which is not something to rely on.
+            let level = match level {
+                pulldown_cmark::HeadingLevel::H1 => 1,
+                pulldown_cmark::HeadingLevel::H2 => 2,
+                pulldown_cmark::HeadingLevel::H3 => 3,
+                pulldown_cmark::HeadingLevel::H4 => 4,
+                pulldown_cmark::HeadingLevel::H5 => 5,
+                pulldown_cmark::HeadingLevel::H6 => 6,
+            };
+            BlockKind::Heading(level)
+        }
+        Tag::CodeBlock(_) => BlockKind::CodeBlock,
+        Tag::BlockQuote(_) => BlockKind::BlockQuote,
+        Tag::List(_) => BlockKind::List,
+        Tag::Item => BlockKind::ListItem,
+        Tag::HtmlBlock => BlockKind::Html,
+        Tag::FootnoteDefinition(_) | Tag::Table(_) => BlockKind::Other,
+        // Everything else is inline and opens no block.
+        _ => return None,
+    })
+}
+
+/// Whether an end tag closes a block, so nesting depth can be tracked without a stack.
+fn closes_block(tag: TagEnd) -> bool {
+    matches!(
+        tag,
+        TagEnd::Paragraph
+            | TagEnd::Heading(_)
+            | TagEnd::CodeBlock
+            | TagEnd::BlockQuote(_)
+            | TagEnd::List(_)
+            | TagEnd::Item
+            | TagEnd::HtmlBlock
+            | TagEnd::FootnoteDefinition
+            | TagEnd::Table
+    )
 }
 
 /// Collects construct ranges and the content ranges that will be subtracted from them.
@@ -63,17 +113,42 @@ fn walk(source: &str) -> Walk {
     let mut contents = Vec::with_capacity(estimate);
     let mut verbatim = Vec::new();
 
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut depth: u16 = 0;
+
     for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 if matches!(tag, Tag::CodeBlock(_)) {
                     verbatim.push(range.clone());
                 }
+                if let Some(kind) = block_kind(&tag) {
+                    // Pushed on the way in, so the list is already outermost-first in document
+                    // order and needs no sort.
+                    blocks.push(Block::new(
+                        BlockId::new(u32::try_from(blocks.len()).unwrap_or(u32::MAX)),
+                        kind,
+                        ByteSpan::from(range.clone()),
+                        depth,
+                    ));
+                    depth = depth.saturating_add(1);
+                }
                 if let Some(marker) = marker_for(&tag) {
                     constructs.push((range, marker));
                 }
             }
-            Event::Rule => constructs.push((range, Marker::ThematicBreak)),
+            Event::End(tag) if closes_block(tag) => {
+                depth = depth.saturating_sub(1);
+            }
+            Event::Rule => {
+                blocks.push(Block::new(
+                    BlockId::new(u32::try_from(blocks.len()).unwrap_or(u32::MAX)),
+                    BlockKind::ThematicBreak,
+                    ByteSpan::from(range.clone()),
+                    depth,
+                ));
+                constructs.push((range, Marker::ThematicBreak));
+            }
             Event::HardBreak => constructs.push((range, Marker::HardBreak)),
 
             // An inline code span reports one range covering delimiters *and* content, with no child
@@ -105,6 +180,7 @@ fn walk(source: &str) -> Walk {
         constructs,
         contents,
         verbatim,
+        blocks,
     }
 }
 

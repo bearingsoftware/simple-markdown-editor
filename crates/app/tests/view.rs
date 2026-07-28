@@ -99,6 +99,48 @@ fn heading_level_sets_the_size() {
     }
 }
 
+/// Something the old heuristic could not do at all.
+///
+/// Heading size used to be recovered by counting `#` on the marker, so a setext heading — whose
+/// syntax is an underline on the *following* line — never got one. Reading the block gives it for
+/// free, because the parser already knew.
+#[test]
+fn a_setext_heading_is_sized_like_its_atx_equivalent() {
+    let theme = Theme::default();
+    for (source, level) in [("Title\n=====\n", 1), ("Title\n-----\n", 2)] {
+        let doc = Document::from(source);
+        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme);
+        let title = runs
+            .iter()
+            .find(|r| r.text.starts_with("Title"))
+            .unwrap_or_else(|| panic!("{source:?} draws its title"));
+        assert_eq!(
+            title.style.size.get(),
+            theme.heading_size(level),
+            "{source:?} should be an h{level}"
+        );
+    }
+}
+
+/// Code inside a fence keeps its own inline characters literal.
+#[test]
+fn a_fence_is_monospaced_from_its_block_not_from_its_markers() {
+    // No closing fence: the block runs to the end of the document. A toggle-based implementation
+    // would have turned monospacing on and left it on; reading the block gets the same answer for
+    // the right reason, and stops where the block stops.
+    let doc = Document::from("```\nunterminated\n");
+    let runs = build_runs(
+        &doc,
+        Selection::caret(ByteOffset::new(999)),
+        &Theme::default(),
+    );
+    let body = runs
+        .iter()
+        .find(|r| r.text.contains("unterminated"))
+        .expect("the body is drawn");
+    assert_eq!(body.style.family, mdedit_text::FontFamily::Mono);
+}
+
 #[test]
 fn emphasis_applies_to_the_text_between_its_markers() {
     let doc = Document::from("plain **bold** plain\n");
