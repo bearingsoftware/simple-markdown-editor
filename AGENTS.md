@@ -42,6 +42,8 @@ crates/document/        # mdedit-document: rope buffer keeping that partition cu
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; the only
                         #   place `unsafe` is permitted. Compiles to nothing elsewhere.
+crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
+                        #   step, and the keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
@@ -60,9 +62,12 @@ Known gaps, so nobody assumes they are done:
 
 - **`BlockId` does not exist.** The newtype rule below is implemented for the four coordinate spaces
   that exist today; `BlockId` arrives with the block model.
-- **No window, and no portable text implementation.** `mdedit-text-dwrite` is the only backend, so
-  the trait has one implementation and therefore no correctness oracle yet. parley fills that in
-  when [parley#689](https://github.com/linebender/parley/pull/689) ships released.
+- **No portable text implementation.** `mdedit-text-dwrite` is the only backend, so the trait has
+  one implementation and therefore no correctness oracle yet. parley fills that in when
+  [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
+  app does not run at all off Windows.
+- **The renderer draws one hardcoded document.** No file I/O, no scrolling, no virtualization, no
+  tabs, no undo, no mouse. Editing is printable characters, backspace, delete and arrows.
 - **No block extents.** `mdedit-markers` reports marker spans only, so `Document::is_revealed`
   approximates "the block" as "the line" — exact for headings, quotes and list items, wrong for
   multi-line fenced code. Shape the block model against what the renderer actually needs.
@@ -103,7 +108,7 @@ cargo bench -p mdedit-markers      # segmentation cost against the keystroke bud
 ```
 
 CI runs fmt, clippy, tests and docs on both Linux and Windows. `cargo deny` and the MSRV check
-pinned to `rust-version` run on Linux only — neither is platform-sensitive. The bench is not a CI
+pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 
 `cargo test --release -- --ignored` is reserved for the perf assertions described under

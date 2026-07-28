@@ -10,7 +10,7 @@
 # Match the project's Cargo.toml `rust-version`. Clippy then flags uses of APIs newer than the MSRV
 # instead of letting them break the CI matrix. REPLACE with this project's MSRV. 1.85 is the floor for
 # edition 2024 (standards/rust.md).
-msrv = "1.85.0"
+msrv = "1.87.0"
 
 # `unwrap`/`expect` are banned outside tests by standards/rust.md; these thresholds catch the
 # adjacent smells that a lint can actually measure.

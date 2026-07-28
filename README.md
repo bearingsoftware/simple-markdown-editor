@@ -16,13 +16,30 @@ No renderer yet. What exists is the document core, built and tested headlessly:
 | [`mdedit-document`](crates/document) | Rope buffer that keeps that partition current across edits, plus selection and the reveal-on-cursor predicate |
 | [`mdedit-text`](crates/text) | The text-layout trait — what the editor asks for, independent of who shapes it |
 | [`mdedit-text-dwrite`](crates/text-dwrite) | DirectWrite implementation of that trait. Windows only |
+| [`mdedit-app`](crates/app) | The window: winit + wgpu, the decoration step, and the latency harness |
 
 ```bash
-cargo test          # 52 tests (10 of them Windows-only)
+cargo run -p mdedit-app --release   # the editor, Windows only
+cargo test          # 71 tests (10 of them Windows-only)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo deny check
 cargo bench -p mdedit-markers
 ```
+
+## Keystroke latency
+
+Measured on this machine over 400 keystrokes into the sample document, reported as percentiles
+rather than a mean, and taken under power-save as well as plugged in — `docs/research/06` is
+explicit that a mean on AC is the least informative number available.
+
+| | p50 | p90 | p99 | max |
+|---|---|---|---|---|
+| Balanced, AC | 1.91 ms | 2.36 ms | 2.73 ms | 6.17 ms |
+| Power saver | 2.28 ms | 2.77 ms | 3.55 ms | 9.20 ms |
+
+Budget is p50 <= 3 ms and p99 <= 8.3 ms. This measures keystroke to `present()` returning, which
+excludes the input stack before winit sees the key and the compositor after — so it is a lower
+bound on true keystroke-to-photon, not the whole path.
 
 ## The invariant everything rests on
 
