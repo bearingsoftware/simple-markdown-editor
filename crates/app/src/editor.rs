@@ -1269,6 +1269,13 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
 
 /// What to do about a tab with unsaved changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "only the Windows prompt constructs Save and Discard; off Windows the app exits before opening a window"
+    )
+)]
 enum Unsaved {
     /// Write it, then close.
     Save,

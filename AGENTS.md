@@ -123,7 +123,12 @@ cargo bench -p mdedit-document     # what an undo group costs against typing the
 
 CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
 `cargo +1.87.0 check --all-features` — because the local toolchain is newer and will happily accept
-things the floor rejects. Let-chains are the trap: they stabilised in 1.88. `cargo deny` and the MSRV check
+things the floor rejects. Let-chains are the trap: they stabilised in 1.88.
+
+Check the Linux build too — `cargo check --target x86_64-unknown-linux-gnu --all-features`. Windows
+is the only platform anything runs on, so it is easy to add a dependency or a `cfg` that only
+compiles here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both got through to CI
+that way. `cargo deny` and the MSRV check
 pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 
