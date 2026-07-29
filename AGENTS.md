@@ -68,12 +68,11 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **No tab strip, and no mouse.** Tabs exist and switch with Ctrl+Tab, but there is nothing on
-  screen showing them and closing a modified tab is refused rather than prompted — both need UI
-  this has no widgets for yet.
 - **Baseline RSS is around 345 MB, against a 50 MB target.** Measured with one tab open, so it is
   the renderer rather than anything above it. 200 deferred tabs add nothing measurable on top.
-- **No virtualization or mouse.** The whole document is laid out every frame, so
+- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar, and the
+  only mouse handling is the strip. Everything else is keyboard.
+- **No virtualization.** The whole document is laid out every frame, so
   `mdedit big.md` will not meet the file-open target until blocks are rendered on demand.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
@@ -124,7 +123,12 @@ cargo bench -p mdedit-document     # what an undo group costs against typing the
 
 CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
 `cargo +1.87.0 check --all-features` — because the local toolchain is newer and will happily accept
-things the floor rejects. Let-chains are the trap: they stabilised in 1.88. `cargo deny` and the MSRV check
+things the floor rejects. Let-chains are the trap: they stabilised in 1.88.
+
+Check the Linux build too — `cargo check --target x86_64-unknown-linux-gnu --all-features`. Windows
+is the only platform anything runs on, so it is easy to add a dependency or a `cfg` that only
+compiles here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both got through to CI
+that way. `cargo deny` and the MSRV check
 pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 

@@ -11,15 +11,16 @@ use std::time::Instant;
 use mdedit_document::{Document, Selection};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
-use mdedit_text::{GlyphKey, Layout, TextLayout};
+use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::latency::Latency;
+use crate::tabs;
 use crate::view::{self, Rgba, Theme};
 
 /// Left and top margin, in device-independent pixels.
@@ -445,6 +446,10 @@ pub struct Editor<T: TextLayout> {
     gpu_error: Option<GpuError>,
     /// Held so Ctrl+S can be told apart from a plain `s`.
     modifiers: ModifiersState,
+    /// Where each tab landed in the strip last frame, for resolving a click.
+    tab_rects: Vec<tabs::TabRect>,
+    /// Last known cursor position, in device-independent pixels.
+    cursor: (f32, f32),
 }
 
 impl<T: TextLayout> std::fmt::Debug for Editor<T> {
@@ -475,6 +480,8 @@ impl<T: TextLayout> Editor<T> {
             pending_keystroke: None,
             gpu_error: None,
             modifiers: ModifiersState::empty(),
+            tab_rects: Vec::new(),
+            cursor: (0.0, 0.0),
         }
     }
 
@@ -600,13 +607,50 @@ impl<T: TextLayout> Editor<T> {
     /// Refuses to discard unsaved work silently. There is no dialog yet, so it says so and declines
     /// rather than losing the edit — a prompt arrives with the tab strip.
     fn close_tab(&mut self) -> bool {
-        let Some(index) = self.workspace.active() else {
-            return false;
-        };
-        if self.is_modified() {
-            eprintln!("unsaved changes — save with Ctrl+S before closing this tab");
-            return false;
+        match self.workspace.active() {
+            Some(index) => self.close_tab_at(index),
+            None => false,
         }
+    }
+
+    /// Closes a specific tab, asking first if it has unsaved work.
+    ///
+    /// The prompt is a native dialog rather than something drawn in the window. `AGENTS.md` already
+    /// names `rfd` for dialogs, and a modal built from our own quads would need focus handling,
+    /// keyboard traversal and a screen-reader story that none of the rest of the editor has yet.
+    fn close_tab_at(&mut self, index: usize) -> bool {
+        let modified = self
+            .workspace
+            .tabs()
+            .get(index)
+            .is_some_and(mdedit_session::Tab::is_modified);
+
+        if modified {
+            let name = self
+                .workspace
+                .tabs()
+                .get(index)
+                .map_or_else(|| "this file".to_owned(), mdedit_session::Tab::display_name);
+
+            match Self::ask_about_unsaved(&name) {
+                Unsaved::Save => {
+                    // Saving the tab being closed means showing it first: `save` works on the
+                    // active tab, which is the only one whose bytes we hold.
+                    if self.workspace.activate(index).is_err() {
+                        return false;
+                    }
+                    self.save();
+                    // A failed save leaves the buffer dirty, and closing then would lose it.
+                    if self.is_modified() {
+                        eprintln!("not closing {name}: the save did not succeed");
+                        return true;
+                    }
+                }
+                Unsaved::Discard => {}
+                Unsaved::Cancel => return false,
+            }
+        }
+
         match self.workspace.close(index) {
             Ok(_) => {
                 if let Some(active) = self.workspace.active() {
@@ -618,6 +662,41 @@ impl<T: TextLayout> Editor<T> {
                 eprintln!("could not close tab: {error}");
                 false
             }
+        }
+    }
+
+    /// Asks what to do about a tab with unsaved changes.
+    ///
+    /// Windows only, because `rfd`'s Linux backend needs GTK development headers and would make the
+    /// workspace unbuildable on CI for a dialog only the Windows build can show. Off Windows the
+    /// app exits before opening a window at all, so this is unreachable rather than degraded — and
+    /// it answers Cancel, because if it ever did become reachable, keeping the work is the only
+    /// safe default.
+    #[cfg(not(windows))]
+    fn ask_about_unsaved(_name: &str) -> Unsaved {
+        Unsaved::Cancel
+    }
+
+    /// Asks what to do about a tab with unsaved changes.
+    #[cfg(windows)]
+    fn ask_about_unsaved(name: &str) -> Unsaved {
+        let answer = rfd::MessageDialog::new()
+            .set_title("Unsaved changes")
+            .set_description(format!("{name} has unsaved changes."))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                "Save".to_owned(),
+                "Discard".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .show();
+
+        match answer {
+            rfd::MessageDialogResult::Custom(choice) if choice == "Save" => Unsaved::Save,
+            rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
+            // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work
+            // is the one outcome that must never be the default.
+            _ => Unsaved::Cancel,
         }
     }
 
@@ -765,23 +844,24 @@ impl<T: TextLayout> Editor<T> {
 
     /// Lays the document out and turns it into quads.
     fn build_frame(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
+        let mut quads = self.build_tab_strip(width, scale);
+
         let runs = view::build_runs(self.document(), self.document().selection(), &self.theme);
         let styled = view::as_styled(&runs);
 
         let available = (width / scale - MARGIN * 2.0).max(1.0);
         let Ok(layout) = self.text.layout(&styled, available) else {
-            return Vec::new();
+            return quads;
         };
 
-        let mut quads = Vec::with_capacity(layout.lines.iter().map(|l| l.glyphs.len()).sum());
+        // The document starts below the strip when there is one.
+        let top = MARGIN + self.strip_height();
+        quads.reserve(layout.lines.iter().map(|l| l.glyphs.len()).sum());
         for glyph in layout.glyphs() {
             let Some(entry) = self.entry_for(glyph.key, scale) else {
                 continue;
             };
-            let (pen_x, pen_y) = (
-                (glyph.pos.x + MARGIN) * scale,
-                (glyph.pos.y + MARGIN) * scale,
-            );
+            let (pen_x, pen_y) = ((glyph.pos.x + MARGIN) * scale, (glyph.pos.y + top) * scale);
             let colour = view::colour_at(&runs, glyph.source.start(), self.theme.text);
             quads.push(QuadInstance {
                 rect: [
@@ -799,6 +879,203 @@ impl<T: TextLayout> Editor<T> {
             quads.push(caret);
         }
         quads
+    }
+
+    /// Height the tab strip occupies, which is nothing when there is nothing to show.
+    fn strip_height(&self) -> f32 {
+        if self.workspace.tabs().is_empty() {
+            0.0
+        } else {
+            tabs::STRIP_HEIGHT
+        }
+    }
+
+    /// A filled rectangle, in physical pixels.
+    ///
+    /// Samples the opaque texel at the atlas origin, so solid fills and glyphs share one pipeline.
+    fn solid(rect: [f32; 4], colour: Rgba) -> QuadInstance {
+        QuadInstance {
+            rect,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            colour: [colour.r, colour.g, colour.b, colour.a],
+        }
+    }
+
+    /// Draws the strip, and remembers where each tab landed so a click can be resolved.
+    fn build_tab_strip(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
+        self.tab_rects.clear();
+        if self.workspace.tabs().is_empty() {
+            return Vec::new();
+        }
+
+        let logical_width = width / scale;
+        let label_style = TextStyle::body(13.0);
+
+        // Measured for as many tabs as could possibly fit, not for all of them: with two hundred
+        // open, shaping every label to draw eight would be the same mistake the document renderer
+        // makes, and there is no reason to repeat it here.
+        let names: Vec<String> = self
+            .workspace
+            .tabs()
+            .iter()
+            .map(mdedit_session::Tab::display_name)
+            .collect();
+        let mut label_widths = Vec::with_capacity(names.len());
+        for name in &names {
+            let run = StyledRun {
+                text: name,
+                style: label_style,
+                source: ByteSpan::empty_at(ByteOffset::ZERO),
+            };
+            let measured = self.text.layout(&[run], f32::MAX).map_or(60.0, |layout| {
+                layout
+                    .glyphs()
+                    .map(|glyph| glyph.pos.x + glyph.advance)
+                    .fold(0.0_f32, f32::max)
+            });
+            label_widths.push(measured);
+            // One more than fits is enough to know where the edge is.
+            if label_widths
+                .iter()
+                .sum::<f32>()
+                .gt(&(logical_width + tabs::STRIP_HEIGHT))
+            {
+                break;
+            }
+        }
+
+        self.tab_rects = tabs::layout(&label_widths, logical_width);
+
+        let active = self.workspace.active();
+        let mut quads = vec![Self::solid(
+            [0.0, 0.0, width, tabs::STRIP_HEIGHT * scale],
+            self.theme.strip,
+        )];
+
+        for rect in self.tab_rects.clone() {
+            let is_active = active == Some(rect.index);
+            let background = if is_active {
+                self.theme.tab_active
+            } else {
+                self.theme.tab_inactive
+            };
+            // A one-pixel gap on the right separates neighbours without a border pass.
+            quads.push(Self::solid(
+                [
+                    rect.x * scale,
+                    0.0,
+                    (rect.width - 1.0) * scale,
+                    tabs::STRIP_HEIGHT * scale,
+                ],
+                background,
+            ));
+
+            let modified = self
+                .workspace
+                .tabs()
+                .get(rect.index)
+                .is_some_and(mdedit_session::Tab::is_modified);
+
+            // The close affordance: a dot when there is unsaved work, an x otherwise. Same target
+            // either way, so the click does not move under the pointer when a file becomes dirty.
+            let (close_x, close_width) = rect.close_region();
+            let glyph = if modified { "•" } else { "×" };
+            let colour = if modified {
+                self.theme.tab_modified
+            } else {
+                self.theme.marker
+            };
+            self.draw_label(
+                &mut quads,
+                glyph,
+                label_style,
+                close_x + close_width / 2.0 - 4.0,
+                colour,
+                scale,
+                close_width,
+            );
+
+            if let Some(name) = names.get(rect.index) {
+                self.draw_label(
+                    &mut quads,
+                    name,
+                    label_style,
+                    rect.label_x(),
+                    if is_active {
+                        self.theme.text
+                    } else {
+                        self.theme.marker
+                    },
+                    scale,
+                    rect.label_width(),
+                );
+            }
+        }
+
+        quads
+    }
+
+    /// Draws one short string into the strip, clipped to `max_width`.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_label(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        text: &str,
+        style: TextStyle,
+        x: f32,
+        colour: Rgba,
+        scale: f32,
+        max_width: f32,
+    ) {
+        let run = StyledRun {
+            text,
+            style,
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        };
+        let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
+            return;
+        };
+        // Baseline placed so the label sits centred in the strip.
+        let baseline = tabs::STRIP_HEIGHT * 0.68;
+
+        let glyphs: Vec<_> = layout.glyphs().copied().collect();
+        for glyph in glyphs {
+            if glyph.pos.x > max_width {
+                // Truncated rather than ellipsised: an ellipsis needs its own measurement pass and
+                // buys little at this size.
+                break;
+            }
+            let Some(entry) = self.entry_for(glyph.key, scale) else {
+                continue;
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    (x + glyph.pos.x) * scale + px_i(entry.left),
+                    baseline * scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [colour.r, colour.g, colour.b, colour.a],
+            });
+        }
+    }
+
+    /// Resolves a click in the tab strip.
+    fn click_strip(&mut self, x: f32, y: f32) -> bool {
+        let Some(hit) = tabs::hit_test(&self.tab_rects, x, y) else {
+            return false;
+        };
+        match hit {
+            tabs::Hit::Select(index) => {
+                if let Err(error) = self.workspace.activate(index) {
+                    eprintln!("could not open tab: {error}");
+                    return false;
+                }
+                true
+            }
+            tabs::Hit::Close(index) => self.close_tab_at(index),
+        }
     }
 
     /// Packs a glyph if it is not already in the atlas.
@@ -938,6 +1215,41 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
+                // Stored in device-independent pixels, which is the space the strip is laid out in.
+                // Truncation is fine: these are screen coordinates, orders of magnitude inside
+                // what f32 represents exactly.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "cursor positions are small screen coordinates"
+                )]
+                let point = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.cursor = point;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button,
+                ..
+            } => {
+                let (x, y) = self.cursor;
+                let changed = match button {
+                    MouseButton::Left => self.click_strip(x, y),
+                    // Middle-click closes, as every editor with tabs does.
+                    MouseButton::Middle => match tabs::hit_test(&self.tab_rects, x, y) {
+                        Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)) => {
+                            self.close_tab_at(index)
+                        }
+                        None => false,
+                    },
+                    _ => false,
+                };
+                if changed {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 // Stamped before any work, so the measurement includes our own handling rather
                 // than starting after it.
@@ -953,4 +1265,22 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
             _ => {}
         }
     }
+}
+
+/// What to do about a tab with unsaved changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "only the Windows prompt constructs Save and Discard; off Windows the app exits before opening a window"
+    )
+)]
+enum Unsaved {
+    /// Write it, then close.
+    Save,
+    /// Close without writing.
+    Discard,
+    /// Keep the tab.
+    Cancel,
 }
