@@ -28,6 +28,7 @@ use winit::window::{Window, WindowId};
 
 use crate::blocks;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
+use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::scroll::{self, Scroll};
 use crate::tabs;
@@ -37,6 +38,8 @@ use crate::view::{self, Rgba, Theme};
 const MARGIN: f32 = 24.0;
 /// Caret width, in device-independent pixels.
 const CARET_WIDTH: f32 = 2.0;
+/// Thickness of the line under text an input method is still composing.
+const UNDERLINE_WIDTH: f32 = 1.0;
 /// What a line of text is assumed to cost before it has been measured, as a multiple of its font
 /// size. Only ever applied to chunks that are off screen.
 const ESTIMATED_LINE_RATIO: f32 = 1.4;
@@ -503,6 +506,13 @@ pub struct Editor<T: TextLayout> {
     layouts: HashMap<ChunkKey, Rc<Cached>>,
     /// What the top of the viewport is resting on, so measuring a chunk does not move the page.
     anchor: Option<Anchor>,
+    /// What an input method is composing, which is deliberately not in the buffer. See [`crate::ime`].
+    composition: Composition,
+    /// Where the caret was drawn last frame, in device-independent pixels from the window's corner.
+    ///
+    /// Kept so the candidate window can be put next to it. An input method that is not told where
+    /// the caret is puts its candidate list at the window's origin, which is step 2 of the script.
+    caret_area: Option<(f32, f32, f32)>,
 }
 
 /// What the last laid-out frame measured, in device-independent pixels.
@@ -558,6 +568,8 @@ impl<T: TextLayout> Editor<T> {
             heights: HashMap::new(),
             layouts: HashMap::new(),
             anchor: None,
+            composition: Composition::new(),
+            caret_area: None,
         }
     }
 
@@ -934,6 +946,33 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Applies one input-method event. Returns whether a redraw is needed.
+    ///
+    /// The composition itself lives in [`crate::ime`], which owns the rule that matters: the
+    /// pre-edit never touches the buffer, so a commit is one edit and a cancel is none.
+    fn handle_ime(&mut self, ime: winit::event::Ime) -> bool {
+        let action = match ime {
+            winit::event::Ime::Preedit(text, cursor) => self.composition.preedit(text, cursor),
+            // One edit for the whole composition, however many keystrokes built it.
+            winit::event::Ime::Commit(text) => self.composition.commit(text),
+            // Focus moved away, or the composition was abandoned. There is nothing to undo: the
+            // pre-edit was never in the buffer, and anything the input method meant to keep it has
+            // already sent as a commit.
+            winit::event::Ime::Disabled => self.composition.cancel(),
+            winit::event::Ime::Enabled => Action::Nothing,
+        };
+
+        match action {
+            Action::Nothing => false,
+            Action::Redraw => true,
+            Action::Insert(text) => {
+                let inserted = self.insert(&text);
+                self.follow_caret = true;
+                inserted
+            }
+        }
+    }
+
     fn insert(&mut self, text: &str) -> bool {
         let caret = self.document().selection().head();
         if self.document_mut().insert(caret, text).is_err() {
@@ -1060,6 +1099,9 @@ impl<T: TextLayout> Editor<T> {
                 ..caret
             });
 
+        self.caret_area =
+            caret.map(|caret| (caret.x + MARGIN, caret.top + top - offset, caret.height));
+
         if let Some(caret) = caret {
             quads.push(QuadInstance {
                 rect: [
@@ -1077,8 +1119,84 @@ impl<T: TextLayout> Editor<T> {
                     self.theme.caret.a,
                 ],
             });
+
+            if self.composition.is_active() {
+                self.draw_preedit(&mut quads, caret, top - offset, scale);
+            }
         }
         quads
+    }
+
+    /// Draws what the input method is composing, at the caret.
+    ///
+    /// On its own background rather than blended with the text underneath: the pre-edit is not in
+    /// the buffer, so the line does not reflow around it, and drawing it over the following words
+    /// would leave two strings on top of each other. Covering them reads as the overlay it is.
+    ///
+    /// Underlined, because that is what every platform's convention says uncommitted text looks
+    /// like, and it is the difference between "this is being composed" and "this has been typed".
+    fn draw_preedit(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        caret: CaretRect,
+        shift: f32,
+        scale: f32,
+    ) {
+        let text = self.composition.text().to_owned();
+        let style = TextStyle::body(self.theme.body_size);
+        let run = [StyledRun {
+            text: &text,
+            style,
+            source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(text.len())),
+        }];
+        let Ok(layout) = self.text.layout(&run, f32::MAX) else {
+            return;
+        };
+
+        let width: f32 = layout
+            .glyphs()
+            .map(|glyph| glyph.advance)
+            .sum::<f32>()
+            .max(1.0);
+        let (x, y) = (caret.x + MARGIN, caret.top + shift);
+
+        quads.push(Self::solid(
+            [x * scale, y * scale, width * scale, caret.height * scale],
+            self.theme.background,
+        ));
+
+        for glyph in layout.glyphs() {
+            let Some(entry) = self.entry_for(glyph.key, scale) else {
+                continue;
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    (glyph.pos.x + x) * scale + px_i(entry.left),
+                    // The layout's own baseline is at the top of its box; the caret's box is where
+                    // this has to sit, so the glyphs hang from the caret's baseline instead.
+                    (glyph.pos.y + y) * scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [
+                    self.theme.text.r,
+                    self.theme.text.g,
+                    self.theme.text.b,
+                    self.theme.text.a,
+                ],
+            });
+        }
+
+        quads.push(Self::solid(
+            [
+                x * scale,
+                (y + caret.height - UNDERLINE_WIDTH) * scale,
+                width * scale,
+                UNDERLINE_WIDTH * scale,
+            ],
+            self.theme.marker,
+        ));
     }
 
     /// Height the tab strip occupies, which is nothing when there is nothing to show.
@@ -1606,6 +1724,15 @@ impl<T: TextLayout> Editor<T> {
 
         let quads = self.build_frame(px(size.width), px(size.height), scale);
 
+        // Told every frame rather than once: the caret moves, and an input method that is not told
+        // where it is puts its candidate list at the window's origin.
+        if let Some((x, y, height)) = self.caret_area {
+            window.set_ime_cursor_area(
+                winit::dpi::LogicalPosition::new(x, y),
+                winit::dpi::LogicalSize::new(CARET_WIDTH, height),
+            );
+        }
+
         // Sampled before the GPU is touched. Under `Fifo`, `present` waits for the next vblank, so
         // once a frame is fast the number below is a refresh interval however little work was done —
         // it says nothing about whether the work got cheaper. This one does.
@@ -1666,6 +1793,9 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
             event_loop.exit();
             return;
         };
+        // Without this winit never delivers `WindowEvent::Ime` at all, and a Japanese, Chinese or
+        // Korean keyboard types nothing into the editor.
+        window.set_ime_allowed(true);
         let window = Arc::new(window);
         match Renderer::new(&window) {
             Ok(renderer) => {
@@ -1751,6 +1881,13 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                     _ => false,
                 };
                 if changed {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::Ime(ime) => {
+                if self.handle_ime(ime) {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }

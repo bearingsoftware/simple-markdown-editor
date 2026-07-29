@@ -14,6 +14,7 @@
 pub mod blocks;
 pub mod editor;
 pub mod gpu;
+pub mod ime;
 pub mod latency;
 pub mod scroll;
 pub mod tabs;
