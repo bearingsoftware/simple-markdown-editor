@@ -70,6 +70,17 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
+- **IME composition is implemented but unverified at a real keyboard.** The pre-edit is drawn at the
+  caret, the candidate window is told where the caret is, a commit is one edit and a cancel is none
+  — and all of that is unit-tested. What is *not* confirmed is what it looks like and where the
+  candidate list actually lands, because composition cannot be driven programmatically: with
+  Microsoft IME (Japanese) installed and the layout active, injected input leaves the IME closed
+  (`IMC_GETOPENSTATUS` stays 0) and no `WindowEvent::Ime` ever arrives. MDEDIT-6 carries the
+  seven-step script for a human.
+- **The pre-edit does not reflow the line it is on.** It is drawn over the following text on its own
+  background rather than pushing it along, because it is deliberately not in the buffer and so
+  cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
+  visibly an overlay in the middle of one.
 - **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar. The mouse
   drives the strip and the wheel; everything else is keyboard, and there is no way to put the caret
   somewhere by clicking.
