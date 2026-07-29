@@ -64,7 +64,21 @@ pub enum GpuError {
 impl Renderer {
     fn new(window: &Arc<Window>) -> Result<Self, GpuError> {
         let size = window.inner_size();
-        let instance = wgpu::Instance::default();
+
+        // `Instance::default()` enables every backend wgpu was built with, and each one initialises
+        // its own driver stack — Vulkan and OpenGL get loaded and paid for even though nothing here
+        // will ever use them. Measured on an empty window with none of this project's code in it:
+        // all backends 346 MB, DX12 alone 124 MB. See MDEDIT-19 and `spikes/gpu-baseline`.
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = if cfg!(windows) {
+            wgpu::Backends::DX12
+        } else {
+            // Nothing runs off Windows yet, but pinning DX12 there would mean no adapter at all
+            // rather than an honest failure.
+            wgpu::Backends::PRIMARY
+        };
+        let instance = wgpu::Instance::new(descriptor);
+
         let surface = instance
             .create_surface(Arc::clone(window))
             .map_err(|e| GpuError::NoSurface(e.to_string()))?;
