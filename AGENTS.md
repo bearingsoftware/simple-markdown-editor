@@ -81,9 +81,13 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
-- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar. The mouse
-  drives the strip and the wheel; everything else is keyboard, and there is no way to put the caret
-  somewhere by clicking.
+- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar.
+- **There is no clipboard.** Text can be selected — by dragging, by shift-clicking, or with shift
+  and the arrow keys — and then nothing can be done with it: Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+A are
+  not handled. Selecting is also the only thing selection does; typing over a selection inserts
+  rather than replacing it.
+- **No double-click to select a word**, and no triple-click for a line. Every selection is a drag or
+  a shift.
 - **Startup costs ~300 ms before anything is drawn**, and none of it is the document: a 5-byte file
   reaches first paint no faster than a 245 KB one. It is winit's window plus wgpu's device and
   pipeline bring-up. That is what stands between the editor and the ≤50 ms file-open target, and it
