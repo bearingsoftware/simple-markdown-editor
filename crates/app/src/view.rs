@@ -156,7 +156,26 @@ impl DecorState {
 /// makes the rendered text read as prose rather than as source.
 #[must_use]
 pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<ViewRun> {
-    let text = doc.to_string();
+    let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(doc.len_bytes()));
+    build_runs_in(doc, selection, theme, whole, &doc.to_string())
+}
+
+/// The runs to draw for the part of `doc` covered by `within`.
+///
+/// `text` is the whole buffer, not the slice: segment spans are absolute, and so are the spans the
+/// runs carry, so a caller that has already materialized the buffer once should not do it again
+/// per chunk.
+///
+/// Inline styling starts clean at `within`, which is sound because chunk boundaries fall on line
+/// boundaries and Markdown pairs inline delimiters within a line.
+#[must_use]
+pub fn build_runs_in(
+    doc: &Document,
+    selection: Selection,
+    theme: &Theme,
+    within: ByteSpan,
+    text: &str,
+) -> Vec<ViewRun> {
     let mut builder = Builder {
         runs: Vec::new(),
         theme,
@@ -164,9 +183,24 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
         state: DecorState::default(),
     };
 
-    for segment in doc.segments() {
-        let span = segment.span();
-        let piece = span.slice(&text);
+    // Segments are sorted and there are as many of them as the whole document has, so a chunk finds
+    // its first one rather than walking past every earlier segment. Without this the cost of a frame
+    // is the number of visible chunks times the length of the document.
+    let first = doc
+        .segments()
+        .partition_point(|segment| segment.span().end() <= within.start());
+
+    for segment in &doc.segments()[first..] {
+        let Some(span) = clip(segment.span(), within) else {
+            // In order, so the first one past the end means there is nothing left.
+            if segment.span().start() >= within.end() {
+                break;
+            }
+            continue;
+        };
+        let piece = span.slice(text);
+        // Asked of the real selection, not a chunk-local one: whether a marker is revealed is a
+        // property of the document, and a caret just outside this chunk can still reveal one in it.
         let revealed = doc.is_revealed(segment, selection);
 
         match segment.kind() {
@@ -183,6 +217,17 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
     }
 
     builder.runs
+}
+
+/// The part of `span` inside `within`, or `None` if they do not overlap.
+///
+/// Needed because segments do not respect chunk boundaries: `mdedit_markers` coalesces adjacent
+/// content, so one segment routinely spans a heading, the blank line after it, and the paragraph
+/// below — three chunks.
+fn clip(span: ByteSpan, within: ByteSpan) -> Option<ByteSpan> {
+    let start = span.start().max(within.start());
+    let end = span.end().min(within.end());
+    (start < end).then(|| ByteSpan::new(start, end))
 }
 
 /// Whether a piece is syntax or content, which decides its colour and whether it is monospaced.

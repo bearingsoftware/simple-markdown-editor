@@ -47,7 +47,8 @@ crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only;
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
 crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
-                        #   step, and the keystroke latency harness. Binary: `mdedit`.
+                        #   step, per-block layout and its cache, and the keystroke latency
+                        #   harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
 docs/research/          # 7 briefs; read README.md first
@@ -72,10 +73,19 @@ Known gaps, so nobody assumes they are done:
 - **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar. The mouse
   drives the strip and the wheel; everything else is keyboard, and there is no way to put the caret
   somewhere by clicking.
-- **No virtualization.** The whole document is laid out every frame, so
-  `mdedit big.md` will not meet the file-open target until blocks are rendered on demand. Scrolling
-  (MDEDIT-16) only culls the *drawing* to the viewport — the layout cost is unchanged, which is
-  MDEDIT-17's job.
+- **Virtualization is by block, and the parse is not virtualized.** MDEDIT-17 lays out only the
+  blocks the viewport touches and caches them by content, which took a 245 KB document from 773 ms
+  a keystroke to 8 ms. What is left is a **full re-parse on every keystroke** — about 6 ms of that
+  8 at 245 KB — which is MDEDIT-18. Until then, typing into a large file misses the 3 ms budget it
+  meets at 28 KB.
+- **A chunk is a whole top-level block.** A document that is one enormous list or one enormous
+  paragraph is one chunk, and no cheaper than before — only its *drawing* is culled, line by line.
+  Splitting inside a block needs the layout engine to lay out part of one, which none of them does.
+- **Off-screen heights are estimated**, at a line count times a nominal line height, so a long
+  wrapped paragraph nobody has scrolled to yet is under-estimated. The estimate is corrected the
+  moment a chunk is measured, and the viewport is anchored so the correction does not move what is
+  on screen — but the document's total height, and therefore how far it can scroll, is approximate
+  until it has all been looked at. This is what a scrollbar would make visible, and there is none.
 - **Scrolling is vertical only, and instant.** No horizontal scroll (long lines wrap), no smooth or
   momentum scrolling, and no scrollbar to show where in the document the view is.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
@@ -196,6 +206,12 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 - **A tab is a lightweight handle until it becomes visible.** Session restore persists handles, not
   content. Copy Obsidian's `DeferredView` model — it is the only implementation in this category.
 - Make the **renderer** incremental, not the parser. Diff the block list, patch changed blocks.
+- **The layout cache is keyed by content, never by position.** `BlockId` is an index into one
+  analysis: insert a character in the first paragraph and every block after it is renumbered, so a
+  cache keyed on it would serve the wrong layout for the whole document below an edit. The key is a
+  hash of the block's bytes plus its kind and the wrapping width — the same bytes lay out the same
+  way wherever they are. A block holding the caret is laid out fresh and never cached, because what
+  it draws depends on where in it the caret sits, and that is not in the key.
 - Tables and code fences are **model-backed block widgets**, not decorations. Pure decoration over a
   linear character stream cannot do 2D layout; Obsidian's forums are a five-year record of that
   failure.
@@ -257,6 +273,11 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
   so the old ≤50 MB total was unreachable. See `docs/research/06-performance-targets.md`.
 - **Measure p99 and measure on battery.** Every published editor benchmark is a mean on AC power,
   which is the least informative condition — Emacs goes 5.3 ms → 50.5 ms on power-save.
+- **Two keystroke numbers, and the second one has a floor.** The harness reports *keystroke → quads
+  ready*, which is what this process spends, and *keystroke → present*, which adds the wait for
+  vblank. Under `PresentMode::Fifo` the second cannot go below a refresh interval however fast the
+  frame was, so once a frame is cheap it stops saying anything about our own work. Compare builds
+  on the first; use the second to confirm frames are still being presented.
 - A change that regresses a target needs a number in the PR body, not an assurance.
 
 ## High-signal findings to watch for in review

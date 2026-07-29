@@ -627,16 +627,30 @@ fn assemble(
     source_map: &SourceMap,
     text: &mut DirectWriteText,
 ) -> Layout {
-    // DirectWrite reports runs in visual order but says which baseline each sits on, so grouping by
-    // baseline recovers the lines without assuming runs arrive line by line.
-    let mut lines: Vec<(f32, Vec<PositionedGlyph>)> = Vec::new();
+    // Lines come from DirectWrite's own metrics, not from the runs it handed back. A blank line
+    // produces no glyphs and therefore no run, so recovering lines from the runs dropped it
+    // entirely: the vertical space it occupies went missing, and every line after it took the
+    // height of the wrong entry in this list.
+    let mut lines: Vec<LayoutLine> = Vec::with_capacity(line_metrics.len());
+    let mut starts: Vec<u32> = Vec::with_capacity(line_metrics.len());
+    let mut top = 0.0f32;
+    let mut consumed = 0u32;
+    for metrics in line_metrics {
+        starts.push(consumed);
+        consumed = consumed.saturating_add(metrics.length);
+        lines.push(LayoutLine {
+            baseline: top + metrics.baseline,
+            height: metrics.height,
+            glyphs: Vec::new(),
+        });
+        top += metrics.height;
+    }
 
     for run in runs {
         let font = text.font_id(&run.face);
         let size = FontSize::new(run.em_size);
 
         let mut pen_x = run.baseline_x;
-        let mut glyphs = Vec::with_capacity(run.glyphs.len());
         for (index, (glyph_id, advance)) in run.glyphs.iter().enumerate() {
             let unit = run.text_positions.get(index).copied().unwrap_or(0);
             let start = source_map.byte_at(unit);
@@ -651,7 +665,7 @@ fn assemble(
                 pen_x -= advance;
             }
 
-            glyphs.push(PositionedGlyph {
+            let glyph = PositionedGlyph {
                 key: GlyphKey {
                     font,
                     glyph: GlyphId::new(*glyph_id),
@@ -660,43 +674,36 @@ fn assemble(
                 pos: LayoutPos::new(pen_x, run.baseline_y),
                 advance: *advance,
                 source: ByteSpan::new(start, end),
-            });
+            };
 
             if !run.right_to_left {
                 pen_x += advance;
             }
-        }
 
-        match lines
-            .iter_mut()
-            .find(|(baseline, _)| (*baseline - run.baseline_y).abs() < f32::EPSILON)
-        {
-            Some((_, existing)) => existing.extend(glyphs),
-            None => lines.push((run.baseline_y, glyphs)),
+            if let Some(line) = lines.get_mut(line_of(&starts, unit)) {
+                line.glyphs.push(glyph);
+            }
         }
     }
 
-    lines.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-    Layout {
-        lines: lines
-            .into_iter()
-            .enumerate()
-            .map(|(index, (baseline, mut glyphs))| {
-                glyphs.sort_by(|a, b| {
-                    a.pos
-                        .x
-                        .partial_cmp(&b.pos.x)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
-                LayoutLine {
-                    baseline,
-                    height: line_metrics
-                        .get(index)
-                        .map_or(0.0, |metrics| metrics.height),
-                    glyphs,
-                }
-            })
-            .collect(),
+    for line in &mut lines {
+        // Runs arrive in visual order, and a bidi line interleaves them, so the glyphs on one line
+        // are only in reading order once sorted.
+        line.glyphs.sort_by(|a, b| {
+            a.pos
+                .x
+                .partial_cmp(&b.pos.x)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
+
+    Layout { lines }
+}
+
+/// The line a UTF-16 unit sits on: the last line starting at or before it.
+fn line_of(starts: &[u32], unit: usize) -> usize {
+    let unit = u32::try_from(unit).unwrap_or(u32::MAX);
+    starts
+        .partition_point(|start| *start <= unit)
+        .saturating_sub(1)
 }

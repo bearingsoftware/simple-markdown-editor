@@ -243,3 +243,58 @@ fn empty_input_lays_out_to_nothing() {
             .is_empty()
     );
 }
+
+/// A blank line has no glyphs, so it used to produce no line at all — and the vertical space it
+/// occupies went missing along with it. Virtualization measures blocks by summing line heights, so
+/// that silently shortened every document containing a paragraph break.
+#[test]
+fn a_blank_line_still_occupies_a_line() {
+    let mut text = engine();
+    let style = TextStyle::body(16.0);
+
+    let one = text.layout(&[run("a", style)], 1000.0).unwrap();
+    let three = text.layout(&[run("a\n\nb", style)], 1000.0).unwrap();
+
+    assert_eq!(one.lines.len(), 1);
+    assert_eq!(three.lines.len(), 3, "text, blank, text");
+    assert!(
+        three.lines[1].glyphs.is_empty(),
+        "the middle line is the blank one"
+    );
+    assert!(three.lines[1].height > 0.0, "and it still takes up space");
+
+    let single = one.height();
+    assert!(
+        (three.height() - single * 3.0).abs() < single * 0.1,
+        "three lines should be about three times one: {} vs {}",
+        three.height(),
+        single
+    );
+}
+
+/// Every line's height must be its own. They used to be indexed by position among the lines that
+/// had glyphs, so one blank line shifted every height after it onto the wrong line.
+#[test]
+fn each_line_carries_its_own_height() {
+    let mut text = engine();
+    let layout = text
+        .layout(
+            &[
+                run("small\n", TextStyle::body(12.0)),
+                run("\n", TextStyle::body(12.0)),
+                run("LARGE", TextStyle::body(48.0)),
+            ],
+            1000.0,
+        )
+        .unwrap();
+
+    assert_eq!(layout.lines.len(), 3);
+    assert!(
+        layout.lines[2].height > layout.lines[0].height * 2.0,
+        "the 48 px line should dwarf the 12 px one: {:?}",
+        layout.lines.iter().map(|l| l.height).collect::<Vec<_>>()
+    );
+    // Baselines increase down the page, and the blank line between them is not skipped.
+    assert!(layout.lines[0].baseline < layout.lines[1].baseline);
+    assert!(layout.lines[1].baseline < layout.lines[2].baseline);
+}

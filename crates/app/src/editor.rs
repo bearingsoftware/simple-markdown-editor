@@ -4,11 +4,17 @@
 //! compiles on Linux CI and the portable backend needs no changes here when it arrives. Only
 //! `main.rs` picks a backend.
 
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
 use mdedit_document::{Document, Selection};
+use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
@@ -18,6 +24,7 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::blocks;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::latency::Latency;
 use crate::scroll::{self, Scroll};
@@ -28,6 +35,12 @@ use crate::view::{self, Rgba, Theme};
 const MARGIN: f32 = 24.0;
 /// Caret width, in device-independent pixels.
 const CARET_WIDTH: f32 = 2.0;
+/// What a line of text is assumed to cost before it has been measured, as a multiple of its font
+/// size. Only ever applied to chunks that are off screen.
+const ESTIMATED_LINE_RATIO: f32 = 1.4;
+/// How many laid-out chunks to keep. At a few hundred glyphs each this is tens of megabytes at the
+/// cap, and it is only reached by scrolling through a very large document.
+const MAX_CACHED_LAYOUTS: usize = 512;
 
 /// GPU resources for one window.
 struct Renderer {
@@ -457,6 +470,8 @@ pub struct Editor<T: TextLayout> {
     latency: Latency,
     /// When the keystroke currently in flight was received, if any. Cleared once presented.
     pending_keystroke: Option<Instant>,
+    /// Keystroke to quads-ready, which is the part of a frame this process spends CPU on.
+    build: Latency,
     /// Set if the GPU could not be brought up, for `main` to report on exit.
     gpu_error: Option<GpuError>,
     /// Held so Ctrl+S can be told apart from a plain `s`.
@@ -474,6 +489,13 @@ pub struct Editor<T: TextLayout> {
     /// Not every frame: scrolling with the wheel would snap straight back to the caret if the
     /// document followed it unconditionally.
     follow_caret: bool,
+    /// What each chunk measured, by content. Kept for the whole session: it is one float per
+    /// distinct chunk, and it is what stops the document's length jumping about as it is scrolled.
+    heights: HashMap<ChunkKey, f32>,
+    /// Laid-out chunks, by content. Capped — see [`MAX_CACHED_LAYOUTS`].
+    layouts: HashMap<ChunkKey, Rc<Cached>>,
+    /// What the top of the viewport is resting on, so measuring a chunk does not move the page.
+    anchor: Option<Anchor>,
 }
 
 /// What the last laid-out frame measured, in device-independent pixels.
@@ -517,6 +539,7 @@ impl<T: TextLayout> Editor<T> {
             renderer: None,
             latency: Latency::new(),
             pending_keystroke: None,
+            build: Latency::new(),
             gpu_error: None,
             modifiers: ModifiersState::empty(),
             tab_rects: Vec::new(),
@@ -524,6 +547,9 @@ impl<T: TextLayout> Editor<T> {
             scroll: Scroll::new(),
             viewport: Viewport::default(),
             follow_caret: false,
+            heights: HashMap::new(),
+            layouts: HashMap::new(),
+            anchor: None,
         }
     }
 
@@ -531,6 +557,12 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn latency(&self) -> &Latency {
         &self.latency
+    }
+
+    /// The CPU half of those samples: keystroke to quads ready, before the GPU is involved.
+    #[must_use]
+    pub fn build_latency(&self) -> &Latency {
+        &self.build
     }
 
     /// Why the editor could not start, if it could not.
@@ -579,6 +611,12 @@ impl<T: TextLayout> Editor<T> {
         self.workspace
             .active_open()
             .map_or(&self.scratch, |open| &open.document)
+    }
+
+    /// The text engine, for a test that wants to know what was asked of it.
+    #[must_use]
+    pub fn text_backend(&self) -> &T {
+        &self.text
     }
 
     /// The buffer being edited, to change.
@@ -954,67 +992,56 @@ impl<T: TextLayout> Editor<T> {
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = self.build_tab_strip(width, scale);
 
-        let runs = view::build_runs(self.document(), self.document().selection(), &self.theme);
-        let styled = view::as_styled(&runs);
-
-        let available = (width / scale - MARGIN * 2.0).max(1.0);
-        let Ok(layout) = self.text.layout(&styled, available) else {
-            return quads;
-        };
-
         // The document starts below the strip when there is one.
         let top = MARGIN + self.strip_height();
         let visible = (height / scale - top).max(1.0);
-        // A bottom margin to match the top one, so the last line is not flush against the edge.
-        let content = layout.height() + MARGIN;
-        self.viewport = Viewport {
-            content,
-            height: visible,
-            line: layout
-                .lines
-                .first()
-                .map_or(self.theme.body_size, |line| line.height.max(1.0)),
-        };
+        let mut frame = self.measure((width / scale - MARGIN * 2.0).max(1.0));
 
-        let caret = self.caret_rect(&layout);
-        if let (true, Some(caret)) = (self.follow_caret, caret) {
-            self.scroll
-                .reveal(caret.top, caret.top + caret.height, content, visible);
+        self.hold_anchor(&frame, visible);
+        if self.follow_caret {
+            if let Some((index, caret)) = self.caret_position(&frame) {
+                let caret_top = frame.tops[index] + caret.top;
+                self.scroll
+                    .reveal(caret_top, caret_top + caret.height, frame.content, visible);
+            }
         }
         self.follow_caret = false;
         // Editing and resizing both change what there is to scroll through, so the offset from the
         // last frame may now be past the end.
-        self.scroll.set(self.scroll.offset(), content, visible);
+        self.scroll
+            .set(self.scroll.offset(), frame.content, visible);
         let offset = self.scroll.offset();
 
-        quads.reserve(layout.lines.iter().map(|l| l.glyphs.len()).sum());
-        for line in &layout.lines {
-            // Nothing off the top or bottom edge can be seen. The whole document is still laid out
-            // — this is not virtualization, only a check against filling the instance buffer with
-            // quads the rasterizer would discard anyway.
-            let line_top = line.baseline - line.height;
-            if line_top - offset > visible || line.baseline - offset < -line.height {
-                continue;
-            }
-            for glyph in &line.glyphs {
-                let Some(entry) = self.entry_for(glyph.key, scale) else {
-                    continue;
-                };
-                let pen_x = (glyph.pos.x + MARGIN) * scale;
-                let pen_y = (glyph.pos.y + top - offset) * scale;
-                let colour = view::colour_at(&runs, glyph.source.start(), self.theme.text);
-                quads.push(QuadInstance {
-                    rect: [
-                        pen_x + px_i(entry.left),
-                        pen_y + px_i(entry.top),
-                        px(entry.width),
-                        px(entry.height),
-                    ],
-                    uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
-                    colour: [colour.r, colour.g, colour.b, colour.a],
-                });
-            }
-        }
+        // Measure what is about to be drawn *before* deciding where it goes. Estimates are fine for
+        // chunks nobody can see; a chunk on screen placed by an estimate would be drawn in the wrong
+        // place and only corrected on the next frame, which there may not be one of.
+        let warmed = blocks::visible(&frame.tops, &frame.heights, offset, visible);
+        self.warm(&mut frame, warmed);
+        self.scroll.set(offset, frame.content, visible);
+        let offset = self.scroll.offset();
+
+        let range = blocks::visible(&frame.tops, &frame.heights, offset, visible);
+        let at = Placement {
+            shift: top - offset,
+            scale,
+            band: (top, top + visible),
+        };
+        let line = self.draw_chunks(&mut quads, &frame, range.clone(), at);
+
+        self.viewport = Viewport {
+            content: frame.content,
+            height: visible,
+            line,
+        };
+        self.take_anchor(&frame, offset);
+
+        let caret = self
+            .caret_position(&frame)
+            .filter(|(index, _)| range.contains(index))
+            .map(|(index, caret)| CaretRect {
+                top: frame.tops[index] + caret.top,
+                ..caret
+            });
 
         if let Some(caret) = caret {
             quads.push(QuadInstance {
@@ -1243,43 +1270,305 @@ impl<T: TextLayout> Editor<T> {
         self.atlas.insert(key, &image).ok()
     }
 
-    /// Where the caret sits in the laid-out document, before the scroll offset is applied.
+    /// Works out where every chunk sits, laying out only the one holding the caret.
     ///
-    /// Document space rather than screen space because both callers need it there: the quad is
-    /// placed by subtracting the offset, and `reveal` decides what the offset should be.
-    fn caret_rect(&self, layout: &Layout) -> Option<CaretRect> {
-        let caret = self.document().selection().head();
-        let mut best: Option<(&mdedit_text::PositionedGlyph, f32)> = None;
-        let mut last: Option<&mdedit_text::PositionedGlyph> = None;
+    /// Everything else is answered from what it measured last time, or estimated if it has never
+    /// been measured. That is the whole of virtualization: the cost of a frame follows the number
+    /// of chunks, not the number of glyphs, until something has to be drawn.
+    fn measure(&mut self, width: f32) -> Frame {
+        let text = self.document().to_string();
+        let selection = self.document().selection();
+        let chunks = blocks::split(self.document(), &text);
+        let last = chunks.len().saturating_sub(1);
+        let keys: Vec<ChunkKey> = chunks
+            .iter()
+            .enumerate()
+            .map(|(index, chunk)| {
+                ChunkKey::of(chunk, chunk.span.slice(&text), index == last, width)
+            })
+            .collect();
 
-        for line in &layout.lines {
-            for glyph in &line.glyphs {
-                last = Some(glyph);
-                if glyph.source.start() >= caret {
-                    // The first glyph at or after the caret is where it sits.
-                    best = Some((glyph, glyph.pos.x));
-                    break;
-                }
+        let mut frame = Frame {
+            chunks,
+            keys,
+            fresh: Vec::new(),
+            heights: Vec::new(),
+            tops: Vec::new(),
+            content: 0.0,
+            text,
+            selection,
+            width,
+        };
+
+        // The chunk the caret is in is laid out every frame: concealment depends on where in it the
+        // caret sits, so two frames over the same bytes can want different glyphs. It happens before
+        // the height table because its height feeds that table, and because following the caret
+        // needs its position whether or not it is on screen.
+        for index in 0..frame.chunks.len() {
+            if !touches(frame.chunks[index].span, selection.span()) {
+                continue;
             }
-            if best.is_some() {
-                break;
+            if let Some(cached) = self.lay_out(index, &frame) {
+                frame.fresh.push((index, cached));
             }
         }
 
-        // Past the last glyph — a caret at the end of the document — sits after it.
-        let (glyph, x) = best.or_else(|| last.map(|g| (g, g.pos.x + g.advance)))?;
-        let height = layout
-            .lines
-            .iter()
-            .find(|line| line.glyphs.iter().any(|g| std::ptr::eq(g, glyph)))
-            .map_or(self.theme.body_size * 1.4, |line| line.height.max(1.0));
+        frame.heights = (0..frame.chunks.len())
+            .map(|index| {
+                frame
+                    .fresh_at(index)
+                    .map(|cached| cached.height)
+                    .or_else(|| self.heights.get(&frame.keys[index]).copied())
+                    .unwrap_or_else(|| self.estimate(&frame, index))
+            })
+            .collect();
+        frame.tops = blocks::stack(&frame.heights);
+        // A bottom margin to match the top one, so the last line is not flush against the edge.
+        frame.content = frame.tops.last().copied().unwrap_or(0.0)
+            + frame.heights.last().copied().unwrap_or(0.0)
+            + MARGIN;
+        frame
+    }
 
-        Some(CaretRect {
-            x,
-            // The glyph's `y` is its baseline; the caret spans the line it sits on.
-            top: glyph.pos.y - height * 0.8,
-            height,
-        })
+    /// Lays out the chunks in `range` and puts their real heights into the table.
+    ///
+    /// The stacking is redone afterwards, so what gets drawn is placed by measurement rather than by
+    /// the estimate that found it.
+    fn warm(&mut self, frame: &mut Frame, range: Range<usize>) {
+        let mut measured = false;
+        for index in range {
+            if frame.fresh_at(index).is_some() || self.heights.contains_key(&frame.keys[index]) {
+                continue;
+            }
+            if self.lay_out(index, frame).is_some() {
+                measured = true;
+            }
+        }
+        if !measured {
+            return;
+        }
+
+        for (index, height) in frame.heights.iter_mut().enumerate() {
+            if let Some(measured) = self.heights.get(&frame.keys[index]) {
+                *height = *measured;
+            }
+        }
+        frame.tops = blocks::stack(&frame.heights);
+        frame.content = frame.tops.last().copied().unwrap_or(0.0)
+            + frame.heights.last().copied().unwrap_or(0.0)
+            + MARGIN;
+    }
+
+    /// Turns the chunks in `range` into quads, laying out any that have not been laid out yet.
+    ///
+    /// Returns a line height for the page keys to step by — measured, not assumed, because a
+    /// document that opens on a heading has a different line height from one that opens on prose.
+    fn draw_chunks(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        frame: &Frame,
+        range: Range<usize>,
+        at: Placement,
+    ) -> f32 {
+        let Placement {
+            shift,
+            scale,
+            band: (band_top, band_bottom),
+        } = at;
+        let mut line_height = self.theme.body_size;
+
+        for index in range {
+            let Some(cached) = self.lay_out(index, frame) else {
+                continue;
+            };
+            let chunk = frame.chunks[index];
+            if let Some(first) = cached.layout.lines.first() {
+                line_height = first.height.max(1.0);
+            }
+
+            // Runs are rebuilt rather than stored with the layout: they are cheap for one chunk, and
+            // keeping them would mean holding a `String` per run for every chunk ever measured.
+            let runs = view::build_runs_in(
+                self.document(),
+                frame.selection,
+                &self.theme,
+                chunk.span,
+                &frame.text,
+            );
+            let chunk_top = frame.tops[index] + shift;
+            let drawn = cached.drawn_lines();
+            quads.reserve(
+                cached.layout.lines[..drawn]
+                    .iter()
+                    .map(|line| line.glyphs.len())
+                    .sum(),
+            );
+
+            for line in &cached.layout.lines[..drawn] {
+                let baseline = line.baseline + chunk_top;
+                if baseline - line.height > band_bottom || baseline < band_top - line.height {
+                    continue;
+                }
+                for glyph in &line.glyphs {
+                    let Some(entry) = self.entry_for(glyph.key, scale) else {
+                        continue;
+                    };
+                    let colour =
+                        view::colour_at(&runs, cached.rebase(glyph, chunk.span), self.theme.text);
+                    quads.push(QuadInstance {
+                        rect: [
+                            (glyph.pos.x + MARGIN) * scale + px_i(entry.left),
+                            (glyph.pos.y + chunk_top) * scale + px_i(entry.top),
+                            px(entry.width),
+                            px(entry.height),
+                        ],
+                        uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                        colour: [colour.r, colour.g, colour.b, colour.a],
+                    });
+                }
+            }
+        }
+        line_height
+    }
+
+    /// Lays a chunk out, from the cache when it is there and from the text engine when it is not.
+    ///
+    /// A chunk holding the caret is laid out fresh and not stored: what it draws depends on where in
+    /// it the caret sits, which is not in the key, so caching it would serve the wrong glyphs to the
+    /// next keystroke.
+    fn lay_out(&mut self, index: usize, frame: &Frame) -> Option<Rc<Cached>> {
+        if let Some(cached) = frame.fresh_at(index) {
+            return Some(cached);
+        }
+        let chunk = frame.chunks[index];
+        let key = frame.keys[index];
+        let revealed = touches(chunk.span, frame.selection.span());
+        if !revealed {
+            if let Some(cached) = self.layouts.get(&key) {
+                return Some(Rc::clone(cached));
+            }
+        }
+
+        let body = chunk.span.slice(&frame.text);
+        let runs = view::build_runs_in(
+            self.document(),
+            frame.selection,
+            &self.theme,
+            chunk.span,
+            &frame.text,
+        );
+        let styled = view::as_styled(&runs);
+        let layout = self.text.layout(&styled, frame.width).ok()?;
+
+        let cached = Rc::new(Cached::new(layout, &chunk, body, key.last));
+        if !revealed {
+            // Layouts are the memory-hungry half — a glyph apiece — so they are capped and the
+            // whole lot dropped when the cap is hit. Heights are a float each and worth keeping:
+            // they are what stops the document's length jumping around as it is scrolled.
+            if self.layouts.len() >= MAX_CACHED_LAYOUTS {
+                self.layouts.clear();
+            }
+            self.layouts.insert(key, Rc::clone(&cached));
+            self.heights.insert(key, cached.height);
+        }
+        Some(cached)
+    }
+
+    /// What a chunk's height is before it has been measured.
+    ///
+    /// Counts the lines it must occupy and multiplies by what a line of its kind costs. Wrapping
+    /// makes this an under-estimate for a long paragraph, which is why it is only ever used for
+    /// chunks that are off screen: an estimate is never what anybody looks at.
+    fn estimate(&self, frame: &Frame, index: usize) -> f32 {
+        let chunk = frame.chunks[index];
+        let body = chunk.span.slice(&frame.text);
+        let is_last = index + 1 == frame.chunks.len();
+        let size = match chunk.kind {
+            Some(BlockKind::Heading(level)) => self.theme.heading_size(level),
+            _ => self.theme.body_size,
+        };
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a line count large enough to lose precision is a document nobody has"
+        )]
+        let lines = blocks::line_count(body, is_last) as f32;
+        lines * size * ESTIMATED_LINE_RATIO
+    }
+
+    /// Which chunk the caret is in, and where in that chunk it sits.
+    ///
+    /// The line is found by counting newlines rather than by hunting for a glyph, so a caret on a
+    /// blank line lands on the blank line instead of jumping to the next thing with ink on it.
+    fn caret_position(&self, frame: &Frame) -> Option<(usize, CaretRect)> {
+        let caret = self.document().selection().head();
+        let index = frame
+            .chunks
+            .iter()
+            .position(|chunk| chunk.span.start() <= caret && caret < chunk.span.end())
+            .or_else(|| frame.chunks.len().checked_sub(1))?;
+        let chunk = frame.chunks[index];
+
+        let cached = frame
+            .fresh_at(index)
+            .or_else(|| self.layouts.get(&frame.keys[index]).map(Rc::clone))?;
+
+        let body = chunk.span.slice(&frame.text);
+        let local = caret
+            .get()
+            .saturating_sub(chunk.span.start().get())
+            .min(body.len());
+        let row = body[..local].bytes().filter(|byte| *byte == b'\n').count();
+        let line = cached.layout.lines.get(row)?;
+
+        let top: f32 = cached.layout.lines[..row].iter().map(|l| l.height).sum();
+        let x = line
+            .glyphs
+            .iter()
+            .find(|glyph| glyph.source.start() >= caret)
+            .map(|glyph| glyph.pos.x)
+            .or_else(|| line.glyphs.last().map(|glyph| glyph.pos.x + glyph.advance))
+            .unwrap_or(0.0);
+
+        Some((
+            index,
+            CaretRect {
+                x,
+                top,
+                height: line.height.max(1.0),
+            },
+        ))
+    }
+
+    /// Keeps the view still when a chunk above it turns out to be taller than its estimate.
+    ///
+    /// Only applied when nothing has moved the offset since the anchor was taken. Scrolling is the
+    /// user's, and correcting for a measurement must not undo it.
+    fn hold_anchor(&mut self, frame: &Frame, visible: f32) {
+        let Some(anchor) = self.anchor else { return };
+        if (self.scroll.offset() - anchor.offset).abs() > f32::EPSILON {
+            return;
+        }
+        let Some(index) = frame.keys.iter().position(|key| *key == anchor.key) else {
+            return;
+        };
+        self.scroll.set(
+            frame.tops[index] + anchor.into_chunk,
+            frame.content,
+            visible,
+        );
+    }
+
+    /// Records what the top of the viewport is resting on, for the next frame to hold it there.
+    fn take_anchor(&mut self, frame: &Frame, offset: f32) {
+        let index = frame
+            .tops
+            .partition_point(|top| *top <= offset)
+            .saturating_sub(1);
+        self.anchor = frame.keys.get(index).map(|key| Anchor {
+            key: *key,
+            into_chunk: offset - frame.tops[index],
+            offset,
+        });
     }
 
     fn redraw(&mut self) {
@@ -1299,6 +1588,13 @@ impl<T: TextLayout> Editor<T> {
         let size = window.inner_size();
 
         let quads = self.build_frame(px(size.width), px(size.height), scale);
+
+        // Sampled before the GPU is touched. Under `Fifo`, `present` waits for the next vblank, so
+        // once a frame is fast the number below is a refresh interval however little work was done —
+        // it says nothing about whether the work got cheaper. This one does.
+        if let Some(started) = self.pending_keystroke {
+            self.build.record(started.elapsed());
+        }
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -1442,6 +1738,137 @@ struct CaretRect {
     x: f32,
     top: f32,
     height: f32,
+}
+
+/// Where a chunk lands on screen: how far down from the document origin, and at what device scale.
+#[derive(Debug, Clone, Copy)]
+struct Placement {
+    shift: f32,
+    scale: f32,
+    /// The screen band the document may draw into, in device-independent pixels. A chunk can be
+    /// far taller than the window — a whole document with no blank line in it is one chunk — so
+    /// lines are checked against this as well as chunks against the height table.
+    band: (f32, f32),
+}
+
+/// One frame's worth of measurement: what the chunks are and where each one sits.
+///
+/// Built once per frame and passed around rather than recomputed, because every step needs the same
+/// answers and the buffer is only worth materializing once.
+struct Frame {
+    chunks: Vec<blocks::Chunk>,
+    keys: Vec<ChunkKey>,
+    /// Chunks laid out this frame rather than taken from the cache — the caret's, always.
+    fresh: Vec<(usize, Rc<Cached>)>,
+    heights: Vec<f32>,
+    tops: Vec<f32>,
+    /// The whole document's height, including the bottom margin.
+    content: f32,
+    text: String,
+    selection: Selection,
+    /// The wrapping width.
+    width: f32,
+}
+
+impl Frame {
+    fn fresh_at(&self, index: usize) -> Option<Rc<Cached>> {
+        self.fresh
+            .iter()
+            .find(|(at, _)| *at == index)
+            .map(|(_, cached)| Rc::clone(cached))
+    }
+}
+
+/// What identifies a laid-out chunk.
+///
+/// Deliberately **not** [`mdedit_offsets::BlockId`], and not the chunk's position: both are indices
+/// into one analysis, so inserting a character in the first paragraph would renumber every block
+/// after it and the cache would hand back the wrong layout for the whole document below an edit.
+/// The content is the identity — the same bytes, of the same kind, at the same width, lay out the
+/// same way wherever they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ChunkKey {
+    content: u64,
+    /// The wrapping width, as bits: a resize invalidates every layout, and rightly.
+    width: u32,
+    /// Whether this is the document's last chunk, which decides whether its trailing empty line is
+    /// a line of its own or the start of the next chunk.
+    last: bool,
+}
+
+impl ChunkKey {
+    fn of(chunk: &blocks::Chunk, body: &str, last: bool, width: f32) -> Self {
+        let mut hasher = DefaultHasher::new();
+        chunk.kind.hash(&mut hasher);
+        body.hash(&mut hasher);
+        Self {
+            content: hasher.finish(),
+            width: width.to_bits(),
+            last,
+        }
+    }
+}
+
+/// A chunk that has been through the text engine.
+#[derive(Debug)]
+struct Cached {
+    layout: Layout,
+    /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
+    /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
+    /// added back before a span means anything.
+    base: usize,
+    /// Whether the last line belongs to the next chunk rather than to this one.
+    drops_last: bool,
+    height: f32,
+}
+
+impl Cached {
+    fn new(layout: Layout, chunk: &blocks::Chunk, body: &str, is_last: bool) -> Self {
+        let drops_last = blocks::drops_last_line(body, is_last);
+        let height = layout.height()
+            - if drops_last {
+                layout.lines.last().map_or(0.0, |line| line.height)
+            } else {
+                0.0
+            };
+        Self {
+            layout,
+            base: chunk.span.start().get(),
+            drops_last,
+            height,
+        }
+    }
+
+    /// How many of the laid-out lines this chunk actually draws.
+    fn drawn_lines(&self) -> usize {
+        let lines = self.layout.lines.len();
+        if self.drops_last {
+            lines.saturating_sub(1)
+        } else {
+            lines
+        }
+    }
+
+    /// A glyph's source offset, moved to where this chunk actually sits in the buffer.
+    fn rebase(&self, glyph: &mdedit_text::PositionedGlyph, span: ByteSpan) -> ByteOffset {
+        ByteOffset::new(span.start().get() + glyph.source.start().get().saturating_sub(self.base))
+    }
+}
+
+/// Where the top of the viewport is resting, so a measurement below it does not move the page.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    key: ChunkKey,
+    /// How far into that chunk the viewport's top edge sits.
+    into_chunk: f32,
+    /// The scroll offset when this was taken. If it has changed, the user has scrolled and the
+    /// anchor is stale.
+    offset: f32,
+}
+
+/// Whether two spans overlap or meet. A caret at a chunk's edge belongs to both sides of it.
+fn touches(span: ByteSpan, other: ByteSpan) -> bool {
+    span.start() <= other.end() && other.start() <= span.end()
 }
 
 /// What to do about a tab with unsaved changes.
