@@ -69,10 +69,15 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar, and the
-  only mouse handling is the strip. Everything else is keyboard.
+- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar. The mouse
+  drives the strip and the wheel; everything else is keyboard, and there is no way to put the caret
+  somewhere by clicking.
 - **No virtualization.** The whole document is laid out every frame, so
-  `mdedit big.md` will not meet the file-open target until blocks are rendered on demand.
+  `mdedit big.md` will not meet the file-open target until blocks are rendered on demand. Scrolling
+  (MDEDIT-16) only culls the *drawing* to the viewport — the layout cost is unchanged, which is
+  MDEDIT-17's job.
+- **Scrolling is vertical only, and instant.** No horizontal scroll (long lines wrap), no smooth or
+  momentum scrolling, and no scrollbar to show where in the document the view is.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.

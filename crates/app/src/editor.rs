@@ -13,13 +13,14 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::latency::Latency;
+use crate::scroll::{self, Scroll};
 use crate::tabs;
 use crate::view::{self, Rgba, Theme};
 
@@ -464,6 +465,30 @@ pub struct Editor<T: TextLayout> {
     tab_rects: Vec<tabs::TabRect>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
+    /// Where the viewport sits over the document.
+    scroll: Scroll,
+    /// What the last frame measured, so the wheel and the page keys have something to clamp to.
+    viewport: Viewport,
+    /// Set by a key press that should bring the caret back into view on the next frame.
+    ///
+    /// Not every frame: scrolling with the wheel would snap straight back to the caret if the
+    /// document followed it unconditionally.
+    follow_caret: bool,
+}
+
+/// What the last laid-out frame measured, in device-independent pixels.
+///
+/// Scroll limits depend on the layout, and the layout only exists during a frame — so a wheel event
+/// arriving between frames clamps against these. Zero before the first paint, which means a wheel
+/// event that beats the first frame does nothing rather than guessing.
+#[derive(Debug, Clone, Copy, Default)]
+struct Viewport {
+    /// Height of the whole laid-out document.
+    content: f32,
+    /// Height of the area the document is drawn into, below the tab strip.
+    height: f32,
+    /// A representative line height, for the wheel notch and the page keys.
+    line: f32,
 }
 
 impl<T: TextLayout> std::fmt::Debug for Editor<T> {
@@ -496,6 +521,9 @@ impl<T: TextLayout> Editor<T> {
             modifiers: ModifiersState::empty(),
             tab_rects: Vec::new(),
             cursor: (0.0, 0.0),
+            scroll: Scroll::new(),
+            viewport: Viewport::default(),
+            follow_caret: false,
         }
     }
 
@@ -546,13 +574,15 @@ impl<T: TextLayout> Editor<T> {
     }
 
     /// The buffer being edited: the active tab's, or the scratch document if no file is open.
-    fn document(&self) -> &Document {
+    #[must_use]
+    pub fn document(&self) -> &Document {
         self.workspace
             .active_open()
             .map_or(&self.scratch, |open| &open.document)
     }
 
-    fn document_mut(&mut self) -> &mut Document {
+    /// The buffer being edited, to change.
+    pub fn document_mut(&mut self) -> &mut Document {
         match self.workspace.active_open_mut() {
             Some(open) => &mut open.document,
             None => &mut self.scratch,
@@ -741,8 +771,28 @@ impl<T: TextLayout> Editor<T> {
             return false;
         }
 
+        // A key press should leave the caret on screen. The two keys that scroll without moving it
+        // say so themselves, below.
+        self.follow_caret = true;
+
         // Chords first, so a modified key never inserts its own letter.
         if self.modifiers.control_key() {
+            // Ctrl+Home and Ctrl+End go to the ends of the document, which is where every editor
+            // puts them. The caret moves, so the scroll follows without either arm saying so.
+            match &event.logical_key {
+                Key::Named(NamedKey::Home) => {
+                    self.document_mut()
+                        .set_selection(Selection::caret(ByteOffset::ZERO));
+                    return true;
+                }
+                Key::Named(NamedKey::End) => {
+                    let end = ByteOffset::new(self.document().len_bytes());
+                    self.document_mut().set_selection(Selection::caret(end));
+                    return true;
+                }
+                _ => {}
+            }
+
             let Key::Character(character) = &event.logical_key else {
                 return false;
             };
@@ -810,6 +860,18 @@ impl<T: TextLayout> Editor<T> {
                 self.document_mut().set_selection(Selection::caret(end));
                 true
             }
+            // Paging moves the view, not the caret — so the caret may end up off screen, and must
+            // not be dragged back the moment the frame is built.
+            Key::Named(NamedKey::PageUp) => {
+                self.follow_caret = false;
+                self.page(-1.0);
+                true
+            }
+            Key::Named(NamedKey::PageDown) => {
+                self.follow_caret = false;
+                self.page(1.0);
+                true
+            }
             Key::Named(NamedKey::Enter) => self.insert("\n"),
             Key::Named(NamedKey::Space) => self.insert(" "),
             Key::Character(text) => self.insert(text),
@@ -856,8 +918,40 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Moves the view by whole pages, against whatever the last frame measured.
+    pub fn page(&mut self, pages: f32) {
+        self.scroll.page(
+            pages,
+            self.viewport.line,
+            self.viewport.content,
+            self.viewport.height,
+        );
+    }
+
+    /// Moves the view by device-independent pixels, positive being further down the document.
+    ///
+    /// Clamped against the last frame's measurements, so nothing here can scroll past either end.
+    pub fn scroll_by(&mut self, delta: f32) {
+        self.scroll
+            .by(delta, self.viewport.content, self.viewport.height);
+    }
+
+    /// How far down the document the view has moved.
+    #[must_use]
+    pub fn scroll_offset(&self) -> f32 {
+        self.scroll.offset()
+    }
+
+    /// Brings the caret back into view on the next frame.
+    pub fn follow_caret(&mut self) {
+        self.follow_caret = true;
+    }
+
     /// Lays the document out and turns it into quads.
-    fn build_frame(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
+    ///
+    /// `width` and `height` are the window's, in physical pixels. Public so a headless test can
+    /// assert what gets drawn without a GPU: nothing here touches the renderer.
+    pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = self.build_tab_strip(width, scale);
 
         let runs = view::build_runs(self.document(), self.document().selection(), &self.theme);
@@ -870,27 +964,75 @@ impl<T: TextLayout> Editor<T> {
 
         // The document starts below the strip when there is one.
         let top = MARGIN + self.strip_height();
+        let visible = (height / scale - top).max(1.0);
+        // A bottom margin to match the top one, so the last line is not flush against the edge.
+        let content = layout.height() + MARGIN;
+        self.viewport = Viewport {
+            content,
+            height: visible,
+            line: layout
+                .lines
+                .first()
+                .map_or(self.theme.body_size, |line| line.height.max(1.0)),
+        };
+
+        let caret = self.caret_rect(&layout);
+        if let (true, Some(caret)) = (self.follow_caret, caret) {
+            self.scroll
+                .reveal(caret.top, caret.top + caret.height, content, visible);
+        }
+        self.follow_caret = false;
+        // Editing and resizing both change what there is to scroll through, so the offset from the
+        // last frame may now be past the end.
+        self.scroll.set(self.scroll.offset(), content, visible);
+        let offset = self.scroll.offset();
+
         quads.reserve(layout.lines.iter().map(|l| l.glyphs.len()).sum());
-        for glyph in layout.glyphs() {
-            let Some(entry) = self.entry_for(glyph.key, scale) else {
+        for line in &layout.lines {
+            // Nothing off the top or bottom edge can be seen. The whole document is still laid out
+            // — this is not virtualization, only a check against filling the instance buffer with
+            // quads the rasterizer would discard anyway.
+            let line_top = line.baseline - line.height;
+            if line_top - offset > visible || line.baseline - offset < -line.height {
                 continue;
-            };
-            let (pen_x, pen_y) = ((glyph.pos.x + MARGIN) * scale, (glyph.pos.y + top) * scale);
-            let colour = view::colour_at(&runs, glyph.source.start(), self.theme.text);
-            quads.push(QuadInstance {
-                rect: [
-                    pen_x + px_i(entry.left),
-                    pen_y + px_i(entry.top),
-                    px(entry.width),
-                    px(entry.height),
-                ],
-                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
-                colour: [colour.r, colour.g, colour.b, colour.a],
-            });
+            }
+            for glyph in &line.glyphs {
+                let Some(entry) = self.entry_for(glyph.key, scale) else {
+                    continue;
+                };
+                let pen_x = (glyph.pos.x + MARGIN) * scale;
+                let pen_y = (glyph.pos.y + top - offset) * scale;
+                let colour = view::colour_at(&runs, glyph.source.start(), self.theme.text);
+                quads.push(QuadInstance {
+                    rect: [
+                        pen_x + px_i(entry.left),
+                        pen_y + px_i(entry.top),
+                        px(entry.width),
+                        px(entry.height),
+                    ],
+                    uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                    colour: [colour.r, colour.g, colour.b, colour.a],
+                });
+            }
         }
 
-        if let Some(caret) = self.caret_quad(&layout, scale) {
-            quads.push(caret);
+        if let Some(caret) = caret {
+            quads.push(QuadInstance {
+                rect: [
+                    (caret.x + MARGIN) * scale,
+                    (caret.top + top - offset) * scale,
+                    CARET_WIDTH * scale,
+                    caret.height * scale,
+                ],
+                // The opaque texel at the atlas origin: a solid fill is a glyph quad that samples it.
+                uv: [0.0, 0.0, 1.0, 1.0],
+                colour: [
+                    self.theme.caret.r,
+                    self.theme.caret.g,
+                    self.theme.caret.b,
+                    self.theme.caret.a,
+                ],
+            });
         }
         quads
     }
@@ -1101,8 +1243,11 @@ impl<T: TextLayout> Editor<T> {
         self.atlas.insert(key, &image).ok()
     }
 
-    /// A quad for the caret, placed at the glyph the caret addresses.
-    fn caret_quad(&self, layout: &Layout, scale: f32) -> Option<QuadInstance> {
+    /// Where the caret sits in the laid-out document, before the scroll offset is applied.
+    ///
+    /// Document space rather than screen space because both callers need it there: the quad is
+    /// placed by subtracting the offset, and `reveal` decides what the offset should be.
+    fn caret_rect(&self, layout: &Layout) -> Option<CaretRect> {
         let caret = self.document().selection().head();
         let mut best: Option<(&mdedit_text::PositionedGlyph, f32)> = None;
         let mut last: Option<&mdedit_text::PositionedGlyph> = None;
@@ -1129,21 +1274,11 @@ impl<T: TextLayout> Editor<T> {
             .find(|line| line.glyphs.iter().any(|g| std::ptr::eq(g, glyph)))
             .map_or(self.theme.body_size * 1.4, |line| line.height.max(1.0));
 
-        Some(QuadInstance {
-            rect: [
-                (x + MARGIN) * scale,
-                (glyph.pos.y + MARGIN) * scale - height * scale * 0.8,
-                CARET_WIDTH * scale,
-                height * scale,
-            ],
-            // The opaque texel at the atlas origin: a solid fill is a glyph quad that samples it.
-            uv: [0.0, 0.0, 1.0, 1.0],
-            colour: [
-                self.theme.caret.r,
-                self.theme.caret.g,
-                self.theme.caret.b,
-                self.theme.caret.a,
-            ],
+        Some(CaretRect {
+            x,
+            // The glyph's `y` is its baseline; the caret spans the line it sits on.
+            top: glyph.pos.y - height * 0.8,
+            height,
         })
     }
 
@@ -1163,7 +1298,7 @@ impl<T: TextLayout> Editor<T> {
         let scale = window.scale_factor() as f32;
         let size = window.inner_size();
 
-        let quads = self.build_frame(px(size.width), scale);
+        let quads = self.build_frame(px(size.width), px(size.height), scale);
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -1241,6 +1376,26 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                 let point = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.cursor = point;
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Wheel-up is positive and moves the view towards the top, which is a smaller
+                // offset — hence the negation on both arms.
+                let delta = match delta {
+                    MouseScrollDelta::LineDelta(_, lines) => {
+                        -lines * scroll::LINES_PER_NOTCH * self.viewport.line
+                    }
+                    // A precision touchpad reports pixels directly, already at the rate the user
+                    // moved their fingers. Truncation is fine: these are gesture-sized deltas.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "scroll deltas are small pixel counts"
+                    )]
+                    MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
+                };
+                self.scroll_by(delta);
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
@@ -1279,6 +1434,14 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
             _ => {}
         }
     }
+}
+
+/// The caret's place in the laid-out document, in device-independent pixels.
+#[derive(Debug, Clone, Copy)]
+struct CaretRect {
+    x: f32,
+    top: f32,
+    height: f32,
 }
 
 /// What to do about a tab with unsaved changes.
