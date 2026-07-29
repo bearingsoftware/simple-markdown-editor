@@ -2,18 +2,19 @@
 //!
 //! Split into a library and a thin binary so the parts that can be tested without a GPU — the
 //! decoration in [`view`], the atlas packing in [`gpu`], the strip geometry in [`tabs`], the
-//! offset arithmetic in [`scroll`], the chunking in [`blocks`], and the frame they produce —
-//! actually are.
+//! offset arithmetic in [`scroll`], the chunking in [`blocks`], the hit-testing in [`hit`], and the
+//! frame they produce — actually are.
 //!
 //! Grown from the vertical slice in
 //! [MDEDIT-11](https://chattersley.atlassian.net/browse/MDEDIT-11) through files, undo, tabs,
-//! scrolling and now per-block layout: a frame lays out only the blocks the viewport touches, and
-//! caches them by content. The parse is still whole-document on every keystroke, which is
-//! MDEDIT-18.
+//! scrolling, per-block layout, a keystroke that re-parses a region rather than the document, an
+//! input method that composes beside the buffer rather than into it, and now a caret you can point
+//! at. There is still no clipboard.
 
 pub mod blocks;
 pub mod editor;
 pub mod gpu;
+pub mod hit;
 pub mod ime;
 pub mod latency;
 pub mod scroll;

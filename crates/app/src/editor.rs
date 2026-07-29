@@ -28,6 +28,7 @@ use winit::window::{Window, WindowId};
 
 use crate::blocks;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
+use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::scroll::{self, Scroll};
@@ -40,6 +41,9 @@ const MARGIN: f32 = 24.0;
 const CARET_WIDTH: f32 = 2.0;
 /// Thickness of the line under text an input method is still composing.
 const UNDERLINE_WIDTH: f32 = 1.0;
+/// How much width a selected line break shows as, so a selection spanning lines reads as one shape
+/// rather than as a ragged stack of separate highlights.
+const EMPTY_ROW_SELECTION: f32 = 6.0;
 /// What a line of text is assumed to cost before it has been measured, as a multiple of its font
 /// size. Only ever applied to chunks that are off screen.
 const ESTIMATED_LINE_RATIO: f32 = 1.4;
@@ -513,6 +517,16 @@ pub struct Editor<T: TextLayout> {
     /// Kept so the candidate window can be put next to it. An input method that is not told where
     /// the caret is puts its candidate list at the window's origin, which is step 2 of the script.
     caret_area: Option<(f32, f32, f32)>,
+    /// What the last frame measured. Clicking and vertical motion both ask where the lines went,
+    /// and this is the only thing that knows.
+    last_frame: Option<Frame>,
+    /// The column Up and Down are aiming for, in device-independent pixels.
+    ///
+    /// Remembered across a run of them so that passing through a short line does not drag the caret
+    /// to its end and leave it there. Any horizontal movement or edit clears it.
+    desired_x: Option<f32>,
+    /// Whether the pointer is dragging out a selection.
+    dragging: bool,
 }
 
 /// What the last laid-out frame measured, in device-independent pixels.
@@ -570,6 +584,9 @@ impl<T: TextLayout> Editor<T> {
             anchor: None,
             composition: Composition::new(),
             caret_area: None,
+            last_frame: None,
+            desired_x: None,
+            dragging: false,
         }
     }
 
@@ -878,6 +895,8 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let caret = self.document().selection().head();
+        // Shift with a motion key drags the selection along instead of collapsing it.
+        let extend = self.modifiers.shift_key();
 
         match &event.logical_key {
             Key::Named(NamedKey::Backspace) => {
@@ -909,22 +928,23 @@ impl<T: TextLayout> Editor<T> {
             }
             Key::Named(NamedKey::ArrowLeft) => {
                 let target = self.previous_boundary(caret);
-                self.document_mut().set_selection(Selection::caret(target));
+                self.select(target, extend);
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
                 let target = self.next_boundary(caret);
-                self.document_mut().set_selection(Selection::caret(target));
+                self.select(target, extend);
                 true
             }
+            Key::Named(NamedKey::ArrowUp) => self.move_vertically(false, extend),
+            Key::Named(NamedKey::ArrowDown) => self.move_vertically(true, extend),
             Key::Named(NamedKey::Home) => {
-                self.document_mut()
-                    .set_selection(Selection::caret(ByteOffset::ZERO));
+                self.select(ByteOffset::ZERO, extend);
                 true
             }
             Key::Named(NamedKey::End) => {
                 let end = ByteOffset::new(self.document().len_bytes());
-                self.document_mut().set_selection(Selection::caret(end));
+                self.select(end, extend);
                 true
             }
             // Paging moves the view, not the caret — so the caret may end up off screen, and must
@@ -1124,6 +1144,10 @@ impl<T: TextLayout> Editor<T> {
                 self.draw_preedit(&mut quads, caret, top - offset, scale);
             }
         }
+
+        // Kept for the next click and the next Up or Down: both need to know where the lines
+        // ended up, and this is the only place that knows.
+        self.last_frame = Some(frame);
         quads
     }
 
@@ -1396,6 +1420,230 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// The laid-out chunk at `index`, from whichever half of the cache has it.
+    fn chunk_layout(&self, frame: &Frame, index: usize) -> Option<Rc<Cached>> {
+        frame
+            .fresh_at(index)
+            .or_else(|| self.layouts.get(frame.keys.get(index)?).map(Rc::clone))
+    }
+
+    /// The byte a point in the window addresses, if there is a laid-out document under it.
+    ///
+    /// `x` and `y` are in device-independent pixels from the window's corner. Returns `None` before
+    /// the first frame, when there is nothing to hit-test against and guessing would be worse than
+    /// doing nothing.
+    fn offset_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
+        let top = MARGIN + self.strip_height();
+        self.offset_in_document(x - MARGIN, y - top + self.scroll.offset())
+    }
+
+    /// The byte at a point in the document's own coordinates.
+    fn offset_in_document(&self, x: f32, y: f32) -> Option<ByteOffset> {
+        let frame = self.last_frame.as_ref()?;
+        if frame.chunks.is_empty() {
+            return None;
+        }
+        if y < 0.0 {
+            return Some(ByteOffset::ZERO);
+        }
+
+        let index = frame
+            .tops
+            .partition_point(|top| *top <= y)
+            .saturating_sub(1)
+            .min(frame.chunks.len() - 1);
+        let chunk = frame.chunks[index];
+        let cached = self.chunk_layout(frame, index)?;
+
+        let target = hit::Chunk {
+            layout: &cached.layout,
+            text: chunk.span.slice(&frame.text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(cached.base),
+        };
+        Some(hit::offset_at(
+            &target,
+            cached.drawn_lines(),
+            y - frame.tops[index],
+            x,
+        ))
+    }
+
+    /// Which chunk and visual line the caret is on, and how far along it.
+    fn caret_place(&self) -> Option<(usize, usize, f32)> {
+        let frame = self.last_frame.as_ref()?;
+        let caret = self.document().selection().head();
+        let index = frame
+            .chunks
+            .iter()
+            .position(|chunk| chunk.span.start() <= caret && caret < chunk.span.end())
+            .or_else(|| frame.chunks.len().checked_sub(1))?;
+        let chunk = frame.chunks[index];
+        let cached = self.chunk_layout(frame, index)?;
+
+        let target = hit::Chunk {
+            layout: &cached.layout,
+            text: chunk.span.slice(&frame.text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(cached.base),
+        };
+        let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
+        Some((index, row, x))
+    }
+
+    /// Moves the caret one visual line up or down.
+    ///
+    /// Visual, not source: a wrapped paragraph is several rows, and Down in the middle of one has to
+    /// reach the next row of the same paragraph rather than skipping the rest of it.
+    ///
+    /// The step lands on the very edge of the neighbouring row rather than a line-height away, so a
+    /// heading or a blank line — which are not the same height as what precedes them — cannot be
+    /// stepped over.
+    fn move_vertically(&mut self, down: bool, extend: bool) -> bool {
+        let Some((index, row, x)) = self.caret_place() else {
+            return false;
+        };
+        let Some(frame) = self.last_frame.as_ref() else {
+            return false;
+        };
+        let Some(cached) = self.chunk_layout(frame, index) else {
+            return false;
+        };
+
+        let chunk = frame.chunks[index];
+        let target = hit::Chunk {
+            layout: &cached.layout,
+            text: chunk.span.slice(&frame.text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(cached.base),
+        };
+        let row_top = frame.tops[index] + hit::row_top(&target, row);
+        let height = cached
+            .layout
+            .lines
+            .get(row)
+            .map_or(self.theme.body_size, |line| line.height);
+
+        let aim = self.desired_x.unwrap_or(x);
+        let edge = if down { row_top + height } else { row_top };
+        // A hair past the boundary, so the answer is the neighbouring row whatever its height.
+        let step = if down { 0.5 } else { -0.5 };
+        let Some(offset) = self.offset_in_document(aim, edge + step) else {
+            return false;
+        };
+
+        self.select(offset, extend);
+        // Restored after `select` clears it: this is the one motion that keeps its column.
+        self.desired_x = Some(aim);
+        true
+    }
+
+    /// Puts the caret at `offset`, or drags the selection to it.
+    fn select(&mut self, offset: ByteOffset, extend: bool) {
+        let selection = if extend {
+            Selection::new(self.document().selection().anchor(), offset)
+        } else {
+            Selection::caret(offset)
+        };
+        self.document_mut().set_selection(selection);
+        self.desired_x = None;
+    }
+
+    /// The horizontal extent of `selected` on one visual row, if it covers any of it.
+    ///
+    /// A row wholly inside the selection runs to the end of its text plus a little, so that a
+    /// selection spanning lines reads as covering the line breaks rather than as a ragged stack of
+    /// separate highlights.
+    fn row_selection(
+        cached: &Cached,
+        chunk: blocks::Chunk,
+        text: &str,
+        row: usize,
+        selected: ByteSpan,
+    ) -> Option<(f32, f32)> {
+        let line = cached.layout.lines.get(row)?;
+        let rebase = |offset: ByteOffset| {
+            ByteOffset::new(chunk.span.start().get() + offset.get().saturating_sub(cached.base))
+        };
+
+        // Where this row's text sits in the buffer. Wrapping adds rows without adding newlines, so
+        // a wrapped row's bounds are the whole source line's — the highlight is then a little
+        // generous on a wrapped line, which is better than absent.
+        let body = chunk.span.slice(text);
+        let base = chunk.span.start().get();
+        let row_start = base
+            + body
+                .split_inclusive('\n')
+                .take(row)
+                .map(str::len)
+                .sum::<usize>();
+        let row_end = row_start
+            + body[row_start - base..]
+                .find('\n')
+                .unwrap_or(body.len() - (row_start - base));
+
+        if selected.end().get() <= row_start || selected.start().get() > row_end {
+            return None;
+        }
+
+        // Where a byte sits along the row: the glyph that starts at or after it, or past the last.
+        let x_at = |offset: usize| -> f32 {
+            line.glyphs
+                .iter()
+                .find(|glyph| rebase(glyph.source.start()).get() >= offset)
+                .map_or_else(
+                    || {
+                        line.glyphs
+                            .last()
+                            .map_or(0.0, |glyph| glyph.pos.x + glyph.advance)
+                    },
+                    |glyph| glyph.pos.x,
+                )
+        };
+
+        let from = if selected.start().get() <= row_start {
+            0.0
+        } else {
+            x_at(selected.start().get())
+        };
+        // Past the end of the row means the line break is selected too, and a selection spanning
+        // lines reads as one shape rather than a ragged stack only if that shows as width.
+        let to = if selected.end().get() > row_end {
+            x_at(usize::MAX) + EMPTY_ROW_SELECTION
+        } else {
+            x_at(selected.end().get())
+        };
+        Some((from, to))
+    }
+
+    /// Puts the caret at a point in the window, and begins dragging a selection from it.
+    ///
+    /// Shift extends the existing selection instead, which is how every editor lets you correct a
+    /// selection whose far end you got wrong. Returns whether anything was under the pointer.
+    /// Public so a headless test can point at the document without a mouse.
+    pub fn click_at(&mut self, x: f32, y: f32) -> bool {
+        let Some(offset) = self.offset_at_point(x, y) else {
+            return false;
+        };
+        self.select(offset, self.modifiers.shift_key());
+        self.dragging = true;
+        true
+    }
+
+    /// Drags the far end of the selection to a point in the window.
+    pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
+        let Some(offset) = self.offset_at_point(x, y) else {
+            return false;
+        };
+        self.select(offset, true);
+        true
+    }
+
+    /// Moves the caret one visual line, extending the selection if asked.
+    pub fn move_caret(&mut self, down: bool, extend: bool) -> bool {
+        self.move_vertically(down, extend)
+    }
+
     /// Packs a glyph if it is not already in the atlas.
     fn entry_for(&mut self, key: GlyphKey, scale: f32) -> Option<crate::gpu::AtlasEntry> {
         if let Some(entry) = self.atlas.get(key) {
@@ -1539,11 +1787,34 @@ impl<T: TextLayout> Editor<T> {
                     .sum(),
             );
 
-            for line in &cached.layout.lines[..drawn] {
+            let selected = frame.selection.span();
+            let mut row_top = chunk_top;
+
+            for (row, line) in cached.layout.lines[..drawn].iter().enumerate() {
                 let baseline = line.baseline + chunk_top;
+                let top_of_row = row_top;
+                row_top += line.height;
                 if baseline - line.height > band_bottom || baseline < band_top - line.height {
                     continue;
                 }
+
+                // Behind the glyphs, so the text stays readable through it.
+                if !selected.is_empty() {
+                    if let Some((from, to)) =
+                        Self::row_selection(&cached, chunk, &frame.text, row, selected)
+                    {
+                        quads.push(Self::solid(
+                            [
+                                (from + MARGIN) * scale,
+                                top_of_row * scale,
+                                (to - from).max(1.0) * scale,
+                                line.height * scale,
+                            ],
+                            self.theme.selection,
+                        ));
+                    }
+                }
+
                 for glyph in &line.glyphs {
                     let Some(entry) = self.entry_for(glyph.key, scale) else {
                         continue;
@@ -1842,6 +2113,16 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                 )]
                 let point = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.cursor = point;
+
+                // Dragging extends the selection from wherever the press landed.
+                if self.dragging {
+                    if let Some(offset) = self.offset_at_point(point.0, point.1) {
+                        self.select(offset, true);
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Wheel-up is positive and moves the view towards the top, which is a smaller
@@ -1864,13 +2145,19 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                 }
             }
             WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.dragging = false,
+            WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,
                 ..
             } => {
                 let (x, y) = self.cursor;
                 let changed = match button {
-                    MouseButton::Left => self.click_strip(x, y),
+                    // The strip first, because it sits over the document's top edge.
+                    MouseButton::Left => self.click_strip(x, y) || self.click_at(x, y),
                     // Middle-click closes, as every editor with tabs does.
                     MouseButton::Middle => match tabs::hit_test(&self.tab_rects, x, y) {
                         Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)) => {

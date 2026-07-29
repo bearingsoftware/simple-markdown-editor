@@ -478,3 +478,242 @@ fn stacked_chunks_land_where_one_layout_would_have_put_them() {
         "three lines of text, with a blank line between each pair"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Putting the caret where you point (MDEDIT-21).
+// ---------------------------------------------------------------------------
+
+/// The x of the `n`th character on a line, in window coordinates.
+fn column(n: f32) -> f32 {
+    MARGIN + n * ADVANCE
+}
+
+/// The y of visual line `n`, in window coordinates — the middle of it, as a click would land.
+fn line_y(n: f32) -> f32 {
+    MARGIN + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
+}
+
+#[test]
+fn clicking_puts_the_caret_where_you_clicked() {
+    let source = "hello world\n\nsecond line\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(3.0), line_y(0.0));
+    assert_eq!(editor.document().selection().head(), ByteOffset::new(3));
+
+    // The third line starts at byte 13.
+    editor.click_at(column(1.0), line_y(2.0));
+    assert_eq!(editor.document().selection().head(), ByteOffset::new(14));
+}
+
+/// The half-character rule: the left half of a character puts the caret before it, the right half
+/// after. Without it there is no way to click *between* two letters.
+#[test]
+fn clicking_snaps_to_the_nearer_edge_of_a_character() {
+    let mut editor = Editor::new("abc\n", Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(1.0) + 1.0, line_y(0.0));
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(1),
+        "just past the start of the second character is still before it"
+    );
+
+    editor.click_at(column(1.0) + ADVANCE - 1.0, line_y(0.0));
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(2),
+        "nearly at its end is after it"
+    );
+}
+
+#[test]
+fn clicking_past_the_end_of_a_line_lands_at_its_end() {
+    let source = "short\n\nlonger line here\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(40.0), line_y(0.0));
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(5),
+        "the end of the first line, not the start of the next"
+    );
+}
+
+#[test]
+fn clicking_a_blank_line_lands_on_it() {
+    let source = "first\n\nthird\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(2.0), line_y(1.0));
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(6),
+        "the blank line between them, not the line after"
+    );
+}
+
+#[test]
+fn clicking_below_the_last_line_lands_at_the_end() {
+    let mut editor = Editor::new("one\n\ntwo\n", Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(0.0), HEIGHT - 1.0);
+    let caret = editor.document().selection().head();
+    assert!(
+        caret.get() >= 5,
+        "expected somewhere in the last line, got {caret}"
+    );
+}
+
+#[test]
+fn clicking_before_the_first_frame_does_nothing() {
+    let mut editor = Editor::new("text\n", Grid::new());
+    editor.click_at(column(2.0), line_y(0.0));
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::ZERO,
+        "nothing has been laid out, so there is nothing to point at"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Up and down.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn down_moves_to_the_next_visual_line() {
+    let source = "first line\n\nsecond line\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(3.0), line_y(0.0));
+    editor.move_caret(true, false);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(11),
+        "the blank line, which has no column 3 to land on"
+    );
+
+    editor.move_caret(true, false);
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(15),
+        "column 3 of the third line, which starts at 12"
+    );
+}
+
+#[test]
+fn up_from_the_first_line_goes_to_the_start() {
+    let mut editor = Editor::new("only line\n", Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(4.0), line_y(0.0));
+    editor.move_caret(false, false);
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::ZERO,
+        "there is nowhere above to go"
+    );
+}
+
+/// The column is remembered: passing through a short line must not drag the caret to its end and
+/// leave it there.
+#[test]
+fn the_column_survives_a_shorter_line_in_between() {
+    let source = "aaaaaaaaaa\n\nbb\n\ncccccccccc\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(8.0), line_y(0.0));
+    assert_eq!(editor.document().selection().head(), ByteOffset::new(8));
+
+    // Down through the blank line, the short line, and the blank line, to the long one.
+    for _ in 0..4 {
+        editor.move_caret(true, false);
+        let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    }
+
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(24),
+        "column 8 of the last line, which starts at 16 — not its start, not its end"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Selection.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dragging_selects_between_the_two_points() {
+    let mut editor = Editor::new("hello world\n", Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(2.0), line_y(0.0));
+    editor.drag_to(column(7.0), line_y(0.0));
+
+    let selection = editor.document().selection();
+    assert_eq!(selection.anchor(), ByteOffset::new(2));
+    assert_eq!(selection.head(), ByteOffset::new(7));
+    assert!(!selection.is_collapsed());
+}
+
+#[test]
+fn a_selection_is_drawn_and_an_empty_one_is_not() {
+    let mut editor = Editor::new("hello world\n", Grid::new());
+    let plain = editor.build_frame(WIDTH, HEIGHT, 1.0).len();
+
+    editor.click_at(column(2.0), line_y(0.0));
+    editor.drag_to(column(7.0), line_y(0.0));
+    let highlighted = editor.build_frame(WIDTH, HEIGHT, 1.0).len();
+
+    assert!(
+        highlighted > plain,
+        "the highlight should add quads: {plain} then {highlighted}"
+    );
+
+    editor.click_at(column(2.0), line_y(0.0));
+    assert_eq!(
+        editor.build_frame(WIDTH, HEIGHT, 1.0).len(),
+        plain,
+        "collapsing it should draw exactly what it drew before"
+    );
+}
+
+#[test]
+fn a_selection_spanning_lines_is_drawn_on_each_of_them() {
+    let source = "first\n\nsecond\n\nthird\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let plain = editor.build_frame(WIDTH, HEIGHT, 1.0).len();
+
+    editor.click_at(column(1.0), line_y(0.0));
+    editor.drag_to(column(3.0), line_y(4.0));
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert!(
+        quads.len() >= plain + 3,
+        "expected a highlight per row: {plain} then {}",
+        quads.len()
+    );
+}
+
+/// Selecting is not editing. The byte-preservation invariant does not care what is highlighted.
+#[test]
+fn selecting_does_not_touch_the_buffer() {
+    let source = "hello world\n\nsecond line\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.click_at(column(1.0), line_y(0.0));
+    editor.drag_to(column(4.0), line_y(2.0));
+    editor.move_caret(true, true);
+    editor.move_caret(false, true);
+
+    assert_eq!(editor.document().to_string(), source);
+}
