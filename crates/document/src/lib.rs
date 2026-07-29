@@ -39,9 +39,17 @@
 //! once per edit, and MDEDIT-14 built it: undo and redo splice every edit in a group and then
 //! re-parse a single time. Ordinary edits still re-parse each, because each is its own group.
 //!
-//! **Re-segmentation is a full re-parse**, per the measurement in
-//! `docs/research/04-parsing-benchmarks.md`: at 60 KB it costs less than a frame, and incremental
-//! parsing was measured to be *slower* than re-parsing for this workload.
+//! **Re-segmentation is a full re-parse up to [`WHOLE_DOCUMENT_LIMIT`], and a regional one above
+//! it.** `docs/research/04-parsing-benchmarks.md` measured a whole-document parse at less than a
+//! frame for 60 KB, which is why every edit did one; at 245 KB it is 14 ms, which is four keystroke
+//! budgets. So an edit to a large buffer re-parses the block it landed in plus a block of margin
+//! either side and splices the result in, and the whole-document parse it skipped happens at
+//! [`Document::reconcile`] when the typing stops.
+//!
+//! The margin is not decoration: typing `===` under a paragraph turns the paragraph *above* into a
+//! heading, and lazy continuation lets a line join the paragraph before it. What the margin cannot
+//! cover is a construct that changes the meaning of the whole document — an unclosed fence, a link
+//! reference definition — and that is exactly what the reconcile is for.
 
 use std::ops::Range;
 
@@ -49,7 +57,7 @@ mod history;
 
 use history::History;
 use mdedit_markers::{Block, BlockKind, Segment, SegmentKind};
-use mdedit_offsets::{ByteOffset, ByteSpan, CharOffset, LineIndex};
+use mdedit_offsets::{BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
 use ropey::Rope;
 
 /// Why an edit was rejected.
@@ -75,6 +83,28 @@ pub enum EditError {
     },
 }
 
+/// Appends a segment, joining it to the one before if they are the same kind and meet.
+///
+/// `mdedit_markers` coalesces adjacent runs of the same kind, so a spliced list has to as well —
+/// otherwise the seam between the reused part and the re-parsed part shows up as two content
+/// segments where a whole-document parse would have produced one. Nothing downstream reads it
+/// wrongly, but "the same answer as parsing the lot" is the property this is all judged against, and
+/// a seam is a difference.
+fn push_merged(out: &mut Vec<Segment>, segment: Segment) {
+    if let Some(last) = out.last_mut() {
+        if last.kind() == segment.kind() && last.span().end() == segment.span().start() {
+            let joined = ByteSpan::new(last.span().start(), segment.span().end());
+            *last = segment.moved_to(joined);
+            return;
+        }
+    }
+    out.push(segment);
+}
+
+/// Below this, a whole-document parse is already well inside the keystroke budget, so a small
+/// document takes exactly the path it always did — one parse, no splicing, nothing to reconcile.
+const WHOLE_DOCUMENT_LIMIT: usize = 16 * 1024;
+
 /// Markdown source, plus the marker/content segmentation derived from it.
 #[derive(Debug, Clone)]
 pub struct Document {
@@ -83,6 +113,8 @@ pub struct Document {
     segments: Vec<Segment>,
     /// Block structure, recomputed alongside the segments by the same parse.
     blocks: Vec<Block>,
+    /// True when the analysis came from a scoped re-parse rather than a whole-document one.
+    scoped: bool,
     /// Where the caret is. Owned here because undo has to put it back where it was.
     selection: Selection,
     history: History,
@@ -96,6 +128,7 @@ impl Document {
             text: Rope::new(),
             segments: Vec::new(),
             blocks: Vec::new(),
+            scoped: false,
             selection: Selection::caret(ByteOffset::ZERO),
             history: History::default(),
         }
@@ -192,9 +225,162 @@ impl Document {
 
     /// Applies a replacement and brings the segmentation up to date.
     fn apply(&mut self, span: ByteSpan, replacement: &str) -> Result<String, EditError> {
+        let scope = self.scope_for(span);
         let removed = self.splice(span, replacement)?;
-        self.resegment();
+        match scope {
+            Some(scope) => self.resegment_scope(scope, removed.len(), replacement.len()),
+            None => self.resegment(),
+        }
         Ok(removed)
+    }
+
+    /// The region a keystroke needs re-parsed, or `None` to re-parse the lot.
+    ///
+    /// Measured before the edit, in the buffer's current coordinates, because it is the *old* block
+    /// list that says where the safe boundaries are.
+    ///
+    /// A margin of one block on each side, not zero: typing `===` under a paragraph turns the
+    /// paragraph above into a heading, and lazy continuation lets a line join the paragraph before
+    /// it. One block of slack covers both without costing anything measurable.
+    fn scope_for(&self, span: ByteSpan) -> Option<Range<usize>> {
+        // Under this, a whole-document parse is already well inside the keystroke budget, and doing
+        // it keeps the small-document path exactly as it was.
+        if self.len_bytes() <= WHOLE_DOCUMENT_LIMIT {
+            return None;
+        }
+
+        let starts: Vec<usize> = self
+            .blocks
+            .iter()
+            .filter(|block| block.depth() == 0)
+            .map(|block| block.span().start().get())
+            .collect();
+
+        let before = starts.partition_point(|start| *start <= span.start().get());
+        let start = starts.get(before.saturating_sub(2)).copied().unwrap_or(0);
+
+        let after = starts.partition_point(|start| *start <= span.end().get());
+        let end = starts
+            .get(after + 1)
+            .copied()
+            .unwrap_or_else(|| self.len_bytes());
+
+        (start < end).then_some(start..end)
+    }
+
+    /// Re-parses `scope` alone and splices the result into the analysis.
+    ///
+    /// `scope` is in the coordinates the buffer had *before* the edit; everything after it moves by
+    /// the difference between what was removed and what was inserted.
+    fn resegment_scope(&mut self, scope: Range<usize>, removed: usize, inserted: usize) {
+        let delta = inserted.cast_signed() - removed.cast_signed();
+        let shift = |offset: usize| -> usize { offset.saturating_add_signed(delta) };
+
+        let text = self.text.to_string();
+        let region = ByteSpan::new(
+            ByteOffset::new(scope.start),
+            ByteOffset::new(shift(scope.end).min(text.len())),
+        );
+        let fresh = mdedit_markers::analyze_region(&text, region);
+
+        // Segments tile, so one straddling an edge is trimmed rather than dropped: dropping it would
+        // leave those bytes covered by nothing, which is the one thing this crate guarantees against.
+        let mut segments: Vec<Segment> = Vec::with_capacity(self.segments.len() + 8);
+        for segment in &self.segments {
+            let span = segment.span();
+            if span.end().get() <= scope.start {
+                push_merged(&mut segments, segment.clone());
+            } else if span.start().get() < scope.start {
+                push_merged(
+                    &mut segments,
+                    segment
+                        .clone()
+                        .moved_to(ByteSpan::new(span.start(), ByteOffset::new(scope.start))),
+                );
+            }
+        }
+        for segment in fresh.segments {
+            push_merged(&mut segments, segment);
+        }
+        for segment in &self.segments {
+            let span = segment.span();
+            if span.start().get() >= scope.end {
+                push_merged(
+                    &mut segments,
+                    segment.clone().moved_to(ByteSpan::new(
+                        ByteOffset::new(shift(span.start().get())),
+                        ByteOffset::new(shift(span.end().get())),
+                    )),
+                );
+            } else if span.end().get() > scope.end {
+                push_merged(
+                    &mut segments,
+                    segment.clone().moved_to(ByteSpan::new(
+                        ByteOffset::new(shift(scope.end)),
+                        ByteOffset::new(shift(span.end().get())),
+                    )),
+                );
+            }
+        }
+
+        // Blocks need no trimming: the scope's edges are top-level block starts, so no block spans
+        // one — a nested block is inside its parent, and its parent is inside the scope or outside
+        // it entirely.
+        let mut blocks: Vec<Block> = Vec::with_capacity(self.blocks.len() + 4);
+        blocks.extend(
+            self.blocks
+                .iter()
+                .filter(|block| block.span().end().get() <= scope.start)
+                .copied(),
+        );
+        blocks.extend(fresh.blocks);
+        blocks.extend(
+            self.blocks
+                .iter()
+                .filter(|block| block.span().start().get() >= scope.end)
+                .map(|block| {
+                    block.moved_to(ByteSpan::new(
+                        ByteOffset::new(shift(block.span().start().get())),
+                        ByteOffset::new(shift(block.span().end().get())),
+                    ))
+                }),
+        );
+        // Ids number a block within one analysis, so a spliced list has to be renumbered or two
+        // blocks would answer to the same one.
+        for (index, block) in blocks.iter_mut().enumerate() {
+            *block = block.with_id(BlockId::new(u32::try_from(index).unwrap_or(u32::MAX)));
+        }
+
+        self.segments = segments;
+        self.blocks = blocks;
+        self.scoped = true;
+    }
+
+    /// Whether the analysis came from a scoped re-parse and has not been brought up to date.
+    ///
+    /// See [`reconcile`](Self::reconcile) for what that costs and why it is worth it.
+    #[must_use]
+    pub fn is_scoped(&self) -> bool {
+        self.scoped
+    }
+
+    /// Re-parses the whole buffer if the last edits only re-parsed part of it.
+    ///
+    /// A scoped parse cannot see what the rest of the document does to the region — an unclosed
+    /// fence above it, a link reference definition below it. Both are rare and neither is invisible
+    /// forever: this is what a caller runs when the typing stops, and it costs one whole-document
+    /// parse, which is what every keystroke used to cost.
+    ///
+    /// Returns whether it found anything to correct, so a caller holding a cache derived from the
+    /// segments knows whether to drop it. Usually it does not: the scoped answer is normally the
+    /// same answer.
+    pub fn reconcile(&mut self) -> bool {
+        if !self.scoped {
+            return false;
+        }
+        let before = std::mem::take(&mut self.segments);
+        self.resegment();
+        self.segments != before
     }
 
     /// Applies a replacement to the buffer *without* re-parsing, returning the bytes it displaced.
@@ -317,6 +503,7 @@ impl Document {
         let analysis = mdedit_markers::analyze(&self.text.to_string());
         self.segments = analysis.segments;
         self.blocks = analysis.blocks;
+        self.scoped = false;
     }
 
     /// Rejects a span that does not address this buffer.
@@ -362,6 +549,7 @@ impl From<&str> for Document {
             text: Rope::from_str(text),
             segments: Vec::new(),
             blocks: Vec::new(),
+            scoped: false,
             selection: Selection::caret(ByteOffset::ZERO),
             history: History::default(),
         };

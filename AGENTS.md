@@ -73,11 +73,15 @@ Known gaps, so nobody assumes they are done:
 - **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar. The mouse
   drives the strip and the wheel; everything else is keyboard, and there is no way to put the caret
   somewhere by clicking.
-- **Virtualization is by block, and the parse is not virtualized.** MDEDIT-17 lays out only the
-  blocks the viewport touches and caches them by content, which took a 245 KB document from 773 ms
-  a keystroke to 8 ms. What is left is a **full re-parse on every keystroke** — about 6 ms of that
-  8 at 245 KB — which is MDEDIT-18. Until then, typing into a large file misses the 3 ms budget it
-  meets at 28 KB.
+- **Startup costs ~300 ms before anything is drawn**, and none of it is the document: a 5-byte file
+  reaches first paint no faster than a 245 KB one. It is winit's window plus wgpu's device and
+  pipeline bring-up. That is what stands between the editor and the ≤50 ms file-open target, and it
+  is measured on every run — `mdedit` prints `launch -> first paint` on exit.
+- **A keystroke re-parses a region, not the document.** MDEDIT-18: an edit re-parses the block it is
+  in plus a block of margin either side, and splices that into the existing analysis. A region
+  cannot see what the rest of the document does to it — an unclosed fence above, a link reference
+  definition below — so the whole document is re-parsed 150 ms after the typing stops. Documents
+  under 16 KB skip all of this and parse whole, exactly as they used to.
 - **A chunk is a whole top-level block.** A document that is one enormous list or one enormous
   paragraph is one chunk, and no cheaper than before — only its *drawing* is culled, line by line.
   Splitting inside a block needs the layout engine to lay out part of one, which none of them does.
