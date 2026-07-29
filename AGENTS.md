@@ -49,6 +49,7 @@ crates/session/         # mdedit-session: tabs as handles, and the session file 
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, and the keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
+spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
   01-editor-landscape.md
@@ -68,8 +69,6 @@ Known gaps, so nobody assumes they are done:
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
   app does not run at all off Windows.
-- **Baseline RSS is around 345 MB, against a 50 MB target.** Measured with one tab open, so it is
-  the renderer rather than anything above it. 200 deferred tabs add nothing measurable on top.
 - **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar, and the
   only mouse handling is the strip. Everything else is keyboard.
 - **No virtualization.** The whole document is laid out every frame, so
@@ -248,7 +247,9 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 **Performance ([`docs/research/06-performance-targets.md`](docs/research/06-performance-targets.md)):**
 
 - Targets are commitments, not aspirations: cold start ≤100 ms, keystroke→pixel p50 ≤3 ms,
-  **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size, baseline RSS ≤50 MB.
+  **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size. Baseline RSS is now split into a
+  floor we do not control and a budget we do — MDEDIT-19 measured an empty wgpu window at 124 MB,
+  so the old ≤50 MB total was unreachable. See `docs/research/06-performance-targets.md`.
 - **Measure p99 and measure on battery.** Every published editor benchmark is a mean on AC power,
   which is the least informative condition — Emacs goes 5.3 ms → 50.5 ms on power-save.
 - A change that regresses a target needs a number in the PR body, not an assurance.

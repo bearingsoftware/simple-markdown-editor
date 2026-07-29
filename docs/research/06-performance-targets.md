@@ -130,11 +130,59 @@ Failures in the incumbents that a viewport-virtualized design makes irrelevant:
 | File open → first paint | **O(1), ≤50 ms at any size** | ≤16 ms | mmap + parse only the visible viewport. This is the bet that makes competitors' numbers irrelevant |
 | File open, fully indexed | ≤10 ms/MB | ≤5 ms/MB | Vim/Helix exceed 200 MB/s; Zed 36, VS Code 26, Sublime 22 |
 | Max file size | **no limit below RAM** | — | **Typora dies at 2 MB** |
-| Baseline RSS | **≤50 MB** | ≤25 MB | Vim's implied ~40 MB; VS Code idles at 30× that |
+| Baseline RSS, editor's own | **≤40 MB over the graphics floor** | ≤20 MB | Revised by MDEDIT-19 — see below. The original ≤50 MB total is unreachable: an empty wgpu window costs 124 MB here |
+| Baseline RSS, total | **≤170 MB on this hardware** | — | Floor plus our budget. Re-measure per machine; the floor is not ours to move |
 | Memory per open file | ≤1.2× file bytes | ≤1.05× | Vim: 240 MB for a 200 MB file |
 | 100 open notes (~50 KB each) | ≤80 MB | ≤60 MB | **No published data exists** — you would set the benchmark |
 | Markdown parse + segment, **viewport** | ≤1 ms | ≤0.5 ms | Measured at 6 KB: 0.42 ms total, 0.11 ms of it segmentation ([04](04-parsing-benchmarks.md)) |
 | Markdown parse + segment, whole 60 KB document | ≤16 ms (one frame) | — | Background/indexing path, not the keystroke path — see below |
+
+
+### The 50 MB baseline was measuring the wrong thing
+
+**Decision, MDEDIT-19 (2026-07-29).** The ≤50 MB baseline RSS target is unreachable on this stack,
+and no amount of care in this codebase will reach it. Measured on Windows 11, Intel integrated
+graphics, release build, 900×700 window:
+
+| Process | Working set | Private |
+|---|---:|---:|
+| Empty winit + wgpu window, all backends | 346.3 MB | 251.7 MB |
+| Empty winit + wgpu window, **DX12 only** | **124.0 MB** | 100.5 MB |
+| Editor, all backends | 345.8 MB | 260.5 MB |
+| Editor, **DX12 only** | **134.4 MB** | 117.5 MB |
+
+The probe is `spikes/gpu-baseline` — a window, a surface, a device, and a render pass that clears to
+a colour and draws nothing. It is re-runnable on other hardware, and it should be re-run before
+anyone treats these numbers as universal.
+
+Two things follow.
+
+**Backend selection was costing 211 MB.** `wgpu::Instance::default()` enables every backend it was
+compiled with, and each initialises its own driver stack — Vulkan and OpenGL were being loaded and
+paid for although nothing here would ever use them. Restricting the instance to DX12 on Windows cut
+the editor from 345.8 MB to 134.4 MB, a 61% reduction, with the hardware adapter unchanged and
+`vulkan-1.dll` no longer loaded at all. That is now what the app does.
+
+**The remaining 124 MB is not ours.** An empty window costs within 1 MB of the entire editor before
+the change, and 124 MB after it. The editor's own contribution is about 10 MB — a 2048² glyph
+atlas held CPU-side and as a texture, an instance buffer, and the document. Targeting 50 MB total
+would mean not using wgpu, which is a decision `02-gui-toolkits.md` already made on other grounds
+and which this does not reopen.
+
+So the target splits: **the editor's own footprint gets a budget we can actually enforce**, and the
+floor gets recorded rather than pretended away. This is the same move MDEDIT-4 made when the
+keystroke budget turned out to be scoped wrongly — the target was not wrong, what it was measuring
+was.
+
+**What would change it:** a lower-level backend, or a wgpu release that stops eagerly initialising
+unused backends. Neither is worth pursuing now. If the floor matters more later — a memory-
+constrained target, or a competitive claim — re-run the probe first, because it answers the question
+in about a minute and costs nothing.
+
+**Not yet measured:** cold start, and file open → first paint at size. RSS was the only target
+nothing had ever measured until MDEDIT-15 needed it, and file open at 239 KiB was incidentally
+measured at 1176 ms against a ≤50 ms target during MDEDIT-17's investigation. Cold start remains
+unmeasured.
 
 ### The 3 ms budget is viewport-scoped
 
