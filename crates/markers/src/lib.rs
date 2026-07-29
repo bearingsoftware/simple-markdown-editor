@@ -290,8 +290,8 @@ pub fn analyze(source: &str) -> Analysis {
 /// It is *not* right when the surrounding text changes what the region means: an unclosed fence
 /// above it makes the whole region code, and a link reference definition anywhere in the document
 /// decides whether `[a]` in the region is a link. A caller that uses this on the keystroke path
-/// therefore owes the document a whole-document [`analyze`] when the typing stops. See
-/// [`mdedit_document::Document::reconcile`].
+/// therefore owes the document a whole-document [`analyze`] when the typing stops — which is what
+/// `mdedit_document`'s `Document::reconcile` is for.
 ///
 /// A region outside the source, or one whose ends are not character boundaries, is clamped and
 /// snapped rather than rejected: a stale viewport must not be able to panic a render.

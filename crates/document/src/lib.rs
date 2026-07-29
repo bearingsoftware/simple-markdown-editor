@@ -39,8 +39,8 @@
 //! once per edit, and MDEDIT-14 built it: undo and redo splice every edit in a group and then
 //! re-parse a single time. Ordinary edits still re-parse each, because each is its own group.
 //!
-//! **Re-segmentation is a full re-parse up to [`WHOLE_DOCUMENT_LIMIT`], and a regional one above
-//! it.** `docs/research/04-parsing-benchmarks.md` measured a whole-document parse at less than a
+//! **Re-segmentation is a full re-parse up to 16 KB, and a regional one above it.**
+//! `docs/research/04-parsing-benchmarks.md` measured a whole-document parse at less than a
 //! frame for 60 KB, which is why every edit did one; at 245 KB it is 14 ms, which is four keystroke
 //! budgets. So an edit to a large buffer re-parses the block it landed in plus a block of margin
 //! either side and splices the result in, and the whole-document parse it skipped happens at

@@ -134,6 +134,7 @@ open stack-corrupting overflow in `serialize()`).
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features
+cargo doc --no-deps --all-features # broken intra-doc links are denied, and CI runs this
 cargo deny check                   # licences + advisories
 cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
 cargo bench -p mdedit-document     # what an undo group costs against typing the same edits
