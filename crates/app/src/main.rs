@@ -26,6 +26,10 @@ fn main() {
 
     #[cfg(windows)]
     {
+        // Stamped first, so "file open to first paint" includes everything the user waited for and
+        // not just the part after the window exists.
+        let launched = std::time::Instant::now();
+
         let text = match mdedit_text_dwrite::DirectWriteText::new() {
             Ok(text) => text,
             Err(err) => {
@@ -106,6 +110,12 @@ fn main() {
 
         // Printed on exit so a manual session doubles as a measurement run, which is how the
         // battery numbers in the PR body are produced.
+        if let Some(painted) = editor.first_paint() {
+            let elapsed = painted.duration_since(launched).as_secs_f64() * 1000.0;
+            let verdict = if elapsed <= 50.0 { "PASS" } else { "FAIL" };
+            println!("\nlaunch -> first paint: {elapsed:.2} ms (target <= 50 ms {verdict})");
+        }
+
         if !editor.latency().is_empty() {
             // Two numbers, because they answer different questions. The first is what this process
             // spends; the second includes waiting for the display, which under Fifo is a refresh

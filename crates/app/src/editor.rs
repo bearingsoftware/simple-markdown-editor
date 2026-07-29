@@ -19,8 +19,10 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event::{
+    ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
+};
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -38,6 +40,9 @@ const CARET_WIDTH: f32 = 2.0;
 /// What a line of text is assumed to cost before it has been measured, as a multiple of its font
 /// size. Only ever applied to chunks that are off screen.
 const ESTIMATED_LINE_RATIO: f32 = 1.4;
+/// How long the typing has to stop before the whole document is re-parsed. Long enough not to fire
+/// between keystrokes at any plausible typing speed, short enough that nobody notices the wait.
+const RECONCILE_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 /// How many laid-out chunks to keep. At a few hundred glyphs each this is tens of megabytes at the
 /// cap, and it is only reached by scrolling through a very large document.
 const MAX_CACHED_LAYOUTS: usize = 512;
@@ -472,6 +477,8 @@ pub struct Editor<T: TextLayout> {
     pending_keystroke: Option<Instant>,
     /// Keystroke to quads-ready, which is the part of a frame this process spends CPU on.
     build: Latency,
+    /// When the first frame was presented, for the file-open target.
+    first_paint: Option<Instant>,
     /// Set if the GPU could not be brought up, for `main` to report on exit.
     gpu_error: Option<GpuError>,
     /// Held so Ctrl+S can be told apart from a plain `s`.
@@ -540,6 +547,7 @@ impl<T: TextLayout> Editor<T> {
             latency: Latency::new(),
             pending_keystroke: None,
             build: Latency::new(),
+            first_paint: None,
             gpu_error: None,
             modifiers: ModifiersState::empty(),
             tab_rects: Vec::new(),
@@ -563,6 +571,15 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn build_latency(&self) -> &Latency {
         &self.build
+    }
+
+    /// When the first frame reached the screen.
+    ///
+    /// The file-open target is stated as *first paint*, not as first window, and the two are not
+    /// close: a window appears before anything has been laid out.
+    #[must_use]
+    pub fn first_paint(&self) -> Option<Instant> {
+        self.first_paint
     }
 
     /// Why the editor could not start, if it could not.
@@ -1604,6 +1621,7 @@ impl<T: TextLayout> Editor<T> {
             self.atlas.mark_clean();
         }
         renderer.draw(&quads, self.theme.background);
+        self.first_paint.get_or_insert_with(Instant::now);
 
         // Sampled after `present` returns, which is the last moment this process controls. See
         // `latency.rs` for exactly what that does and does not include.
@@ -1614,6 +1632,29 @@ impl<T: TextLayout> Editor<T> {
 }
 
 impl<T: TextLayout> ApplicationHandler for Editor<T> {
+    /// Brings the parse up to date once the typing has stopped.
+    ///
+    /// The keystroke path re-parses only the region around an edit, which is what makes a keystroke
+    /// in a large document cost what a keystroke in a small one does. The whole-document parse it
+    /// skips happens here instead, on the timer the last keystroke set — off the path where anyone
+    /// is waiting for it.
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
+            return;
+        }
+        event_loop.set_control_flow(ControlFlow::Wait);
+
+        if self.document_mut().reconcile() {
+            // The parse changed its mind about something, so anything derived from it is suspect.
+            // Rare — see `Document::reconcile` — and the alternative is drawing a stale answer.
+            self.layouts.clear();
+            self.heights.clear();
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -1724,6 +1765,13 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
+                }
+                // An edit into a large document re-parses only the region around it, which cannot
+                // see what the rest of the document does to that region. Come back when the typing
+                // stops and parse the whole thing.
+                if self.document().is_scoped() {
+                    event_loop
+                        .set_control_flow(ControlFlow::WaitUntil(Instant::now() + RECONCILE_AFTER));
                 }
             }
             WindowEvent::RedrawRequested => self.redraw(),

@@ -38,7 +38,7 @@
 //!
 //! [pulldown-cmark#441]: https://github.com/pulldown-cmark/pulldown-cmark/issues/441
 
-use mdedit_offsets::{BlockId, ByteSpan};
+use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
 
 mod classify;
 
@@ -70,6 +70,17 @@ impl Segment {
     #[must_use]
     pub fn is_marker(&self) -> bool {
         matches!(self.kind, SegmentKind::Marker(_))
+    }
+
+    /// The same run, covering a different span.
+    ///
+    /// For a caller splicing two analyses together: an edit moves everything after it, and a run
+    /// straddling the edge of a re-parsed region is trimmed rather than dropped, because segments
+    /// tile and dropping one would leave its bytes covered by nothing.
+    #[must_use]
+    pub fn moved_to(mut self, span: ByteSpan) -> Self {
+        self.span = span;
+        self
     }
 }
 
@@ -222,6 +233,23 @@ impl Block {
     pub fn depth(&self) -> u16 {
         self.depth
     }
+
+    /// The same block, covering a different span. As [`Segment::moved_to`].
+    #[must_use]
+    pub fn moved_to(mut self, span: ByteSpan) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// The same block under a different id.
+    ///
+    /// A [`BlockId`] numbers a block within one analysis, so a list spliced from two of them has to
+    /// be renumbered or two blocks would answer to the same id.
+    #[must_use]
+    pub fn with_id(mut self, id: BlockId) -> Self {
+        self.id = id;
+        self
+    }
 }
 
 /// Everything one parse of a document yields.
@@ -245,6 +273,60 @@ pub struct Analysis {
 #[must_use]
 pub fn analyze(source: &str) -> Analysis {
     classify::analyze(source)
+}
+
+/// Analyses only `region`, as if the rest of `source` were not there.
+///
+/// The spans come back in `source`'s coordinates, so the result splices into a whole-document
+/// analysis. Segments tile `region` exactly, as they tile the whole document in [`analyze`].
+///
+/// # What this can and cannot know
+///
+/// The region is parsed **on its own**. That is exactly right for a region that starts and ends on a
+/// top-level block boundary and contains no construct left open at either edge, which is what a
+/// caller should pass — and it is what makes an edit cost the size of a paragraph rather than the
+/// size of the file.
+///
+/// It is *not* right when the surrounding text changes what the region means: an unclosed fence
+/// above it makes the whole region code, and a link reference definition anywhere in the document
+/// decides whether `[a]` in the region is a link. A caller that uses this on the keystroke path
+/// therefore owes the document a whole-document [`analyze`] when the typing stops — which is what
+/// `mdedit_document`'s `Document::reconcile` is for.
+///
+/// A region outside the source, or one whose ends are not character boundaries, is clamped and
+/// snapped rather than rejected: a stale viewport must not be able to panic a render.
+#[must_use]
+pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
+    let start = floor_boundary(source, region.start().get().min(source.len()));
+    let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
+
+    let mut analysis = classify::analyze(&source[start..end]);
+    if start == 0 {
+        return analysis;
+    }
+    for segment in &mut analysis.segments {
+        segment.span = shift(segment.span, start);
+    }
+    for block in &mut analysis.blocks {
+        block.span = shift(block.span, start);
+    }
+    analysis
+}
+
+fn shift(span: ByteSpan, by: usize) -> ByteSpan {
+    ByteSpan::new(
+        ByteOffset::new(span.start().get() + by),
+        ByteOffset::new(span.end().get() + by),
+    )
+}
+
+/// The character boundary at or before `at`.
+fn floor_boundary(source: &str, at: usize) -> usize {
+    let mut at = at;
+    while at > 0 && !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// Partitions `source` into ordered marker and content runs.
