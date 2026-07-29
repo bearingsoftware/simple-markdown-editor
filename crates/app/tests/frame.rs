@@ -34,10 +34,26 @@ const MARGIN: f32 = 24.0;
 ///
 /// Enough for the frame to have geometry to place, and predictable enough that a wrong offset is
 /// arithmetic rather than a rendering judgement call.
-struct Grid;
+#[derive(Default)]
+struct Grid {
+    /// How many chunks have been through the engine. The whole point of MDEDIT-17 is that this
+    /// stays small however long the document is, so the tests assert on it directly.
+    layouts: usize,
+}
+
+impl Grid {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn layouts(&self) -> usize {
+        self.layouts
+    }
+}
 
 impl TextLayout for Grid {
     fn layout(&mut self, runs: &[StyledRun<'_>], _max_width: f32) -> Result<Layout, TextError> {
+        self.layouts += 1;
         let mut lines: Vec<LayoutLine> = Vec::new();
         let mut pen_x = 0.0;
         let mut row = 0usize;
@@ -125,7 +141,7 @@ fn document_of(lines: usize) -> String {
 }
 
 fn editor(lines: usize) -> Editor<Grid> {
-    let mut editor = Editor::new(&document_of(lines), Grid);
+    let mut editor = Editor::new(&document_of(lines), Grid::new());
     // One frame so the viewport has been measured; scrolling before the first paint has nothing to
     // clamp against, which is correct but not what these tests are about.
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
@@ -317,4 +333,148 @@ fn a_caret_already_on_screen_does_not_move_the_view() {
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     assert_eq!(editor.scroll_offset(), 200.0);
+}
+
+// ---------------------------------------------------------------------------
+// Virtualization: what a frame is allowed to look at (MDEDIT-17).
+// ---------------------------------------------------------------------------
+
+/// A document of separate blocks, so it is cut into many chunks rather than one paragraph.
+fn blocks_document(count: usize) -> String {
+    let mut text = String::new();
+    for n in 0..count {
+        writeln!(text, "## Heading {n}\n\nParagraph {n}.\n")
+            .expect("a String never fails to write");
+    }
+    text
+}
+
+/// The point of the whole ticket: what is off screen is not laid out.
+#[test]
+fn only_the_chunks_on_screen_are_laid_out() {
+    let mut editor = Editor::new(&blocks_document(400), Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let laid_out = editor.text_backend().layouts();
+    assert!(
+        laid_out < 40,
+        "a 400-block document should not lay out 400 blocks to fill 200 pixels: {laid_out}"
+    );
+    assert!(laid_out > 0, "something has to be drawn");
+}
+
+/// The cache is what makes the second frame cheap, and it survives an edit elsewhere.
+#[test]
+fn a_second_frame_lays_nothing_out_again() {
+    let mut editor = Editor::new(&blocks_document(400), Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let first = editor.text_backend().layouts();
+
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let second = editor.text_backend().layouts() - first;
+    assert!(
+        second <= 2,
+        "only the caret's chunk should be laid out again, not {second} of them"
+    );
+}
+
+/// Typing shifts every byte after the caret, so a cache keyed on position would miss everywhere.
+#[test]
+fn editing_the_first_block_does_not_invalidate_the_rest() {
+    let mut editor = Editor::new(&blocks_document(400), Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let before = editor.text_backend().layouts();
+
+    editor
+        .document_mut()
+        .insert(ByteOffset::new(3), "x")
+        .unwrap();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let again = editor.text_backend().layouts() - before;
+    assert!(
+        again <= 2,
+        "the edited chunk should be the only one laid out again, not {again}"
+    );
+}
+
+/// Scrolling somewhere new does lay out what arrives — the cost follows the viewport, not the file.
+#[test]
+fn scrolling_lays_out_what_comes_into_view() {
+    let mut editor = Editor::new(&blocks_document(400), Grid::new());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let before = editor.text_backend().layouts();
+
+    editor.scroll_by(4000.0);
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let arrived = editor.text_backend().layouts() - before;
+    assert!(arrived > 0, "new content has to be measured");
+    assert!(
+        arrived < 40,
+        "and only what is on screen: {arrived} chunks laid out"
+    );
+    assert!(quads.len() > 1, "there is something down there");
+}
+
+/// The acceptance criterion that guards against a cache that returns the wrong layout: what a
+/// chunk draws must not depend on where an identical chunk was drawn before.
+#[test]
+fn identical_blocks_in_different_places_draw_in_different_places() {
+    let source = "same\n\nsame\n\nsame\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let drawn = rows(&quads);
+    assert!(
+        drawn.len() >= 3,
+        "three identical paragraphs occupy three different rows: {drawn:?}"
+    );
+}
+
+/// Concealment is the document's answer, not the renderer's, and a chunk boundary must not change
+/// it. A fence reveals its `` ``` `` from anywhere inside the block — including when the caret's line is
+/// off screen, since the fence is one chunk.
+#[test]
+fn a_fence_reveals_its_markers_from_anywhere_inside_it() {
+    let source = "before\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n\nafter\n";
+    let caret = source.find("let b").expect("the second line of the fence");
+
+    let mut editor = Editor::new(source, Grid::new());
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(caret)));
+    let quads = editor.build_frame(WIDTH, 2000.0, 1.0);
+
+    // The stub draws one glyph per character, so counting quads counts drawn characters. With the
+    // fences revealed there are six more than with them concealed.
+    let revealed = quads.len();
+
+    let mut away = Editor::new(source, Grid::new());
+    away.document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(0)));
+    let concealed = away.build_frame(WIDTH, 2000.0, 1.0).len();
+
+    assert!(
+        revealed > concealed,
+        "the fence markers should be drawn when the caret is inside the block: {revealed} vs {concealed}"
+    );
+}
+
+/// Chunks are laid out separately and stacked, so the arithmetic that joins them has to produce
+/// exactly what one layout of the whole document would have: no lost blank line, no doubled one.
+#[test]
+fn stacked_chunks_land_where_one_layout_would_have_put_them() {
+    let source = "# Title\n\npara\n\nlast\n";
+    let mut editor = Editor::new(source, Grid::new());
+    let quads = editor.build_frame(WIDTH, 2000.0, 1.0);
+
+    // Lines: "# Title", blank, "para", blank, "last". The first row is the caret, which sits at the
+    // top of line 0 rather than on its baseline.
+    let drawn = rows(&quads);
+    assert_eq!(drawn[0], 24, "the caret, at the top of line 0");
+    assert_eq!(
+        &drawn[1..],
+        [glyph_row(0.0), glyph_row(2.0), glyph_row(4.0)],
+        "three lines of text, with a blank line between each pair"
+    );
 }

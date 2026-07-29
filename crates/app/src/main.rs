@@ -107,7 +107,12 @@ fn main() {
         // Printed on exit so a manual session doubles as a measurement run, which is how the
         // battery numbers in the PR body are produced.
         if !editor.latency().is_empty() {
-            println!("\nkeystroke -> present");
+            // Two numbers, because they answer different questions. The first is what this process
+            // spends; the second includes waiting for the display, which under Fifo is a refresh
+            // interval however little work the frame did.
+            println!("\nkeystroke -> quads ready (CPU)");
+            print!("{}", editor.build_latency().report());
+            println!("\nkeystroke -> present (includes the wait for vblank)");
             print!("{}", editor.latency().report());
         }
     }
