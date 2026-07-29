@@ -1,15 +1,18 @@
 //! The editor window.
 //!
 //! Split into a library and a thin binary so the parts that can be tested without a GPU — the
-//! decoration in [`view`] and the atlas packing in [`gpu`] — actually are.
+//! decoration in [`view`], the atlas packing in [`gpu`], the strip geometry in [`tabs`], the
+//! offset arithmetic in [`scroll`], and the frame the four produce — actually are.
 //!
-//! This is the vertical slice from [MDEDIT-11](https://chattersley.atlassian.net/browse/MDEDIT-11):
-//! one hardcoded document, minimal input, and a latency harness. No file I/O, no tabs, no undo, no
-//! scrolling, no virtualization.
+//! Grown from the vertical slice in
+//! [MDEDIT-11](https://chattersley.atlassian.net/browse/MDEDIT-11) through files, undo, tabs and
+//! now scrolling. Still no virtualization: the whole document is laid out every frame, and only
+//! the drawing is confined to the viewport.
 
 pub mod editor;
 pub mod gpu;
 pub mod latency;
+pub mod scroll;
 pub mod tabs;
 pub mod view;
 
