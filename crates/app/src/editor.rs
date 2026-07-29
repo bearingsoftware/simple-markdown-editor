@@ -666,6 +666,19 @@ impl<T: TextLayout> Editor<T> {
     }
 
     /// Asks what to do about a tab with unsaved changes.
+    ///
+    /// Windows only, because `rfd`'s Linux backend needs GTK development headers and would make the
+    /// workspace unbuildable on CI for a dialog only the Windows build can show. Off Windows the
+    /// app exits before opening a window at all, so this is unreachable rather than degraded — and
+    /// it answers Cancel, because if it ever did become reachable, keeping the work is the only
+    /// safe default.
+    #[cfg(not(windows))]
+    fn ask_about_unsaved(_name: &str) -> Unsaved {
+        Unsaved::Cancel
+    }
+
+    /// Asks what to do about a tab with unsaved changes.
+    #[cfg(windows)]
     fn ask_about_unsaved(name: &str) -> Unsaved {
         let answer = rfd::MessageDialog::new()
             .set_title("Unsaved changes")
