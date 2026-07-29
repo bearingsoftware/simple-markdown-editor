@@ -2,7 +2,8 @@
 //!
 //! Split into a library and a thin binary so the parts that can be tested without a GPU — the
 //! decoration in [`view`], the atlas packing in [`gpu`], the strip geometry in [`tabs`], the
-//! offset arithmetic in [`scroll`], the chunking in [`blocks`], the hit-testing in [`hit`], and the
+//! offset arithmetic in [`scroll`], the chunking in [`blocks`], the geometry in [`content`], the
+//! hit-testing in [`hit`], and the
 //! frame they produce — actually are.
 //!
 //! Grown from the vertical slice in
@@ -12,6 +13,7 @@
 //! at. There is still no clipboard.
 
 pub mod blocks;
+pub mod content;
 pub mod editor;
 pub mod gpu;
 pub mod hit;
