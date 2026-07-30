@@ -112,6 +112,33 @@ impl Theme {
     }
 }
 
+/// How the document is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Mode {
+    /// Syntax concealed unless the caret is near it, headings sized, emphasis applied. The editor's
+    /// reason for existing.
+    #[default]
+    Preview,
+    /// Every byte on screen, at one size and weight: the file as it actually is.
+    ///
+    /// Not "preview with the markers left in" — that is what the caret already does locally, and it
+    /// would still lie about the sizes. Plain means plain: no heading sizes, no bold, no italics, no
+    /// monospacing. Colours stay, because tinting syntax does not misrepresent what is there.
+    Plain,
+}
+
+/// Everything the decoration step needs to know about how to draw, other than the document.
+///
+/// A pair rather than two arguments because they travel together everywhere and the alternative is a
+/// six-argument function.
+#[derive(Debug, Clone, Copy)]
+pub struct Decoration<'a> {
+    /// Sizes and colours.
+    pub theme: &'a Theme,
+    /// Concealed, or shown as it is.
+    pub mode: Mode,
+}
+
 /// One run of text to draw, with its colour.
 ///
 /// Colour is deliberately not part of [`mdedit_text::TextStyle`]: it does not affect shaping, and
@@ -160,7 +187,11 @@ impl DecorState {
 #[must_use]
 pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<ViewRun> {
     let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(doc.len_bytes()));
-    build_runs_in(doc, selection, theme, whole, &doc.to_string())
+    let decoration = Decoration {
+        theme,
+        mode: Mode::Preview,
+    };
+    build_runs_in(doc, selection, decoration, whole, &doc.to_string())
 }
 
 /// The runs to draw for the part of `doc` covered by `within`.
@@ -175,13 +206,14 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
 pub fn build_runs_in(
     doc: &Document,
     selection: Selection,
-    theme: &Theme,
+    decoration: Decoration<'_>,
     within: ByteSpan,
     text: &str,
 ) -> Vec<ViewRun> {
     let mut builder = Builder {
         runs: Vec::new(),
-        theme,
+        theme: decoration.theme,
+        mode: decoration.mode,
         doc,
         state: DecorState::default(),
     };
@@ -204,7 +236,8 @@ pub fn build_runs_in(
         let piece = span.slice(text);
         // Asked of the real selection, not a chunk-local one: whether a marker is revealed is a
         // property of the document, and a caret just outside this chunk can still reveal one in it.
-        let revealed = doc.is_revealed(segment, selection);
+        // In plain mode nothing is concealed, so there is nothing to ask.
+        let revealed = decoration.mode == Mode::Plain || doc.is_revealed(segment, selection);
 
         match segment.kind() {
             SegmentKind::Marker(marker) => {
@@ -244,6 +277,7 @@ enum Role {
 struct Builder<'a> {
     runs: Vec<ViewRun>,
     theme: &'a Theme,
+    mode: Mode,
     doc: &'a Document,
     state: DecorState,
 }
@@ -264,6 +298,13 @@ impl Builder<'_> {
 
     /// The style for text at `offset`, combining block structure with inline state.
     fn style_at(&self, offset: ByteOffset, role: Role) -> TextStyle {
+        // Plain mode is one size and one weight, all the way down. Anything else — a heading still
+        // large, a fence still monospaced — would be preview wearing its markers, which is not what
+        // was asked for and not what the file looks like.
+        if self.mode == Mode::Plain {
+            return TextStyle::body(self.theme.body_size);
+        }
+
         // Innermost is what governs: code content has no child blocks, so a byte inside a fence
         // resolves to the code block, and a heading's bytes resolve to the heading.
         let kind = self.doc.block_at(offset).map(Block::kind);

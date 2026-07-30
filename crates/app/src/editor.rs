@@ -540,6 +540,8 @@ pub struct Editor<T: TextLayout> {
     prompt: Box<dyn UnsavedPrompt>,
     /// Asks where to save something that has nowhere to go. Declines by default.
     pick_save_path: SavePathPicker,
+    /// Concealed, or shown as it is. See [`crate::view::Mode`].
+    mode: view::Mode,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -618,6 +620,7 @@ impl<T: TextLayout> Editor<T> {
             clipboard: Box::new(System),
             prompt: Box::new(KeepEverything),
             pick_save_path: Box::new(|_| None),
+            mode: view::Mode::default(),
             menu: None,
             menu_proxy: None,
         }
@@ -1117,6 +1120,12 @@ impl<T: TextLayout> Editor<T> {
                 self.select_all();
                 true
             }
+            // Typora's binding for the same idea, which is the closest thing to a convention a
+            // WYSIWYG Markdown editor has.
+            "/" => {
+                self.toggle_mode();
+                true
+            }
             _ => false,
         }
     }
@@ -1551,6 +1560,35 @@ impl<T: TextLayout> Editor<T> {
             ],
             self.theme.marker,
         ));
+    }
+
+    /// Switches between the previewed view and the raw markup.
+    ///
+    /// A rendering mode, not a document mode: the buffer, the parse and the caret's byte are
+    /// untouched. Only what is drawn changes.
+    pub fn toggle_mode(&mut self) {
+        self.mode = match self.mode {
+            view::Mode::Preview => view::Mode::Plain,
+            view::Mode::Plain => view::Mode::Preview,
+        };
+        // The caret is on the same byte, but that byte is somewhere else on screen now — concealed
+        // markers have appeared, and every heading has changed size. Bring it back into view rather
+        // than leaving the reader hunting for it.
+        self.follow_caret = true;
+    }
+
+    /// Which view the document is drawn in.
+    #[must_use]
+    pub fn mode(&self) -> view::Mode {
+        self.mode
+    }
+
+    /// How the document should be drawn right now.
+    fn decoration(&self) -> view::Decoration<'_> {
+        view::Decoration {
+            theme: &self.theme,
+            mode: self.mode,
+        }
     }
 
     /// What the chrome has taken out of the window.
@@ -2014,7 +2052,13 @@ impl<T: TextLayout> Editor<T> {
             .iter()
             .enumerate()
             .map(|(index, chunk)| {
-                ChunkKey::of(chunk, chunk.span.slice(&text), index == last, width)
+                ChunkKey::of(
+                    chunk,
+                    chunk.span.slice(&text),
+                    index == last,
+                    width,
+                    self.mode,
+                )
             })
             .collect();
 
@@ -2122,7 +2166,7 @@ impl<T: TextLayout> Editor<T> {
             let runs = view::build_runs_in(
                 self.document(),
                 frame.selection,
-                &self.theme,
+                self.decoration(),
                 chunk.span,
                 &frame.text,
             );
@@ -2211,7 +2255,7 @@ impl<T: TextLayout> Editor<T> {
         let runs = view::build_runs_in(
             self.document(),
             frame.selection,
-            &self.theme,
+            self.decoration(),
             chunk.span,
             &frame.text,
         );
@@ -2306,7 +2350,11 @@ impl<T: TextLayout> Editor<T> {
         if (self.scroll.offset() - anchor.offset).abs() > f32::EPSILON {
             return;
         }
-        let Some(index) = frame.keys.iter().position(|key| *key == anchor.key) else {
+        let Some(index) = frame
+            .keys
+            .iter()
+            .position(|key| key.content == anchor.content)
+        else {
             return;
         };
         self.scroll.set(
@@ -2323,7 +2371,7 @@ impl<T: TextLayout> Editor<T> {
             .partition_point(|top| *top <= offset)
             .saturating_sub(1);
         self.anchor = frame.keys.get(index).map(|key| Anchor {
-            key: *key,
+            content: key.content,
             into_chunk: offset - frame.tops[index],
             offset,
         });
@@ -2643,10 +2691,14 @@ struct ChunkKey {
     /// Whether this is the document's last chunk, which decides whether its trailing empty line is
     /// a line of its own or the start of the next chunk.
     last: bool,
+    /// The same bytes lay out differently concealed and revealed, so the mode is part of what
+    /// identifies a layout. In the key rather than clearing the cache on a toggle, so switching back
+    /// and forth is free after the first time.
+    mode: view::Mode,
 }
 
 impl ChunkKey {
-    fn of(chunk: &blocks::Chunk, body: &str, last: bool, width: f32) -> Self {
+    fn of(chunk: &blocks::Chunk, body: &str, last: bool, width: f32, mode: view::Mode) -> Self {
         let mut hasher = DefaultHasher::new();
         chunk.kind.hash(&mut hasher);
         body.hash(&mut hasher);
@@ -2654,6 +2706,7 @@ impl ChunkKey {
             content: hasher.finish(),
             width: width.to_bits(),
             last,
+            mode,
         }
     }
 }
@@ -2707,7 +2760,13 @@ impl Cached {
 /// Where the top of the viewport is resting, so a measurement below it does not move the page.
 #[derive(Debug, Clone, Copy)]
 struct Anchor {
-    key: ChunkKey,
+    /// The chunk's *content*, not its whole key.
+    ///
+    /// Deliberately: the key carries the drawing mode, so anchoring on it would lose the anchor at
+    /// exactly the moment it is most wanted — switching between preview and plain changes every
+    /// chunk's height at once, and without an anchor the reader would be thrown somewhere else in
+    /// the document.
+    content: u64,
     /// How far into that chunk the viewport's top edge sits.
     into_chunk: f32,
     /// The scroll offset when this was taken. If it has changed, the user has scrolled and the
