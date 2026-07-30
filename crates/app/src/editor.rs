@@ -37,7 +37,21 @@ use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::prompt::{KeepEverything, Unsaved, UnsavedPrompt};
 use crate::scroll::{self, Scroll};
+use crate::status;
 use crate::tabs;
+
+/// The status bar's right-hand fields.
+const RIGHT: usize = 0;
+/// The status bar's breadcrumb.
+const TRAIL: usize = 1;
+
+/// A short string of chrome, laid out and kept until it changes.
+#[derive(Debug, Clone)]
+struct Label {
+    text: String,
+    glyphs: Vec<mdedit_text::PositionedGlyph>,
+    width: f32,
+}
 use crate::view::{self, Rgba, Theme};
 use mdedit_menu_win::{Command, MenuBar};
 
@@ -552,6 +566,24 @@ pub struct Editor<T: TextLayout> {
     config: Config,
     /// The ten digits and their advance, laid out once. See [`Self::digits`].
     digits: Option<[(GlyphKey, f32); 10]>,
+    /// The last word count, and `None` until one has finished.
+    ///
+    /// Counted on the idle timer rather than per frame — see [`crate::status`] — so this is what the
+    /// status bar shows, deliberately a moment behind while typing.
+    words: Option<usize>,
+    /// The status bar's two strings, laid out.
+    ///
+    /// Chrome is redrawn every frame and the text engine is the expensive part of drawing it, so
+    /// each side is laid out only when what it says changes. The breadcrumb changes when the caret
+    /// crosses a heading; the right-hand fields change when it moves at all — which is once per
+    /// keystroke rather than once per frame, and that is the difference worth having.
+    status_labels: [Option<Label>; 2],
+    /// Which tab [`Self::words`] was counted from.
+    ///
+    /// Tracked rather than cleared at each of the nine places that activate a tab, because a count
+    /// that belongs to the tab you just left is not stale, it is wrong — and one forgotten call site
+    /// is a bug nobody would see until they switched files.
+    counted_for: Option<usize>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -633,6 +665,9 @@ impl<T: TextLayout> Editor<T> {
             mode: view::Mode::default(),
             config: Config::default(),
             digits: None,
+            words: None,
+            status_labels: [None, None],
+            counted_for: None,
             menu: None,
             menu_proxy: None,
         }
@@ -1515,10 +1550,168 @@ impl<T: TextLayout> Editor<T> {
             }
         }
 
+        // Last, so it covers the document rather than the other way round. The bar's inset keeps
+        // text out of it, but a caret revealed at the very bottom of the viewport can still round
+        // into the top pixel of the bar.
+        self.draw_status_bar(&mut quads, width, height, scale);
+
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the status bar across the foot of the window.
+    ///
+    /// The breadcrumb goes left and gets whatever room the right-hand fields leave, because it is
+    /// the only part whose length the document decides. Everything on the right is short and
+    /// bounded, so it is measured and placed from the right edge.
+    fn draw_status_bar(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        width: f32,
+        height: f32,
+        scale: f32,
+    ) {
+        let logical_height = height / scale;
+        let logical_width = width / scale;
+        let top = logical_height - status::BAR_HEIGHT;
+
+        quads.push(Self::solid(
+            [
+                0.0,
+                top * scale,
+                width,
+                status::BAR_HEIGHT.mul_add(scale, 1.0),
+            ],
+            self.theme.strip,
+        ));
+
+        let style = TextStyle::body(self.theme.body_size * 0.85);
+        let baseline = top + status::BAR_HEIGHT * 0.68;
+
+        // The one time a count happens on a drawing path: a document nobody has typed in yet has
+        // never set the idle timer, so without this it would show no count until first edited. It
+        // costs one walk of the buffer, once per document — a keystroke leaves a count in place, so
+        // it cannot recur on the path this is kept off.
+        if self.words.is_none() || self.counted_for != self.workspace.active() {
+            self.recount_words();
+        }
+
+        let head = self.document().selection().head();
+        let (line, column) = self.document().line_and_column(head);
+        let position = status::position(line.get(), column.get());
+
+        let format = self
+            .workspace
+            .active_open()
+            .and_then(|open| open.file.as_ref().map(mdedit_file::LoadedFile::format));
+        let details = status::details(
+            format.map_or("UTF-8", |format| format.encoding()),
+            format.map_or_else(
+                // An untitled buffer has no file to have detected anything from, so it will be
+                // written with whatever `Newline::default` is until it is saved somewhere.
+                mdedit_file::Newline::default,
+                |format| format.newline(),
+            ),
+            self.words,
+        );
+
+        let right_text = format!("{position}   {details}");
+        let right_width = self.status_label(RIGHT, &right_text, style);
+        let right_x = (logical_width - status::PADDING - right_width).max(status::PADDING);
+        self.draw_status_label(quads, RIGHT, right_x, baseline, self.theme.marker, scale);
+
+        let steps: Vec<String> = self
+            .document()
+            .heading_trail(head)
+            .iter()
+            .map(|heading| self.document().heading_text(heading))
+            .collect();
+        let trail = status::breadcrumb(&steps);
+        self.status_label(TRAIL, &trail, style);
+        if !trail.is_empty() {
+            self.draw_status_label(
+                quads,
+                TRAIL,
+                status::PADDING,
+                baseline,
+                self.theme.text,
+                scale,
+            );
+        }
+    }
+
+    /// Lays a status-bar string out if it has changed, and returns its width.
+    fn status_label(&mut self, slot: usize, text: &str, style: TextStyle) -> f32 {
+        if let Some(label) = &self.status_labels[slot] {
+            if label.text == text {
+                return label.width;
+            }
+        }
+
+        let run = StyledRun {
+            text,
+            style,
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        };
+        let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
+            self.status_labels[slot] = None;
+            return 0.0;
+        };
+        let glyphs: Vec<_> = layout.glyphs().copied().collect();
+        let width = glyphs
+            .iter()
+            .map(|glyph| glyph.pos.x + glyph.advance)
+            .fold(0.0_f32, f32::max);
+
+        self.status_labels[slot] = Some(Label {
+            text: text.to_owned(),
+            glyphs,
+            width,
+        });
+        width
+    }
+
+    /// Draws a slot that [`Self::status_label`] has already laid out.
+    ///
+    /// The label is moved out and put back rather than cloned, because rasterising needs `&mut self`
+    /// and a per-frame copy of the glyphs would give back some of what the cache just saved.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_status_label(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        slot: usize,
+        x: f32,
+        baseline: f32,
+        colour: Rgba,
+        scale: f32,
+    ) {
+        let Some(label) = self.status_labels[slot].take() else {
+            return;
+        };
+        for glyph in &label.glyphs {
+            let Some(entry) = self.entry_for(glyph.key, scale) else {
+                continue;
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    (x + glyph.pos.x) * scale + px_i(entry.left),
+                    baseline * scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [colour.r, colour.g, colour.b, colour.a],
+            });
+        }
+        self.status_labels[slot] = Some(label);
+    }
+
+    /// Recounts the words. Called on the idle timer, never on the keystroke path.
+    fn recount_words(&mut self) {
+        self.words = Some(status::count_words(&self.document().rope().to_string()));
+        self.counted_for = self.workspace.active();
     }
 
     /// Draws what the input method is composing, at the caret.
@@ -1635,6 +1828,7 @@ impl<T: TextLayout> Editor<T> {
         Insets {
             top: self.strip_height(),
             left: self.gutter_width(),
+            bottom: status::BAR_HEIGHT,
             ..Insets::default()
         }
     }
@@ -1779,6 +1973,8 @@ impl<T: TextLayout> Editor<T> {
                 glyph,
                 label_style,
                 close_x + close_width / 2.0 - 4.0,
+                // Placed so the label sits centred in the strip.
+                tabs::STRIP_HEIGHT * 0.68,
                 colour,
                 scale,
                 close_width,
@@ -1790,6 +1986,7 @@ impl<T: TextLayout> Editor<T> {
                     name,
                     label_style,
                     rect.label_x(),
+                    tabs::STRIP_HEIGHT * 0.68,
                     if is_active {
                         self.theme.text
                     } else {
@@ -1804,7 +2001,10 @@ impl<T: TextLayout> Editor<T> {
         quads
     }
 
-    /// Draws one short string into the strip, clipped to `max_width`.
+    /// Draws one short string of chrome, clipped to `max_width`.
+    ///
+    /// `baseline` is in window pixels, so the same call serves the strip at the top and the status
+    /// bar at the bottom.
     #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
     fn draw_label(
         &mut self,
@@ -1812,6 +2012,7 @@ impl<T: TextLayout> Editor<T> {
         text: &str,
         style: TextStyle,
         x: f32,
+        baseline: f32,
         colour: Rgba,
         scale: f32,
         max_width: f32,
@@ -1824,8 +2025,6 @@ impl<T: TextLayout> Editor<T> {
         let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
             return;
         };
-        // Baseline placed so the label sits centred in the strip.
-        let baseline = tabs::STRIP_HEIGHT * 0.68;
 
         let glyphs: Vec<_> = layout.glyphs().copied().collect();
         for glyph in glyphs {
@@ -2670,11 +2869,20 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
         }
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        if self.document_mut().reconcile() {
+        let reparsed = self.document_mut().reconcile();
+        if reparsed {
             // The parse changed its mind about something, so anything derived from it is suspect.
             // Rare — see `Document::reconcile` — and the alternative is drawing a stale answer.
             self.layouts.clear();
             self.heights.clear();
+        }
+
+        // The other thing too expensive to do per keystroke. It shares this timer rather than having
+        // its own, so typing schedules one wake-up rather than two.
+        let before = self.words;
+        self.recount_words();
+
+        if reparsed || before != self.words {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }

@@ -54,10 +54,12 @@
 use std::ops::Range;
 
 mod history;
+pub mod outline;
 
 use history::History;
 use mdedit_markers::{Block, BlockKind, Segment, SegmentKind};
 use mdedit_offsets::{BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
+use outline::Heading;
 use ropey::Rope;
 
 /// Why an edit was rejected.
@@ -178,6 +180,71 @@ impl Document {
             .iter()
             .filter(|block| block.span().start() <= offset && offset < block.span().end())
             .max_by_key(|block| block.depth())
+    }
+
+    /// The heading trail enclosing `offset`, outermost first. See [`outline::heading_trail`].
+    #[must_use]
+    pub fn heading_trail(&self, offset: ByteOffset) -> Vec<Heading> {
+        outline::heading_trail(&self.blocks, offset)
+    }
+
+    /// A heading's text, with its syntax left out.
+    ///
+    /// Taken from the segments rather than by trimming `#` and whitespace, because the segments are
+    /// the one place that knows which bytes are syntax — that is what they are for, and a setext
+    /// heading's markers are on a different line from its text, which no amount of trimming the
+    /// front would find.
+    #[must_use]
+    pub fn heading_text(&self, heading: &Heading) -> String {
+        let span = heading.span();
+        let mut text = String::new();
+        // Segments tile the buffer in order, so the first one that reaches into this heading can be
+        // found rather than scanned to. Walking from byte zero instead costs the whole document on
+        // every call, which on a large file is the difference between a breadcrumb being free and
+        // it showing up in a keystroke.
+        let first = self
+            .segments
+            .partition_point(|segment| segment.span().end() <= span.start());
+        for segment in &self.segments[first..] {
+            if segment.span().start() >= span.end() {
+                break;
+            }
+            if segment.is_marker() {
+                continue;
+            }
+            // Clipped rather than skipped. Segments tile the whole buffer and a block's span ends
+            // mid-segment: the content run after `# Guide` carries straight on into the blank line
+            // and the paragraph below it, so taking it whole puts the next paragraph in the
+            // breadcrumb.
+            let start = segment.span().start().max(span.start());
+            let end = segment.span().end().min(span.end());
+            if start >= end {
+                continue;
+            }
+            text.push_str(&self.slice(ByteSpan::new(start, end)));
+        }
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The bytes of a span, as a string.
+    fn slice(&self, span: ByteSpan) -> String {
+        let start = self.text.byte_to_char(span.start().get());
+        let end = self.text.byte_to_char(span.end().get());
+        self.text.slice(start..end).to_string()
+    }
+
+    /// Which source line an offset is on, and how many characters into it, both counting from one.
+    ///
+    /// **Characters, not bytes and not columns.** A status bar saying "Col 4" in the middle of an
+    /// emoji would be lying, and one that counted a tab as eight would be answering a question about
+    /// a terminal rather than about this document. `ByteOffset` and `CharOffset` exist as separate
+    /// types precisely so this cannot be fudged.
+    #[must_use]
+    pub fn line_and_column(&self, offset: ByteOffset) -> (LineIndex, CharOffset) {
+        let byte = offset.get().min(self.text.len_bytes());
+        let line = self.text.byte_to_line(byte);
+        let column = self.text.byte_to_char(byte) - self.text.line_to_char(line);
+        (LineIndex::new(line), CharOffset::new(column))
     }
 
     /// The innermost code block containing `offset`, if there is one.

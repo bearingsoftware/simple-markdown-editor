@@ -14,6 +14,7 @@ use std::fmt::Write as _;
 
 use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
+use mdedit_app::status::BAR_HEIGHT;
 use mdedit_app::tabs::STRIP_HEIGHT;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
@@ -26,6 +27,12 @@ use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT, MARGIN};
 /// One line, as a whole number of pixels: the tests compare rounded rows, so the step has to be
 /// expressible as one too.
 const LINE_STEP: i32 = 20;
+
+/// The status bar's two strings — the breadcrumb, and the right-hand fields.
+///
+/// They are laid out when what they say changes and not otherwise, so this is a per-*edit* cost and
+/// never a per-frame one. Named here so a test's budget says which part of it is chrome.
+const CHROME_LABELS: usize = 2;
 
 /// A window 200 device-independent pixels tall below the margin, at scale 1.
 const WIDTH: f32 = 400.0;
@@ -47,8 +54,13 @@ fn editor(lines: usize) -> Editor<Grid> {
     editor
 }
 
-/// The vertical position of every quad drawn, rounded so float noise does not defeat comparison.
-fn rows(quads: &[QuadInstance]) -> Vec<i32> {
+/// The vertical position of every quad the *document* drew, rounded so float noise does not defeat
+/// comparison.
+///
+/// The status bar draws its own glyphs across the foot of every window, and they are not what any of
+/// these tests are about — so anything at or below where it starts is left out. `bar_top` is
+/// [`status_bar_top`] for whatever height the frame was built at.
+fn rows_above(quads: &[QuadInstance], bar_top: i32) -> Vec<i32> {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "quad positions are small pixel coordinates"
@@ -56,10 +68,25 @@ fn rows(quads: &[QuadInstance]) -> Vec<i32> {
     let mut rows: Vec<i32> = quads
         .iter()
         .map(|quad| quad.rect[1].round() as i32)
+        .filter(|y| *y < bar_top)
         .collect();
     rows.sort_unstable();
     rows.dedup();
     rows
+}
+
+/// Where the status bar starts, for a window `height` tall.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "window heights in these tests are small whole pixels"
+)]
+fn status_bar_top(height: f32) -> i32 {
+    (height - BAR_HEIGHT).round() as i32
+}
+
+/// [`rows_above`] for the standard window these tests use.
+fn rows(quads: &[QuadInstance]) -> Vec<i32> {
+    rows_above(quads, status_bar_top(HEIGHT))
 }
 
 /// Where the glyphs of line `n` land on screen when the view has not moved.
@@ -153,9 +180,10 @@ fn the_view_stops_at_the_end_of_the_document() {
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     // 101 lines at 20 px — the trailing newline opens a line of its own, as it does in any editor
-    // — plus a bottom margin, less the 200 px of visible document.
+    // — plus a bottom margin, less the visible document: the 200 px below the top margin, less what
+    // the status bar takes off the foot.
     let content = 101.0f32.mul_add(LINE_HEIGHT, MARGIN);
-    assert_eq!(editor.scroll_offset(), content - 200.0);
+    assert_eq!(editor.scroll_offset(), content - (200.0 - BAR_HEIGHT));
 }
 
 #[test]
@@ -291,8 +319,12 @@ fn editing_the_first_block_does_not_invalidate_the_rest() {
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     let again = editor.text_backend().layouts() - before;
+    // Two for the chunk, and up to two more for the status bar: this edit moves the caret, so the
+    // "Ln, Col" fields really do say something new, and it lands in the first heading, so the
+    // breadcrumb does too. Those are the chrome's whole per-edit cost — see `Editor::status_label`,
+    // which is what keeps them from being laid out per *frame* rather than per change.
     assert!(
-        again <= 2,
+        again <= 2 + CHROME_LABELS,
         "the edited chunk should be the only one laid out again, not {again}"
     );
 }
@@ -369,7 +401,7 @@ fn stacked_chunks_land_where_one_layout_would_have_put_them() {
 
     // Lines: "# Title", blank, "para", blank, "last". The first row is the caret, which sits at the
     // top of line 0 rather than on its baseline.
-    let drawn = rows(&quads);
+    let drawn = rows_above(&quads, status_bar_top(2000.0));
     assert_eq!(drawn[0], 24, "the caret, at the top of line 0");
     assert_eq!(
         &drawn[1..],
@@ -670,7 +702,15 @@ fn chrome_moves_the_glyphs_by_exactly_its_own_height() {
         reason = "the strip is thirty pixels tall"
     )]
     let step = STRIP_HEIGHT.round() as i32;
-    let moved: Vec<i32> = rows(&bare_quads).into_iter().map(|y| y + step).collect();
+    let bar_top = status_bar_top(HEIGHT);
+    // A row near the foot moves down past the status bar and stops being drawn, which is the strip
+    // taking room rather than the arithmetic going wrong — so the comparison is over the rows that
+    // are still on screen afterwards.
+    let moved: Vec<i32> = rows(&bare_quads)
+        .into_iter()
+        .map(|y| y + step)
+        .filter(|y| *y < bar_top)
+        .collect();
     let after = rows(&tabbed_quads);
     assert!(
         moved.iter().all(|y| after.contains(y)),

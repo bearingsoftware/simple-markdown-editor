@@ -171,10 +171,12 @@ fn a_wrapped_line_is_numbered_once() {
     let quads = editor.build_frame(narrow, HEIGHT, 1.0);
     let left = editor.content_rect().left_edge();
 
-    // Numbers are the only thing drawn left of where the text starts.
+    // Numbers are the only thing drawn left of where the text starts and above the status bar,
+    // whose breadcrumb also begins left of the text.
+    let bar_top = HEIGHT - mdedit_app::status::BAR_HEIGHT;
     let numbered: BTreeSet<i32> = quads
         .iter()
-        .filter(|quad| quad.rect[0] < left)
+        .filter(|quad| quad.rect[0] < left && quad.rect[1] < bar_top)
         .map(|quad| {
             #[allow(
                 clippy::cast_possible_truncation,
@@ -195,7 +197,7 @@ fn a_wrapped_line_is_numbered_once() {
     // And the long line really did wrap, or this proves nothing.
     let rows: BTreeSet<i32> = quads
         .iter()
-        .filter(|quad| quad.rect[0] >= left)
+        .filter(|quad| quad.rect[0] >= left && quad.rect[1] < bar_top)
         .map(|quad| {
             #[allow(
                 clippy::cast_possible_truncation,

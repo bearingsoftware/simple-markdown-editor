@@ -40,7 +40,8 @@ crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, Line
 crates/markers/         # mdedit-markers: partitions source into marker and content spans, and
                         #   reports block extents — one parse for both
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
-                        #   selection and the reveal-on-cursor predicate
+                        #   selection, the reveal-on-cursor predicate, and the heading trail to a
+                        #   position
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the two
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
@@ -49,8 +50,8 @@ crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsa
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
 crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
-                        #   step, per-block layout and its cache, the settings file, and the
-                        #   keystroke latency harness. Binary: `mdedit`.
+                        #   step, per-block layout and its cache, the settings file, the status
+                        #   bar, and the keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
 docs/research/          # 7 briefs; read README.md first
@@ -83,9 +84,20 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
-- **There is a File and Edit menu, and no other chrome.** No status bar, no scrollbar, no View menu,
-  no context menu on right-click, no recent files. The plain-markup toggle is Ctrl+/ and has no menu
-  item, because a View menu was out of MDEDIT-25's scope.
+- **There is a File and Edit menu and a status bar, and no other chrome.** No scrollbar, no View
+  menu, no context menu on right-click, no recent files. The plain-markup toggle is Ctrl+/ and has no
+  menu item, because a View menu was out of MDEDIT-25's scope.
+- **The status bar's word count lags, deliberately.** It is recomputed on the same idle timer that
+  runs the whole-document re-parse 150 ms after typing stops, because counting words is a walk of the
+  buffer and doing it per frame would undo MDEDIT-17 and MDEDIT-18. While you type, the number shown
+  is the one from before you started. A document nobody has typed in yet is counted once, on its
+  first frame.
+- **The breadcrumb shows headings, and nothing else.** A caret above the document's first heading
+  gets an empty breadcrumb rather than a root, and a long trail is truncated rather than ellipsised
+  or scrolled. Nothing in the bar is clickable.
+- **Line and column count characters.** Not bytes, and not display columns — a tab is one column
+  here. `ByteOffset` and `CharOffset` exist as separate types so this cannot be fudged; see
+  `Document::line_and_column`.
 - **The drawing mode is global and not remembered.** Toggling to plain markup switches every tab,
   and the editor opens previewed every time — the session file records handles rather than view
   state, and there is no config to put a default in until MDEDIT-22.
