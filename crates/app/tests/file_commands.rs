@@ -15,9 +15,11 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use mdedit_app::clipboard::Clipboard;
 use mdedit_app::editor::Editor;
 use mdedit_app::prompt::{Unsaved, UnsavedPrompt};
 use mdedit_document::Selection;
+use mdedit_menu_win::Command;
 use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
@@ -383,4 +385,138 @@ fn an_untitled_buffer_is_not_closed_by_a_save_that_cannot_happen() {
         "the buffer is still here, with its contents"
     );
     assert_eq!(editor.document().to_string(), "would be lost");
+}
+
+// ---------------------------------------------------------------------------
+// The menu, as commands. The bar itself is native and cannot be clicked by a test;
+// `apply_command` is what every item ends up calling, and that can be.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn new_from_the_menu_opens_an_untitled_buffer() {
+    let mut editor = Editor::new("", Grid::new());
+    assert!(editor.apply_command(Command::New));
+    assert_eq!(editor.workspace().tabs().len(), 1);
+    assert!(editor.workspace().tabs()[0].is_untitled());
+}
+
+#[test]
+fn save_from_the_menu_writes_the_visible_tab() {
+    let dir = TempDir::new().unwrap();
+    let one = write(&dir, "one.md", "one\n");
+    let mut editor = open_on(&[one.as_path()]);
+
+    let end = ByteOffset::new(editor.document().len_bytes());
+    editor.document_mut().set_selection(Selection::caret(end));
+    editor.insert_text("more\n");
+    editor.apply_command(Command::Save);
+
+    assert_eq!(std::fs::read_to_string(&one).unwrap(), "one\nmore\n");
+}
+
+/// Save As with nobody to ask must not write somewhere nobody chose.
+#[test]
+fn save_as_without_a_picker_does_nothing() {
+    let mut editor = Editor::new("", Grid::new());
+    editor.apply_command(Command::New);
+    editor.insert_text("content");
+
+    assert!(!editor.apply_command(Command::SaveAs));
+    assert!(editor.workspace().tabs()[0].is_untitled());
+}
+
+#[test]
+fn save_as_from_the_menu_uses_the_path_the_picker_returns() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("chosen.md");
+    let chosen = target.clone();
+
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_file_picker(Box::new(move |_| Some(chosen.clone())));
+    editor.apply_command(Command::New);
+    editor.insert_text("picked\n");
+
+    assert!(editor.apply_command(Command::SaveAs));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "picked\n");
+    assert_eq!(editor.workspace().tabs()[0].display_name(), "chosen.md");
+}
+
+/// The picker is offered the current name, so the dialog opens on something sensible.
+#[test]
+fn the_picker_is_told_what_the_tab_is_called() {
+    let seen = Rc::new(RefCell::new(None));
+    let recorder = Rc::clone(&seen);
+
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_file_picker(Box::new(move |suggested| {
+        *recorder.borrow_mut() = suggested.map(str::to_owned);
+        None
+    }));
+    editor.apply_command(Command::New);
+    editor.apply_command(Command::SaveAs);
+
+    assert_eq!(seen.borrow().as_deref(), Some("Untitled 1"));
+}
+
+#[test]
+fn undo_and_redo_from_the_menu_move_the_buffer() {
+    let mut editor = Editor::new("start\n", Grid::new());
+    editor.insert_text("typed");
+    assert_eq!(editor.document().to_string(), "typedstart\n");
+
+    assert!(editor.apply_command(Command::Undo));
+    assert_eq!(editor.document().to_string(), "start\n");
+
+    assert!(editor.apply_command(Command::Redo));
+    assert_eq!(editor.document().to_string(), "typedstart\n");
+}
+
+#[test]
+fn cut_copy_and_paste_from_the_menu_reach_the_clipboard() {
+    let clipboard = Fake::default();
+    let mut editor = Editor::new("hello world\n", Grid::new());
+    editor.with_clipboard(Box::new(clipboard.clone()));
+
+    editor
+        .document_mut()
+        .set_selection(Selection::new(ByteOffset::new(0), ByteOffset::new(5)));
+    editor.apply_command(Command::Copy);
+    assert_eq!(clipboard.contents().as_deref(), Some("hello"));
+
+    editor.apply_command(Command::Cut);
+    assert_eq!(editor.document().to_string(), " world\n");
+
+    editor.apply_command(Command::Paste);
+    assert_eq!(editor.document().to_string(), "hello world\n");
+}
+
+#[test]
+fn close_all_from_the_menu_empties_the_workspace() {
+    let dir = TempDir::new().unwrap();
+    let one = write(&dir, "one.md", "one\n");
+    let two = write(&dir, "two.md", "two\n");
+
+    let mut editor = open_on(&[one.as_path(), two.as_path()]);
+    assert!(editor.apply_command(Command::CloseAll));
+    assert!(editor.workspace().tabs().is_empty());
+}
+
+/// A clipboard in a variable, as `clipboard.rs` uses.
+#[derive(Debug, Default, Clone)]
+struct Fake(Rc<RefCell<Option<String>>>);
+
+impl Fake {
+    fn contents(&self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+}
+
+impl Clipboard for Fake {
+    fn read(&mut self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+
+    fn write(&mut self, text: &str) {
+        *self.0.borrow_mut() = Some(text.to_owned());
+    }
 }

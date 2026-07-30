@@ -42,8 +42,10 @@ crates/markers/         # mdedit-markers: partitions source into marker and cont
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection and the reveal-on-cursor predicate
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
-crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; the only
-                        #   place `unsafe` is permitted. Compiles to nothing elsewhere.
+crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the two
+                        #   places `unsafe` is permitted. Compiles to nothing elsewhere.
+crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsafe call that
+                        #   attaches it. Windows-only. Where shell integration will go.
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
 crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
@@ -81,7 +83,12 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
-- **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar.
+- **There is a File and Edit menu, and no other chrome.** No status bar, no scrollbar, no View menu,
+  no context menu on right-click, no recent files.
+- **Menu accelerators are labels, not bindings.** The items show "Ctrl+S" and so on, but they do not
+  fire: muda's accelerators need the message loop to call `TranslateAcceleratorW`, and winit's does
+  not. That is deliberate — the key handler owns those chords, and two things acting on one Ctrl+Z
+  would undo twice.
 - **The clipboard is text only, and a paste keeps its own line endings.** An image on the clipboard
   is ignored, because a Markdown buffer cannot hold one and deciding where to write the file would be
   a feature rather than a paste. Pasted text goes in verbatim, so pasting CRLF into an LF file leaves
@@ -181,9 +188,10 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 
 - **No `async` in the editor core.** The UI thread is a synchronous frame loop; I/O goes to a worker
   thread. Adding a runtime to the core needs a design decision on the ticket.
-- **`unsafe` anywhere outside the platform layer is a review block**, not a discussion — stricter than
-  the baseline's `deny` + scoped-allow. The platform layer is the only place it is expected, and only
-  for Win32/DirectWrite FFI.
+- **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
+  the baseline's `deny` + scoped-allow. Two crates qualify: `mdedit-text-dwrite` for DirectWrite, and
+  `mdedit-menu-win` for the one call that attaches a menu bar to a window. A third needs a reason on
+  the ticket, not a `SAFETY` comment in `mdedit-app`.
 - **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
   codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
   positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the

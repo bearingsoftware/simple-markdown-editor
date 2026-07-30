@@ -1,0 +1,27 @@
+[package]
+name = "mdedit-menu-win"
+version = "0.1.0"
+description = "The native Windows menu bar, and the one unsafe call that attaches it. Windows only."
+keywords = ["menu", "windows", "win32", "editor"]
+categories = ["gui"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# muda's default features pull in `gtk` for its Linux backend and `libxdo` for its predefined
+# clipboard items — the same trap `rfd` sprang in MDEDIT-13, where a Linux backend needed system
+# headers for something only Windows can show. Without them muda has no `platform_impl` at all off
+# Windows, so it is gated rather than merely feature-trimmed.
+#
+# `common-controls-v6` is deliberately OFF, and that is load-bearing rather than an oversight. It
+# makes muda import from the ComCtl32 v6 side-by-side assembly, which comes from the manifest
+# `build.rs` embeds into the executable — and a test binary has no manifest, so every test in the
+# workspace that links `mdedit-app` dies at load with STATUS_ENTRYPOINT_NOT_FOUND. A menu bar is
+# USER32 rather than ComCtl32, so what is lost is nothing a menu bar draws with. `rfd` keeps the
+# feature because only the binary links it, and the binary has the manifest.
+[target.'cfg(windows)'.dependencies]
+muda = { version = "0.19", default-features = false }
+
+[lints]
+workspace = true
