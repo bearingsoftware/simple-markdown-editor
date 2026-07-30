@@ -43,7 +43,7 @@ impl Grid {
 }
 
 impl TextLayout for Grid {
-    fn layout(&mut self, runs: &[StyledRun<'_>], _max_width: f32) -> Result<Layout, TextError> {
+    fn layout(&mut self, runs: &[StyledRun<'_>], max_width: f32) -> Result<Layout, TextError> {
         self.layouts += 1;
         let mut lines: Vec<LayoutLine> = Vec::new();
         let mut pen_x = 0.0;
@@ -59,6 +59,14 @@ impl TextLayout for Grid {
                     row += 1;
                     pen_x = 0.0;
                     continue;
+                }
+                // Wrapping, crudely: at the character rather than at a word boundary, which is
+                // wrong for prose and exactly right for a test — a row break happens at a position
+                // arithmetic can predict. Without it nothing that only happens on a wrapped line
+                // could be tested at all.
+                if pen_x + ADVANCE > max_width && pen_x > 0.0 {
+                    row += 1;
+                    pen_x = 0.0;
                 }
                 while lines.len() <= row {
                     lines.push(new_line(lines.len()));

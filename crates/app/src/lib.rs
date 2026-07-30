@@ -14,6 +14,7 @@
 
 pub mod blocks;
 pub mod clipboard;
+pub mod config;
 pub mod content;
 pub mod editor;
 pub mod gpu;

@@ -28,6 +28,8 @@ mdedit-text.workspace = true
 winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06"] }
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 pollster = "1"
 thiserror.workspace = true
 arboard = { version = "3.6.1", default-features = false }

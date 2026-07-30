@@ -89,6 +89,15 @@ impl ContentRect {
         (x - self.left, y - self.top + scroll)
     }
 
+    /// Where the text starts, measured from the window's left edge.
+    ///
+    /// The one thing outside this type that needs the raw number: a gutter draws to the left of it,
+    /// which is the one thing that is not in document coordinates at all.
+    #[must_use]
+    pub fn left_edge(self) -> f32 {
+        self.left
+    }
+
     /// Whether a window point is inside the document's area rather than over chrome.
     #[must_use]
     pub fn contains(self, x: f32, y: f32) -> bool {
