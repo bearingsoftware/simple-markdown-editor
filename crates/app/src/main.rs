@@ -12,6 +12,41 @@ use mdedit_app::{SAMPLE, editor::Editor};
 #[cfg(windows)]
 use winit::event_loop::{ControlFlow, EventLoop};
 
+/// The unsaved-changes dialog.
+///
+/// Here rather than in the library, and not only for testability: `rfd` imports from the `ComCtl32` v6
+/// side-by-side assembly, which comes from the manifest `build.rs` embeds into *this* executable. A
+/// test binary has no manifest, so a test that merely links this would die at load with
+/// `STATUS_ENTRYPOINT_NOT_FOUND` before running. Keeping it in the binary keeps it out of them.
+#[cfg(windows)]
+struct NativePrompt;
+
+#[cfg(windows)]
+impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
+    fn ask(&mut self, name: &str) -> mdedit_app::prompt::Unsaved {
+        use mdedit_app::prompt::Unsaved;
+
+        let answer = rfd::MessageDialog::new()
+            .set_title("Unsaved changes")
+            .set_description(format!("{name} has unsaved changes."))
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                "Save".to_owned(),
+                "Discard".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .show();
+
+        match answer {
+            rfd::MessageDialogResult::Custom(choice) if choice == "Save" => Unsaved::Save,
+            rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
+            // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work is
+            // the one outcome that must never be the default.
+            _ => Unsaved::Cancel,
+        }
+    }
+}
+
 fn main() {
     #[cfg(not(windows))]
     {
@@ -91,6 +126,9 @@ fn main() {
             editor.activate_saved_tab();
             editor
         };
+        // The editor keeps every tab by default when it has nobody to ask. This is the asking.
+        editor.with_prompt(Box::new(NativePrompt));
+
         if let Err(err) = event_loop.run_app(&mut editor) {
             eprintln!("event loop stopped: {err}");
             std::process::exit(1);

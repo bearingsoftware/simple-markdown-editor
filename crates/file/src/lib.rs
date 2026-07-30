@@ -350,6 +350,23 @@ pub fn save(path: &Path, text: &str, file: &LoadedFile) -> Result<(), FileError>
     write_atomically(path, &bytes)
 }
 
+/// Writes `text` to a path that has no bytes to preserve.
+///
+/// For a buffer that has never been on disk. [`save`] cannot serve this case: its whole job is to
+/// reproduce bytes it was given, and there are none — so the choice of encoding has to be made here
+/// rather than inherited. **UTF-8, no BOM**, and whatever line endings the text already contains,
+/// which for a buffer typed into this editor means the ones [`Newline::as_str`] inserted.
+///
+/// Atomic, as [`save`] is: a crash part way through must not leave a half-written file where the user
+/// asked for a whole one.
+///
+/// # Errors
+///
+/// [`FileError::Io`] if writing fails.
+pub fn save_new(path: &Path, text: &str) -> Result<(), FileError> {
+    write_atomically(path, text.as_bytes())
+}
+
 /// Writes to a temporary file in the same directory, then renames over the target.
 ///
 /// A crash or a full disk half way through a plain write truncates the user's document. Rename is

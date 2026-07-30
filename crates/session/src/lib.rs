@@ -82,12 +82,28 @@ pub enum SessionError {
     NoSuchTab(usize),
 }
 
+/// Where a tab's contents came from.
+///
+/// An enum rather than an `Option<PathBuf>` because the two cases behave differently everywhere that
+/// matters — what the tab is called, whether it counts as modified, whether it can be saved without
+/// asking, and whether the session file mentions it at all. Making that a nullable path would leave
+/// each of those decisions to be remembered at the call site.
+#[derive(Debug)]
+enum Origin {
+    /// Backed by a file, which may not have been read yet.
+    File(PathBuf),
+    /// Never saved anywhere. Carries the number that names it, so "Untitled 2" stays "Untitled 2"
+    /// when "Untitled 1" is closed.
+    Untitled(u32),
+}
+
 /// A file that is open in the editor.
 ///
-/// Holds no [`Document`] until [`Workspace::activate`] materialises one.
+/// Holds no [`Document`] until [`Workspace::activate`] materialises one — except for an untitled
+/// tab, which has nothing to defer and is open from the moment it exists.
 #[derive(Debug)]
 pub struct Tab {
-    path: PathBuf,
+    origin: Origin,
     /// Where the caret was when the session was saved, restored on materialisation.
     caret: ByteOffset,
     /// `None` while this tab is deferred. The whole point of the type.
@@ -99,24 +115,37 @@ pub struct Tab {
 pub struct OpenTab {
     /// The buffer, with its own undo history and caret.
     pub document: Document,
-    /// The bytes as they were on disk, for the byte-identical save path.
-    pub file: LoadedFile,
+    /// The bytes as they were on disk, for the byte-identical save path. `None` for a buffer that
+    /// has never been on disk — there is nothing to be identical to.
+    pub file: Option<LoadedFile>,
 }
 
 impl Tab {
-    /// The file this tab shows.
+    /// The file this tab shows, or `None` for a buffer that has never been saved.
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn path(&self) -> Option<&Path> {
+        match &self.origin {
+            Origin::File(path) => Some(path),
+            Origin::Untitled(_) => None,
+        }
+    }
+
+    /// Whether this tab has never been saved anywhere.
+    #[must_use]
+    pub fn is_untitled(&self) -> bool {
+        matches!(self.origin, Origin::Untitled(_))
     }
 
     /// The name to put on the tab strip.
     #[must_use]
     pub fn display_name(&self) -> String {
-        self.path.file_name().map_or_else(
-            || self.path.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+        match &self.origin {
+            Origin::File(path) => path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            Origin::Untitled(number) => format!("Untitled {number}"),
+        }
     }
 
     /// Whether this tab has been read from disk yet.
@@ -133,12 +162,15 @@ impl Tab {
 
     /// Whether the buffer differs from the file on disk.
     ///
-    /// A deferred tab is never modified: nothing has been able to edit it.
+    /// A deferred tab is never modified: nothing has been able to edit it. An untitled one is
+    /// modified as soon as it has anything in it, because there is nothing on disk to compare
+    /// against and closing it would lose whatever is there.
     #[must_use]
     pub fn is_modified(&self) -> bool {
-        self.open
-            .as_ref()
-            .is_some_and(|open| open.document.to_string() != open.file.text())
+        self.open.as_ref().is_some_and(|open| match &open.file {
+            Some(file) => open.document.to_string() != file.text(),
+            None => !open.document.is_empty(),
+        })
     }
 }
 
@@ -147,6 +179,8 @@ impl Tab {
 pub struct Workspace {
     tabs: Vec<Tab>,
     active: Option<usize>,
+    /// How many untitled buffers have been made this run, so the next one gets a fresh number.
+    next_untitled: u32,
 }
 
 /// A session entry that was refused, so the caller can say so rather than silently losing a tab.
@@ -194,13 +228,13 @@ impl Workspace {
     pub fn active_path(&self) -> Option<&Path> {
         self.active
             .and_then(|index| self.tabs.get(index))
-            .map(Tab::path)
+            .and_then(Tab::path)
     }
 
     /// Replaces the visible tab's record of what is on disk, after a save.
     pub fn set_active_file(&mut self, file: LoadedFile) {
         if let Some(open) = self.active_open_mut() {
-            open.file = file;
+            open.file = Some(file);
         }
     }
 
@@ -217,15 +251,66 @@ impl Workspace {
     ///
     /// Returns the index of the new tab, or of the existing one if the file is already open.
     pub fn add(&mut self, path: PathBuf) -> usize {
-        if let Some(existing) = self.tabs.iter().position(|tab| tab.path == path) {
+        if let Some(existing) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.path() == Some(path.as_path()))
+        {
             return existing;
         }
         self.tabs.push(Tab {
-            path,
+            origin: Origin::File(path),
             caret: ByteOffset::ZERO,
             open: None,
         });
         self.tabs.len() - 1
+    }
+
+    /// Adds an empty buffer that has never been saved, and returns its index.
+    ///
+    /// Open from the moment it exists: there is nothing to defer, since there is no file to read.
+    /// The number counts up and is never reused while the editor runs, so closing "Untitled 1" does
+    /// not make the next one "Untitled 1" again while it is still on screen.
+    pub fn add_untitled(&mut self) -> usize {
+        self.next_untitled = self.next_untitled.saturating_add(1);
+        self.tabs.push(Tab {
+            origin: Origin::Untitled(self.next_untitled),
+            caret: ByteOffset::ZERO,
+            open: Some(OpenTab {
+                document: Document::new(),
+                file: None,
+            }),
+        });
+        self.tabs.len() - 1
+    }
+
+    /// Points a tab at a file, after its contents have been written there.
+    ///
+    /// What makes Save As different from Save: the tab stops being untitled, or stops being the file
+    /// it was, and everything downstream — its name, whether it is modified, whether the session
+    /// records it — follows from that.
+    ///
+    /// `file` is what is now on disk, so the modified comparison is against the new bytes rather
+    /// than the old ones.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoSuchTab`] for an index that does not exist.
+    pub fn bind_to_path(
+        &mut self,
+        index: usize,
+        path: PathBuf,
+        file: LoadedFile,
+    ) -> Result<(), SessionError> {
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(SessionError::NoSuchTab(index))?;
+        tab.origin = Origin::File(path);
+        if let Some(open) = tab.open.as_mut() {
+            open.file = Some(file);
+        }
+        Ok(())
     }
 
     /// Makes `index` the visible tab, reading it from disk if this is the first time.
@@ -241,13 +326,21 @@ impl Workspace {
             .ok_or(SessionError::NoSuchTab(index))?;
 
         if tab.open.is_none() {
-            let file = mdedit_file::load(&tab.path)?;
+            let Some(path) = tab.path() else {
+                // An untitled tab has no file to read; it was open from the moment it existed.
+                self.active = Some(index);
+                return tab.open.as_mut().ok_or(SessionError::NoSuchTab(index));
+            };
+            let file = mdedit_file::load(path)?;
             let mut document = Document::from(file.text());
             // Put the caret back where the session left it, clamped: the file may have changed on
             // disk since, and a stale offset must not be able to panic a restore.
             let caret = ByteOffset::new(tab.caret.get().min(document.len_bytes()));
             document.set_selection(Selection::caret(caret));
-            tab.open = Some(OpenTab { document, file });
+            tab.open = Some(OpenTab {
+                document,
+                file: Some(file),
+            });
         }
 
         self.active = Some(index);
@@ -315,17 +408,23 @@ impl Workspace {
         let session = SessionFile {
             version: FORMAT_VERSION,
             active: self.active,
+            // Untitled tabs are left out. The session persists handles, not content — that is what
+            // makes restoring one cheap — and an untitled buffer is nothing but content. Writing it
+            // here would turn the session file into a place documents live, with its own data-loss
+            // questions to answer.
             tabs: self
                 .tabs
                 .iter()
-                .map(|tab| SessionTab {
-                    path: tab.path.clone(),
-                    // The live caret if the tab is open, otherwise the one it was restored with.
-                    caret: tab
-                        .open
-                        .as_ref()
-                        .map_or(tab.caret, |open| open.document.selection().head())
-                        .get(),
+                .filter_map(|tab| {
+                    Some(SessionTab {
+                        path: tab.path()?.to_path_buf(),
+                        // The live caret if the tab is open, otherwise the one it was restored with.
+                        caret: tab
+                            .open
+                            .as_ref()
+                            .map_or(tab.caret, |open| open.document.selection().head())
+                            .get(),
+                    })
                 })
                 .collect(),
         };
