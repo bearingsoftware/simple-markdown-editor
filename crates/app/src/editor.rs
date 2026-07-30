@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,8 +22,9 @@ use winit::application::ApplicationHandler;
 use winit::event::{
     ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowId};
 
 use crate::blocks;
@@ -37,6 +38,11 @@ use crate::prompt::{KeepEverything, Unsaved, UnsavedPrompt};
 use crate::scroll::{self, Scroll};
 use crate::tabs;
 use crate::view::{self, Rgba, Theme};
+use mdedit_menu_win::{Command, MenuBar};
+
+/// Asks the user where to save something. Given the current name as a suggestion; `None` if they
+/// decline, or if there is nobody to ask.
+pub type SavePathPicker = Box<dyn Fn(Option<&str>) -> Option<PathBuf>>;
 
 /// Left and top margin, in device-independent pixels.
 const MARGIN: f32 = 24.0;
@@ -532,6 +538,12 @@ pub struct Editor<T: TextLayout> {
     dragging: bool,
     /// Asks about unsaved work when a tab is closing. See [`crate::prompt`].
     prompt: Box<dyn UnsavedPrompt>,
+    /// Asks where to save something that has nowhere to go. Declines by default.
+    pick_save_path: SavePathPicker,
+    /// The native menu bar, once there is a window to hang it on.
+    menu: Option<MenuBar>,
+    /// How menu commands get from muda's channel into this loop. Set before the window exists.
+    menu_proxy: Option<EventLoopProxy<Command>>,
     /// Where text goes when it is copied, and comes from when it is pasted.
     ///
     /// Boxed rather than a second type parameter: `Editor` is already generic over the text
@@ -605,6 +617,9 @@ impl<T: TextLayout> Editor<T> {
             content: ContentRect::default(),
             clipboard: Box::new(System),
             prompt: Box::new(KeepEverything),
+            pick_save_path: Box::new(|_| None),
+            menu: None,
+            menu_proxy: None,
         }
     }
 
@@ -796,6 +811,97 @@ impl<T: TextLayout> Editor<T> {
             Err(error) => eprintln!("saved, but could not re-read {}: {error}", path.display()),
         }
         true
+    }
+
+    /// Asks where to put the visible tab, then puts it there.
+    ///
+    /// The asking is somebody else's: [`with_file_picker`](Self::with_file_picker) supplies it, and
+    /// the default declines — so an editor with no dialog does nothing rather than writing somewhere
+    /// nobody chose.
+    pub fn save_as_prompted(&mut self) -> bool {
+        let suggestion = self
+            .workspace
+            .active()
+            .and_then(|index| self.workspace.tabs().get(index))
+            .map(mdedit_session::Tab::display_name);
+        let Some(path) = (self.pick_save_path)(suggestion.as_deref()) else {
+            return false;
+        };
+        self.save_as(&path)
+    }
+
+    /// Does what a menu item asked for. Returns whether the frame needs redrawing.
+    ///
+    /// Separate from the event handler so the whole menu is testable without one — a native menu
+    /// cannot be clicked by a test, but this can be called by one, and every arm is a command that
+    /// already exists. The menu is a surface, not a second implementation.
+    pub fn apply_command(&mut self, command: Command) -> bool {
+        match command {
+            Command::New => {
+                self.new_file();
+                true
+            }
+            Command::Save => {
+                self.save();
+                true
+            }
+            Command::SaveAs => self.save_as_prompted(),
+            Command::SaveAll => {
+                self.save_all();
+                true
+            }
+            Command::Close => self.close_tab(),
+            Command::CloseAll => self.close_all(),
+            Command::Undo => self.document_mut().undo(),
+            Command::Redo => self.document_mut().redo(),
+            Command::Cut => self.cut(),
+            Command::Copy => {
+                self.copy();
+                false
+            }
+            Command::Paste => self.paste(),
+        }
+    }
+
+    /// Builds the menu bar and puts it on the window.
+    ///
+    /// Quiet about failure: an editor with no menu bar still edits, and every command it offers has
+    /// a chord. Losing the menu is a worse day, not a lost document.
+    fn attach_menu(&mut self, window: &Window) {
+        let Some(menu) = MenuBar::new() else {
+            return;
+        };
+        if let Some(proxy) = self.menu_proxy.clone() {
+            menu.forward_to(move |command| {
+                // The loop has gone away, which happens while the editor is shutting down. Nothing
+                // to deliver it to and nothing to do about it.
+                let _ = proxy.send_event(command);
+            });
+        }
+
+        // Getting the handle is safe; only attaching to it is not, and that lives in the platform
+        // crate where `AGENTS.md` permits it.
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                menu.attach(win32.hwnd.get());
+            }
+        }
+        self.menu = Some(menu);
+    }
+
+    /// Carries menu commands into this editor's event loop.
+    ///
+    /// Held until there is a menu to attach it to, which is when the window appears.
+    pub fn forward_menu(&mut self, proxy: EventLoopProxy<Command>) {
+        self.menu_proxy = Some(proxy);
+    }
+
+    /// Supplies the "where should this go?" dialog.
+    ///
+    /// Kept out of the library for the same reason the unsaved-changes prompt is: `rfd` cannot be
+    /// linked into a test binary. See [`crate::prompt`].
+    pub fn with_file_picker(&mut self, picker: SavePathPicker) {
+        self.pick_save_path = picker;
     }
 
     /// Opens an empty buffer that has never been saved, and shows it.
@@ -1452,6 +1558,10 @@ impl<T: TextLayout> Editor<T> {
     /// The tab strip is the only one so far. A menu bar, a status bar, a file pane and a
     /// line-number gutter each add to this and nothing else changes — which is the point.
     fn insets(&self) -> Insets {
+        // The menu bar is deliberately absent. A native Windows menu is part of the window frame
+        // rather than of the client area, so Windows has already taken its height off what
+        // `inner_size` reports — accounting for it here would take it off twice and leave a strip of
+        // the document permanently below the fold.
         Insets {
             top: self.strip_height(),
             ..Insets::default()
@@ -2271,7 +2381,27 @@ impl<T: TextLayout> Editor<T> {
     }
 }
 
-impl<T: TextLayout> ApplicationHandler for Editor<T> {
+impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
+    /// A menu item was chosen.
+    ///
+    /// The menu delivers on a channel of its own, forwarded into this loop — see
+    /// [`mdedit_menu_win::MenuBar::forward_to`]. Every arm is a command that already exists and is
+    /// already tested, which is what makes the menu a surface rather than a second implementation.
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, command: Command) {
+        if self.apply_command(command) {
+            self.follow_caret = true;
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+
+        // Closing the last tab leaves nothing to edit, which is what the window was for. Decided
+        // here rather than in `apply_command`, because only the loop can end itself.
+        if command == Command::CloseAll && self.workspace.tabs().is_empty() {
+            event_loop.exit();
+        }
+    }
+
     /// Brings the parse up to date once the typing has stopped.
     ///
     /// The keystroke path re-parses only the region around an edit, which is what makes a keystroke
@@ -2309,6 +2439,7 @@ impl<T: TextLayout> ApplicationHandler for Editor<T> {
         // Without this winit never delivers `WindowEvent::Ime` at all, and a Japanese, Chinese or
         // Korean keyboard types nothing into the editor.
         window.set_ime_allowed(true);
+        self.attach_menu(&window);
         let window = Arc::new(window);
         match Renderer::new(&window) {
             Ok(renderer) => {

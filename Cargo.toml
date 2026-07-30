@@ -6,6 +6,7 @@ members = [
     "crates/document",
     "crates/text",
     "crates/text-dwrite",
+    "crates/menu-win",
     "crates/file",
     "crates/session",
     "crates/app",
@@ -29,6 +30,7 @@ mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }
 mdedit-text-dwrite = { path = "crates/text-dwrite", version = "0.1.0" }
+mdedit-menu-win = { path = "crates/menu-win", version = "0.1.0" }
 mdedit-document = { path = "crates/document", version = "0.1.0" }
 mdedit-file = { path = "crates/file", version = "0.1.0" }
 mdedit-session = { path = "crates/session", version = "0.1.0" }

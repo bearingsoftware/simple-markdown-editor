@@ -73,7 +73,9 @@ fn main() {
             }
         };
 
-        let event_loop = match EventLoop::new() {
+        // Carries menu commands: muda raises them on a channel of its own, and this is how they
+        // reach the loop that owns the document.
+        let event_loop = match EventLoop::<mdedit_menu_win::Command>::with_user_event().build() {
             Ok(event_loop) => event_loop,
             Err(err) => {
                 eprintln!("could not create an event loop: {err}");
@@ -128,6 +130,15 @@ fn main() {
         };
         // The editor keeps every tab by default when it has nobody to ask. This is the asking.
         editor.with_prompt(Box::new(NativePrompt));
+        editor.with_file_picker(Box::new(|suggested| {
+            let mut dialog = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"]);
+            if let Some(name) = suggested {
+                dialog = dialog.set_file_name(name);
+            }
+            dialog.save_file()
+        }));
+        // Menu commands arrive on muda's own channel; this is what carries them into the loop.
+        editor.forward_menu(event_loop.create_proxy());
 
         if let Err(err) = event_loop.run_app(&mut editor) {
             eprintln!("event loop stopped: {err}");
