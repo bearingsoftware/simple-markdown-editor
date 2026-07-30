@@ -84,7 +84,11 @@ Known gaps, so nobody assumes they are done:
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
 - **There is a File and Edit menu, and no other chrome.** No status bar, no scrollbar, no View menu,
-  no context menu on right-click, no recent files.
+  no context menu on right-click, no recent files. The plain-markup toggle is Ctrl+/ and has no menu
+  item, because a View menu was out of MDEDIT-25's scope.
+- **The drawing mode is global and not remembered.** Toggling to plain markup switches every tab,
+  and the editor opens previewed every time — the session file records handles rather than view
+  state, and there is no config to put a default in until MDEDIT-22.
 - **Menu accelerators are labels, not bindings.** The items show "Ctrl+S" and so on, but they do not
   fire: muda's accelerators need the message loop to call `TranslateAcceleratorW`, and winit's does
   not. That is deliberate — the key handler owns those chords, and two things acting on one Ctrl+Z
