@@ -9,10 +9,11 @@
 //! Grown from the vertical slice in
 //! [MDEDIT-11](https://chattersley.atlassian.net/browse/MDEDIT-11) through files, undo, tabs,
 //! scrolling, per-block layout, a keystroke that re-parses a region rather than the document, an
-//! input method that composes beside the buffer rather than into it, and now a caret you can point
-//! at. There is still no clipboard.
+//! input method that composes beside the buffer rather than into it, a caret you can point at, and
+//! now a clipboard to do something with what you selected.
 
 pub mod blocks;
+pub mod clipboard;
 pub mod content;
 pub mod editor;
 pub mod gpu;
