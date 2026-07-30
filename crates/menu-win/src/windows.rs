@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{Menu, MenuEvent, MenuId, MenuItem, Submenu};
+use muda::{Menu, MenuEvent, MenuId, MenuItem, MenuTheme, Submenu};
 
 use crate::Command;
 
@@ -123,11 +123,18 @@ impl MenuBar {
     ///
     /// `hwnd` must be a live window handle, which is why this is the one place in the editor outside
     /// the text backend that needs `unsafe`.
+    ///
+    /// Attached **dark**, to match the editor. Deliberately not `MenuTheme::Auto`: Auto follows
+    /// Windows, and the editor does not — its theme is one hardcoded dark palette with no settings
+    /// surface to choose another. On a light-themed Windows, Auto would put a light menu bar over a
+    /// dark document, which is the bug this replaced (MDEDIT-32). When the editor learns to follow
+    /// the system, the menu follows with it and this becomes a variable.
     pub fn attach(&self, hwnd: isize) {
         // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
-        // still holds, so it is a valid `HWND` for the duration of the call. `init_for_hwnd` only
-        // reads it, to set the window's menu.
-        if let Err(error) = unsafe { self.menu.init_for_hwnd(hwnd) } {
+        // still holds, so it is a valid `HWND` for the duration of the call. It is only read, to set
+        // the window's menu.
+        let attached = unsafe { self.menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Dark) };
+        if let Err(error) = attached {
             // Nothing to do about it that the user would thank us for: the chords still work.
             eprintln!("could not attach the menu bar: {error}");
         }
