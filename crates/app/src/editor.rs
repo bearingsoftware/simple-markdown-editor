@@ -33,6 +33,7 @@ use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
+use crate::prompt::{KeepEverything, Unsaved, UnsavedPrompt};
 use crate::scroll::{self, Scroll};
 use crate::tabs;
 use crate::view::{self, Rgba, Theme};
@@ -529,6 +530,8 @@ pub struct Editor<T: TextLayout> {
     desired_x: Option<f32>,
     /// Whether the pointer is dragging out a selection.
     dragging: bool,
+    /// Asks about unsaved work when a tab is closing. See [`crate::prompt`].
+    prompt: Box<dyn UnsavedPrompt>,
     /// Where text goes when it is copied, and comes from when it is pasted.
     ///
     /// Boxed rather than a second type parameter: `Editor` is already generic over the text
@@ -601,6 +604,7 @@ impl<T: TextLayout> Editor<T> {
             dragging: false,
             content: ContentRect::default(),
             clipboard: Box::new(System),
+            prompt: Box::new(KeepEverything),
         }
     }
 
@@ -648,10 +652,23 @@ impl<T: TextLayout> Editor<T> {
         self.clipboard = clipboard;
     }
 
+    /// Answers the unsaved-changes question differently.
+    ///
+    /// So a test can close a modified tab without a dialog — and, on Windows, without linking one:
+    /// see [`crate::prompt`] for why merely linking `rfd` stops a test binary from starting.
+    pub fn with_prompt(&mut self, prompt: Box<dyn UnsavedPrompt>) {
+        self.prompt = prompt;
+    }
+
     /// The tabs, for a caller that wants to report on them.
     #[must_use]
     pub fn workspace(&self) -> &Workspace {
         &self.workspace
+    }
+
+    /// The tabs, to change. For a caller driving the editor without a window.
+    pub fn workspace_mut(&mut self) -> &mut Workspace {
+        &mut self.workspace
     }
 
     /// Displays whichever tab the session had active, or the first one.
@@ -697,40 +714,144 @@ impl<T: TextLayout> Editor<T> {
 
     /// Whether the buffer differs from what is on disk.
     ///
-    /// Compared by content rather than tracked by a flag: typing a character and deleting it again
-    /// leaves a document that does not need saving, and a flag would say otherwise.
+    /// Asks the tab rather than comparing here: an untitled buffer has no disk to differ from, and
+    /// deciding what "modified" means for one belongs with the type that knows it has no file. This
+    /// used to be a second copy of the comparison, which is one copy too many.
     #[must_use]
     pub fn is_modified(&self) -> bool {
         self.workspace
-            .active_open()
-            .is_some_and(|open| open.document.to_string() != open.file.text())
+            .active()
+            .and_then(|index| self.workspace.tabs().get(index))
+            .is_some_and(mdedit_session::Tab::is_modified)
     }
 
     /// Writes the buffer back to the file it came from.
     ///
     /// Reloads afterwards so the in-memory original matches what is now on disk — otherwise the
     /// next save would compare against stale bytes and take the wrong path.
-    fn save(&mut self) {
-        let (Some(path), Some(open)) = (
-            self.workspace.active_path().map(Path::to_path_buf),
-            self.workspace.active_open(),
-        ) else {
-            // The built-in sample has nowhere to go. Not an error; there is just no file.
+    pub fn save(&mut self) {
+        let Some(path) = self.workspace.active_path().map(Path::to_path_buf) else {
+            // Either the built-in sample, which has nowhere to go, or an untitled buffer, which needs
+            // somewhere chosen first. Neither is an error.
             return;
+        };
+        self.write_active_to(&path);
+    }
+
+    /// Writes the visible tab to `path` and points the tab at it.
+    ///
+    /// The Save As half of the File menu, with the choosing left to the caller — so the command is
+    /// testable without a file dialog, and the dialog stays where the platform code is.
+    ///
+    /// Byte preservation still holds: a tab that came from a file and has not been edited writes its
+    /// original bytes verbatim, even to a new name, so copying a Shift-JIS file somewhere else does
+    /// not silently re-encode it.
+    pub fn save_as(&mut self, path: &Path) -> bool {
+        if !self.write_active_to(path) {
+            return false;
+        }
+        let Some(index) = self.workspace.active() else {
+            return false;
+        };
+        match mdedit_file::load(path) {
+            Ok(file) => self
+                .workspace
+                .bind_to_path(index, path.to_path_buf(), file)
+                .is_ok(),
+            // The bytes are on disk. Only our record of the tab is stale, which matters for the next
+            // save rather than for this one.
+            Err(error) => {
+                eprintln!("saved, but could not re-read {}: {error}", path.display());
+                false
+            }
+        }
+    }
+
+    /// Writes the visible tab's buffer to `path`. Returns whether it got there.
+    fn write_active_to(&mut self, path: &Path) -> bool {
+        let Some(open) = self.workspace.active_open() else {
+            return false;
         };
 
         let text = open.document.to_string();
-        if let Err(error) = mdedit_file::save(&path, &text, &open.file) {
+        // A buffer that has never been on disk has no bytes to preserve, so the encoding is chosen
+        // rather than inherited. One that has goes through the byte-preserving path.
+        let written = match &open.file {
+            Some(file) => mdedit_file::save(path, &text, file),
+            None => mdedit_file::save_new(path, &text),
+        };
+        if let Err(error) = written {
             eprintln!("could not save {}: {error}", path.display());
-            return;
+            return false;
         }
 
-        match mdedit_file::reload(&path, &open.file) {
-            Ok(reloaded) => self.workspace.set_active_file(reloaded),
-            // The bytes are on disk; only our copy of them is stale. Worth saying so, because the
-            // next save will fall back to re-encoding.
+        // Re-read so the modified comparison is against what is now on disk. Without this the next
+        // save would compare against stale bytes and take the re-encoding path for nothing.
+        let reloaded = match &open.file {
+            Some(file) => mdedit_file::reload(path, file),
+            None => mdedit_file::load(path),
+        };
+        match reloaded {
+            Ok(file) => self.workspace.set_active_file(file),
             Err(error) => eprintln!("saved, but could not re-read {}: {error}", path.display()),
         }
+        true
+    }
+
+    /// Opens an empty buffer that has never been saved, and shows it.
+    pub fn new_file(&mut self) {
+        let index = self.workspace.add_untitled();
+        if let Err(error) = self.workspace.activate(index) {
+            eprintln!("could not open a new file: {error}");
+        }
+    }
+
+    /// Saves every tab that has somewhere to go, reporting the ones that did not.
+    ///
+    /// Carries on past a failure rather than stopping at the first: the point of Save All is that
+    /// afterwards everything that could be saved has been.
+    pub fn save_all(&mut self) -> usize {
+        let mut saved = 0;
+        let was_active = self.workspace.active();
+
+        for index in 0..self.workspace.tabs().len() {
+            let Some(tab) = self.workspace.tabs().get(index) else {
+                continue;
+            };
+            // An untitled tab needs a path chosen, which is a question rather than a save. Nothing
+            // to do here, and nothing to complain about either.
+            if !tab.is_modified() || tab.is_untitled() {
+                continue;
+            }
+            let Some(path) = tab.path().map(Path::to_path_buf) else {
+                continue;
+            };
+            // Saving works on the visible tab, because that is the one whose bytes are in hand.
+            if self.workspace.activate(index).is_err() {
+                continue;
+            }
+            if self.write_active_to(&path) {
+                saved += 1;
+            }
+        }
+
+        if let Some(index) = was_active {
+            let _ = self.workspace.activate(index);
+        }
+        saved
+    }
+
+    /// Closes every tab, asking about each one that has unsaved work.
+    ///
+    /// Stops on the first Cancel rather than closing the rest anyway — a cancelled prompt means "I
+    /// did not mean this", not "skip that one".
+    pub fn close_all(&mut self) -> bool {
+        while !self.workspace.tabs().is_empty() {
+            if !self.close_tab_at(0) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Shows the next or previous tab, wrapping.
@@ -765,6 +886,11 @@ impl<T: TextLayout> Editor<T> {
 
     /// Closes a specific tab, asking first if it has unsaved work.
     ///
+    /// **Returns whether the tab was closed** — not whether something happened. The difference
+    /// matters: [`close_all`](Self::close_all) walks tabs until one refuses, and a "yes, but it is
+    /// still there" would spin on the same tab for ever. It was that, until a test for an untitled
+    /// buffer that cannot be saved found it.
+    ///
     /// The prompt is a native dialog rather than something drawn in the window. `AGENTS.md` already
     /// names `rfd` for dialogs, and a modal built from our own quads would need focus handling,
     /// keyboard traversal and a screen-reader story that none of the rest of the editor has yet.
@@ -782,7 +908,7 @@ impl<T: TextLayout> Editor<T> {
                 .get(index)
                 .map_or_else(|| "this file".to_owned(), mdedit_session::Tab::display_name);
 
-            match Self::ask_about_unsaved(&name) {
+            match self.prompt.ask(&name) {
                 Unsaved::Save => {
                     // Saving the tab being closed means showing it first: `save` works on the
                     // active tab, which is the only one whose bytes we hold.
@@ -790,10 +916,12 @@ impl<T: TextLayout> Editor<T> {
                         return false;
                     }
                     self.save();
-                    // A failed save leaves the buffer dirty, and closing then would lose it.
+                    // A failed save leaves the buffer dirty, and closing then would lose it. That
+                    // includes an untitled buffer, where `save` has nowhere to write and does
+                    // nothing at all.
                     if self.is_modified() {
                         eprintln!("not closing {name}: the save did not succeed");
-                        return true;
+                        return false;
                     }
                 }
                 Unsaved::Discard => {}
@@ -815,50 +943,18 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Asks what to do about a tab with unsaved changes.
-    ///
-    /// Windows only, because `rfd`'s Linux backend needs GTK development headers and would make the
-    /// workspace unbuildable on CI for a dialog only the Windows build can show. Off Windows the
-    /// app exits before opening a window at all, so this is unreachable rather than degraded — and
-    /// it answers Cancel, because if it ever did become reachable, keeping the work is the only
-    /// safe default.
-    #[cfg(not(windows))]
-    fn ask_about_unsaved(_name: &str) -> Unsaved {
-        Unsaved::Cancel
-    }
-
-    /// Asks what to do about a tab with unsaved changes.
-    #[cfg(windows)]
-    fn ask_about_unsaved(name: &str) -> Unsaved {
-        let answer = rfd::MessageDialog::new()
-            .set_title("Unsaved changes")
-            .set_description(format!("{name} has unsaved changes."))
-            .set_level(rfd::MessageLevel::Warning)
-            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-                "Save".to_owned(),
-                "Discard".to_owned(),
-                "Cancel".to_owned(),
-            ))
-            .show();
-
-        match answer {
-            rfd::MessageDialogResult::Custom(choice) if choice == "Save" => Unsaved::Save,
-            rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
-            // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work
-            // is the one outcome that must never be the default.
-            _ => Unsaved::Cancel,
-        }
-    }
-
     /// The window title: the file name, marked when there are unsaved changes, with a tab count.
-    fn title(&self) -> String {
-        let Some(path) = self.workspace.active_path() else {
+    pub fn title(&self) -> String {
+        // The tab's own name, so an untitled buffer shows as "Untitled 1" rather than falling back
+        // to the bare product name as if nothing were open.
+        let Some(name) = self
+            .workspace
+            .active()
+            .and_then(|index| self.workspace.tabs().get(index))
+            .map(mdedit_session::Tab::display_name)
+        else {
             return "Simple Markdown Editor".to_owned();
         };
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
         let marker = if self.is_modified() { "•" } else { "—" };
         let count = self.workspace.tabs().len();
         if count > 1 {
@@ -2491,22 +2587,4 @@ struct Anchor {
 /// Whether two spans overlap or meet. A caret at a chunk's edge belongs to both sides of it.
 fn touches(span: ByteSpan, other: ByteSpan) -> bool {
     span.start() <= other.end() && other.start() <= span.end()
-}
-
-/// What to do about a tab with unsaved changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(
-    not(windows),
-    allow(
-        dead_code,
-        reason = "only the Windows prompt constructs Save and Discard; off Windows the app exits before opening a window"
-    )
-)]
-enum Unsaved {
-    /// Write it, then close.
-    Save,
-    /// Close without writing.
-    Discard,
-    /// Keep the tab.
-    Cancel,
 }

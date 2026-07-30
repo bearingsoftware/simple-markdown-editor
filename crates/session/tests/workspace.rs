@@ -417,7 +417,7 @@ fn a_freshly_opened_tab_is_not_modified() {
     let open = workspace.active_open().unwrap();
     assert_eq!(
         open.document.to_string(),
-        open.file.text(),
+        open.file.as_ref().expect("a file-backed tab").text(),
         "opening a file must not change its text"
     );
     assert!(!workspace.has_unsaved_changes());
