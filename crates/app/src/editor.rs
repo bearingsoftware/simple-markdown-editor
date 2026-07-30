@@ -27,6 +27,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::blocks;
+use crate::content::{ContentRect, Insets};
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
 use crate::ime::{Action, Composition};
@@ -527,6 +528,11 @@ pub struct Editor<T: TextLayout> {
     desired_x: Option<f32>,
     /// Whether the pointer is dragging out a selection.
     dragging: bool,
+    /// Where the document was allowed to draw last frame.
+    ///
+    /// Kept because a click arrives between frames and has to be mapped back through exactly the
+    /// rectangle the glyphs were placed with. See [`crate::content`].
+    content: ContentRect,
 }
 
 /// What the last laid-out frame measured, in device-independent pixels.
@@ -587,6 +593,7 @@ impl<T: TextLayout> Editor<T> {
             last_frame: None,
             desired_x: None,
             dragging: false,
+            content: ContentRect::default(),
         }
     }
 
@@ -1068,10 +1075,11 @@ impl<T: TextLayout> Editor<T> {
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = self.build_tab_strip(width, scale);
 
-        // The document starts below the strip when there is one.
-        let top = MARGIN + self.strip_height();
-        let visible = (height / scale - top).max(1.0);
-        let mut frame = self.measure((width / scale - MARGIN * 2.0).max(1.0));
+        // Everything the chrome has not taken. One place decides it; see `crate::content`.
+        self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
+        let content = self.content;
+        let visible = content.height();
+        let mut frame = self.measure(content.width());
 
         self.hold_anchor(&frame, visible);
         if self.follow_caret {
@@ -1098,9 +1106,9 @@ impl<T: TextLayout> Editor<T> {
 
         let range = blocks::visible(&frame.tops, &frame.heights, offset, visible);
         let at = Placement {
-            shift: top - offset,
+            content,
+            scroll: offset,
             scale,
-            band: (top, top + visible),
         };
         let line = self.draw_chunks(&mut quads, &frame, range.clone(), at);
 
@@ -1119,14 +1127,16 @@ impl<T: TextLayout> Editor<T> {
                 ..caret
             });
 
-        self.caret_area =
-            caret.map(|caret| (caret.x + MARGIN, caret.top + top - offset, caret.height));
+        let placed = caret.map(|caret| content.to_window(caret.x, caret.top, offset));
+        self.caret_area = placed
+            .zip(caret)
+            .map(|((x, y), caret)| (x, y, caret.height));
 
-        if let Some(caret) = caret {
+        if let (Some((x, y)), Some(caret)) = (placed, caret) {
             quads.push(QuadInstance {
                 rect: [
-                    (caret.x + MARGIN) * scale,
-                    (caret.top + top - offset) * scale,
+                    x * scale,
+                    y * scale,
                     CARET_WIDTH * scale,
                     caret.height * scale,
                 ],
@@ -1141,7 +1151,7 @@ impl<T: TextLayout> Editor<T> {
             });
 
             if self.composition.is_active() {
-                self.draw_preedit(&mut quads, caret, top - offset, scale);
+                self.draw_preedit(&mut quads, (x, y), caret.height, scale);
             }
         }
 
@@ -1162,8 +1172,8 @@ impl<T: TextLayout> Editor<T> {
     fn draw_preedit(
         &mut self,
         quads: &mut Vec<QuadInstance>,
-        caret: CaretRect,
-        shift: f32,
+        at: (f32, f32),
+        height: f32,
         scale: f32,
     ) {
         let text = self.composition.text().to_owned();
@@ -1182,10 +1192,11 @@ impl<T: TextLayout> Editor<T> {
             .map(|glyph| glyph.advance)
             .sum::<f32>()
             .max(1.0);
-        let (x, y) = (caret.x + MARGIN, caret.top + shift);
+        // Already in window coordinates: the caller placed the caret, and this hangs off it.
+        let (x, y) = at;
 
         quads.push(Self::solid(
-            [x * scale, y * scale, width * scale, caret.height * scale],
+            [x * scale, y * scale, width * scale, height * scale],
             self.theme.background,
         ));
 
@@ -1215,12 +1226,23 @@ impl<T: TextLayout> Editor<T> {
         quads.push(Self::solid(
             [
                 x * scale,
-                (y + caret.height - UNDERLINE_WIDTH) * scale,
+                (y + height - UNDERLINE_WIDTH) * scale,
                 width * scale,
                 UNDERLINE_WIDTH * scale,
             ],
             self.theme.marker,
         ));
+    }
+
+    /// What the chrome has taken out of the window.
+    ///
+    /// The tab strip is the only one so far. A menu bar, a status bar, a file pane and a
+    /// line-number gutter each add to this and nothing else changes — which is the point.
+    fn insets(&self) -> Insets {
+        Insets {
+            top: self.strip_height(),
+            ..Insets::default()
+        }
     }
 
     /// Height the tab strip occupies, which is nothing when there is nothing to show.
@@ -1433,8 +1455,10 @@ impl<T: TextLayout> Editor<T> {
     /// the first frame, when there is nothing to hit-test against and guessing would be worse than
     /// doing nothing.
     fn offset_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
-        let top = MARGIN + self.strip_height();
-        self.offset_in_document(x - MARGIN, y - top + self.scroll.offset())
+        // The same rectangle the glyphs were placed with, run backwards. Neither side computes an
+        // offset of its own, so the two cannot drift apart.
+        let (x, y) = self.content.to_document(x, y, self.scroll.offset());
+        self.offset_in_document(x, y)
     }
 
     /// The byte at a point in the document's own coordinates.
@@ -1754,10 +1778,11 @@ impl<T: TextLayout> Editor<T> {
         at: Placement,
     ) -> f32 {
         let Placement {
-            shift,
+            content,
+            scroll,
             scale,
-            band: (band_top, band_bottom),
         } = at;
+        let (band_top, band_bottom) = content.visible(scroll);
         let mut line_height = self.theme.body_size;
 
         for index in range {
@@ -1778,7 +1803,7 @@ impl<T: TextLayout> Editor<T> {
                 chunk.span,
                 &frame.text,
             );
-            let chunk_top = frame.tops[index] + shift;
+            let chunk_top = frame.tops[index];
             let drawn = cached.drawn_lines();
             quads.reserve(
                 cached.layout.lines[..drawn]
@@ -1791,6 +1816,8 @@ impl<T: TextLayout> Editor<T> {
             let mut row_top = chunk_top;
 
             for (row, line) in cached.layout.lines[..drawn].iter().enumerate() {
+                // Culled in the document's own coordinates rather than the window's, so the check
+                // is in the same space the layout is in.
                 let baseline = line.baseline + chunk_top;
                 let top_of_row = row_top;
                 row_top += line.height;
@@ -1803,10 +1830,11 @@ impl<T: TextLayout> Editor<T> {
                     if let Some((from, to)) =
                         Self::row_selection(&cached, chunk, &frame.text, row, selected)
                     {
+                        let (x, y) = content.to_window(from, top_of_row, scroll);
                         quads.push(Self::solid(
                             [
-                                (from + MARGIN) * scale,
-                                top_of_row * scale,
+                                x * scale,
+                                y * scale,
                                 (to - from).max(1.0) * scale,
                                 line.height * scale,
                             ],
@@ -1821,10 +1849,11 @@ impl<T: TextLayout> Editor<T> {
                     };
                     let colour =
                         view::colour_at(&runs, cached.rebase(glyph, chunk.span), self.theme.text);
+                    let (x, y) = content.to_window(glyph.pos.x, glyph.pos.y + chunk_top, scroll);
                     quads.push(QuadInstance {
                         rect: [
-                            (glyph.pos.x + MARGIN) * scale + px_i(entry.left),
-                            (glyph.pos.y + chunk_top) * scale + px_i(entry.top),
+                            x * scale + px_i(entry.left),
+                            y * scale + px_i(entry.top),
                             px(entry.width),
                             px(entry.height),
                         ],
@@ -2215,12 +2244,16 @@ struct CaretRect {
 /// Where a chunk lands on screen: how far down from the document origin, and at what device scale.
 #[derive(Debug, Clone, Copy)]
 struct Placement {
-    shift: f32,
+    /// Where the document may draw, and the only thing that converts between its coordinates and
+    /// the window's.
+    content: ContentRect,
+    /// How far down the document the viewport has moved.
+    ///
+    /// With the rectangle, this gives the band of the document that is on screen — which is what
+    /// lines are culled against. A chunk can be far taller than the window, since a document with
+    /// no blank line in it is a single chunk, so per-line culling is needed as well as per-chunk.
+    scroll: f32,
     scale: f32,
-    /// The screen band the document may draw into, in device-independent pixels. A chunk can be
-    /// far taller than the window — a whole document with no blank line in it is one chunk — so
-    /// lines are checked against this as well as chunks against the height table.
-    band: (f32, f32),
 }
 
 /// One frame's worth of measurement: what the chunks are and where each one sits.

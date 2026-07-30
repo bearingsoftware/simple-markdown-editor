@@ -14,12 +14,15 @@ use std::fmt::Write as _;
 
 use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
+use mdedit_app::tabs::STRIP_HEIGHT;
 use mdedit_document::Selection;
 use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
+use mdedit_session::Workspace;
 use mdedit_text::{
     FontId, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine, PositionedGlyph, StyledRun,
     TextError, TextLayout,
 };
+use tempfile::TempDir;
 
 /// One line, as a whole number of pixels: the tests compare rounded rows, so the step has to be
 /// expressible as one too.
@@ -716,4 +719,65 @@ fn selecting_does_not_touch_the_buffer() {
     editor.move_caret(false, true);
 
     assert_eq!(editor.document().to_string(), source);
+}
+
+/// The failure MDEDIT-23 exists to prevent: chrome shifts where the text is drawn, and the hit test
+/// does not follow. With a tab strip open the document starts 30 pixels lower, so a click 30 pixels
+/// lower has to reach the same byte it would have without one.
+#[test]
+fn a_click_follows_the_document_when_chrome_pushes_it_down() {
+    let source = "hello world\n\nsecond line\n";
+
+    let mut bare = Editor::new(source, Grid::new());
+    let _ = bare.build_frame(WIDTH, HEIGHT, 1.0);
+    bare.click_at(column(4.0), line_y(2.0));
+    let without_chrome = bare.document().selection().head();
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("open.md");
+    std::fs::write(&path, source).unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let mut tabbed = Editor::with_workspace(workspace, Grid::new());
+    tabbed.activate_saved_tab();
+    let _ = tabbed.build_frame(WIDTH, HEIGHT, 1.0);
+
+    // Same point in the text, which is STRIP_HEIGHT further down the window.
+    tabbed.click_at(column(4.0), line_y(2.0) + STRIP_HEIGHT);
+    assert_eq!(
+        tabbed.document().selection().head(),
+        without_chrome,
+        "the click did not follow the document down"
+    );
+}
+
+/// And the drawing moved by the same amount, which is the other half of the same claim.
+#[test]
+fn chrome_moves_the_glyphs_by_exactly_its_own_height() {
+    let source = "hello world\n\nsecond line\n";
+
+    let mut bare = Editor::new(source, Grid::new());
+    let bare_quads = bare.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("open.md");
+    std::fs::write(&path, source).unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let mut tabbed = Editor::with_workspace(workspace, Grid::new());
+    tabbed.activate_saved_tab();
+    let tabbed_quads = tabbed.build_frame(WIDTH, HEIGHT, 1.0);
+
+    // The strip draws quads of its own at the top; the document's rows are the ones below it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the strip is thirty pixels tall"
+    )]
+    let step = STRIP_HEIGHT.round() as i32;
+    let moved: Vec<i32> = rows(&bare_quads).into_iter().map(|y| y + step).collect();
+    let after = rows(&tabbed_quads);
+    assert!(
+        moved.iter().all(|y| after.contains(y)),
+        "expected every row to move down by {step}: {moved:?} not all in {after:?}"
+    );
 }

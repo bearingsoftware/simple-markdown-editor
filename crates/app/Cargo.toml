@@ -40,5 +40,8 @@ rfd = { version = "0.15", default-features = false, features = ["common-controls
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

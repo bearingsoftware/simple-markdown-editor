@@ -898,6 +898,7 @@ dependencies = [
  "mdedit-text-dwrite",
  "pollster",
  "rfd",
+ "tempfile",
  "thiserror 2.0.19",
  "wgpu",
  "winit",
