@@ -82,12 +82,13 @@ Known gaps, so nobody assumes they are done:
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
 - **The tab strip is the only widget.** There is no menu, no status bar and no scrollbar.
-- **There is no clipboard.** Text can be selected — by dragging, by shift-clicking, or with shift
-  and the arrow keys — and then nothing can be done with it: Ctrl+C, Ctrl+X, Ctrl+V and Ctrl+A are
-  not handled. Selecting is also the only thing selection does; typing over a selection inserts
-  rather than replacing it.
+- **The clipboard is text only, and a paste keeps its own line endings.** An image on the clipboard
+  is ignored, because a Markdown buffer cannot hold one and deciding where to write the file would be
+  a feature rather than a paste. Pasted text goes in verbatim, so pasting CRLF into an LF file leaves
+  mixed endings — the byte-preserving choice, and the opposite of what VS Code does. Revisit if it
+  annoys anyone.
 - **No double-click to select a word**, and no triple-click for a line. Every selection is a drag or
-  a shift.
+  a shift — and there is no menu to reach copy and paste from, only the chords.
 - **Startup costs ~300 ms before anything is drawn**, and none of it is the document: a 5-byte file
   reaches first paint no faster than a 245 KB one. It is winit's window plus wgpu's device and
   pipeline bring-up. That is what stands between the editor and the ≤50 ms file-open target, and it

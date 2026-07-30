@@ -27,6 +27,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::blocks;
+use crate::clipboard::{Clipboard, System};
 use crate::content::{ContentRect, Insets};
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
@@ -528,6 +529,11 @@ pub struct Editor<T: TextLayout> {
     desired_x: Option<f32>,
     /// Whether the pointer is dragging out a selection.
     dragging: bool,
+    /// Where text goes when it is copied, and comes from when it is pasted.
+    ///
+    /// Boxed rather than a second type parameter: `Editor` is already generic over the text
+    /// backend, and threading a second one through every signature would cost more than it buys.
+    clipboard: Box<dyn Clipboard>,
     /// Where the document was allowed to draw last frame.
     ///
     /// Kept because a click arrives between frames and has to be mapped back through exactly the
@@ -594,6 +600,7 @@ impl<T: TextLayout> Editor<T> {
             desired_x: None,
             dragging: false,
             content: ContentRect::default(),
+            clipboard: Box::new(System),
         }
     }
 
@@ -631,6 +638,14 @@ impl<T: TextLayout> Editor<T> {
         let mut editor = Self::new("", text);
         editor.workspace = workspace;
         editor
+    }
+
+    /// Uses a different clipboard.
+    ///
+    /// So a test can assert what copy put there and what paste took, without depending on whatever
+    /// the machine happens to have on its real clipboard — or racing another test doing the same.
+    pub fn with_clipboard(&mut self, clipboard: Box<dyn Clipboard>) {
+        self.clipboard = clipboard;
     }
 
     /// The tabs, for a caller that wants to report on them.
@@ -857,6 +872,53 @@ impl<T: TextLayout> Editor<T> {
     /// Applies one key press to the document.
     ///
     /// Returns whether anything changed and a redraw is needed.
+    /// Applies a Ctrl chord. Returns whether anything changed and a redraw is needed.
+    ///
+    /// Separate from the rest of the key handling because they are two different things: a chord is
+    /// a command, and everything else edits or moves.
+    fn handle_chord(&mut self, event: &KeyEvent) -> bool {
+        // Ctrl+Home and Ctrl+End go to the ends of the document, which is where every editor puts
+        // them. The caret moves, so the scroll follows without either arm saying so.
+        match &event.logical_key {
+            Key::Named(NamedKey::Home) => {
+                self.select(ByteOffset::ZERO, self.modifiers.shift_key());
+                return true;
+            }
+            Key::Named(NamedKey::End) => {
+                let end = ByteOffset::new(self.document().len_bytes());
+                self.select(end, self.modifiers.shift_key());
+                return true;
+            }
+            _ => {}
+        }
+
+        let Key::Character(character) = &event.logical_key else {
+            return false;
+        };
+        match character.as_str() {
+            "s" | "S" => {
+                self.save();
+                false
+            }
+            // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
+            "z" if !self.modifiers.shift_key() => self.document_mut().undo(),
+            "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
+            "w" | "W" => self.close_tab(),
+            "	" => self.cycle_tab(!self.modifiers.shift_key()),
+            "c" | "C" => {
+                self.copy();
+                false
+            }
+            "x" | "X" => self.cut(),
+            "v" | "V" => self.paste(),
+            "a" | "A" => {
+                self.select_all();
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
         if event.state != ElementState::Pressed {
             return false;
@@ -868,37 +930,7 @@ impl<T: TextLayout> Editor<T> {
 
         // Chords first, so a modified key never inserts its own letter.
         if self.modifiers.control_key() {
-            // Ctrl+Home and Ctrl+End go to the ends of the document, which is where every editor
-            // puts them. The caret moves, so the scroll follows without either arm saying so.
-            match &event.logical_key {
-                Key::Named(NamedKey::Home) => {
-                    self.document_mut()
-                        .set_selection(Selection::caret(ByteOffset::ZERO));
-                    return true;
-                }
-                Key::Named(NamedKey::End) => {
-                    let end = ByteOffset::new(self.document().len_bytes());
-                    self.document_mut().set_selection(Selection::caret(end));
-                    return true;
-                }
-                _ => {}
-            }
-
-            let Key::Character(character) = &event.logical_key else {
-                return false;
-            };
-            return match character.as_str() {
-                "s" | "S" => {
-                    self.save();
-                    false
-                }
-                // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
-                "z" if !self.modifiers.shift_key() => self.document_mut().undo(),
-                "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
-                "w" | "W" => self.close_tab(),
-                "	" => self.cycle_tab(!self.modifiers.shift_key()),
-                _ => false,
-            };
+            return self.handle_chord(event);
         }
 
         let caret = self.document().selection().head();
@@ -907,6 +939,11 @@ impl<T: TextLayout> Editor<T> {
 
         match &event.logical_key {
             Key::Named(NamedKey::Backspace) => {
+                // With something selected, Backspace removes the selection rather than the character
+                // before it — which is also what makes it one edit and one undo step.
+                if self.delete_selection() {
+                    return true;
+                }
                 if caret == ByteOffset::ZERO {
                     return false;
                 }
@@ -921,6 +958,7 @@ impl<T: TextLayout> Editor<T> {
                 // `delete` already leaves the caret at the start of what it removed.
                 true
             }
+            Key::Named(NamedKey::Delete) if self.delete_selection() => true,
             Key::Named(NamedKey::Delete) => {
                 let next = self.next_boundary(caret);
                 if next == caret
@@ -1000,8 +1038,87 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// The selected text, or nothing when the selection is collapsed.
+    #[must_use]
+    pub fn selected_text(&self) -> Option<String> {
+        let span = self.document().selection().span();
+        (!span.is_empty()).then(|| span.slice(&self.document().to_string()).to_owned())
+    }
+
+    /// Puts the selection on the clipboard, leaving the buffer alone.
+    pub fn copy(&mut self) {
+        if let Some(text) = self.selected_text() {
+            self.clipboard.write(&text);
+        }
+    }
+
+    /// Puts the selection on the clipboard and removes it. One edit.
+    pub fn cut(&mut self) -> bool {
+        let Some(text) = self.selected_text() else {
+            return false;
+        };
+        self.clipboard.write(&text);
+        self.follow_caret = true;
+        self.delete_selection()
+    }
+
+    /// Replaces the selection with whatever is on the clipboard, as one edit.
+    ///
+    /// Multi-line text included: a paste is one insertion however many lines it contains, so undoing
+    /// it takes one step rather than one per line.
+    pub fn paste(&mut self) -> bool {
+        let Some(text) = self.clipboard.read() else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        self.follow_caret = true;
+        self.insert(&text)
+    }
+
+    /// Selects the whole buffer.
+    pub fn select_all(&mut self) {
+        let end = ByteOffset::new(self.document().len_bytes());
+        self.document_mut()
+            .set_selection(Selection::new(ByteOffset::ZERO, end));
+        self.desired_x = None;
+    }
+
+    /// Removes what is selected, if anything is. One edit, so one undo step.
+    ///
+    /// Returns whether there was a selection to remove, which is how the callers tell "handled" from
+    /// "carry on and do the single-character thing".
+    pub fn delete_selected(&mut self) -> bool {
+        self.delete_selection()
+    }
+
+    /// Inserts text at the caret, replacing the selection if there is one.
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        self.insert(text)
+    }
+
+    /// Removes what is selected, if anything is. One edit, so one undo step.
+    fn delete_selection(&mut self) -> bool {
+        let span = self.document().selection().span();
+        if span.is_empty() {
+            return false;
+        }
+        // `delete` leaves the caret at the start of what it removed, which is where the selection
+        // began — the same place every editor leaves it.
+        self.document_mut().delete(span).is_ok()
+    }
+
+    /// Inserts `text` at the caret, replacing the selection if there is one.
+    ///
+    /// One edit either way. Typing over a selection used to insert *beside* it, which left the
+    /// selected text in the buffer and the highlight covering something the caret was no longer in.
     fn insert(&mut self, text: &str) -> bool {
-        let caret = self.document().selection().head();
+        let span = self.document().selection().span();
+        if !span.is_empty() {
+            return self.document_mut().replace(span, text).is_ok();
+        }
+        let caret = span.start();
         if self.document_mut().insert(caret, text).is_err() {
             return false;
         }
