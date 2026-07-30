@@ -23,6 +23,7 @@ pub mod ime;
 pub mod latency;
 pub mod prompt;
 pub mod scroll;
+pub mod status;
 pub mod tabs;
 pub mod view;
 
