@@ -49,8 +49,8 @@ crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsa
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
 crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
-                        #   step, per-block layout and its cache, and the keystroke latency
-                        #   harness. Binary: `mdedit`.
+                        #   step, per-block layout and its cache, the settings file, and the
+                        #   keystroke latency harness. Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
 docs/research/          # 7 briefs; read README.md first
@@ -122,6 +122,14 @@ Known gaps, so nobody assumes they are done:
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
+- **One setting, and no UI to change it.** `%APPDATA%\SimpleMarkdownEditor\config.json` holds
+  `line_numbers`, read once at startup and never written back, so changing it means editing the file
+  and restarting. **No setting may name a path** — see `crates/app/src/config.rs` for why that is a
+  rule rather than a caution. JSON because `serde_json` was already here; the lack of comments is the
+  known cost, and TOML is the thing to revisit if this grows past a handful of keys.
+- **A line number counts source lines, not rows.** A wrapped paragraph is numbered once, at its first
+  row, which is what every editor does. The gutter is sized for the largest number the document can
+  show, with a two-digit floor, so it does not visibly resize as you pass line 9.
 - **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
   calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
   error rather than as text until there is UI to choose.

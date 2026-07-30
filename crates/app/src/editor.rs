@@ -29,6 +29,7 @@ use winit::window::{Window, WindowId};
 
 use crate::blocks;
 use crate::clipboard::{Clipboard, System};
+use crate::config::Config;
 use crate::content::{ContentRect, Insets};
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
@@ -46,6 +47,11 @@ pub type SavePathPicker = Box<dyn Fn(Option<&str>) -> Option<PathBuf>>;
 
 /// Left and top margin, in device-independent pixels.
 const MARGIN: f32 = 24.0;
+/// Fewest digits the gutter is sized for, so a short file does not visibly resize its gutter the
+/// moment it grows past nine lines.
+const GUTTER_MIN_DIGITS: usize = 2;
+/// Space either side of the numbers in the gutter.
+const GUTTER_PADDING: f32 = 8.0;
 /// Caret width, in device-independent pixels.
 const CARET_WIDTH: f32 = 2.0;
 /// Thickness of the line under text an input method is still composing.
@@ -542,6 +548,10 @@ pub struct Editor<T: TextLayout> {
     pick_save_path: SavePathPicker,
     /// Concealed, or shown as it is. See [`crate::view::Mode`].
     mode: view::Mode,
+    /// What the user chose. Read once at startup; see [`crate::config`].
+    config: Config,
+    /// The ten digits and their advance, laid out once. See [`Self::digits`].
+    digits: Option<[(GlyphKey, f32); 10]>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -621,6 +631,8 @@ impl<T: TextLayout> Editor<T> {
             prompt: Box::new(KeepEverything),
             pick_save_path: Box::new(|_| None),
             mode: view::Mode::default(),
+            config: Config::default(),
+            digits: None,
             menu: None,
             menu_proxy: None,
         }
@@ -660,6 +672,26 @@ impl<T: TextLayout> Editor<T> {
         let mut editor = Self::new("", text);
         editor.workspace = workspace;
         editor
+    }
+
+    /// Applies settings read from the config file.
+    pub fn with_config(&mut self, config: Config) {
+        self.config = config;
+    }
+
+    /// What the user chose.
+    #[must_use]
+    pub fn config(&self) -> Config {
+        self.config
+    }
+
+    /// Where the document was allowed to draw last frame.
+    ///
+    /// For a test that needs to know where the text starts — which moves when chrome appears, and is
+    /// exactly what a click has to agree with.
+    #[must_use]
+    pub fn content_rect(&self) -> ContentRect {
+        self.content
     }
 
     /// Uses a different clipboard.
@@ -1595,15 +1627,47 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// The tab strip is the only one so far. A menu bar, a status bar, a file pane and a
     /// line-number gutter each add to this and nothing else changes — which is the point.
-    fn insets(&self) -> Insets {
+    fn insets(&mut self) -> Insets {
         // The menu bar is deliberately absent. A native Windows menu is part of the window frame
         // rather than of the client area, so Windows has already taken its height off what
         // `inner_size` reports — accounting for it here would take it off twice and leave a strip of
         // the document permanently below the fold.
         Insets {
             top: self.strip_height(),
+            left: self.gutter_width(),
             ..Insets::default()
         }
+    }
+
+    /// How wide the line-number gutter is, or nothing when it is switched off.
+    ///
+    /// Wide enough for the largest number the document can show, with a floor of two digits so a
+    /// short file's gutter does not visibly resize the moment it grows past nine lines. It changes
+    /// only when the document crosses a power of ten.
+    fn gutter_width(&mut self) -> f32 {
+        if !self.config.line_numbers {
+            return 0.0;
+        }
+        let lines = self.document().rope().len_lines().max(1);
+        let digits = lines.ilog10() as usize + 1;
+        let digit = self.digit_width();
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a document with more digits than an f32 can count is not reachable"
+        )]
+        let columns = digits.max(GUTTER_MIN_DIGITS) as f32;
+        digit.mul_add(columns, GUTTER_PADDING * 2.0)
+    }
+
+    /// How wide a digit is.
+    ///
+    /// Measured rather than assumed, because it is what the gutter's width is built from and a guess
+    /// would show as numbers crowding the text or floating away from it. Digits are the same width
+    /// as each other in every face worth setting a UI in, which is the assumption the gutter's
+    /// right-alignment rests on as well.
+    fn digit_width(&mut self) -> f32 {
+        self.digits()
+            .map_or(self.theme.body_size * 0.6, |digits| digits[0].1)
     }
 
     /// Height the tab strip occupies, which is nothing when there is nothing to show.
@@ -2181,6 +2245,9 @@ impl<T: TextLayout> Editor<T> {
 
             let selected = frame.selection.span();
             let mut row_top = chunk_top;
+            // Which source line the row above was on, so a wrapped row can be told from a new one.
+            // `usize::MAX` for "there was no row above", which no line number can collide with.
+            let mut previous_line = usize::MAX;
 
             for (row, line) in cached.layout.lines[..drawn].iter().enumerate() {
                 // Culled in the document's own coordinates rather than the window's, so the check
@@ -2188,8 +2255,19 @@ impl<T: TextLayout> Editor<T> {
                 let baseline = line.baseline + chunk_top;
                 let top_of_row = row_top;
                 row_top += line.height;
+
+                // Worked out before the cull, because a row scrolled off the top still tells the
+                // row below it whether it is a continuation.
+                let source_line = self.line_of_row(&cached, chunk, line, previous_line);
+                let starts_a_line = source_line != previous_line;
+                previous_line = source_line;
+
                 if baseline - line.height > band_bottom || baseline < band_top - line.height {
                     continue;
+                }
+
+                if self.config.line_numbers && starts_a_line {
+                    self.draw_line_number(quads, source_line + 1, top_of_row, at);
                 }
 
                 // Behind the glyphs, so the text stays readable through it.
@@ -2231,6 +2309,136 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         line_height
+    }
+
+    /// Which source line a visual row belongs to.
+    ///
+    /// Asked of the glyphs rather than by counting newlines, and that distinction is the whole
+    /// point: a wrapped paragraph is one source line over several rows, so counting newlines would
+    /// number every row of it and the numbers would stop matching the file — which is the only
+    /// reason to show them.
+    ///
+    /// A row with no glyphs is a blank line, which is never wrapped, so it is one line on from
+    /// whatever was above it.
+    fn line_of_row(
+        &self,
+        cached: &Cached,
+        chunk: blocks::Chunk,
+        line: &mdedit_text::LayoutLine,
+        previous: usize,
+    ) -> usize {
+        match line.glyphs.first() {
+            Some(glyph) => {
+                let at = cached.rebase(glyph, chunk.span);
+                self.document()
+                    .rope()
+                    .byte_to_line(at.get().min(self.document().len_bytes()))
+            }
+            None if previous == usize::MAX => self
+                .document()
+                .rope()
+                .byte_to_line(chunk.span.start().get().min(self.document().len_bytes())),
+            None => previous + 1,
+        }
+    }
+
+    /// The ten digits, laid out once.
+    ///
+    /// Laying out a number per visible row is thirty-odd trips through the text engine every frame —
+    /// on Windows, thirty `CreateTextLayout` calls — and it measured at p50 2.03 → 2.22 ms with p99
+    /// 5.10 → 6.10 on a 245 KB document. Inside budget, but a fifth of the tail for something that
+    /// draws at most five characters. There are only ten digits, and UI faces make them the same
+    /// width, so one layout answers every number the editor will ever show.
+    fn digits(&mut self) -> Option<[(GlyphKey, f32); 10]> {
+        if let Some(digits) = self.digits {
+            return Some(digits);
+        }
+        let style = TextStyle::body(self.theme.body_size);
+        let run = [StyledRun {
+            text: "0123456789",
+            style,
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        }];
+        let layout = self.text.layout(&run, f32::MAX).ok()?;
+
+        let measured: Vec<(GlyphKey, f32)> = layout
+            .glyphs()
+            .map(|glyph| (glyph.key, glyph.advance))
+            .collect();
+        // Ten glyphs for ten characters, unless a backend did something surprising — in which case
+        // fall back rather than mis-render, since drawing numbers is not worth a panic.
+        let digits: [(GlyphKey, f32); 10] = measured.try_into().ok()?;
+        self.digits = Some(digits);
+        Some(digits)
+    }
+
+    /// Draws one line number, right-aligned in the gutter.
+    ///
+    /// Composed from the cached digits rather than laid out: see [`digits`](Self::digits).
+    fn draw_line_number(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        number: usize,
+        top: f32,
+        at: Placement,
+    ) {
+        let Some(digits) = self.digits() else {
+            return;
+        };
+
+        // Written back to front into a fixed buffer, so a line number costs no allocation. Twenty
+        // digits is more than a usize can have.
+        let mut buffer = [0usize; 20];
+        let mut count = 0;
+        let mut left = number;
+        loop {
+            buffer[count] = left % 10;
+            count += 1;
+            left /= 10;
+            if left == 0 {
+                break;
+            }
+        }
+
+        let advance = digits[0].1;
+        let (_, y) = at.content.to_window(0.0, top, at.scroll);
+        // Right-aligned against the text's left edge, less the padding, so the ones column lines up
+        // however many digits a number has.
+        let right = at.content.left_edge() - GUTTER_PADDING;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a line number with more digits than an f32 can count is not reachable"
+        )]
+        let width = advance * count as f32;
+
+        for (place, digit) in buffer[..count].iter().enumerate() {
+            let (key, _) = digits[*digit];
+            let Some(entry) = self.entry_for(key, at.scale) else {
+                continue;
+            };
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "a line number with more digits than an f32 can count is not reachable"
+            )]
+            let from_right = (count - place - 1) as f32;
+            let x = right - width + advance * from_right;
+            quads.push(QuadInstance {
+                rect: [
+                    x * at.scale + px_i(entry.left),
+                    y * at.scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                // The same dimmed colour as revealed syntax: scaffolding, not content.
+                colour: [
+                    self.theme.marker.r,
+                    self.theme.marker.g,
+                    self.theme.marker.b,
+                    self.theme.marker.a,
+                ],
+            });
+        }
     }
 
     /// Lays a chunk out, from the cache when it is there and from the text engine when it is not.

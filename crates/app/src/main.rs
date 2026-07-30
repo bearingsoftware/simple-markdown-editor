@@ -128,6 +128,8 @@ fn main() {
             editor.activate_saved_tab();
             editor
         };
+        // Read once, at startup, and never written back — see `mdedit_app::config`.
+        editor.with_config(mdedit_app::config::Config::load());
         // The editor keeps every tab by default when it has nobody to ask. This is the asking.
         editor.with_prompt(Box::new(NativePrompt));
         editor.with_file_picker(Box::new(|suggested| {
