@@ -36,6 +36,10 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",          # file-level copyleft; safe to link, but modifications to MPL files stay MPL
+    # Boost. Permissive, no copyleft, and unlike MIT it waives attribution in binary distributions —
+    # so it constrains us less than licences already on this list. Added deliberately (MDEDIT-24) for
+    # `clipboard-win` and `error-code`, which arboard uses for the Windows clipboard.
+    "BSL-1.0",
 ]
 confidence-threshold = 0.9
 

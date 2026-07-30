@@ -16,120 +16,16 @@ use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
 use mdedit_app::tabs::STRIP_HEIGHT;
 use mdedit_document::Selection;
-use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
+use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
-use mdedit_text::{
-    FontId, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine, PositionedGlyph, StyledRun,
-    TextError, TextLayout,
-};
 use tempfile::TempDir;
+
+mod stub;
+use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT, MARGIN};
 
 /// One line, as a whole number of pixels: the tests compare rounded rows, so the step has to be
 /// expressible as one too.
 const LINE_STEP: i32 = 20;
-const LINE_HEIGHT: f32 = 20.0;
-const ASCENT: f32 = 16.0;
-const ADVANCE: f32 = 8.0;
-/// Matches `MARGIN` in the editor. A test that hardcodes it would silently pass if it changed.
-const MARGIN: f32 = 24.0;
-
-/// A text backend with no font behind it: one line per `\n`, one fixed-width glyph per character.
-///
-/// Enough for the frame to have geometry to place, and predictable enough that a wrong offset is
-/// arithmetic rather than a rendering judgement call.
-#[derive(Default)]
-struct Grid {
-    /// How many chunks have been through the engine. The whole point of MDEDIT-17 is that this
-    /// stays small however long the document is, so the tests assert on it directly.
-    layouts: usize,
-}
-
-impl Grid {
-    fn new() -> Self {
-        Self::default()
-    }
-
-    fn layouts(&self) -> usize {
-        self.layouts
-    }
-}
-
-impl TextLayout for Grid {
-    fn layout(&mut self, runs: &[StyledRun<'_>], _max_width: f32) -> Result<Layout, TextError> {
-        self.layouts += 1;
-        let mut lines: Vec<LayoutLine> = Vec::new();
-        let mut pen_x = 0.0;
-        let mut row = 0usize;
-
-        for run in runs {
-            for (index, character) in run.text.char_indices() {
-                if character == '\n' {
-                    // An empty line still occupies one, so push it before moving on.
-                    while lines.len() <= row {
-                        lines.push(new_line(lines.len()));
-                    }
-                    row += 1;
-                    pen_x = 0.0;
-                    continue;
-                }
-                while lines.len() <= row {
-                    lines.push(new_line(lines.len()));
-                }
-                let start = run.source.start().get() + index;
-                let baseline = lines[row].baseline;
-                lines[row].glyphs.push(PositionedGlyph {
-                    key: GlyphKey {
-                        font: FontId::new(0),
-                        glyph: GlyphId::new(1),
-                        size: run.style.size,
-                    },
-                    pos: LayoutPos::new(pen_x, baseline),
-                    advance: ADVANCE,
-                    source: ByteSpan::new(
-                        ByteOffset::new(start),
-                        ByteOffset::new(start + character.len_utf8()),
-                    ),
-                });
-                pen_x += ADVANCE;
-            }
-        }
-        while lines.len() <= row {
-            lines.push(new_line(lines.len()));
-        }
-        Ok(Layout { lines })
-    }
-
-    fn rasterize(
-        &mut self,
-        _key: GlyphKey,
-        _scale_factor: f32,
-    ) -> Result<Option<GlyphImage>, TextError> {
-        Ok(Some(GlyphImage {
-            width: 1,
-            height: 1,
-            left: 0,
-            top: -1,
-            coverage: vec![255],
-        }))
-    }
-
-    fn font_name(&self, _font: FontId) -> Option<String> {
-        Some("grid".to_owned())
-    }
-}
-
-fn new_line(row: usize) -> LayoutLine {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "row counts in a test document are small"
-    )]
-    let row = row as f32;
-    LayoutLine {
-        baseline: row * LINE_HEIGHT + ASCENT,
-        height: LINE_HEIGHT,
-        glyphs: Vec::new(),
-    }
-}
 
 /// A window 200 device-independent pixels tall below the margin, at scale 1.
 const WIDTH: f32 = 400.0;

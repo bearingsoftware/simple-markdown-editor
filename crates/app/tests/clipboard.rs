@@ -1,0 +1,315 @@
+//! Copy, cut, paste, select-all — and the correctness fix underneath them.
+//!
+//! Against a fake clipboard rather than the system one, so these assert what the editor did rather
+//! than what the machine happened to have copied, and so they run on a headless CI runner without
+//! racing each other.
+//!
+//! The half that matters most is not the clipboard at all: typing with a selection active used to
+//! insert *beside* it, leaving the selected text in the buffer. That is asserted here too, because it
+//! is the bug this ticket set out to fix.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use mdedit_app::clipboard::Clipboard;
+use mdedit_app::editor::Editor;
+use mdedit_document::Selection;
+use mdedit_offsets::ByteOffset;
+
+mod stub;
+use stub::Grid;
+
+/// A clipboard in a variable. Shared with the test so it can be read back after a copy.
+#[derive(Debug, Default, Clone)]
+struct Fake(Rc<RefCell<Option<String>>>);
+
+impl Fake {
+    fn holding(text: &str) -> Self {
+        Self(Rc::new(RefCell::new(Some(text.to_owned()))))
+    }
+
+    fn contents(&self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+}
+
+impl Clipboard for Fake {
+    fn read(&mut self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+
+    fn write(&mut self, text: &str) {
+        *self.0.borrow_mut() = Some(text.to_owned());
+    }
+}
+
+fn editor_with(source: &str, clipboard: &Fake) -> Editor<Grid> {
+    let mut editor = Editor::new(source, Grid::new());
+    editor.with_clipboard(Box::new(clipboard.clone()));
+    editor
+}
+
+fn select(editor: &mut Editor<Grid>, from: usize, to: usize) {
+    editor
+        .document_mut()
+        .set_selection(Selection::new(ByteOffset::new(from), ByteOffset::new(to)));
+}
+
+// ---------------------------------------------------------------------------
+// The correctness fix: a selection is replaced, not typed beside.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn typing_over_a_selection_replaces_it() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 5);
+
+    editor.insert_text("goodbye");
+    assert_eq!(editor.document().to_string(), "goodbye world\n");
+}
+
+/// And in one undo step, not two. This is why it goes through `replace` rather than delete-then-type.
+#[test]
+fn replacing_a_selection_is_one_undo_step() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 5);
+    editor.insert_text("goodbye");
+
+    editor.document_mut().undo();
+    assert_eq!(
+        editor.document().to_string(),
+        "hello world\n",
+        "one undo should put back both what was removed and what was typed"
+    );
+}
+
+#[test]
+fn backspace_with_a_selection_removes_the_selection() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 6, 11);
+
+    assert!(editor.delete_selected());
+    assert_eq!(editor.document().to_string(), "hello \n");
+    assert_eq!(
+        editor.document().selection().head(),
+        ByteOffset::new(6),
+        "the caret is left where the selection started"
+    );
+}
+
+#[test]
+fn with_nothing_selected_there_is_nothing_to_delete() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello\n", &clipboard);
+    assert!(
+        !editor.delete_selected(),
+        "so the caller does the character"
+    );
+    assert_eq!(editor.document().to_string(), "hello\n");
+}
+
+// ---------------------------------------------------------------------------
+// Copy, cut, paste.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn copy_puts_the_selection_on_the_clipboard_and_leaves_the_buffer_alone() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 6, 11);
+
+    editor.copy();
+    assert_eq!(clipboard.contents().as_deref(), Some("world"));
+    assert_eq!(editor.document().to_string(), "hello world\n");
+}
+
+#[test]
+fn copy_with_nothing_selected_does_not_clear_the_clipboard() {
+    let clipboard = Fake::holding("kept");
+    let mut editor = editor_with("hello\n", &clipboard);
+
+    editor.copy();
+    assert_eq!(
+        clipboard.contents().as_deref(),
+        Some("kept"),
+        "an accidental Ctrl+C must not throw away what was already there"
+    );
+}
+
+#[test]
+fn cut_takes_the_text_and_removes_it() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 6);
+
+    assert!(editor.cut());
+    assert_eq!(clipboard.contents().as_deref(), Some("hello "));
+    assert_eq!(editor.document().to_string(), "world\n");
+}
+
+#[test]
+fn one_undo_puts_back_a_cut() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 6);
+    editor.cut();
+
+    editor.document_mut().undo();
+    assert_eq!(editor.document().to_string(), "hello world\n");
+}
+
+#[test]
+fn cut_with_nothing_selected_does_nothing() {
+    let clipboard = Fake::holding("kept");
+    let mut editor = editor_with("hello\n", &clipboard);
+
+    assert!(!editor.cut());
+    assert_eq!(editor.document().to_string(), "hello\n");
+    assert_eq!(clipboard.contents().as_deref(), Some("kept"));
+}
+
+#[test]
+fn paste_inserts_at_the_caret() {
+    let clipboard = Fake::holding("there ");
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 6, 6);
+
+    assert!(editor.paste());
+    assert_eq!(editor.document().to_string(), "hello there world\n");
+}
+
+#[test]
+fn paste_over_a_selection_replaces_it() {
+    let clipboard = Fake::holding("everyone");
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 6, 11);
+
+    assert!(editor.paste());
+    assert_eq!(editor.document().to_string(), "hello everyone\n");
+}
+
+/// A paste is one insertion however many lines it carries, so undo takes one step rather than one
+/// per line.
+#[test]
+fn pasting_several_lines_is_one_edit() {
+    let clipboard = Fake::holding("one\ntwo\nthree\n");
+    let mut editor = editor_with("start\n", &clipboard);
+    select(&mut editor, 6, 6);
+
+    assert!(editor.paste());
+    assert_eq!(editor.document().to_string(), "start\none\ntwo\nthree\n");
+
+    editor.document_mut().undo();
+    assert_eq!(editor.document().to_string(), "start\n");
+}
+
+#[test]
+fn pasting_an_empty_clipboard_does_nothing() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello\n", &clipboard);
+    assert!(!editor.paste());
+    assert_eq!(editor.document().to_string(), "hello\n");
+
+    let empty = Fake::holding("");
+    let mut editor = editor_with("hello\n", &empty);
+    assert!(!editor.paste(), "an empty string is not an edit");
+    assert_eq!(editor.document().to_string(), "hello\n");
+}
+
+// ---------------------------------------------------------------------------
+// Select all.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn select_all_covers_the_buffer() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("hello world\n", &clipboard);
+
+    editor.select_all();
+    let selection = editor.document().selection();
+    assert_eq!(selection.anchor(), ByteOffset::ZERO);
+    assert_eq!(selection.head(), ByteOffset::new(12));
+}
+
+#[test]
+fn select_all_then_paste_replaces_the_whole_document_in_one_edit() {
+    let clipboard = Fake::holding("replacement\n");
+    let mut editor = editor_with("the old contents\nover two lines\n", &clipboard);
+
+    editor.select_all();
+    assert!(editor.paste());
+    assert_eq!(editor.document().to_string(), "replacement\n");
+
+    editor.document_mut().undo();
+    assert_eq!(
+        editor.document().to_string(),
+        "the old contents\nover two lines\n"
+    );
+}
+
+#[test]
+fn select_all_on_an_empty_document_selects_nothing() {
+    let clipboard = Fake::default();
+    let mut editor = editor_with("", &clipboard);
+    editor.select_all();
+    assert!(editor.document().selection().is_collapsed());
+    assert_eq!(editor.selected_text(), None);
+}
+
+// ---------------------------------------------------------------------------
+// The invariant that outranks all of it.
+// ---------------------------------------------------------------------------
+
+/// Clipboard text is untrusted input in the same way file contents are: it goes into the buffer, and
+/// what comes out has to be exactly what went in.
+#[test]
+fn pasted_bytes_survive_a_round_trip_unchanged() {
+    for text in [
+        "日本語のテキスト",
+        "with\ttabs\tand \r\n mixed \n endings",
+        "emoji 🦀 and a combining é",
+        "trailing spaces   ",
+    ] {
+        let clipboard = Fake::holding(text);
+        let mut editor = editor_with("", &clipboard);
+        assert!(editor.paste(), "pasting {text:?}");
+        assert_eq!(editor.document().to_string(), text, "pasting {text:?}");
+
+        editor.select_all();
+        assert_eq!(
+            editor.selected_text().as_deref(),
+            Some(text),
+            "copying {text:?} back out"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The real one.
+// ---------------------------------------------------------------------------
+
+/// Proves the `arboard` integration actually works, rather than only the trait around it.
+///
+/// Ignored by default: it touches the machine's real clipboard, so it would trample whatever the
+/// person running the tests had copied, and two of these running at once would race. Run it by hand
+/// with `cargo test -p mdedit-app --test clipboard -- --ignored`.
+#[test]
+#[ignore = "touches the real system clipboard"]
+fn the_system_clipboard_round_trips() {
+    use mdedit_app::clipboard::System;
+
+    let mut system = System;
+    let text = "mdedit round trip 日本語 🦀";
+    system.write(text);
+    assert_eq!(system.read().as_deref(), Some(text));
+}
