@@ -482,19 +482,31 @@ fn a_traversing_argument_is_accepted_and_flattened() {
     );
 }
 
-/// Resolved lexically, not canonicalised. `fs::canonicalize` returns `\?\C:\…` on Windows, which
-/// `validate` reads as the device namespace — so a path resolved that way would be written into the
-/// session file and refused on the next start.
+/// Whatever comes out has to be something the session boundary accepts, because that is what it
+/// will be handed on the next start.
+///
+/// The two ways of getting this wrong are opposite, which is why the resolution is per-platform:
+/// canonicalising gives a verbatim `\\?\` path on Windows, which `validate` reads as the device
+/// namespace, and *not* canonicalising leaves `..` on Unix, which it reads as traversal.
 #[test]
 fn a_resolved_argument_survives_a_round_trip_through_the_session_file() {
     let dir = TempDir::new().unwrap();
     let paths = files(&dir, 1);
 
-    let resolved = path::from_command_line(&paths[0]).expect("a real file");
-    assert!(
-        path::validate(&resolved).is_ok(),
-        "{resolved:?} came back in a shape the session boundary refuses"
-    );
+    let name = paths[0].file_name().unwrap();
+    let nested = dir.path().join("down");
+    std::fs::create_dir(&nested).unwrap();
+
+    // The second case is the one that matters. The first version of this test used only a plain
+    // path, passed on both platforms, and would have shipped a Linux build whose every traversing
+    // argument was dropped from the session on restart.
+    for given in [paths[0].clone(), nested.join("..").join(name)] {
+        let resolved = path::from_command_line(&given).expect("a real file");
+        assert!(
+            path::validate(&resolved).is_ok(),
+            "{given:?} resolved to {resolved:?}, which the session boundary refuses"
+        );
+    }
 }
 
 /// A typo says so rather than opening an empty buffer named after it.

@@ -117,11 +117,22 @@ pub fn validate(path: &Path) -> Result<(), PathRejected> {
 /// and a relative one written into the session file would be refused by [`validate`] on the next
 /// start, having meanwhile meant whatever directory the editor happened to be launched from.
 ///
-/// Resolved **lexically**, with [`std::path::absolute`] rather than [`std::fs::canonicalize`]. Two
-/// reasons, and the second is the one that matters: canonicalising returns a `\\?\C:\…` path on
-/// Windows, which every subsequent glance at the path — including [`validate`]'s own — would read as
-/// the device namespace. That is the trap `validate` documents in its first check, and the way to
-/// avoid springing it is not to create such a path in the first place.
+/// The result must also be something [`validate`] would accept, because that is what it will be
+/// handed on the next start — which means no `..` left in it. **The two platforms remove those
+/// differently, and neither way works on the other:**
+///
+/// - On Windows, [`std::path::absolute`] applies Win32 path normalisation, which flattens `..`
+///   lexically because that is what the platform itself defines a path to mean. Canonicalising
+///   instead would return `\\?\C:\…`, which `validate`'s *first* check reads as the device
+///   namespace — so the tab would be refused on the next start. The way not to spring the trap
+///   `validate` documents is not to create such a path.
+/// - On Unix, `absolute` deliberately leaves `..` alone, because `a/link/..` is not `a` when `link`
+///   is a symlink; removing it lexically would silently name a different file. So the resolution has
+///   to touch the filesystem, and [`std::fs::canonicalize`] is the platform's answer. There is no
+///   verbatim-prefix problem to trade against.
+///
+/// The asymmetry is real rather than tidied away: on Unix a symlink resolves to its target, and on
+/// Windows it does not. Both are the platform's own rule, and both give something `validate` takes.
 ///
 /// # Errors
 ///
@@ -129,16 +140,22 @@ pub fn validate(path: &Path) -> Result<(), PathRejected> {
 /// typo should say so rather than opening an empty buffer named after it — that would be a feature,
 /// and this is the behaviour the editor already had.
 pub fn from_command_line(path: &Path) -> Result<PathBuf, PathRejected> {
-    let Ok(absolute) = std::path::absolute(path) else {
-        // Only an empty path, or one the platform cannot express, reaches here.
-        return Err(PathRejected::NotAFile(path.to_path_buf()));
-    };
+    // Reported as given rather than as resolved throughout, because what the user typed is where
+    // they will look for the typo.
+    let rejected = || PathRejected::NotAFile(path.to_path_buf());
 
-    match std::fs::metadata(&absolute) {
-        Ok(metadata) if metadata.is_file() => Ok(absolute),
-        // Reported as given rather than as resolved, because that is what the user typed and what
-        // they will look for the typo in.
-        _ => Err(PathRejected::NotAFile(path.to_path_buf())),
+    #[cfg(windows)]
+    // Only an empty path, or one the platform cannot express, fails here.
+    let resolved = std::path::absolute(path).map_err(|_| rejected())?;
+
+    #[cfg(not(windows))]
+    // Fails when any component does not exist, which is the same answer the metadata check below
+    // would give and is reported the same way.
+    let resolved = std::fs::canonicalize(path).map_err(|_| rejected())?;
+
+    match std::fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_file() => Ok(resolved),
+        _ => Err(rejected()),
     }
 }
 
