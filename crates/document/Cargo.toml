@@ -10,6 +10,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+mdedit-language.workspace = true
 mdedit-markers.workspace = true
 mdedit-offsets.workspace = true
 ropey.workspace = true

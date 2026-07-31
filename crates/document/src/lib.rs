@@ -57,7 +57,7 @@ mod history;
 pub mod outline;
 
 use history::History;
-use mdedit_markers::{Block, BlockKind, Segment, SegmentKind};
+use mdedit_language::{Block, BlockKind, Language, Segment, SegmentKind};
 use mdedit_offsets::{BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
 use outline::Heading;
 use ropey::Rope;
@@ -120,12 +120,27 @@ pub struct Document {
     /// Where the caret is. Owned here because undo has to put it back where it was.
     selection: Selection,
     history: History,
+    /// What language this buffer is in.
+    ///
+    /// A `&'static dyn` rather than a type parameter: the language comes from a file's extension at
+    /// runtime, so making it generic would push that runtime choice up through every type that holds
+    /// a document. The cost is one vtable call per parse, against a parse measured in milliseconds.
+    language: &'static dyn Language,
 }
 
 impl Document {
     /// An empty document.
     #[must_use]
     pub fn new() -> Self {
+        Self::in_language(&mdedit_markers::MARKDOWN)
+    }
+
+    /// An empty document in a given language.
+    ///
+    /// [`new`](Self::new) is this with Markdown, which is what every caller wants until a file's
+    /// extension says otherwise.
+    #[must_use]
+    pub fn in_language(language: &'static dyn Language) -> Self {
         Self {
             text: Rope::new(),
             segments: Vec::new(),
@@ -133,7 +148,14 @@ impl Document {
             scoped: false,
             selection: Selection::caret(ByteOffset::ZERO),
             history: History::default(),
+            language,
         }
+    }
+
+    /// What language this buffer is being read as.
+    #[must_use]
+    pub fn language(&self) -> &'static dyn Language {
+        self.language
     }
 
     /// Length of the buffer in bytes.
@@ -348,7 +370,13 @@ impl Document {
             ByteOffset::new(scope.start),
             ByteOffset::new(shift(scope.end).min(text.len())),
         );
-        let fresh = mdedit_markers::analyze_region(&text, region);
+        let Some(fresh) = self.language.analyze_region(&text, region) else {
+            // This language has no safe place to restart here — JSON nests without limit, so an edit
+            // deep inside an object may have no boundary short of the top. A whole-document parse is
+            // the correct answer, merely a slower one, and saying so beats a fast wrong one.
+            self.resegment();
+            return;
+        };
 
         // Segments tile, so one straddling an edge is trimmed rather than dropped: dropping it would
         // leave those bytes covered by nothing, which is the one thing this crate guarantees against.
@@ -567,7 +595,7 @@ impl Document {
     fn resegment(&mut self) {
         // One parse for both. `analyze` exists precisely so the block list does not cost a second
         // walk of the parser on every keystroke.
-        let analysis = mdedit_markers::analyze(&self.text.to_string());
+        let analysis = self.language.analyze(&self.text.to_string());
         self.segments = analysis.segments;
         self.blocks = analysis.blocks;
         self.scoped = false;
@@ -614,11 +642,7 @@ impl From<&str> for Document {
     fn from(text: &str) -> Self {
         let mut doc = Self {
             text: Rope::from_str(text),
-            segments: Vec::new(),
-            blocks: Vec::new(),
-            scoped: false,
-            selection: Selection::caret(ByteOffset::ZERO),
-            history: History::default(),
+            ..Self::new()
         };
         doc.resegment();
         doc
@@ -728,6 +752,14 @@ impl Document {
     /// when the caret is on a fence line, where Typora would show them from anywhere inside.
     #[must_use]
     pub fn is_revealed(&self, segment: &Segment, selection: Selection) -> bool {
+        // A language that never conceals reveals everything, always. That is the whole of the
+        // colour-only rendering model: JSON's braces and quotes *are* the document, and YAML's
+        // indentation is load-bearing, so hiding either produces something that cannot be edited
+        // back into itself.
+        if !self.language.conceals() {
+            return true;
+        }
+
         let SegmentKind::Marker(marker) = segment.kind() else {
             return true;
         };

@@ -11,6 +11,7 @@ repository.workspace = true
 
 [dependencies]
 mdedit-offsets.workspace = true
+mdedit-language.workspace = true
 pulldown-cmark.workspace = true
 
 [dev-dependencies]

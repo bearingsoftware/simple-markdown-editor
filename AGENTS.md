@@ -37,8 +37,12 @@ platform-agnostic.
 ```
 crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos,
                         #   BlockId
-crates/markers/         # mdedit-markers: partitions source into marker and content spans, and
-                        #   reports block extents — one parse for both
+crates/language/        # mdedit-language: what the editor needs from a language — spans with a
+                        #   role, block extents, and whether syntax is ever concealed. Depends on
+                        #   `mdedit-offsets` and nothing else, deliberately
+crates/markers/         # mdedit-markers: Markdown's implementation of that trait. Partitions
+                        #   source into marker and content spans, and reports block extents — one
+                        #   parse for both
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection, the reveal-on-cursor predicate, and the heading trail to a
                         #   position
@@ -145,6 +149,17 @@ Known gaps, so nobody assumes they are done:
 - **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
   calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
   error rather than as text until there is UI to choose.
+- **There is a language boundary, and one language behind it.** MDEDIT-29 put Markdown behind
+  `mdedit_language::Language` so JSON and YAML can follow, and changed nothing observable — the whole
+  test suite passed unmodified, which was the acceptance criterion. A language answers three things:
+  its spans, its block extents, and whether its syntax is ever concealed. That last one is the
+  rendering model in a single bool: Markdown hides its syntax because the syntax is scaffolding for
+  prose, and JSON must not because its braces *are* the document. Nothing but Markdown implements it
+  yet, so the trait has no correctness oracle — the same position `mdedit-text` is in.
+- **A language that cannot say where to restart gets a whole-document parse.** `analyze_region`
+  returns `Option`, and `None` means "no safe boundary here". Correct and merely slower, which is the
+  right trade — JSON nests without limit, so an edit deep inside an object may have no boundary short
+  of the top.
 - **Blocks are extents, not a tree.** `Document::blocks` is a flat list with a depth on each entry.
   Nothing walks parent or child links because nothing has needed to; `block_at` scans the list.
   Fine at present sizes, and the thing to revisit when virtualization needs to diff block lists.
