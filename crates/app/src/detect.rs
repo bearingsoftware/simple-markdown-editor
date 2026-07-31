@@ -28,6 +28,8 @@ pub fn language_for(path: &Path) -> &'static dyn Language {
     // Lowercased because Windows filesystems are case-insensitive and `DATA.JSON` is a JSON file.
     match extension.to_ascii_lowercase().as_str() {
         "json" => &mdedit_json::JSON,
+        // Both spellings. `.yml` is the older one and still the commoner in the wild.
+        "yaml" | "yml" => &mdedit_yaml::YAML,
         _ => &mdedit_markers::MARKDOWN,
     }
 }

@@ -18,6 +18,7 @@ mdedit-document.workspace = true
 mdedit-file.workspace = true
 mdedit-session.workspace = true
 mdedit-json.workspace = true
+mdedit-yaml.workspace = true
 mdedit-language.workspace = true
 mdedit-markers.workspace = true
 mdedit-menu-win.workspace = true

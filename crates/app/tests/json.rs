@@ -167,3 +167,82 @@ fn opening_a_json_file_does_not_touch_a_byte() {
     let editor = open(&dir, "data.json", source);
     assert_eq!(editor.document().to_string(), source);
 }
+
+// ---------------------------------------------------------------------------
+// YAML, which is the same bargain with a larger grammar. See `mdedit_yaml`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn both_yaml_extensions_are_recognised() {
+    assert_eq!(language_for(Path::new("compose.yaml")).name(), "YAML");
+    assert_eq!(language_for(Path::new("compose.yml")).name(), "YAML");
+    assert_eq!(language_for(Path::new("CI.YML")).name(), "YAML");
+}
+
+#[test]
+fn a_yaml_file_opens_highlighted_and_never_concealed() {
+    let dir = TempDir::new().unwrap();
+    let source = "# a note\nname: value\nlist:\n  - 1\n  - two\n";
+    let editor = open(&dir, "config.yaml", source);
+
+    let document = editor.document();
+    assert_eq!(document.language().name(), "YAML");
+    assert!(!document.language().conceals());
+    assert!(
+        document
+            .segments()
+            .iter()
+            .all(|segment| document.is_revealed(segment, document.selection())),
+        "every byte of a YAML file is on screen"
+    );
+
+    let text = document.to_string();
+    let rebuilt: String = document
+        .segments()
+        .iter()
+        .map(|segment| segment.span().slice(&text))
+        .collect();
+    assert_eq!(rebuilt, source);
+}
+
+#[test]
+fn a_yaml_file_draws_in_more_than_one_colour() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = open(
+        &dir,
+        "config.yaml",
+        "# note\nname: value\ncount: 42\nflag: true\n",
+    );
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let colours: std::collections::BTreeSet<[u32; 4]> = quads
+        .iter()
+        .map(|quad| quad.colour.map(f32::to_bits))
+        .collect();
+    assert!(colours.len() > 2, "{colours:?}");
+}
+
+/// The documents a real YAML parser refused, which is why one is not being used.
+#[test]
+fn a_yaml_file_a_parser_would_reject_still_draws() {
+    let dir = TempDir::new().unwrap();
+    for broken in [
+        "a: 1\nb:\n  - x\n  - \nc: [1, 2",
+        "a:\n   b: 1\n  c: 2\n",
+        "a:\n\tb: 1\n",
+    ] {
+        let mut editor = open(&dir, "config.yaml", broken);
+        let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+        assert!(!quads.is_empty(), "{broken:?} drew nothing");
+    }
+}
+
+#[test]
+fn opening_a_yaml_file_does_not_touch_a_byte() {
+    let dir = TempDir::new().unwrap();
+    // Trailing spaces, tabs in a value, an odd quote style and no trailing newline: everything a
+    // round trip through a YAML library would tidy up.
+    let source = "a:   1  \nb: 'quoted'\nc: |\n  literal\ttext\nd: [ 1,2 ]";
+    let editor = open(&dir, "config.yml", source);
+    assert_eq!(editor.document().to_string(), source);
+}

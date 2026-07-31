@@ -4,6 +4,7 @@ members = [
     "crates/offsets",
     "crates/language",
     "crates/json",
+    "crates/yaml",
     "crates/markers",
     "crates/document",
     "crates/text",
@@ -30,6 +31,7 @@ thiserror = "2"
 # which deny.toml rejects.
 mdedit-language = { path = "crates/language", version = "0.1.0" }
 mdedit-json = { path = "crates/json", version = "0.1.0" }
+mdedit-yaml = { path = "crates/yaml", version = "0.1.0" }
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }
