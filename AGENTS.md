@@ -40,6 +40,8 @@ crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, Line
 crates/language/        # mdedit-language: what the editor needs from a language — spans with a
                         #   role, block extents, and whether syntax is ever concealed. Depends on
                         #   `mdedit-offsets` and nothing else, deliberately
+crates/json/            # mdedit-json: an error-tolerant, span-producing JSON lexer. No serde —
+                        #   a value has no spans and a strict parser is useless mid-edit
 crates/markers/         # mdedit-markers: Markdown's implementation of that trait. Partitions
                         #   source into marker and content spans, and reports block extents — one
                         #   parse for both
@@ -149,6 +151,18 @@ Known gaps, so nobody assumes they are done:
 - **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
   calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
   error rather than as text until there is UI to choose.
+- **`.json` files open highlighted and never concealed**, by extension only — a JSON file named
+  `data.txt` opens as Markdown, deliberately. Content sniffing is the trust boundary the 2023
+  Notepad++ CVEs were all in, so nothing reads a byte of a file to decide what it is. The fix when
+  somebody wants one is a language picker, which is a UI decision rather than a sniffing one.
+- **JSON always takes a whole-document parse.** Its `analyze_region` returns `None`: JSON nests
+  without limit, a region carries no record of how deep it started, and unlike Markdown there is no
+  blank line to resynchronise on, so MDEDIT-18's reconcile could not repair a wrong regional parse.
+  Correct and slower, and **the slower is now measured: a 357 KB JSON types at p50 6.2 ms / p99
+  13.4 ms, against budgets of 3 ms and 8.3 ms.** So large JSON misses the keystroke target, by about
+  double, and that is the whole cost of forgoing MDEDIT-18 for this language. Markdown is unaffected
+  (3.0 / 9.6 on the same machine, unchanged). MDEDIT-36 carries the fix, which needs the region
+  parser to be told what depth it starts at.
 - **There is a language boundary, and one language behind it.** MDEDIT-29 put Markdown behind
   `mdedit_language::Language` so JSON and YAML can follow, and changed nothing observable — the whole
   test suite passed unmodified, which was the acceptance criterion. A language answers three things:

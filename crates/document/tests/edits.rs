@@ -148,7 +148,8 @@ fn segmentation_reflects_the_current_buffer() {
             .iter()
             .filter_map(|s| match s.kind() {
                 SegmentKind::Marker(m) => Some((s.span().slice(&text).to_owned(), m)),
-                SegmentKind::Content => None,
+                // Content, and any kind a language other than Markdown produces.
+                _ => None,
             })
             .collect()
     };

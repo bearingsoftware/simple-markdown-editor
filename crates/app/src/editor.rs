@@ -631,8 +631,12 @@ impl<T: TextLayout> std::fmt::Debug for Editor<T> {
 impl<T: TextLayout> Editor<T> {
     /// An editor over `source`, drawn with `text`.
     pub fn new(source: &str, text: T) -> Self {
+        let mut workspace = Workspace::new();
+        // Set here as well as in `with_workspace`, because a file opened later through the menu goes
+        // into this one and has to get its language too.
+        workspace.with_language_resolver(crate::detect::language_for);
         Self {
-            workspace: Workspace::new(),
+            workspace,
             scratch: Document::from(source),
             theme: Theme::default(),
             text,
@@ -703,7 +707,8 @@ impl<T: TextLayout> Editor<T> {
     /// An editor over a restored workspace.
     ///
     /// Nothing is read until the active tab is displayed, which is the point of the whole type.
-    pub fn with_workspace(workspace: Workspace, text: T) -> Self {
+    pub fn with_workspace(mut workspace: Workspace, text: T) -> Self {
+        workspace.with_language_resolver(crate::detect::language_for);
         let mut editor = Self::new("", text);
         editor.workspace = workspace;
         editor

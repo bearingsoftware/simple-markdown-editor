@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 
 use mdedit_document::{Document, Selection};
 use mdedit_file::LoadedFile;
+use mdedit_language::Language;
 use mdedit_offsets::ByteOffset;
 use serde::{Deserialize, Serialize};
 
@@ -181,7 +182,16 @@ pub struct Workspace {
     active: Option<usize>,
     /// How many untitled buffers have been made this run, so the next one gets a fresh number.
     next_untitled: u32,
+    /// How a path becomes a language, or `None` to read everything as the document's default.
+    ///
+    /// Injected rather than decided here. Choosing a language means knowing which languages exist,
+    /// and this crate is about tabs and files — a dependency on every parser the editor will ever
+    /// support does not belong in it. The app knows; see `mdedit_app::detect`.
+    language_for: Option<LanguageFor>,
 }
+
+/// How a path becomes a language. See [`Workspace::with_language_resolver`].
+pub type LanguageFor = fn(&Path) -> &'static dyn Language;
 
 /// A session entry that was refused, so the caller can say so rather than silently losing a tab.
 #[derive(Debug)]
@@ -195,6 +205,11 @@ impl Workspace {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Sets how a path chooses a language. Without one, every file is read as Markdown.
+    pub fn with_language_resolver(&mut self, resolver: LanguageFor) {
+        self.language_for = resolver.into();
     }
 
     /// The open tabs, in strip order.
@@ -320,6 +335,8 @@ impl Workspace {
     /// [`SessionError::NoSuchTab`] for an index that does not exist, or [`SessionError::File`] if
     /// the file cannot be read — it may have been deleted since the session was written.
     pub fn activate(&mut self, index: usize) -> Result<&mut OpenTab, SessionError> {
+        // Read before the tab is borrowed, because it is borrowed from the same `self`.
+        let resolver = self.language_for;
         let tab = self
             .tabs
             .get_mut(index)
@@ -332,7 +349,10 @@ impl Workspace {
                 return tab.open.as_mut().ok_or(SessionError::NoSuchTab(index));
             };
             let file = mdedit_file::load(path)?;
-            let mut document = Document::from(file.text());
+            let mut document = match resolver {
+                Some(resolve) => Document::with_text(file.text(), resolve(path)),
+                None => Document::from(file.text()),
+            };
             // Put the caret back where the session left it, clamped: the file may have changed on
             // disk since, and a stale offset must not be able to panic a restore.
             let caret = ByteOffset::new(tab.caret.get().min(document.len_bytes()));

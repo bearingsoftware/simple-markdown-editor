@@ -16,6 +16,7 @@ pub mod blocks;
 pub mod clipboard;
 pub mod config;
 pub mod content;
+pub mod detect;
 pub mod editor;
 pub mod gpu;
 pub mod hit;

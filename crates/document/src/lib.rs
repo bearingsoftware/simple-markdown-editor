@@ -152,6 +152,19 @@ impl Document {
         }
     }
 
+    /// A document holding `text`, read as `language`.
+    ///
+    /// [`From<&str>`](Document::from) is this with Markdown.
+    #[must_use]
+    pub fn with_text(text: &str, language: &'static dyn Language) -> Self {
+        let mut doc = Self {
+            text: Rope::from_str(text),
+            ..Self::in_language(language)
+        };
+        doc.resegment();
+        doc
+    }
+
     /// What language this buffer is being read as.
     #[must_use]
     pub fn language(&self) -> &'static dyn Language {

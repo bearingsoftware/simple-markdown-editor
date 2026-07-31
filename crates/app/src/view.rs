@@ -21,7 +21,7 @@
 //! unterminated `**` would embolden the rest of the file.
 
 use mdedit_document::{Document, Selection};
-use mdedit_markers::{Block, BlockKind, Marker, SegmentKind};
+use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{StyledRun, TextStyle};
 
@@ -74,6 +74,18 @@ pub struct Theme {
     pub tab_inactive: Rgba,
     /// The dot marking a tab with unsaved changes.
     pub tab_modified: Rgba,
+    /// A key in a data language.
+    pub token_key: Rgba,
+    /// A quoted string used as a value.
+    pub token_string: Rgba,
+    /// A numeric literal.
+    pub token_number: Rgba,
+    /// `true`, `false`, `null`.
+    pub token_literal: Rgba,
+    /// Braces, brackets, commas, colons. Dimmed: structure the eye skips over.
+    pub token_punctuation: Rgba,
+    /// A comment, in the dialects that permit one.
+    pub token_comment: Rgba,
 }
 
 impl Default for Theme {
@@ -89,6 +101,14 @@ impl Default for Theme {
             tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
             tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),
             tab_modified: Rgba::rgb(0xff, 0xd7, 0x4a),
+            // Conventional enough to be unsurprising in any editor, and picked to sit on the same
+            // dark background the prose does.
+            token_key: Rgba::rgb(0x9c, 0xdc, 0xfe),
+            token_string: Rgba::rgb(0xce, 0x91, 0x78),
+            token_number: Rgba::rgb(0xb5, 0xce, 0xa8),
+            token_literal: Rgba::rgb(0x56, 0x9c, 0xd6),
+            token_punctuation: Rgba::rgb(0x9a, 0x9a, 0x9a),
+            token_comment: Rgba::rgb(0x6a, 0x99, 0x55),
         }
     }
 }
@@ -248,7 +268,12 @@ pub fn build_runs_in(
                     builder.push_split(piece, span, Role::Marker);
                 }
             }
-            SegmentKind::Content => builder.push_split(piece, span, Role::Content),
+            // Never concealed, whatever the caret is doing: the whole point of the colour-only
+            // model is that every byte stays on screen.
+            SegmentKind::Token(token) => builder.push_split(piece, span, Role::Token(token)),
+            // Content, and any kind this renderer has not learned yet — whose bytes are drawn as
+            // ordinary text rather than dropped, the same bargain `Marker` already makes.
+            _ => builder.push_split(piece, span, Role::Content),
         }
     }
 
@@ -271,6 +296,8 @@ fn clip(span: ByteSpan, within: ByteSpan) -> Option<ByteSpan> {
 enum Role {
     Marker,
     Content,
+    /// Syntax that is coloured rather than concealed — see [`mdedit_language::Token`].
+    Token(Token),
 }
 
 /// Accumulates runs while walking the document's segments.
@@ -351,6 +378,16 @@ impl Builder<'_> {
             let colour = match role {
                 Role::Marker => self.theme.marker,
                 Role::Content => self.theme.text,
+                Role::Token(token) => match token {
+                    Token::Key => self.theme.token_key,
+                    Token::String => self.theme.token_string,
+                    Token::Number => self.theme.token_number,
+                    Token::Literal => self.theme.token_literal,
+                    Token::Punctuation => self.theme.token_punctuation,
+                    Token::Comment => self.theme.token_comment,
+                    // A class added to the vocabulary since this was written.
+                    _ => self.theme.text,
+                },
             };
 
             let rest = &piece[cursor..];
