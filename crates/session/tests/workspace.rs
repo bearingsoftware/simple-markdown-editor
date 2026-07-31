@@ -422,3 +422,119 @@ fn a_freshly_opened_tab_is_not_modified() {
     );
     assert!(!workspace.has_unsaved_changes());
 }
+
+// ---------------------------------------------------------------------------
+// The other trust source: a path the user typed.
+// ---------------------------------------------------------------------------
+
+/// MDEDIT-33. The command line went through `validate`, so `mdedit README.md` exited 1.
+///
+/// A relative path is how anyone invokes a CLI. It is refused from a session file — where it would
+/// mean whatever directory the editor happened to be launched from — and accepted here, because
+/// here that directory is exactly what the user meant.
+#[test]
+fn a_relative_argument_resolves_against_the_working_directory() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 1);
+    let name = paths[0].file_name().unwrap();
+
+    // The resolution is against the process's directory, so the test has to stand in it. That is
+    // process-wide state in a suite that runs threaded, and it is safe here only because every other
+    // test in this binary addresses its `TempDir` absolutely — a test that used a relative path
+    // would have to be told about this one. The directory is restored before anything is asserted,
+    // so a failure does not leave the rest of the suite somewhere else.
+    let restore = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let resolved = path::from_command_line(std::path::Path::new(name));
+    std::env::set_current_dir(restore).unwrap();
+
+    let resolved = resolved.expect("a relative path naming a real file should resolve");
+    assert!(resolved.is_absolute(), "{resolved:?} has to be absolute");
+    assert_eq!(
+        std::fs::canonicalize(&resolved).unwrap(),
+        std::fs::canonicalize(&paths[0]).unwrap(),
+        "it should have resolved to the file that was actually there"
+    );
+}
+
+/// A `..` component is a traversal in a session file and an ordinary thing to type at a shell.
+#[test]
+fn a_traversing_argument_is_accepted_and_flattened() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 1);
+    let name = paths[0].file_name().unwrap();
+
+    let nested = dir.path().join("down");
+    std::fs::create_dir(&nested).unwrap();
+    let up_and_over = nested.join("..").join(name);
+
+    let resolved =
+        path::from_command_line(&up_and_over).expect("`..` from a real directory should resolve");
+    assert!(
+        !resolved
+            .components()
+            .any(|c| c == std::path::Component::ParentDir),
+        "the `..` should be gone, or the session file gets one: {resolved:?}"
+    );
+    assert_eq!(
+        std::fs::canonicalize(&resolved).unwrap(),
+        std::fs::canonicalize(&paths[0]).unwrap()
+    );
+}
+
+/// Whatever comes out has to be something the session boundary accepts, because that is what it
+/// will be handed on the next start.
+///
+/// The two ways of getting this wrong are opposite, which is why the resolution is per-platform:
+/// canonicalising gives a verbatim `\\?\` path on Windows, which `validate` reads as the device
+/// namespace, and *not* canonicalising leaves `..` on Unix, which it reads as traversal.
+#[test]
+fn a_resolved_argument_survives_a_round_trip_through_the_session_file() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 1);
+
+    let name = paths[0].file_name().unwrap();
+    let nested = dir.path().join("down");
+    std::fs::create_dir(&nested).unwrap();
+
+    // The second case is the one that matters. The first version of this test used only a plain
+    // path, passed on both platforms, and would have shipped a Linux build whose every traversing
+    // argument was dropped from the session on restart.
+    for given in [paths[0].clone(), nested.join("..").join(name)] {
+        let resolved = path::from_command_line(&given).expect("a real file");
+        assert!(
+            path::validate(&resolved).is_ok(),
+            "{given:?} resolved to {resolved:?}, which the session boundary refuses"
+        );
+    }
+}
+
+/// A typo says so rather than opening an empty buffer named after it.
+#[test]
+fn an_argument_naming_nothing_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let missing = dir.path().join("not-here.md");
+
+    assert!(matches!(
+        path::from_command_line(&missing),
+        Err(PathRejected::NotAFile(_))
+    ));
+    assert!(matches!(
+        path::from_command_line(std::path::Path::new("")),
+        Err(PathRejected::NotAFile(_))
+    ));
+}
+
+/// The point of keeping the two apart. Loosening the command line must not loosen the session file,
+/// which is the boundary the whole module exists for.
+#[test]
+fn the_session_boundary_is_unchanged() {
+    assert!(matches!(
+        path::validate(std::path::Path::new("relative/note.md")),
+        Err(PathRejected::NotAbsolute(_))
+    ));
+    assert!(matches!(
+        path::validate(std::path::Path::new(r"\\evil.example\share\note.md")),
+        Err(PathRejected::NetworkOrDevice(_))
+    ));
+}

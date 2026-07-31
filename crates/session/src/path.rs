@@ -26,6 +26,18 @@
 //! for an attacker: writing the session file already requires write access to the user's local app
 //! data, and anyone holding that can do considerably worse than make us read a pipe.
 
+//! # A command line is a different source, and gets a different rule
+//!
+//! Everything above is about a file this process wrote and something else may have edited. A path
+//! typed at a shell, or handed over by Explorer, is the user themselves — the party the rules above
+//! exist to protect. None of those rules defends against anything there, and all three reject
+//! ordinary input: a relative path is how anyone invokes a CLI, `..` is a component a shell hands
+//! over without comment, and a UNC path the user typed is one they meant.
+//!
+//! So [`from_command_line`] resolves against the working directory and checks only that the result
+//! is a file. That is not a weakening of [`validate`] — it is a second function for a second source,
+//! and the two sit here together so the difference is written down rather than inferred.
+
 use std::path::{Component, Path, PathBuf};
 
 /// Why a path from a session file was refused.
@@ -96,6 +108,54 @@ pub fn validate(path: &Path) -> Result<(), PathRejected> {
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
         _ => Err(PathRejected::NotAFile(path.to_path_buf())),
+    }
+}
+
+/// Resolves a path given on the command line, or by the shell.
+///
+/// The result is absolute, because everything downstream needs it to be: a tab is keyed by its path,
+/// and a relative one written into the session file would be refused by [`validate`] on the next
+/// start, having meanwhile meant whatever directory the editor happened to be launched from.
+///
+/// The result must also be something [`validate`] would accept, because that is what it will be
+/// handed on the next start — which means no `..` left in it. **The two platforms remove those
+/// differently, and neither way works on the other:**
+///
+/// - On Windows, [`std::path::absolute`] applies Win32 path normalisation, which flattens `..`
+///   lexically because that is what the platform itself defines a path to mean. Canonicalising
+///   instead would return `\\?\C:\…`, which `validate`'s *first* check reads as the device
+///   namespace — so the tab would be refused on the next start. The way not to spring the trap
+///   `validate` documents is not to create such a path.
+/// - On Unix, `absolute` deliberately leaves `..` alone, because `a/link/..` is not `a` when `link`
+///   is a symlink; removing it lexically would silently name a different file. So the resolution has
+///   to touch the filesystem, and [`std::fs::canonicalize`] is the platform's answer. There is no
+///   verbatim-prefix problem to trade against.
+///
+/// The asymmetry is real rather than tidied away: on Unix a symlink resolves to its target, and on
+/// Windows it does not. Both are the platform's own rule, and both give something `validate` takes.
+///
+/// # Errors
+///
+/// [`PathRejected::NotAFile`] if it does not resolve, does not exist, or is not a regular file. A
+/// typo should say so rather than opening an empty buffer named after it — that would be a feature,
+/// and this is the behaviour the editor already had.
+pub fn from_command_line(path: &Path) -> Result<PathBuf, PathRejected> {
+    // Reported as given rather than as resolved throughout, because what the user typed is where
+    // they will look for the typo.
+    let rejected = || PathRejected::NotAFile(path.to_path_buf());
+
+    #[cfg(windows)]
+    // Only an empty path, or one the platform cannot express, fails here.
+    let resolved = std::path::absolute(path).map_err(|_| rejected())?;
+
+    #[cfg(not(windows))]
+    // Fails when any component does not exist, which is the same answer the metadata check below
+    // would give and is reported the same way.
+    let resolved = std::fs::canonicalize(path).map_err(|_| rejected())?;
+
+    match std::fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_file() => Ok(resolved),
+        _ => Err(rejected()),
     }
 }
 
