@@ -155,14 +155,54 @@ fn top_level_members_become_blocks() {
 }
 
 #[test]
-fn json_never_conceals_and_never_restarts_partway() {
+fn json_never_conceals() {
     assert!(!Json.conceals(), "JSON's braces are the document");
-    assert!(
-        Json.analyze_region("{}", ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(2)))
-            .is_none(),
-        "JSON has no safe restart boundary, and has to say so"
-    );
     assert_eq!(Json.name(), "JSON");
+}
+
+/// MDEDIT-36. A region starting at a member boundary is one container deep, and a region starting at
+/// byte zero is none — which is the whole of the state a JSON lexer cannot recover from a slice.
+#[test]
+fn a_region_lexes_at_the_depth_its_start_implies() {
+    let source = r#"{"a": 1, "b": {"c": 2}, "d": 3}"#;
+    let whole = analyze(source);
+
+    // Every top-level member, re-lexed on its own from its own boundary.
+    for block in &whole.blocks {
+        let region = mdedit_json::analyze_region(source, block.span());
+        assert_eq!(
+            region.blocks.len(),
+            1,
+            "{:?} should lex as exactly the one member it is",
+            block.span().slice(source)
+        );
+        assert_eq!(region.blocks[0].span(), block.span());
+    }
+
+    // And from byte zero it is the whole document again.
+    let all = mdedit_json::analyze_region(
+        source,
+        ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
+    );
+    assert_eq!(all.blocks.len(), whole.blocks.len());
+}
+
+/// A region's spans come back in the source's coordinates, or a splice would put them in the wrong
+/// place — silently, since they would still be a valid tiling of something.
+#[test]
+fn a_regions_spans_are_in_the_documents_coordinates() {
+    let source = r#"{"a": 1, "b": 2}"#;
+    let whole = analyze(source);
+    let second = whole.blocks[1].span();
+
+    let region = mdedit_json::analyze_region(source, second);
+    assert_eq!(region.segments[0].span().start(), second.start());
+    let rebuilt: String = region
+        .segments
+        .iter()
+        .map(|segment| segment.span().slice(source))
+        .collect();
+    assert_eq!(rebuilt, second.slice(source), "and it tiles its own region");
 }
 
 #[test]

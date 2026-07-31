@@ -486,9 +486,14 @@ impl Document {
         if !self.scoped {
             return false;
         }
-        let before = std::mem::take(&mut self.segments);
+        let segments = std::mem::take(&mut self.segments);
+        // Blocks as well as segments, and that is not belt-and-braces. A JSON edit that closes a
+        // container early re-depths every member below it while leaving every token's class alone —
+        // so the segments agree, the blocks do not, and comparing only the segments reported that
+        // nothing had changed while handing back a corrected block list nobody was told about.
+        let blocks = std::mem::take(&mut self.blocks);
         self.resegment();
-        self.segments != before
+        self.segments != segments || self.blocks != blocks
     }
 
     /// Applies a replacement to the buffer *without* re-parsing, returning the bytes it displaced.
