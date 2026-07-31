@@ -96,6 +96,11 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
+- **All chrome draws after the document.** There is no depth buffer and no scissor, so the painter's
+  order is the whole of the answer: the tab strip, file pane and status bar are appended after
+  `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
+  — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
+  drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
 - **There is a File and Edit menu, a status bar, and the open files shown either as a tab strip or
   as a left pane.** No scrollbar, no View menu, no context menu on right-click, no recent files. The
   plain-markup toggle is Ctrl+/ and the strip/pane toggle is Ctrl+B; neither has a menu item, because

@@ -1512,7 +1512,7 @@ impl<T: TextLayout> Editor<T> {
     /// `width` and `height` are the window's, in physical pixels. Public so a headless test can
     /// assert what gets drawn without a GPU: nothing here touches the renderer.
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
-        let mut quads = self.build_tab_strip(width, scale);
+        let mut quads = Vec::new();
 
         // Everything the chrome has not taken. One place decides it; see `crate::content`.
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
@@ -1594,9 +1594,15 @@ impl<T: TextLayout> Editor<T> {
             }
         }
 
-        // Both after the document, so chrome covers the seam rather than the other way round. The
-        // insets keep text out of both, but a caret at the very edge of the viewport can still round
-        // into a chrome pixel.
+        // ALL CHROME DRAWS AFTER THE DOCUMENT, and that ordering is a rule rather than a
+        // preference: there is no depth buffer and no scissor, so a later quad simply covers an
+        // earlier one. The row cull deliberately keeps up to a line-height of overshoot above the
+        // viewport — it is what makes a partly-scrolled row look cut off at the top edge instead of
+        // popping in — and the strip used to be built first, so those rows painted straight over it
+        // and it read as transparent (MDEDIT-39).
+        //
+        // Anything added here goes after the document too, or it will be drawn on.
+        quads.append(&mut self.build_tab_strip(width, scale));
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
 
