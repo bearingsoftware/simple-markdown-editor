@@ -68,7 +68,7 @@ impl Config {
             return Self::default();
         };
         if metadata.len() > MAX_CONFIG_BYTES {
-            eprintln!(
+            crate::log_error!(
                 "ignoring {}: {} bytes is larger than the {MAX_CONFIG_BYTES} byte limit",
                 path.display(),
                 metadata.len()
@@ -77,14 +77,14 @@ impl Config {
         }
 
         let Ok(bytes) = std::fs::read(path) else {
-            eprintln!("could not read {}; using defaults", path.display());
+            crate::log_error!("could not read {}; using defaults", path.display());
             return Self::default();
         };
 
         match serde_json::from_slice(&bytes) {
             Ok(config) => config,
             Err(error) => {
-                eprintln!("{} is malformed, using defaults: {error}", path.display());
+                crate::log_error!("{} is malformed, using defaults: {error}", path.display());
                 Self::default()
             }
         }

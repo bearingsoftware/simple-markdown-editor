@@ -96,6 +96,13 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
+- **Errors go to a log file, not to a console.** The binary is windows-subsystem, so an Explorer
+  launch no longer flashes one — and `main` calls `AttachConsole(ATTACH_PARENT_PROCESS)` so a
+  terminal launch still gets its output, including the latency harness line. Soft errors and panics
+  land in `mdedit.log` beside the session file, capped at 1 MB with one previous generation. Messages
+  and paths only: **never document bytes**, because the log is the thing a user attaches to a bug
+  report. The Windows Event Log is deliberately not used — a services convention needing a registered
+  message source, read by administrators rather than by the person whose editor misbehaved.
 - **All chrome draws after the document.** There is no depth buffer and no scissor, so the painter's
   order is the whole of the answer: the tab strip, file pane and status bar are appended after
   `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
