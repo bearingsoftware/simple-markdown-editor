@@ -129,7 +129,14 @@ impl MenuBar {
     /// surface to choose another. On a light-themed Windows, Auto would put a light menu bar over a
     /// dark document, which is the bug this replaced (MDEDIT-32). When the editor learns to follow
     /// the system, the menu follows with it and this becomes a variable.
+    ///
+    /// `MenuTheme::Dark` covers the bar and nothing else, because that is all muda draws — the
+    /// dropdowns are Windows' own popups, and [`crate::dark`] is what makes those dark (MDEDIT-35).
+    /// It runs first: the theme is a property of the process, and setting it after a menu exists
+    /// means asking Windows to re-theme one rather than to build it right.
     pub fn attach(&self, hwnd: isize) {
+        crate::dark::use_dark_menus();
+
         // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
         // still holds, so it is a valid `HWND` for the duration of the call. It is only read, to set
         // the window's menu.

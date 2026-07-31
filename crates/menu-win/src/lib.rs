@@ -65,6 +65,9 @@ pub enum Command {
 }
 
 #[cfg(windows)]
+mod dark;
+
+#[cfg(windows)]
 mod windows;
 
 #[cfg(windows)]
