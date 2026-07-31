@@ -2601,9 +2601,16 @@ impl<T: TextLayout> Editor<T> {
 
         let advance = digits[0].1;
         let (_, y) = at.content.to_window(0.0, top, at.scroll);
-        // Right-aligned against the text's left edge, less the padding, so the ones column lines up
-        // however many digits a number has.
-        let right = at.content.left_edge() - GUTTER_PADDING;
+        // Right-aligned against the *gutter's* right edge, less its padding — not against where the
+        // text starts, which is what MDEDIT-34 was. `left_edge` is the gutter plus the document's
+        // margin, so aligning to it drew the number past the gutter entirely and hard up against the
+        // text.
+        //
+        // The width is a whole number of digit columns plus a padding either side, so a number that
+        // fills it sits exactly centred, and a shorter one is right-aligned within that column —
+        // which keeps the ones digits in line as the document passes ten and a hundred. Centring
+        // each number on its own would break that.
+        let right = self.gutter_width() - GUTTER_PADDING;
         #[allow(
             clippy::cast_precision_loss,
             reason = "a line number with more digits than an f32 can count is not reachable"

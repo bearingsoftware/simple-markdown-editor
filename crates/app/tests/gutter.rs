@@ -51,6 +51,24 @@ fn line_y(n: f32) -> f32 {
     MARGIN + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
 }
 
+/// The rightmost edge any line number reaches, and where the text starts.
+///
+/// The gutter's quads are the ones left of the text and above the status bar, whose breadcrumb also
+/// begins over on the left.
+fn number_right_and_text_left(source: &str) -> (f32, f32) {
+    let mut editor = editor_with(source, true);
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let left = editor.content_rect().left_edge();
+    let bar_top = HEIGHT - mdedit_app::status::BAR_HEIGHT;
+
+    let right = quads
+        .iter()
+        .filter(|quad| quad.rect[0] < left && quad.rect[1] < bar_top)
+        .map(|quad| quad.rect[0] + quad.rect[2])
+        .fold(0.0_f32, f32::max);
+    (right, left)
+}
+
 /// An opt-in feature that changes the default rendering is a bug.
 #[test]
 fn nothing_changes_when_it_is_off() {
@@ -130,6 +148,50 @@ fn clicking_in_the_gutter_lands_at_the_start_of_the_row() {
         editor.document().selection().head(),
         ByteOffset::new(12),
         "the start of the third line, not a no-op"
+    );
+}
+
+/// MDEDIT-34: numbers sat against the text rather than in the gutter.
+///
+/// The assertion the original tests were missing. They all measured where the *text* started, which
+/// was right either way — the numbers were being drawn past the gutter and into the document's left
+/// margin, and nothing looked at where they landed.
+///
+/// A number must not cross into the margin. The gutter is a whole number of digit columns plus a
+/// padding either side, so a full-width number ends one padding short of the gutter's own right
+/// edge, and there is a clear margin's worth of space between it and the first character of text.
+#[test]
+fn a_number_stays_inside_the_gutter() {
+    // Two digits, which is the gutter's floor, so the widest number exactly fills its column.
+    let (right, text_left) = number_right_and_text_left(&lines(12));
+
+    assert!(
+        right < text_left - MARGIN,
+        "a number reaching {right} has crossed out of the gutter and into the {MARGIN}px margin \
+         before the text at {text_left}"
+    );
+
+    // And specifically: right-aligned one padding in from the gutter's edge, not from the text's.
+    let gutter = text_left - MARGIN;
+    let padding = gutter - right;
+    assert!(
+        padding > 0.0 && padding < MARGIN,
+        "the gap between the number's end and the gutter's edge should be the gutter's own padding, \
+         not the document margin: {padding}"
+    );
+}
+
+/// The ones column still lines up when the numbers are not all the same width — which is what
+/// centring each number individually would have broken.
+#[test]
+fn numbers_of_different_widths_share_a_right_edge() {
+    // Spans 9 to 10, so both a one-digit and a two-digit number are on screen at once.
+    let (right, _) = number_right_and_text_left(&lines(12));
+    let (wider, _) = number_right_and_text_left(&lines(120));
+
+    assert!(
+        wider > right,
+        "a three-digit gutter is wider, so its numbers end further right: {right} then {wider}"
     );
 }
 
