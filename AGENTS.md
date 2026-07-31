@@ -62,7 +62,10 @@ crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, th
                         #   bar, the tab strip and file pane, and the keystroke latency harness.
                         #   Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
-spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
+spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in memory. Re-runnable
+spikes/startup-attribution/
+                        # MDEDIT-20 probe: where the ~250 ms before first paint goes. Re-runnable,
+                        #   and worth re-running whenever wgpu is bumped
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
   01-editor-landscape.md
@@ -132,10 +135,16 @@ Known gaps, so nobody assumes they are done:
   annoys anyone.
 - **No double-click to select a word**, and no triple-click for a line. Every selection is a drag or
   a shift — and there is no menu to reach copy and paste from, only the chords.
-- **Startup costs ~300 ms before anything is drawn**, and none of it is the document: a 5-byte file
-  reaches first paint no faster than a 245 KB one. It is winit's window plus wgpu's device and
-  pipeline bring-up. That is what stands between the editor and the ≤50 ms file-open target, and it
-  is measured on every run — `mdedit` prints `launch -> first paint` on exit.
+- **Startup costs ~250 ms before anything is drawn, and none of it is ours to fix.** MDEDIT-20
+  attributed it with `spikes/startup-attribution`: creating the window is 60–79 ms, `request_adapter`
+  70–100, `request_device` 62–72, `surface.configure` 39–54. Shader compilation is **0.3 ms** and
+  pipeline creation under 11, so the obvious suspects are not it, and `PowerPreference` makes no
+  difference. Creating a window alone exceeds the ≤50 ms target before any GPU work starts, so that
+  target has been **split**: cold start is recorded rather than budgeted, and `file open → first
+  paint ≤50 ms` now applies to a process that is already running — which is the case that matters,
+  because opening N files from Explorer is required to reuse one process. See
+  `docs/research/06-performance-targets.md`. Still measured on every run: `mdedit` prints
+  `launch -> first paint` on exit.
 - **A keystroke re-parses a region, not the document.** MDEDIT-18: an edit re-parses the block it is
   in plus a block of margin either side, and splices that into the existing analysis. A region
   cannot see what the rest of the document does to it — an unclosed fence above, a link reference

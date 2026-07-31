@@ -1,0 +1,14 @@
+[package]
+name = "startup-attribution-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+description = "Spike (MDEDIT-20): where do the ~300 ms before the editor's first frame actually go?"
+
+[dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11", "rwh_06"] }
+wgpu = "30"
+pollster = "1"
+
+[workspace]

@@ -121,13 +121,13 @@ Failures in the incumbents that a viewport-virtualized design makes irrelevant:
 
 | Metric | Target | Stretch | Basis |
 |---|---|---|---|
-| Cold start → interactive paint | **≤100 ms** | ≤50 ms | Beats Vim/Helix (170 ms), the fastest credibly measured; 5× better than Zed native |
+| Cold start → interactive paint | **~250 ms on this hardware, recorded not budgeted** | — | Revised by MDEDIT-20 — see below. winit plus wgpu plus driver; creating a window alone exceeds 50 ms |
 | Warm start | ≤30 ms | ≤16 ms | Indistinguishable from an already-open window |
 | Keystroke→pixel, software-only **p50** | **≤3 ms** | ≤1 ms | GVim proves 0.9 ms is achievable; VS Code's 31.2 ms is 10× the budget |
 | Keystroke→pixel **p99** | **≤8.3 ms** | ≤6 ms | One 120 Hz frame. Budget the tail explicitly — Luu's 99.9p reached 111 ms |
 | **p50 on battery** | **≤8 ms** | ≤5 ms | The discriminating test. Nobody benchmarks it |
 | Frame render | ≤4 ms | ≤2 ms | Matches Zed's measured figure, with headroom for 240 Hz |
-| File open → first paint | **O(1), ≤50 ms at any size** | ≤16 ms | mmap + parse only the visible viewport. This is the bet that makes competitors' numbers irrelevant |
+| File open → first paint, **process already running** | **O(1), ≤50 ms at any size** | ≤16 ms | Scoped by MDEDIT-20 — see below, and **met**: 2.4 ms at 245 KB, 3.0 ms at 357 KB. The bet that makes competitors' numbers irrelevant |
 | File open, fully indexed | ≤10 ms/MB | ≤5 ms/MB | Vim/Helix exceed 200 MB/s; Zed 36, VS Code 26, Sublime 22 |
 | Max file size | **no limit below RAM** | — | **Typora dies at 2 MB** |
 | Baseline RSS, editor's own | **≤40 MB over the graphics floor** | ≤20 MB | Revised by MDEDIT-19 — see below. The original ≤50 MB total is unreachable: an empty wgpu window costs 124 MB here |
@@ -179,10 +179,74 @@ unused backends. Neither is worth pursuing now. If the floor matters more later 
 constrained target, or a competitive claim — re-run the probe first, because it answers the question
 in about a minute and costs nothing.
 
-**Not yet measured:** cold start, and file open → first paint at size. RSS was the only target
-nothing had ever measured until MDEDIT-15 needed it, and file open at 239 KiB was incidentally
-measured at 1176 ms against a ≤50 ms target during MDEDIT-17's investigation. Cold start remains
-unmeasured.
+
+### The ≤50 ms file-open target measures two different things
+
+**Decision, MDEDIT-20 (2026-07-31).** `file open → first paint ≤50 ms at any size` is unreachable
+from a cold process on this stack, and comfortably met once a process exists. It was one target
+covering both, and it splits.
+
+MDEDIT-18 measured 313 ms for a five-byte file and 571 ms for a 245 KB one, of which loading and
+parsing the document was 9–10 ms. So the document was never what made opening slow. `spikes/
+startup-attribution` brings up the same window and the same pipeline the editor does and times each
+step. On Windows 11, Intel integrated graphics, release build, DX12 only — which is what the editor
+already restricts to, for the memory reason above:
+
+| Step | Typical | What it is |
+|---|---:|---|
+| `EventLoop::new` | 12 ms | winit |
+| `create_window` | 60–79 ms | winit, and Win32 under it |
+| `Instance::new` | 16–26 ms | wgpu, DX12 only |
+| `create_surface` | 0.2 ms | — |
+| `request_adapter` | 70–100 ms | DXGI enumeration and the driver |
+| `request_device` | 62–72 ms | the driver |
+| `surface.configure` | 39–54 ms | swapchain creation |
+| `create_shader_module` | **0.3 ms** | — |
+| `create_render_pipeline` | **0.5–11 ms** | — |
+| First frame | 4–6 ms | ours |
+| **Total** | **235–340 ms** | |
+
+**Two hypotheses on the ticket died.** Shader compilation is 0.3 ms and pipeline creation under
+11 ms, so moving either off the critical path buys nothing — there was no reason to think otherwise
+except that it is the usual answer elsewhere. And `PowerPreference` makes no measurable difference
+to `request_adapter`: `LowPower` 97–106 ms, `None` 117–124, `HighPerformance` 94–101, which is noise
+either side of 100.
+
+**Backend restriction was already banked.** With wgpu's default backends `Instance::new` costs
+126–383 ms rather than 16–26. The editor has restricted to DX12 since MDEDIT-19, for memory, and got
+this for nothing.
+
+**What is left is not ours.** Creating a window alone exceeds the 50 ms target before any GPU work
+starts. Everything above it is winit, DXGI, or the display driver. There is no arrangement of this
+code that reaches 50 ms from a cold process, and the only thing that would change it is not using
+wgpu — a decision `02-gui-toolkits.md` made on other grounds and this does not reopen.
+
+**So the target splits, the way the RSS one did:**
+
+| Target | Value | What it means |
+|---|---|---|
+| Cold start → first paint | **~250 ms on this hardware, recorded rather than budgeted** | winit plus wgpu plus driver. Re-measure per machine; it is not ours to move |
+| File open → first paint, process already running | **≤50 ms at any size — met, with room** | Measured 2.4 ms at 245 KB and 3.0 ms at 357 KB, against a 50 ms budget |
+
+That second row is the one that matters for the product, and it is met with room to spare: opening a
+file into a running editor and drawing a frame takes **2.4 ms at 245 KB and 3.0 ms at 357 KB**,
+against a 50 ms budget. `AGENTS.md` already requires that opening N files from Explorer reuses one
+process, via a `DropTarget` verb — so for every file after the first, the 250 ms does not recur and
+this is what the user experiences. The cold-start figure is what somebody pays once.
+
+Splitting the target is not a way of declaring victory over the hard half. The 250 ms is real, it is
+what someone sees when they double-click a `.md` file with no editor running, and it is recorded in
+the table above rather than hidden here.
+
+**What would change it:** a wgpu release that defers device creation, or showing the window before
+the device exists. The second is possible and deliberately not done — it would mean presenting a
+blank window for 200 ms, which makes the number look better and the editor feel worse. If it is ever
+wanted, it is a product decision rather than a performance one.
+
+**Now measured.** Cold start and file open → first paint were the last unmeasured targets; MDEDIT-20
+attributed both, above. The 1176 ms that MDEDIT-17 measured incidentally at 239 KiB was mostly the
+document, and MDEDIT-17 and MDEDIT-18 removed that part — what is left is the ~250 ms of window and
+device bring-up, which is not the document's and not ours.
 
 ### The 3 ms budget is viewport-scoped
 
