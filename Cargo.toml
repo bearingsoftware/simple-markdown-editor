@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/offsets",
+    "crates/language",
     "crates/markers",
     "crates/document",
     "crates/text",
@@ -26,6 +27,7 @@ ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 thiserror = "2"
 # `version` alongside `path` is not redundant: without it this is a wildcard dependency,
 # which deny.toml rejects.
+mdedit-language = { path = "crates/language", version = "0.1.0" }
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }

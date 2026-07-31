@@ -1002,6 +1002,7 @@ name = "mdedit-document"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mdedit-language",
  "mdedit-markers",
  "mdedit-offsets",
  "proptest",
@@ -1020,10 +1021,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdedit-language"
+version = "0.1.0"
+dependencies = [
+ "mdedit-offsets",
+]
+
+[[package]]
 name = "mdedit-markers"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mdedit-language",
  "mdedit-offsets",
  "proptest",
  "pulldown-cmark",

@@ -1,0 +1,19 @@
+[package]
+name = "mdedit-language"
+version = "0.1.0"
+description = "What the editor needs from a language: spans with a role, block extents, and whether syntax is ever concealed"
+keywords = ["editor", "syntax", "language", "markdown"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Deliberately only the offsets. This crate is the vocabulary every language speaks, so a dependency
+# here is one every language would inherit — a parser named here would be a parser JSON had to
+# compile in order to be JSON.
+[dependencies]
+mdedit-offsets.workspace = true
+
+[lints]
+workspace = true

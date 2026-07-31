@@ -320,11 +320,18 @@ fn coalesce(source: &str, marks: &[Option<Marker>]) -> Vec<Segment> {
         };
         let end = ByteOffset::new(offset + ch.len_utf8());
         match out.last_mut() {
-            Some(last) if last.kind == kind => last.span = ByteSpan::new(last.span.start(), end),
-            _ => out.push(Segment {
-                span: ByteSpan::new(ByteOffset::new(offset), end),
+            // Extending the run rather than pushing a second of the same kind: the coalescing the
+            // tiling invariant is stated in terms of. `moved_to` because the fields belong to
+            // another crate now — see `mdedit_language`.
+            Some(last) if last.kind() == kind => {
+                *last = last
+                    .clone()
+                    .moved_to(ByteSpan::new(last.span().start(), end));
+            }
+            _ => out.push(Segment::new(
+                ByteSpan::new(ByteOffset::new(offset), end),
                 kind,
-            }),
+            )),
         }
     }
 
