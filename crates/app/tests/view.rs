@@ -20,8 +20,9 @@ fn drawn(source: &str, caret: usize) -> String {
         &doc,
         Selection::caret(ByteOffset::new(caret)),
         &Theme::default(),
+        source,
     );
-    runs.iter().map(|run| run.text.as_str()).collect()
+    runs.iter().map(|run| run.text).collect()
 }
 
 /// Caret parked far from anything, so nothing is revealed.
@@ -45,9 +46,15 @@ fn a_marker_under_the_caret_is_drawn() {
 
 #[test]
 fn the_buffer_is_never_modified_by_drawing() {
-    let doc = Document::from("# Heading\n\n**bold**\n");
+    let source = "# Heading\n\n**bold**\n";
+    let doc = Document::from(source);
     let before = doc.to_string();
-    let _ = build_runs(&doc, Selection::caret(ByteOffset::ZERO), &Theme::default());
+    let _ = build_runs(
+        &doc,
+        Selection::caret(ByteOffset::ZERO),
+        &Theme::default(),
+        source,
+    );
     assert_eq!(
         doc.to_string(),
         before,
@@ -63,8 +70,9 @@ fn the_buffer_is_never_modified_by_drawing() {
 #[test]
 fn heading_size_does_not_leak_into_the_next_paragraph() {
     let theme = Theme::default();
-    let doc = Document::from("# Heading\n\nOrdinary paragraph text.\n");
-    let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme);
+    let source = "# Heading\n\nOrdinary paragraph text.\n";
+    let doc = Document::from(source);
+    let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme, source);
 
     let heading = runs
         .iter()
@@ -89,7 +97,7 @@ fn heading_level_sets_the_size() {
     let theme = Theme::default();
     for (source, level) in [("# a\n", 1), ("## a\n", 2), ("### a\n", 3)] {
         let doc = Document::from(source);
-        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme);
+        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme, source);
         let text = runs.iter().find(|r| r.text.starts_with('a')).unwrap();
         assert_eq!(
             text.style.size.get(),
@@ -109,7 +117,7 @@ fn a_setext_heading_is_sized_like_its_atx_equivalent() {
     let theme = Theme::default();
     for (source, level) in [("Title\n=====\n", 1), ("Title\n-----\n", 2)] {
         let doc = Document::from(source);
-        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme);
+        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(999)), &theme, source);
         let title = runs
             .iter()
             .find(|r| r.text.starts_with("Title"))
@@ -128,11 +136,13 @@ fn a_fence_is_monospaced_from_its_block_not_from_its_markers() {
     // No closing fence: the block runs to the end of the document. A toggle-based implementation
     // would have turned monospacing on and left it on; reading the block gets the same answer for
     // the right reason, and stops where the block stops.
-    let doc = Document::from("```\nunterminated\n");
+    let source = "```\nunterminated\n";
+    let doc = Document::from(source);
     let runs = build_runs(
         &doc,
         Selection::caret(ByteOffset::new(999)),
         &Theme::default(),
+        source,
     );
     let body = runs
         .iter()
@@ -143,11 +153,13 @@ fn a_fence_is_monospaced_from_its_block_not_from_its_markers() {
 
 #[test]
 fn emphasis_applies_to_the_text_between_its_markers() {
-    let doc = Document::from("plain **bold** plain\n");
+    let source = "plain **bold** plain\n";
+    let doc = Document::from(source);
     let runs = build_runs(
         &doc,
         Selection::caret(ByteOffset::new(999)),
         &Theme::default(),
+        source,
     );
 
     let bold = runs.iter().find(|r| r.text == "bold").expect("bold run");
@@ -162,11 +174,13 @@ fn emphasis_applies_to_the_text_between_its_markers() {
 
 #[test]
 fn code_spans_are_monospaced() {
-    let doc = Document::from("call `func()` now\n");
+    let source = "call `func()` now\n";
+    let doc = Document::from(source);
     let runs = build_runs(
         &doc,
         Selection::caret(ByteOffset::new(999)),
         &Theme::default(),
+        source,
     );
     let code = runs.iter().find(|r| r.text == "func()").expect("code run");
     assert_eq!(code.style.family, mdedit_text::FontFamily::Mono);
@@ -175,11 +189,13 @@ fn code_spans_are_monospaced() {
 /// Unclosed emphasis must not run away with the rest of the document.
 #[test]
 fn an_unclosed_marker_stops_at_the_end_of_its_line() {
-    let doc = Document::from("**never closed\n\nplain paragraph\n");
+    let source = "**never closed\n\nplain paragraph\n";
+    let doc = Document::from(source);
     let runs = build_runs(
         &doc,
         Selection::caret(ByteOffset::new(999)),
         &Theme::default(),
+        source,
     );
 
     let plain = runs
@@ -199,11 +215,13 @@ fn an_unclosed_marker_stops_at_the_end_of_its_line() {
 /// block spans lines by definition. Resetting both together silently un-monospaced every fence.
 #[test]
 fn a_fenced_block_stays_monospaced_across_its_lines() {
-    let doc = Document::from("```rust\nfn one() {}\nfn two() {}\n```\n\nprose after\n");
+    let source = "```rust\nfn one() {}\nfn two() {}\n```\n\nprose after\n";
+    let doc = Document::from(source);
     let runs = build_runs(
         &doc,
         Selection::caret(ByteOffset::new(9_999)),
         &Theme::default(),
+        source,
     );
 
     for needle in ["fn one() {}", "fn two() {}"] {
@@ -232,8 +250,9 @@ fn a_fenced_block_stays_monospaced_across_its_lines() {
 #[test]
 fn revealed_markers_are_drawn_in_the_marker_colour() {
     let theme = Theme::default();
-    let doc = Document::from("**bold**");
-    let runs = build_runs(&doc, Selection::caret(ByteOffset::ZERO), &theme);
+    let source = "**bold**";
+    let doc = Document::from(source);
+    let runs = build_runs(&doc, Selection::caret(ByteOffset::ZERO), &theme, source);
 
     let marker = runs.iter().find(|r| r.text == "**").expect("revealed `**`");
     assert_eq!(marker.colour, theme.marker);
@@ -249,6 +268,7 @@ fn runs_are_in_source_order_and_do_not_overlap() {
         &doc,
         Selection::caret(ByteOffset::new(40)),
         &Theme::default(),
+        mdedit_app::SAMPLE,
     );
 
     for pair in runs.windows(2) {
@@ -264,8 +284,9 @@ fn runs_are_in_source_order_and_do_not_overlap() {
 #[test]
 fn colour_lookup_finds_the_run_a_byte_belongs_to() {
     let theme = Theme::default();
-    let doc = Document::from("**bold**");
-    let runs = build_runs(&doc, Selection::caret(ByteOffset::ZERO), &theme);
+    let source = "**bold**";
+    let doc = Document::from(source);
+    let runs = build_runs(&doc, Selection::caret(ByteOffset::ZERO), &theme, source);
 
     // Byte 0 is the first `*` of the revealed opening marker.
     assert_eq!(colour_at(&runs, ByteOffset::ZERO, theme.text), theme.marker);
@@ -286,7 +307,12 @@ fn the_sample_document_draws_without_panicking_at_every_caret() {
         if !mdedit_app::SAMPLE.is_char_boundary(caret) {
             continue;
         }
-        let runs = build_runs(&doc, Selection::caret(ByteOffset::new(caret)), &theme);
+        let runs = build_runs(
+            &doc,
+            Selection::caret(ByteOffset::new(caret)),
+            &theme,
+            mdedit_app::SAMPLE,
+        );
         assert!(!runs.is_empty(), "caret {caret} produced nothing to draw");
     }
 }
