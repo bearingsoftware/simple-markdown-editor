@@ -42,6 +42,8 @@ crates/language/        # mdedit-language: what the editor needs from a language
                         #   `mdedit-offsets` and nothing else, deliberately
 crates/json/            # mdedit-json: an error-tolerant, span-producing JSON lexer. No serde —
                         #   a value has no spans and a strict parser is useless mid-edit
+crates/yaml/            # mdedit-yaml: the same for YAML, hand-written for evidenced reasons —
+                        #   read its crate docs before proposing a parser crate
 crates/markers/         # mdedit-markers: Markdown's implementation of that trait. Partitions
                         #   source into marker and content spans, and reports block extents — one
                         #   parse for both
@@ -155,13 +157,27 @@ Known gaps, so nobody assumes they are done:
   `data.txt` opens as Markdown, deliberately. Content sniffing is the trust boundary the 2023
   Notepad++ CVEs were all in, so nothing reads a byte of a file to decide what it is. The fix when
   somebody wants one is a language picker, which is a UI decision rather than a sniffing one.
-- **JSON always takes a whole-document parse.** Its `analyze_region` returns `None`: JSON nests
-  without limit, a region carries no record of how deep it started, and unlike Markdown there is no
-  blank line to resynchronise on, so MDEDIT-18's reconcile could not repair a wrong regional parse.
-  Correct and slower, and **the slower is now measured: a 357 KB JSON types at p50 6.2 ms / p99
-  13.4 ms, against budgets of 3 ms and 8.3 ms.** So large JSON misses the keystroke target, by about
-  double, and that is the whole cost of forgoing MDEDIT-18 for this language. Markdown is unaffected
-  (3.0 / 9.6 on the same machine, unchanged). MDEDIT-36 carries the fix, which needs the region
+- **`.yaml` and `.yml` open highlighted too, from a hand-written lexer — and the parser decision is
+  evidenced, so read `crates/yaml/src/lib.rs` before proposing a crate for it.** Measured 2026-07-31:
+  `syntect` **fails MSRV 1.87** (`plist` and `time` need 1.88); `tree-sitter` passes but is a C
+  parser at a file-parsing trust boundary, which is the CVE class this project's language choice
+  exists to remove; and a real YAML parser (`saphyr-parser`) **failed 3 of 4** mid-edit documents —
+  a half-typed flow sequence, inconsistent indentation, and a tab — which is what a file being
+  written looks like.
+- **The YAML lexer highlights; it does not parse.** It understands comments, document markers, keys,
+  sequences, quoted scalars, anchors, aliases, tags, flow collections and block scalars including
+  their indentation. It approximates a key as text before `:` at end-of-line or `: ` before a
+  comment, which is wrong for the explicit `? key` form and for a colon-space inside a flow scalar.
+  Both mis-*colour* rather than mis-*cover*, and tiling is property-tested either way.
+- **JSON and YAML always take a whole-document parse.** Both `analyze_region`s return `None`. JSON
+  nests without limit and a region carries no record of how deep it started; YAML's indentation is
+  significant, so a region cannot see that it has become the body of the block above. Neither has a
+  blank line to resynchronise on the way Markdown does, so MDEDIT-18's reconcile could not repair a
+  wrong regional parse. Correct and slower, and **the slower is measured: a 357 KB JSON types at p50
+  6.2 ms / p99 13.4 ms and a 302 KB YAML at 6.3 / 13.9, against budgets of 3 ms and 8.3 ms.** So both
+  miss the keystroke target by about double, and that is the whole cost of forgoing MDEDIT-18 for
+  them. Markdown is unaffected (3.0 / 9.6 on the same machine, unchanged). MDEDIT-36 carries the fix,
+  which needs the region
   parser to be told what depth it starts at.
 - **There is a language boundary, and one language behind it.** MDEDIT-29 put Markdown behind
   `mdedit_language::Language` so JSON and YAML can follow, and changed nothing observable — the whole

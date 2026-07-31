@@ -989,6 +989,7 @@ dependencies = [
  "mdedit-session",
  "mdedit-text",
  "mdedit-text-dwrite",
+ "mdedit-yaml",
  "pollster",
  "rfd",
  "serde",
@@ -1092,6 +1093,15 @@ dependencies = [
  "mdedit-text",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "mdedit-yaml"
+version = "0.1.0"
+dependencies = [
+ "mdedit-language",
+ "mdedit-offsets",
+ "proptest",
 ]
 
 [[package]]

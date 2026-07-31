@@ -1,0 +1,21 @@
+[package]
+name = "mdedit-yaml"
+version = "0.1.0"
+description = "An error-tolerant, span-producing YAML lexer for highlighting rather than for loading"
+keywords = ["yaml", "lexer", "editor", "syntax"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No YAML parser, and no syntax-highlighting framework. The evidence for that is in the crate docs.
+[dependencies]
+mdedit-language.workspace = true
+mdedit-offsets.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true
