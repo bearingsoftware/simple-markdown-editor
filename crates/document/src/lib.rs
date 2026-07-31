@@ -210,11 +210,34 @@ impl Document {
     /// bytes at that position, and the closest enclosing construct is what governs them: a
     /// paragraph inside a quote inside a list is a paragraph.
     #[must_use]
+    /// # Why this is not a scan
+    ///
+    /// It used to be, and `AGENTS.md` named it as the thing to revisit. MDEDIT-37 is what made it
+    /// worth revisiting: the renderer asks this **once per styled run**, so a frame costs the number
+    /// of visible runs times the number of blocks in the document. For a 357 KB JSON file — 4,001
+    /// blocks, thirty-six runs in each of some twenty visible chunks — that is 2.9 million
+    /// comparisons a frame, and it was the largest single cost in drawing one.
+    ///
+    /// Blocks are in document order with non-decreasing starts, so the candidates are a prefix,
+    /// found by binary search. The walk back through that prefix then stops at the first *top-level*
+    /// block that ends before `offset`: top-level blocks do not overlap and are ordered, so nothing
+    /// earlier can contain it either. What is left to scan is one top-level block's worth of nesting.
     pub fn block_at(&self, offset: ByteOffset) -> Option<&Block> {
-        self.blocks
-            .iter()
-            .filter(|block| block.span().start() <= offset && offset < block.span().end())
-            .max_by_key(|block| block.depth())
+        let candidates = self
+            .blocks
+            .partition_point(|block| block.span().start() <= offset);
+
+        let mut innermost: Option<&Block> = None;
+        for block in self.blocks[..candidates].iter().rev() {
+            if offset < block.span().end() {
+                if innermost.is_none_or(|found| block.depth() > found.depth()) {
+                    innermost = Some(block);
+                }
+            } else if block.depth() == 0 {
+                break;
+            }
+        }
+        innermost
     }
 
     /// The heading trail enclosing `offset`, outermost first. See [`outline::heading_trail`].

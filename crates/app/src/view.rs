@@ -164,10 +164,18 @@ pub struct Decoration<'a> {
 /// Colour is deliberately not part of [`mdedit_text::TextStyle`]: it does not affect shaping, and
 /// putting it there would make two identically-shaped runs miss the layout cache for no reason.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ViewRun {
-    /// The text of the run. Owned, because concealing markers means the drawn string is not a
-    /// contiguous slice of the buffer.
-    pub text: String,
+pub struct ViewRun<'a> {
+    /// The text of the run.
+    ///
+    /// Borrowed from the buffer. Every run is a contiguous slice of it — concealing a marker drops a
+    /// whole run rather than splicing one, so it is only the *concatenation* of runs that is not
+    /// contiguous, which is what the previous comment here had wrong.
+    ///
+    /// Owning it cost a `String` allocation per run per frame. Removing that turned out **not** to be
+    /// measurable (MDEDIT-37 — `build_runs_in` on a JSON chunk went 0.064 ms to 0.068, which is
+    /// noise); the cost was `Document::block_at`. It stays because it is strictly less work and the
+    /// comment it replaced was wrong, not because it made anything faster.
+    pub text: &'a str,
     /// How it is shaped.
     pub style: TextStyle,
     /// Where it came from in the buffer.
@@ -205,13 +213,18 @@ impl DecorState {
 /// Concealed markers are absent from the output entirely — not empty runs, not spaces. That is what
 /// makes the rendered text read as prose rather than as source.
 #[must_use]
-pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<ViewRun> {
+pub fn build_runs<'t>(
+    doc: &Document,
+    selection: Selection,
+    theme: &Theme,
+    text: &'t str,
+) -> Vec<ViewRun<'t>> {
     let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(doc.len_bytes()));
     let decoration = Decoration {
         theme,
         mode: Mode::Preview,
     };
-    build_runs_in(doc, selection, decoration, whole, &doc.to_string())
+    build_runs_in(doc, selection, decoration, whole, text)
 }
 
 /// The runs to draw for the part of `doc` covered by `within`.
@@ -223,13 +236,13 @@ pub fn build_runs(doc: &Document, selection: Selection, theme: &Theme) -> Vec<Vi
 /// Inline styling starts clean at `within`, which is sound because chunk boundaries fall on line
 /// boundaries and Markdown pairs inline delimiters within a line.
 #[must_use]
-pub fn build_runs_in(
+pub fn build_runs_in<'t>(
     doc: &Document,
     selection: Selection,
     decoration: Decoration<'_>,
     within: ByteSpan,
-    text: &str,
-) -> Vec<ViewRun> {
+    text: &'t str,
+) -> Vec<ViewRun<'t>> {
     let mut builder = Builder {
         runs: Vec::new(),
         theme: decoration.theme,
@@ -301,15 +314,15 @@ enum Role {
 }
 
 /// Accumulates runs while walking the document's segments.
-struct Builder<'a> {
-    runs: Vec<ViewRun>,
+struct Builder<'a, 't> {
+    runs: Vec<ViewRun<'t>>,
     theme: &'a Theme,
     mode: Mode,
     doc: &'a Document,
     state: DecorState,
 }
 
-impl Builder<'_> {
+impl<'t> Builder<'_, 't> {
     /// Folds one marker into the inline styling state.
     ///
     /// Block markers do nothing here: what a heading's size is, and whether a byte is inside a code
@@ -369,7 +382,7 @@ impl Builder<'_> {
     /// coalesces adjacent runs of the same kind, so a single content segment routinely spans a
     /// heading's text, the blank line after it, and the whole next paragraph — three different
     /// blocks. Styling that segment once drew all of it at heading size.
-    fn push_split(&mut self, piece: &str, span: ByteSpan, role: Role) {
+    fn push_split(&mut self, piece: &'t str, span: ByteSpan, role: Role) {
         let base = span.start().get();
         let mut cursor = 0usize;
 
@@ -403,12 +416,12 @@ impl Builder<'_> {
         }
     }
 
-    fn push_one(&mut self, text: &str, start: usize, style: TextStyle, colour: Rgba) {
+    fn push_one(&mut self, text: &'t str, start: usize, style: TextStyle, colour: Rgba) {
         if text.is_empty() {
             return;
         }
         self.runs.push(ViewRun {
-            text: text.to_owned(),
+            text,
             style,
             source: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(start + text.len())),
             colour,
@@ -418,10 +431,10 @@ impl Builder<'_> {
 
 /// Borrows the runs as [`StyledRun`]s for the layout engine.
 #[must_use]
-pub fn as_styled(runs: &[ViewRun]) -> Vec<StyledRun<'_>> {
+pub fn as_styled<'a>(runs: &[ViewRun<'a>]) -> Vec<StyledRun<'a>> {
     runs.iter()
         .map(|run| StyledRun {
-            text: &run.text,
+            text: run.text,
             style: run.style,
             source: run.source,
         })
@@ -433,7 +446,7 @@ pub fn as_styled(runs: &[ViewRun]) -> Vec<StyledRun<'_>> {
 /// Layout hands back glyphs keyed by source byte, not by run, so the mapping has to be recovered.
 /// Runs are in source order and non-overlapping, so this is a binary search.
 #[must_use]
-pub fn colour_at(runs: &[ViewRun], offset: ByteOffset, fallback: Rgba) -> Rgba {
+pub fn colour_at(runs: &[ViewRun<'_>], offset: ByteOffset, fallback: Rgba) -> Rgba {
     let found = runs.binary_search_by(|run| {
         if offset < run.source.start() {
             std::cmp::Ordering::Greater

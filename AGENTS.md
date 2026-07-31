@@ -201,8 +201,11 @@ Known gaps, so nobody assumes they are done:
   right trade — JSON nests without limit, so an edit deep inside an object may have no boundary short
   of the top.
 - **Blocks are extents, not a tree.** `Document::blocks` is a flat list with a depth on each entry.
-  Nothing walks parent or child links because nothing has needed to; `block_at` scans the list.
-  Fine at present sizes, and the thing to revisit when virtualization needs to diff block lists.
+  Nothing walks parent or child links because nothing has needed to. `block_at` **binary-searches**
+  rather than scanning — MDEDIT-37 found it was the largest single cost in drawing a frame, because
+  the renderer asks it once per styled run: 4,001 blocks times thirty-six runs times twenty visible
+  chunks is 2.9 million comparisons a frame for a 357 KB JSON. Fixing it took `build_runs_in` on one
+  JSON chunk from 0.064 ms to 0.005.
 - **No perf assertions.** The bench in `crates/markers/benches` measures; nothing gates a regression.
 - **CI does not run the app**, only the headless crates. There is no way to open a window on a CI
   runner, so rendering is verified by hand on Windows.

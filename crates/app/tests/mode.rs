@@ -37,7 +37,7 @@ fn drawn(source: &str, mode: Mode, caret: usize) -> String {
         source,
     )
     .iter()
-    .map(|run| run.text.as_str())
+    .map(|run| run.text)
     .collect()
 }
 
