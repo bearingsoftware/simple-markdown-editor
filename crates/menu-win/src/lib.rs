@@ -95,3 +95,41 @@ impl MenuBar {
     /// Forwards nothing, because nothing can be chosen.
     pub fn forward_to(&self, _deliver: impl Fn(Command) + Send + Sync + 'static) {}
 }
+
+/// Reattaches a windows-subsystem process to the console that launched it, if there was one.
+///
+/// # Why this lives in this crate
+///
+/// It is a raw Win32 call, and `AGENTS.md` makes `unsafe` outside a platform crate a review block.
+/// This crate is the platform layer for the shell-adjacent parts of the window — the menu bar today,
+/// the `DropTarget` verb eventually — and console attachment is the same kind of thing. When
+/// MDEDIT-61 adds `mdedit-shell-win` this should move there; the name is imperfect and the rule is
+/// not, so it lives here rather than in `mdedit-app`, and rather than minting a crate for one call.
+///
+/// # Why it is needed at all
+///
+/// The binary is windows-subsystem, so double-clicking it from Explorer no longer flashes a console.
+/// The cost is that a windows-subsystem process gets no standard handles even when it *was* started
+/// from a terminal — so `stderr` would go nowhere and the latency harness's `launch -> first paint`
+/// line, which `AGENTS.md` says is measured on every run, would vanish. Attaching to the parent's
+/// console when there is one gives that back and does nothing when there is not.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "the platform layer; see this function's docs for why it is here"
+)]
+pub fn attach_parent_console() {
+    // SAFETY: `AttachConsole` takes a process id and attaches this process to that console if it has
+    // one. `ATTACH_PARENT_PROCESS` is its documented sentinel for "my parent". It fails harmlessly
+    // when the parent has no console — which is the Explorer case — and the failure is ignored
+    // because having no console is not an error here.
+    unsafe {
+        let _ = windows_sys::Win32::System::Console::AttachConsole(
+            windows_sys::Win32::System::Console::ATTACH_PARENT_PROCESS,
+        );
+    }
+}
+
+/// Off Windows there is no console to reattach to.
+#[cfg(not(windows))]
+pub fn attach_parent_console() {}

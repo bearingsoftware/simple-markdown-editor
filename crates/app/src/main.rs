@@ -6,6 +6,10 @@
 // The binary talks to the user through stdout when it cannot open a window, which is the one place
 // printing is the right behaviour rather than a stray debug statement.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
+// No console window when Explorer launches this. A terminal launch still gets its output, because
+// `main` reattaches to the parent's console — see `mdedit_menu_win::attach_parent_console`, and
+// MDEDIT-62 for why that mitigation is not optional.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
 use mdedit_app::{SAMPLE, editor::Editor};
@@ -47,12 +51,44 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
     }
 }
 
+/// Tells the user a panic happened, and where to find the detail.
+///
+/// Supplied to the library rather than living in it: `rfd` is loadable from this executable and not
+/// from anything else that links the library, for the manifest reason `NativePrompt` documents.
+#[cfg(windows)]
+fn report_panic(message: &str, log_path: Option<&std::path::Path>) {
+    let where_to_look = log_path.map_or_else(
+        || "No log file could be opened.".to_owned(),
+        |path| format!("Details were written to:\n{}", path.display()),
+    );
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title("Simple Markdown Editor stopped")
+        .set_description(format!("{message}\n\n{where_to_look}"))
+        .show();
+}
+
+/// Off Windows there is no dialog to show; the log has it either way.
+#[cfg(not(windows))]
+fn report_panic(_message: &str, _log_path: Option<&std::path::Path>) {}
+
 fn main() {
+    // Reattach to the terminal that launched us, if there was one. The binary is windows-subsystem
+    // so Explorer gets no console flash; the cost is no standard handles at all, which would take
+    // the latency harness's output with it. See `attach_parent_console`.
+    mdedit_menu_win::attach_parent_console();
+
+    // Before anything that can fail, so that what it says survives an Explorer launch. The dialog
+    // is supplied from here rather than from the library for the `rfd` reason documented below on
+    // `NativePrompt` — the manifest that makes `rfd` loadable belongs to this executable.
+    mdedit_app::log::start();
+    mdedit_app::log::install_panic_hook(report_panic);
+
     #[cfg(not(windows))]
     {
         // parley is the portable backend and is not viable on Windows until parley#689 ships in a
         // released fontique (MDEDIT-5); it is not written yet, so there is nothing to run on.
-        eprintln!(
+        mdedit_app::log_error!(
             "No text backend for this platform yet. DirectWrite is Windows-only and the portable \
              parley backend is not written — see AGENTS.md, \"Text layer\"."
         );
@@ -68,7 +104,7 @@ fn main() {
         let text = match mdedit_text_dwrite::DirectWriteText::new() {
             Ok(text) => text,
             Err(err) => {
-                eprintln!("DirectWrite unavailable: {err}");
+                mdedit_app::log_error!("DirectWrite unavailable: {err}");
                 std::process::exit(1);
             }
         };
@@ -78,7 +114,7 @@ fn main() {
         let event_loop = match EventLoop::<mdedit_menu_win::Command>::with_user_event().build() {
             Ok(event_loop) => event_loop,
             Err(err) => {
-                eprintln!("could not create an event loop: {err}");
+                mdedit_app::log_error!("could not create an event loop: {err}");
                 std::process::exit(1);
             }
         };
@@ -102,7 +138,7 @@ fn main() {
                     for tab in &skipped {
                         // Reported rather than silently dropped: a tab vanishing without explanation
                         // looks like data loss.
-                        eprintln!("skipped a session entry: {}", tab.reason);
+                        mdedit_app::log_error!("skipped a session entry: {}", tab.reason);
                     }
                     let mut editor = Editor::with_workspace(workspace, text);
                     editor.activate_saved_tab();
@@ -122,7 +158,7 @@ fn main() {
                         workspace.add(resolved);
                     }
                     Err(reason) => {
-                        eprintln!("could not open: {reason}");
+                        mdedit_app::log_error!("could not open: {reason}");
                         std::process::exit(1);
                     }
                 }
@@ -146,11 +182,11 @@ fn main() {
         editor.forward_menu(event_loop.create_proxy());
 
         if let Err(err) = event_loop.run_app(&mut editor) {
-            eprintln!("event loop stopped: {err}");
+            mdedit_app::log_error!("event loop stopped: {err}");
             std::process::exit(1);
         }
         if let Some(err) = editor.gpu_error() {
-            eprintln!("could not start the renderer: {err}");
+            mdedit_app::log_error!("could not start the renderer: {err}");
             std::process::exit(1);
         }
 

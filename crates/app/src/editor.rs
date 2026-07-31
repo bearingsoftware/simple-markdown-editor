@@ -800,7 +800,7 @@ impl<T: TextLayout> Editor<T> {
     pub fn activate_saved_tab(&mut self) {
         let index = self.workspace.active().unwrap_or(0);
         if let Err(error) = self.workspace.activate(index) {
-            eprintln!("could not open tab: {error}");
+            crate::log_error!("could not open tab: {error}");
         }
     }
 
@@ -809,7 +809,7 @@ impl<T: TextLayout> Editor<T> {
     /// Handles only, never content — that is what makes restoring one cheap.
     pub fn save_session(&self, path: &Path) {
         if let Err(error) = self.workspace.save_session(path) {
-            eprintln!("could not save session: {error}");
+            crate::log_error!("could not save session: {error}");
         }
     }
 
@@ -884,7 +884,7 @@ impl<T: TextLayout> Editor<T> {
             // The bytes are on disk. Only our record of the tab is stale, which matters for the next
             // save rather than for this one.
             Err(error) => {
-                eprintln!("saved, but could not re-read {}: {error}", path.display());
+                crate::log_error!("saved, but could not re-read {}: {error}", path.display());
                 false
             }
         }
@@ -904,7 +904,7 @@ impl<T: TextLayout> Editor<T> {
             None => mdedit_file::save_new(path, &text),
         };
         if let Err(error) = written {
-            eprintln!("could not save {}: {error}", path.display());
+            crate::log_error!("could not save {}: {error}", path.display());
             return false;
         }
 
@@ -916,7 +916,9 @@ impl<T: TextLayout> Editor<T> {
         };
         match reloaded {
             Ok(file) => self.workspace.set_active_file(file),
-            Err(error) => eprintln!("saved, but could not re-read {}: {error}", path.display()),
+            Err(error) => {
+                crate::log_error!("saved, but could not re-read {}: {error}", path.display());
+            }
         }
         true
     }
@@ -1016,7 +1018,7 @@ impl<T: TextLayout> Editor<T> {
     pub fn new_file(&mut self) {
         let index = self.workspace.add_untitled();
         if let Err(error) = self.workspace.activate(index) {
-            eprintln!("could not open a new file: {error}");
+            crate::log_error!("could not open a new file: {error}");
         }
     }
 
@@ -1081,7 +1083,7 @@ impl<T: TextLayout> Editor<T> {
         let step = if forward { 1 } else { count - 1 };
         let next = (current + step) % count;
         if let Err(error) = self.workspace.activate(next) {
-            eprintln!("could not open tab: {error}");
+            crate::log_error!("could not open tab: {error}");
             return false;
         }
         true
@@ -1134,7 +1136,7 @@ impl<T: TextLayout> Editor<T> {
                     // includes an untitled buffer, where `save` has nowhere to write and does
                     // nothing at all.
                     if self.is_modified() {
-                        eprintln!("not closing {name}: the save did not succeed");
+                        crate::log_error!("not closing {name}: the save did not succeed");
                         return false;
                     }
                 }
@@ -1151,7 +1153,7 @@ impl<T: TextLayout> Editor<T> {
                 true
             }
             Err(error) => {
-                eprintln!("could not close tab: {error}");
+                crate::log_error!("could not close tab: {error}");
                 false
             }
         }
@@ -2373,7 +2375,7 @@ impl<T: TextLayout> Editor<T> {
         match hit {
             pane::Hit::Select(index) => {
                 if let Err(error) = self.workspace.activate(index) {
-                    eprintln!("could not open tab: {error}");
+                    crate::log_error!("could not open tab: {error}");
                     return false;
                 }
                 true
@@ -2390,7 +2392,7 @@ impl<T: TextLayout> Editor<T> {
         match hit {
             tabs::Hit::Select(index) => {
                 if let Err(error) = self.workspace.activate(index) {
-                    eprintln!("could not open tab: {error}");
+                    crate::log_error!("could not open tab: {error}");
                     return false;
                 }
                 true
