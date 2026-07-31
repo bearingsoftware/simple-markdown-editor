@@ -59,7 +59,8 @@ crates/file/            # mdedit-file: reads and writes files without changing a
 crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, per-block layout and its cache, the settings file, the status
-                        #   bar, and the keystroke latency harness. Binary: `mdedit`.
+                        #   bar, the tab strip and file pane, and the keystroke latency harness.
+                        #   Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs. Re-runnable
 docs/research/          # 7 briefs; read README.md first
@@ -92,9 +93,20 @@ Known gaps, so nobody assumes they are done:
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;
   visibly an overlay in the middle of one.
-- **There is a File and Edit menu and a status bar, and no other chrome.** No scrollbar, no View
-  menu, no context menu on right-click, no recent files. The plain-markup toggle is Ctrl+/ and has no
-  menu item, because a View menu was out of MDEDIT-25's scope.
+- **There is a File and Edit menu, a status bar, and the open files shown either as a tab strip or
+  as a left pane.** No scrollbar, no View menu, no context menu on right-click, no recent files. The
+  plain-markup toggle is Ctrl+/ and the strip/pane toggle is Ctrl+B; neither has a menu item, because
+  there is still no View menu to put one in.
+- **Which chrome is showing is not remembered.** Ctrl+B swaps the strip for the pane and the editor
+  starts on the strip every time — the config file is read once and never written back, so there is
+  nowhere to put it that survives a restart. A `chrome` setting is the obvious home when someone
+  wants one.
+- **A pane row truncates its name; it does not ellipsise it, and there is no hover.** MDEDIT-28's
+  plan asked for eliding with the full path on hover. Truncation is what the tab strip already does
+  and what this matches; an ellipsis needs its own measurement pass, and a tooltip needs a hover
+  affordance that does not exist yet.
+- **The pane lists what is open, not what is on disk.** A file *tree* is a different feature with
+  filesystem-watching decisions attached, and deliberately not this one.
 - **The status bar's word count lags, deliberately.** It is recomputed on the same idle timer that
   runs the whole-document re-parse 150 ms after typing stops, because counting words is a walk of the
   buffer and doing it per frame would undo MDEDIT-17 and MDEDIT-18. While you type, the number shown

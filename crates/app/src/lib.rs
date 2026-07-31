@@ -22,6 +22,7 @@ pub mod gpu;
 pub mod hit;
 pub mod ime;
 pub mod latency;
+pub mod pane;
 pub mod prompt;
 pub mod scroll;
 pub mod status;
