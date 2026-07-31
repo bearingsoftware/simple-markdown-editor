@@ -35,10 +35,24 @@ use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
+use crate::pane;
 use crate::prompt::{KeepEverything, Unsaved, UnsavedPrompt};
 use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
+
+/// Where the list of open files is shown.
+///
+/// One or the other, never both: they are two presentations of the same list, and showing both would
+/// be two places to click for one action and two pieces of chrome taking room from the document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Chrome {
+    /// A strip of tabs across the top. The default, and what MDEDIT-15 built.
+    #[default]
+    Strip,
+    /// A vertical list down the left.
+    Pane,
+}
 
 /// The status bar's right-hand fields.
 const RIGHT: usize = 0;
@@ -521,6 +535,21 @@ pub struct Editor<T: TextLayout> {
     modifiers: ModifiersState,
     /// Where each tab landed in the strip last frame, for resolving a click.
     tab_rects: Vec<tabs::TabRect>,
+    /// Where the open files are shown. See [`Chrome`].
+    chrome: Chrome,
+    /// The pane's visible rows, kept for the next click, as `tab_rects` is for the strip.
+    row_rects: Vec<pane::RowRect>,
+    /// How far the pane's list has been scrolled. Its own, not the document's — the two scroll
+    /// independently, which is the point of a pane that can hold more files than fit.
+    pane_scroll: f32,
+    /// Laid-out row labels, keyed by the text.
+    ///
+    /// The pane redraws every frame and a forty-file pane shows sixteen rows, so laying each name
+    /// out per frame put thirty-odd text-engine calls on the keystroke path — measured, and the same
+    /// trap the gutter and the status bar each hit. A file name changes when a tab is renamed or
+    /// saved somewhere new, which is rare enough that keying on the text is the whole cache
+    /// invalidation this needs. Bounded by the session's tab limit.
+    row_labels: HashMap<String, Label>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
     /// Where the viewport sits over the document.
@@ -650,6 +679,10 @@ impl<T: TextLayout> Editor<T> {
             gpu_error: None,
             modifiers: ModifiersState::empty(),
             tab_rects: Vec::new(),
+            chrome: Chrome::Strip,
+            row_rects: Vec::new(),
+            pane_scroll: 0.0,
+            row_labels: HashMap::new(),
             cursor: (0.0, 0.0),
             scroll: Scroll::new(),
             viewport: Viewport::default(),
@@ -1198,6 +1231,12 @@ impl<T: TextLayout> Editor<T> {
                 self.toggle_mode();
                 true
             }
+            // What VS Code, Sublime and Zed all use for showing and hiding the sidebar. There is no
+            // menu item, because there is still no View menu to put one in.
+            "b" | "B" => {
+                self.toggle_chrome();
+                true
+            }
             _ => false,
         }
     }
@@ -1555,9 +1594,10 @@ impl<T: TextLayout> Editor<T> {
             }
         }
 
-        // Last, so it covers the document rather than the other way round. The bar's inset keeps
-        // text out of it, but a caret revealed at the very bottom of the viewport can still round
-        // into the top pixel of the bar.
+        // Both after the document, so chrome covers the seam rather than the other way round. The
+        // insets keep text out of both, but a caret at the very edge of the viewport can still round
+        // into a chrome pixel.
+        self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
@@ -1832,9 +1872,20 @@ impl<T: TextLayout> Editor<T> {
         // the document permanently below the fold.
         Insets {
             top: self.strip_height(),
-            left: self.gutter_width(),
+            // The pane and the gutter both take from the left, and they add rather than compete —
+            // which is exactly the arithmetic `ContentRect` exists to keep in one place.
+            left: self.pane_width() + self.gutter_width(),
             bottom: status::BAR_HEIGHT,
             ..Insets::default()
+        }
+    }
+
+    /// Width the file pane occupies, which is nothing unless it is the chrome in use.
+    fn pane_width(&self) -> f32 {
+        if self.chrome == Chrome::Pane && !self.workspace.tabs().is_empty() {
+            pane::PANE_WIDTH
+        } else {
+            0.0
         }
     }
 
@@ -1871,10 +1922,10 @@ impl<T: TextLayout> Editor<T> {
 
     /// Height the tab strip occupies, which is nothing when there is nothing to show.
     fn strip_height(&self) -> f32 {
-        if self.workspace.tabs().is_empty() {
-            0.0
-        } else {
+        if self.chrome == Chrome::Strip && !self.workspace.tabs().is_empty() {
             tabs::STRIP_HEIGHT
+        } else {
+            0.0
         }
     }
 
@@ -1892,7 +1943,7 @@ impl<T: TextLayout> Editor<T> {
     /// Draws the strip, and remembers where each tab landed so a click can be resolved.
     fn build_tab_strip(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
         self.tab_rects.clear();
-        if self.workspace.tabs().is_empty() {
+        if self.chrome != Chrome::Strip || self.workspace.tabs().is_empty() {
             return Vec::new();
         }
 
@@ -2051,6 +2102,252 @@ impl<T: TextLayout> Editor<T> {
                 uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
                 colour: [colour.r, colour.g, colour.b, colour.a],
             });
+        }
+    }
+
+    /// Draws the file pane down the left, and remembers where its rows landed.
+    ///
+    /// Drawn after the document rather than before it, so that a row and a glyph cannot disagree
+    /// about which is on top — the pane's inset keeps the text out of its column, and this covers
+    /// the seam.
+    fn draw_pane(&mut self, quads: &mut Vec<QuadInstance>, height: f32, scale: f32) {
+        self.row_rects.clear();
+        if self.chrome != Chrome::Pane || self.workspace.tabs().is_empty() {
+            return;
+        }
+
+        let logical_height = height / scale;
+        // The pane runs the full height, under nothing: there is no strip when it is showing, and
+        // the status bar is drawn after it.
+        let visible = (logical_height - status::BAR_HEIGHT).max(0.0);
+        let count = self.workspace.tabs().len();
+
+        self.pane_scroll = self
+            .pane_scroll
+            .clamp(0.0, pane::max_scroll(count, visible));
+        self.row_rects = pane::layout(count, visible, self.pane_scroll);
+
+        quads.push(Self::solid(
+            [0.0, 0.0, pane::PANE_WIDTH * scale, visible * scale],
+            self.theme.strip,
+        ));
+
+        let names: Vec<String> = self
+            .row_rects
+            .iter()
+            .map(|rect| self.workspace.tabs()[rect.index].display_name())
+            .collect();
+        let active = self.workspace.active();
+        let style = TextStyle::body(self.theme.body_size * 0.85);
+
+        for (rect, name) in self.row_rects.clone().into_iter().zip(names) {
+            let is_active = active == Some(rect.index);
+            if is_active {
+                quads.push(Self::solid(
+                    [
+                        0.0,
+                        rect.y * scale,
+                        pane::PANE_WIDTH * scale,
+                        pane::ROW_HEIGHT * scale,
+                    ],
+                    self.theme.tab_active,
+                ));
+            }
+
+            let modified = self
+                .workspace
+                .tabs()
+                .get(rect.index)
+                .is_some_and(mdedit_session::Tab::is_modified);
+            let (close_x, close_width) = rect.close_region();
+            let baseline = rect.y + pane::ROW_HEIGHT * 0.7;
+
+            self.draw_row_label(
+                quads,
+                if modified { "•" } else { "×" },
+                style,
+                close_x + close_width / 2.0 - 4.0,
+                baseline,
+                if modified {
+                    self.theme.tab_modified
+                } else {
+                    self.theme.marker
+                },
+                scale,
+                close_width,
+            );
+
+            self.draw_row_label(
+                quads,
+                &name,
+                style,
+                rect.label_x(),
+                baseline,
+                if is_active {
+                    self.theme.text
+                } else {
+                    self.theme.marker
+                },
+                scale,
+                rect.label_width(),
+            );
+        }
+    }
+
+    /// Turns a wheel notch into a scroll of whatever is under the pointer.
+    fn wheel(&mut self, delta: MouseScrollDelta) {
+        // Wheel-up is positive and moves the view towards the top, which is a smaller offset —
+        // hence the negation on both arms.
+        let delta = match delta {
+            MouseScrollDelta::LineDelta(_, lines) => {
+                -lines * scroll::LINES_PER_NOTCH * self.viewport.line
+            }
+            // A precision touchpad reports pixels directly, already at the rate the user moved
+            // their fingers. Truncation is fine: these are gesture-sized deltas.
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "scroll deltas are small pixel counts"
+            )]
+            MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
+        };
+
+        // Over the pane, the wheel scrolls the file list rather than the document — which is what
+        // every editor with a sidebar does, and the reason the pane owns an offset of its own.
+        let (x, y) = self.cursor;
+        if pane::hit_test(&self.row_rects, x, y).is_some() {
+            self.scroll_pane(delta);
+        } else {
+            self.scroll_by(delta);
+        }
+    }
+
+    /// Draws one row label, laying it out only if this text has not been seen before.
+    ///
+    /// The pane's equivalent of [`Self::status_label`], keyed by text rather than by slot because
+    /// the rows are a list rather than a fixed pair. Taken out of the map and put back rather than
+    /// cloned, since rasterising needs `&mut self` and a per-frame copy of the glyphs would give
+    /// back some of what the cache just saved.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_row_label(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        text: &str,
+        style: TextStyle,
+        x: f32,
+        baseline: f32,
+        colour: Rgba,
+        scale: f32,
+        max_width: f32,
+    ) {
+        let label = if let Some(label) = self.row_labels.remove(text) {
+            label
+        } else {
+            let run = StyledRun {
+                text,
+                style,
+                source: ByteSpan::empty_at(ByteOffset::ZERO),
+            };
+            let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
+                return;
+            };
+            let glyphs: Vec<_> = layout.glyphs().copied().collect();
+            let width = glyphs
+                .iter()
+                .map(|glyph| glyph.pos.x + glyph.advance)
+                .fold(0.0_f32, f32::max);
+            Label {
+                text: text.to_owned(),
+                glyphs,
+                width,
+            }
+        };
+
+        for glyph in &label.glyphs {
+            if glyph.pos.x > max_width {
+                // Truncated rather than ellipsised, as the strip's labels are: file names are longer
+                // than a row is wide, and an ellipsis needs its own measurement pass.
+                break;
+            }
+            let Some(entry) = self.entry_for(glyph.key, scale) else {
+                continue;
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    (x + glyph.pos.x) * scale + px_i(entry.left),
+                    baseline * scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [colour.r, colour.g, colour.b, colour.a],
+            });
+        }
+
+        self.row_labels.insert(label.text.clone(), label);
+    }
+
+    /// Scrolls the file pane's list. Returns whether it moved.
+    pub fn scroll_pane(&mut self, by: f32) -> bool {
+        if self.chrome != Chrome::Pane {
+            return false;
+        }
+        let before = self.pane_scroll;
+        // Clamped against the last known viewport; the next frame clamps again with a fresh one,
+        // which is what makes a resize while scrolled land somewhere sensible.
+        let visible = (self.viewport.height + status::BAR_HEIGHT).max(0.0);
+        self.pane_scroll = (self.pane_scroll + by)
+            .clamp(0.0, pane::max_scroll(self.workspace.tabs().len(), visible));
+        #[allow(
+            clippy::float_cmp,
+            reason = "asking whether the clamp moved it, where exact equality is the question"
+        )]
+        let moved = self.pane_scroll != before;
+        moved
+    }
+
+    /// Which presentation the open files are in.
+    #[must_use]
+    pub fn chrome(&self) -> Chrome {
+        self.chrome
+    }
+
+    /// Swaps the tab strip for the file pane, or back.
+    ///
+    /// The wrapping width changes with it, so every cached layout is invalidated — correctly and by
+    /// itself, because a chunk's cache key includes the width. Toggling on a large document
+    /// therefore re-lays-out the viewport, which is expected rather than a bug.
+    pub fn toggle_chrome(&mut self) {
+        self.chrome = match self.chrome {
+            Chrome::Strip => Chrome::Pane,
+            Chrome::Pane => Chrome::Strip,
+        };
+        self.pane_scroll = 0.0;
+    }
+
+    /// A left-click anywhere in the window.
+    ///
+    /// Chrome first, because both presentations sit over an edge of the document; only one of the
+    /// two is ever showing, so at most one can match. The order lives here rather than in the event
+    /// handler so that a test clicks the same way the window does — a test that reached past this
+    /// into [`click_at`](Self::click_at) would be exercising a dispatch the app does not use.
+    pub fn click(&mut self, x: f32, y: f32) -> bool {
+        self.click_strip(x, y) || self.click_pane(x, y) || self.click_at(x, y)
+    }
+
+    /// Resolves a click in the file pane.
+    fn click_pane(&mut self, x: f32, y: f32) -> bool {
+        let Some(hit) = pane::hit_test(&self.row_rects, x, y) else {
+            return false;
+        };
+        match hit {
+            pane::Hit::Select(index) => {
+                if let Err(error) = self.workspace.activate(index) {
+                    eprintln!("could not open tab: {error}");
+                    return false;
+                }
+                true
+            }
+            pane::Hit::Close(index) => self.close_tab_at(index),
         }
     }
 
@@ -2974,21 +3271,7 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Wheel-up is positive and moves the view towards the top, which is a smaller
-                // offset — hence the negation on both arms.
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(_, lines) => {
-                        -lines * scroll::LINES_PER_NOTCH * self.viewport.line
-                    }
-                    // A precision touchpad reports pixels directly, already at the rate the user
-                    // moved their fingers. Truncation is fine: these are gesture-sized deltas.
-                    #[allow(
-                        clippy::cast_possible_truncation,
-                        reason = "scroll deltas are small pixel counts"
-                    )]
-                    MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
-                };
-                self.scroll_by(delta);
+                self.wheel(delta);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
@@ -3005,15 +3288,20 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
             } => {
                 let (x, y) = self.cursor;
                 let changed = match button {
-                    // The strip first, because it sits over the document's top edge.
-                    MouseButton::Left => self.click_strip(x, y) || self.click_at(x, y),
+                    MouseButton::Left => self.click(x, y),
                     // Middle-click closes, as every editor with tabs does.
-                    MouseButton::Middle => match tabs::hit_test(&self.tab_rects, x, y) {
-                        Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)) => {
-                            self.close_tab_at(index)
+                    MouseButton::Middle => {
+                        match (
+                            tabs::hit_test(&self.tab_rects, x, y),
+                            pane::hit_test(&self.row_rects, x, y),
+                        ) {
+                            (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
+                            | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
+                                self.close_tab_at(index)
+                            }
+                            (None, None) => false,
                         }
-                        None => false,
-                    },
+                    }
                     _ => false,
                 };
                 if changed {
