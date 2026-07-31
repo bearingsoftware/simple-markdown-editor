@@ -26,6 +26,18 @@
 //! for an attacker: writing the session file already requires write access to the user's local app
 //! data, and anyone holding that can do considerably worse than make us read a pipe.
 
+//! # A command line is a different source, and gets a different rule
+//!
+//! Everything above is about a file this process wrote and something else may have edited. A path
+//! typed at a shell, or handed over by Explorer, is the user themselves — the party the rules above
+//! exist to protect. None of those rules defends against anything there, and all three reject
+//! ordinary input: a relative path is how anyone invokes a CLI, `..` is a component a shell hands
+//! over without comment, and a UNC path the user typed is one they meant.
+//!
+//! So [`from_command_line`] resolves against the working directory and checks only that the result
+//! is a file. That is not a weakening of [`validate`] — it is a second function for a second source,
+//! and the two sit here together so the difference is written down rather than inferred.
+
 use std::path::{Component, Path, PathBuf};
 
 /// Why a path from a session file was refused.
@@ -95,6 +107,37 @@ pub fn validate(path: &Path) -> Result<(), PathRejected> {
     // wanted: a link to a real file is a real file.
     match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(()),
+        _ => Err(PathRejected::NotAFile(path.to_path_buf())),
+    }
+}
+
+/// Resolves a path given on the command line, or by the shell.
+///
+/// The result is absolute, because everything downstream needs it to be: a tab is keyed by its path,
+/// and a relative one written into the session file would be refused by [`validate`] on the next
+/// start, having meanwhile meant whatever directory the editor happened to be launched from.
+///
+/// Resolved **lexically**, with [`std::path::absolute`] rather than [`std::fs::canonicalize`]. Two
+/// reasons, and the second is the one that matters: canonicalising returns a `\\?\C:\…` path on
+/// Windows, which every subsequent glance at the path — including [`validate`]'s own — would read as
+/// the device namespace. That is the trap `validate` documents in its first check, and the way to
+/// avoid springing it is not to create such a path in the first place.
+///
+/// # Errors
+///
+/// [`PathRejected::NotAFile`] if it does not resolve, does not exist, or is not a regular file. A
+/// typo should say so rather than opening an empty buffer named after it — that would be a feature,
+/// and this is the behaviour the editor already had.
+pub fn from_command_line(path: &Path) -> Result<PathBuf, PathRejected> {
+    let Ok(absolute) = std::path::absolute(path) else {
+        // Only an empty path, or one the platform cannot express, reaches here.
+        return Err(PathRejected::NotAFile(path.to_path_buf()));
+    };
+
+    match std::fs::metadata(&absolute) {
+        Ok(metadata) if metadata.is_file() => Ok(absolute),
+        // Reported as given rather than as resolved, because that is what the user typed and what
+        // they will look for the typo in.
         _ => Err(PathRejected::NotAFile(path.to_path_buf())),
     }
 }

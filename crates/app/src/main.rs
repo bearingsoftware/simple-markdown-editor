@@ -114,9 +114,12 @@ fn main() {
         } else {
             let mut workspace = mdedit_session::Workspace::new();
             for path in arguments {
-                match mdedit_session::path::validate(&path) {
-                    Ok(()) => {
-                        workspace.add(path);
+                // `from_command_line`, not `validate`: the latter guards the session file, which is
+                // a file this process wrote and something else may have edited. This is the user
+                // typing. See `mdedit_session::path` for why they are separate functions.
+                match mdedit_session::path::from_command_line(&path) {
+                    Ok(resolved) => {
+                        workspace.add(resolved);
                     }
                     Err(reason) => {
                         eprintln!("could not open: {reason}");
