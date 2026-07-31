@@ -23,5 +23,12 @@ repository.workspace = true
 [target.'cfg(windows)'.dependencies]
 muda = { version = "0.19", default-features = false }
 
+# For the two undocumented uxtheme ordinals that make popup menus dark — see `dark.rs`. Pinned to the
+# range muda already requires so the tree holds one copy of it rather than two.
+windows-sys = { version = ">=0.60, <=0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+] }
+
 [lints]
 workspace = true
