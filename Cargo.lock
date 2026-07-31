@@ -1005,9 +1005,11 @@ name = "mdedit-document"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mdedit-json",
  "mdedit-language",
  "mdedit-markers",
  "mdedit-offsets",
+ "mdedit-yaml",
  "proptest",
  "ropey",
  "thiserror 2.0.19",

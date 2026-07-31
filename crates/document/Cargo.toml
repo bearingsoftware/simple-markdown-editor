@@ -18,6 +18,10 @@ thiserror.workspace = true
 
 [dev-dependencies]
 criterion = "0.7"
+# Test-only, and deliberately not real dependencies: this crate is language-agnostic, and the
+# scoped-lex gate needs concrete languages to hold it against.
+mdedit-json.workspace = true
+mdedit-yaml.workspace = true
 proptest = "1.11.0"
 
 [[bench]]

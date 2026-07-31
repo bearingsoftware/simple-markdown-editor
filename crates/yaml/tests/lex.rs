@@ -193,17 +193,57 @@ fn top_level_entries_become_blocks() {
 }
 
 #[test]
-fn yaml_never_conceals_and_never_restarts_partway() {
+fn yaml_never_conceals() {
     assert!(!Yaml.conceals());
-    assert!(
-        Yaml.analyze_region(
-            "a: 1\n",
-            ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(5))
-        )
-        .is_none(),
-        "significant indentation means there is no safe restart"
-    );
     assert_eq!(Yaml.name(), "YAML");
+}
+
+/// MDEDIT-36. A column-zero line is provably outside every block scalar — a block scalar's content
+/// must be indented further than the line that opened it, and that line is itself at column zero —
+/// so a region starting at one needs no state carried into it.
+#[test]
+fn a_region_starting_at_column_zero_is_outside_every_block_scalar() {
+    let source = "script: |\n  # not a comment\n  key: not a key\nafter: 1\n";
+    let whole = analyze(source);
+
+    // The second top-level entry, re-lexed on its own.
+    let second = whole.blocks[1].span();
+    let region = mdedit_yaml::analyze_region(source, second);
+
+    assert!(
+        region
+            .segments
+            .iter()
+            .any(|segment| segment.kind() == SegmentKind::Token(Token::Key)),
+        "`after: 1` should lex as a key, not as the tail of the block scalar above it"
+    );
+
+    let rebuilt: String = region
+        .segments
+        .iter()
+        .map(|segment| segment.span().slice(source))
+        .collect();
+    assert_eq!(rebuilt, second.slice(source), "and it tiles its own region");
+}
+
+/// The case the contract exists to exclude: starting *inside* a block scalar would read its text as
+/// syntax. Pinned so that anyone loosening `scope_for` sees what it would cost.
+#[test]
+fn a_region_starting_inside_a_block_scalar_would_be_wrong() {
+    let source = "script: |\n  # not a comment\nafter: 1\n";
+    let inside = source.find("  # not").unwrap();
+    let region = mdedit_yaml::analyze_region(
+        source,
+        ByteSpan::new(ByteOffset::new(inside), ByteOffset::new(source.len())),
+    );
+
+    assert!(
+        region
+            .segments
+            .iter()
+            .any(|segment| segment.kind() == SegmentKind::Token(Token::Comment)),
+        "which is why a caller may only ever start a region at a block boundary"
+    );
 }
 
 proptest! {

@@ -327,11 +327,28 @@ pub trait Language: std::fmt::Debug + Send + Sync {
 
     /// Analyses only `region`, as if the rest of `source` were not there, in `source`'s coordinates.
     ///
-    /// `None` means **this language has no safe restart boundary here**, and the caller owes it a
-    /// whole-document [`analyze`](Self::analyze) instead. That is not a failure: JSON nests without
-    /// limit, so an edit deep inside an object may have no boundary short of the top, and a language
-    /// that says so gets a correct parse that is merely slower. A language that pretended otherwise
-    /// would get a fast wrong one.
+    /// # What the caller must guarantee
+    ///
+    /// **`region` begins at the start of a depth-zero [`Block`] from a previous
+    /// [`analyze`](Self::analyze), or at byte zero.** Not a courtesy — it is the whole of the state
+    /// an implementation is given, and every language here needs some. JSON recovers its nesting
+    /// depth from it (a top-level member is one container deep, byte zero is none); YAML recovers
+    /// that it is not inside a block scalar (a column-zero line provably is not). An arbitrary
+    /// offset would give both of them a confidently wrong answer.
+    ///
+    /// # `None`
+    ///
+    /// Means **this language cannot restart even there**, and the caller owes it a whole-document
+    /// [`analyze`](Self::analyze) instead. No language needs it today; it stays because a language
+    /// whose state cannot be recovered from a boundary should say so and take a correct parse that
+    /// is merely slower, rather than a fast wrong one.
+    ///
+    /// # What a region cannot see
+    ///
+    /// Anything outside itself. An unclosed fence above it makes Markdown's whole region code; a `{`
+    /// inserted above it shifts JSON's depth; a changed indent above it re-parents YAML's lines. A
+    /// caller using this on the keystroke path therefore owes the document a whole-document parse
+    /// when the typing stops, which is what `mdedit_document`'s `Document::reconcile` is for.
     fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis>;
 
     /// Whether this language's syntax is ever hidden.

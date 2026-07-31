@@ -63,13 +63,8 @@ impl Language for Json {
         analyze(source)
     }
 
-    fn analyze_region(&self, _source: &str, _region: ByteSpan) -> Option<Analysis> {
-        // JSON nests without limit and a region carries no record of how deep it started, so an edit
-        // inside an object may have no safe restart short of the top of the file. Saying so gets a
-        // whole-document parse — correct, and merely slower. Claiming a boundary that does not exist
-        // would get a fast wrong answer, and MDEDIT-18's reconcile could not repair it, because a
-        // JSON document has no equivalent of a blank line to resynchronise on.
-        None
+    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
+        Some(analyze_region(source, region))
     }
 
     fn conceals(&self) -> bool {
@@ -82,12 +77,75 @@ impl Language for Json {
 /// Never fails. See the [crate docs](crate) for the tiling guarantee.
 #[must_use]
 pub fn analyze(source: &str) -> Analysis {
+    lex(source, 0)
+}
+
+/// Lexes only `region`, as if the rest of `source` were not there, in `source`'s coordinates.
+///
+/// # The contract that makes this safe
+///
+/// **`region` must begin at the start of a top-level member reported by a previous [`analyze`], or
+/// at byte zero.** That is exactly what `mdedit_document`'s `scope_for` passes — it snaps every
+/// region to a depth-zero block start — and it is what supplies the one piece of state a JSON lexer
+/// cannot recover from a slice: how deep it already is. A member boundary is inside the root
+/// container and outside any string, so the nesting depth there is one, and byte zero is zero.
+///
+/// MDEDIT-30 declined to implement this on the grounds that a region "carries no record of how deep
+/// it started". That was true of an arbitrary region and beside the point for the only regions the
+/// caller ever asks for, which had already been snapped to boundaries this crate itself produced.
+///
+/// What a region still cannot see is a change *outside* it — inserting a `{` above shifts the depth
+/// of everything below, and this analysis will be wrong until the whole-document parse that
+/// `Document::reconcile` runs when the typing stops. That is the same bargain Markdown makes with an
+/// unclosed fence, and the same reconcile repairs both.
+///
+/// A region outside the source, or one whose ends are not character boundaries, is clamped and
+/// snapped rather than rejected: a stale viewport must not be able to panic a render.
+#[must_use]
+pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
+    let start = floor_boundary(source, region.start().get().min(source.len()));
+    let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
+
+    // Byte zero is outside the root container; anywhere else the caller may point is inside it.
+    let depth = u16::from(start > 0);
+    let mut analysis = lex(&source[start..end], depth);
+    if start == 0 {
+        return analysis;
+    }
+    for segment in &mut analysis.segments {
+        *segment = segment.clone().moved_to(shift(segment.span(), start));
+    }
+    for block in &mut analysis.blocks {
+        *block = block.moved_to(shift(block.span(), start));
+    }
+    analysis
+}
+
+/// Lexes `source`, starting already `depth` containers deep.
+fn lex(source: &str, depth: u16) -> Analysis {
     let mut lexer = Lexer::new(source);
+    lexer.depth = depth;
     lexer.run();
     Analysis {
         segments: lexer.segments,
         blocks: lexer.blocks,
     }
+}
+
+fn shift(span: ByteSpan, by: usize) -> ByteSpan {
+    ByteSpan::new(
+        ByteOffset::new(span.start().get() + by),
+        ByteOffset::new(span.end().get() + by),
+    )
+}
+
+/// The character boundary at or before `at`.
+fn floor_boundary(source: &str, at: usize) -> usize {
+    let mut at = at;
+    while at > 0 && !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 /// What the lexer is doing to the bytes.

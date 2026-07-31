@@ -82,11 +82,8 @@ impl Language for Yaml {
         analyze(source)
     }
 
-    fn analyze_region(&self, _source: &str, _region: ByteSpan) -> Option<Analysis> {
-        // Indentation is significant, so changing one line's indent restructures everything under
-        // it — a region cannot see that it has become the body of the block above. Worse than JSON,
-        // where at least the nesting is written down in braces. Whole-document, and say so.
-        None
+    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
+        Some(analyze_region(source, region))
     }
 
     fn conceals(&self) -> bool {
@@ -105,6 +102,61 @@ pub fn analyze(source: &str) -> Analysis {
         segments: lexer.segments,
         blocks: lexer.blocks,
     }
+}
+
+/// Lexes only `region`, as if the rest of `source` were not there, in `source`'s coordinates.
+///
+/// # The contract that makes this safe
+///
+/// **`region` must begin at the start of a line at column zero — a block reported by a previous
+/// [`analyze`] — or at byte zero.** That is what `mdedit_document`'s `scope_for` passes, and it is
+/// what makes a fresh lexer correct here rather than merely convenient.
+///
+/// The state a YAML lexer cannot recover from a slice is whether it is inside a block scalar, and a
+/// column-zero line is the one place it provably is not: a block scalar's content must be indented
+/// further than the line that opened it, and that line is itself at column zero. So a region
+/// starting at column zero starts outside every block scalar, with no indentation context to carry.
+///
+/// MDEDIT-31 declined this, reasoning that significant indentation means a region "cannot see that
+/// it has become the body of the block above". That is true, and it is a statement about an edit
+/// *outside* the region rather than about restarting inside it — the same thing an unclosed fence
+/// does to Markdown, repaired the same way, by the whole-document parse `Document::reconcile` runs
+/// when the typing stops.
+///
+/// A region outside the source, or one whose ends are not character boundaries, is clamped and
+/// snapped rather than rejected.
+#[must_use]
+pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
+    let start = floor_boundary(source, region.start().get().min(source.len()));
+    let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
+
+    let mut analysis = analyze(&source[start..end]);
+    if start == 0 {
+        return analysis;
+    }
+    for segment in &mut analysis.segments {
+        *segment = segment.clone().moved_to(shift(segment.span(), start));
+    }
+    for block in &mut analysis.blocks {
+        *block = block.moved_to(shift(block.span(), start));
+    }
+    analysis
+}
+
+fn shift(span: ByteSpan, by: usize) -> ByteSpan {
+    ByteSpan::new(
+        ByteOffset::new(span.start().get() + by),
+        ByteOffset::new(span.end().get() + by),
+    )
+}
+
+/// The character boundary at or before `at`.
+fn floor_boundary(source: &str, at: usize) -> usize {
+    let mut at = at;
+    while at > 0 && !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }
 
 struct Lexer<'a> {

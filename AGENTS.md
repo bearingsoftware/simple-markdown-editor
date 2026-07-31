@@ -181,16 +181,14 @@ Known gaps, so nobody assumes they are done:
   their indentation. It approximates a key as text before `:` at end-of-line or `: ` before a
   comment, which is wrong for the explicit `? key` form and for a colon-space inside a flow scalar.
   Both mis-*colour* rather than mis-*cover*, and tiling is property-tested either way.
-- **JSON and YAML always take a whole-document parse.** Both `analyze_region`s return `None`. JSON
-  nests without limit and a region carries no record of how deep it started; YAML's indentation is
-  significant, so a region cannot see that it has become the body of the block above. Neither has a
-  blank line to resynchronise on the way Markdown does, so MDEDIT-18's reconcile could not repair a
-  wrong regional parse. Correct and slower, and **the slower is measured: a 357 KB JSON types at p50
-  6.2 ms / p99 13.4 ms and a 302 KB YAML at 6.3 / 13.9, against budgets of 3 ms and 8.3 ms.** So both
-  miss the keystroke target by about double, and that is the whole cost of forgoing MDEDIT-18 for
-  them. Markdown is unaffected (3.0 / 9.6 on the same machine, unchanged). MDEDIT-36 carries the fix,
-  which needs the region
-  parser to be told what depth it starts at.
+- **JSON and YAML re-parse a region, like Markdown — but a keystroke in them still costs more than
+  one in Markdown, and the parse is not why.** MDEDIT-36 made both languages restart at a block
+  boundary: JSON is one container deep there and YAML is provably outside every block scalar, and
+  `Document::scope_for` already snapped every region to one. That halved the document-level cost of
+  an edit on a 357 KB JSON, from ~3.7 ms of lexing to 1.96 ms end to end — **and moved the app's
+  keystroke latency not at all**, p50 10.03 ms whole against 10.24 scoped in a same-session A/B.
+  The remaining ~8 ms is elsewhere; MDEDIT-37 carries finding it, with segment density as the
+  suspect (JSON 140,009 segments to Markdown's 19,410).
 - **There is a language boundary, and one language behind it.** MDEDIT-29 put Markdown behind
   `mdedit_language::Language` so JSON and YAML can follow, and changed nothing observable — the whole
   test suite passed unmodified, which was the acceptance criterion. A language answers three things:
