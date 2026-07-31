@@ -83,12 +83,47 @@ impl Segment {
 }
 
 /// The role a [`Segment`] plays.
+///
+/// The two rendering models are the two syntax variants. [`Marker`] is syntax that may be *hidden* —
+/// the conceal-and-style model, which only Markdown uses. [`Token`] is syntax that is *coloured* and
+/// never hidden, which is the colour-only model JSON and YAML need. A language uses one or the
+/// other; nothing stops it using both, and nothing has wanted to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SegmentKind {
     /// Markdown syntax. The renderer conceals this unless the cursor is inside it.
     Marker(Marker),
     /// Everything else — rendered text, and any construct not yet classified.
     Content,
+    /// Syntax to colour rather than conceal. See [`Token`].
+    Token(Token),
+}
+
+/// A highlight class, in the vocabulary every syntax highlighter uses.
+///
+/// Deliberately **language-neutral**, which is the choice MDEDIT-29 left open and this settles.
+/// The alternative was a variant per language — `JsonNumber`, `YamlAnchor` — which would make the
+/// renderer learn a new case for every language and would name a JSON string a "marker", a word that
+/// means "syntax to conceal" everywhere else in this codebase.
+///
+/// Non-exhaustive: a language that needs a class not here adds one, and a renderer that has not
+/// learned it yet draws it as ordinary text rather than dropping its bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Token {
+    /// The name half of a key/value pair. Distinct from [`Token::String`] because it reads as
+    /// structure rather than as data, and every editor colours the two differently.
+    Key,
+    /// A quoted string used as a value.
+    String,
+    /// A numeric literal.
+    Number,
+    /// A keyword-like literal: `true`, `false`, `null`.
+    Literal,
+    /// Structural characters — braces, brackets, commas, colons.
+    Punctuation,
+    /// A comment, in the dialects that permit one.
+    Comment,
 }
 
 /// Which construct a marker belongs to.

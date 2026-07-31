@@ -1,0 +1,21 @@
+[package]
+name = "mdedit-json"
+version = "0.1.0"
+description = "An error-tolerant, span-producing JSON lexer for editing rather than for parsing"
+keywords = ["json", "lexer", "editor", "syntax"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# No `serde_json`, and that is the point rather than an omission — see the crate docs.
+[dependencies]
+mdedit-language.workspace = true
+mdedit-offsets.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true

@@ -981,6 +981,8 @@ dependencies = [
  "embed-manifest",
  "mdedit-document",
  "mdedit-file",
+ "mdedit-json",
+ "mdedit-language",
  "mdedit-markers",
  "mdedit-menu-win",
  "mdedit-offsets",
@@ -1021,6 +1023,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdedit-json"
+version = "0.1.0"
+dependencies = [
+ "mdedit-language",
+ "mdedit-offsets",
+ "proptest",
+]
+
+[[package]]
 name = "mdedit-language"
 version = "0.1.0"
 dependencies = [
@@ -1057,6 +1068,7 @@ version = "0.1.0"
 dependencies = [
  "mdedit-document",
  "mdedit-file",
+ "mdedit-language",
  "mdedit-offsets",
  "serde",
  "serde_json",

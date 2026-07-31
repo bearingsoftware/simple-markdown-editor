@@ -13,7 +13,8 @@ fn markers(source: &str) -> Vec<(&str, Marker)> {
         .into_iter()
         .filter_map(|s| match s.kind() {
             SegmentKind::Marker(m) => Some((s.span().slice(source), m)),
-            SegmentKind::Content => None,
+            // Content, and any kind a language other than Markdown produces.
+            _ => None,
         })
         .collect()
 }
