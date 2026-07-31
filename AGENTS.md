@@ -121,8 +121,13 @@ Known gaps, so nobody assumes they are done:
   is the one from before you started. A document nobody has typed in yet is counted once, on its
   first frame.
 - **The breadcrumb shows headings, and nothing else.** A caret above the document's first heading
-  gets an empty breadcrumb rather than a root, and a long trail is truncated rather than ellipsised
-  or scrolled. Nothing in the bar is clickable.
+  gets an empty breadcrumb rather than a root. Nothing in the bar is clickable.
+- **The status bar is two containers that truncate, not one row that overflows.** The right-hand
+  fields ask first, up to 60%% of the bar; the breadcrumb takes what is left, and both clip at their
+  own edge. Because the fields read with the least important last, what a narrow window loses is the
+  word count, then the line endings, then the encoding — line and column survive longest, which is
+  the priority order without anything encoding it. Truncated, never ellipsised: an ellipsis needs its
+  own measurement pass.
 - **Line and column count characters.** Not bytes, and not display columns — a tab is one column
   here. `ByteOffset` and `CharOffset` exist as separate types so this cannot be fudged; see
   `Document::line_and_column`.

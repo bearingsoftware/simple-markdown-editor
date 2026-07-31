@@ -185,3 +185,95 @@ fn crossing_into_another_section_redraws_the_trail() {
     assert_eq!(trail_of(&mut editor, "alpha"), "One");
     assert_eq!(trail_of(&mut editor, "beta"), "Two");
 }
+
+// ---------------------------------------------------------------------------
+// MDEDIT-38: the two sections get containers and stay inside them.
+// ---------------------------------------------------------------------------
+
+/// A document whose breadcrumb is far too long for any sane bar.
+const DEEP: &str = "# A very long first heading indeed\n\n## And a second one just as long\n\n\
+                    ### And a third to be sure about it\n\nbody text\n";
+
+/// The quads of the bar, split by which container they fall in.
+///
+/// The breadcrumb is drawn in `theme.text` and the fields in `theme.marker`, so colour tells them
+/// apart without guessing from position — which is the thing under test and would beg the question.
+fn bar_quads(width: f32) -> (Vec<f32>, Vec<f32>) {
+    let mut editor = Editor::new(DEEP, Grid::new());
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(
+            DEEP.find("body").unwrap(),
+        )));
+    let quads = editor.build_frame(width, HEIGHT, 1.0);
+    let bar_top = HEIGHT - BAR_HEIGHT;
+    let theme = mdedit_app::view::Theme::default();
+
+    let mut trail = Vec::new();
+    let mut fields = Vec::new();
+    for quad in &quads {
+        if quad.rect[1] < bar_top {
+            continue;
+        }
+        let colour = quad.colour;
+        if colour[0] == theme.text.r && colour[1] == theme.text.g {
+            trail.push(quad.rect[0]);
+        } else if colour[0] == theme.marker.r && colour[1] == theme.marker.g {
+            fields.push(quad.rect[0]);
+        }
+    }
+    (trail, fields)
+}
+
+/// The bug: at a narrow width the breadcrumb ran straight through the fields.
+#[test]
+fn the_two_sections_never_overlap_however_narrow_the_window() {
+    for width in [1000.0, 700.0, 500.0, 400.0, 300.0, 200.0, 120.0] {
+        let (trail, fields) = bar_quads(width);
+        let (Some(trail_right), Some(fields_left)) = (
+            trail
+                .iter()
+                .copied()
+                .fold(None, |a: Option<f32>, x| Some(a.map_or(x, |a| a.max(x)))),
+            fields
+                .iter()
+                .copied()
+                .fold(None, |a: Option<f32>, x| Some(a.map_or(x, |a| a.min(x)))),
+        ) else {
+            // One of them had no room at all, which is allowed — it cannot overlap what is absent.
+            continue;
+        };
+        assert!(
+            trail_right < fields_left,
+            "at width {width} the breadcrumb reaches {trail_right} and the fields start at \
+             {fields_left}"
+        );
+    }
+}
+
+/// Both sections stay inside the window, too — truncating at the container's edge, not the bar's.
+#[test]
+fn neither_section_runs_off_the_edge() {
+    for width in [1000.0, 400.0, 200.0] {
+        let (trail, fields) = bar_quads(width);
+        for x in trail.iter().chain(fields.iter()) {
+            assert!(
+                *x >= 0.0 && *x < width,
+                "a bar quad at {x} is outside a {width}-wide window"
+            );
+        }
+    }
+}
+
+/// A wide window still shows the whole breadcrumb — the containers must not truncate needlessly.
+#[test]
+fn a_wide_window_truncates_nothing() {
+    let (narrow, _) = bar_quads(300.0);
+    let (wide, _) = bar_quads(1400.0);
+    assert!(
+        wide.len() > narrow.len(),
+        "a wider bar should show more of the breadcrumb: {} then {}",
+        narrow.len(),
+        wide.len()
+    );
+}

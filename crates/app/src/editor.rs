@@ -1668,10 +1668,23 @@ impl<T: TextLayout> Editor<T> {
             self.words,
         );
 
+        // TWO CONTAINERS THAT CANNOT OVERLAP, which is the whole of MDEDIT-38. The two sides are not
+        // symmetrical: the right-hand fields are short and bounded, the breadcrumb is neither, so
+        // the fields get the room they ask for up to a share of the bar and the breadcrumb takes
+        // what is left. Both clip to their own container rather than running into the other.
         let right_text = format!("{position}   {details}");
-        let right_width = self.status_label(RIGHT, &right_text, style);
-        let right_x = (logical_width - status::PADDING - right_width).max(status::PADDING);
-        self.draw_status_label(quads, RIGHT, right_x, baseline, self.theme.marker, scale);
+        let wanted = self.status_label(RIGHT, &right_text, style);
+        let right_room = wanted.min(status::right_share(logical_width));
+        let right_x = (logical_width - status::PADDING - right_room).max(status::PADDING);
+        self.draw_status_label(
+            quads,
+            RIGHT,
+            right_x,
+            baseline,
+            self.theme.marker,
+            scale,
+            right_room,
+        );
 
         let steps: Vec<String> = self
             .document()
@@ -1682,6 +1695,9 @@ impl<T: TextLayout> Editor<T> {
         let trail = status::breadcrumb(&steps);
         self.status_label(TRAIL, &trail, style);
         if !trail.is_empty() {
+            // Up to the right container's edge, less a gap so the two never touch even when both
+            // are full.
+            let trail_room = (right_x - status::GAP - status::PADDING).max(0.0);
             self.draw_status_label(
                 quads,
                 TRAIL,
@@ -1689,6 +1705,7 @@ impl<T: TextLayout> Editor<T> {
                 baseline,
                 self.theme.text,
                 scale,
+                trail_room,
             );
         }
     }
@@ -1737,11 +1754,19 @@ impl<T: TextLayout> Editor<T> {
         baseline: f32,
         colour: Rgba,
         scale: f32,
+        max_width: f32,
     ) {
         let Some(label) = self.status_labels[slot].take() else {
             return;
         };
         for glyph in &label.glyphs {
+            // Truncated rather than ellipsised, as the strip's and the pane's labels are: an
+            // ellipsis needs its own measurement pass. This parameter is the fix for MDEDIT-38 —
+            // it existed on `draw_label`, and was lost when this function was written to draw from
+            // the cache.
+            if glyph.pos.x > max_width {
+                break;
+            }
             let Some(entry) = self.entry_for(glyph.key, scale) else {
                 continue;
             };
