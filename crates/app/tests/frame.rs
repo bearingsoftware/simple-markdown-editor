@@ -717,3 +717,70 @@ fn chrome_moves_the_glyphs_by_exactly_its_own_height() {
         "expected every row to move down by {step}: {moved:?} not all in {after:?}"
     );
 }
+
+/// MDEDIT-39: chrome is drawn after the document, so nothing paints over it.
+///
+/// The row cull deliberately keeps up to a line-height of overshoot above the viewport — that is
+/// what makes a partly-scrolled row look cut off at the top edge rather than popping in. Those rows
+/// land in the tab strip's band, and while the strip was built first they painted over it and it
+/// read as transparent. This scrolls to exactly that state and asserts the strip is intact.
+#[test]
+fn a_partly_scrolled_row_does_not_draw_over_the_tab_strip() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("many.md");
+    std::fs::write(&path, document_of(100)).unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    // Half a line, so a row straddles the top edge of the document area.
+    editor.scroll_by(LINE_HEIGHT / 2.0);
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    // The overshooting rows are still *emitted* — culling them would make a partly-scrolled row pop
+    // in instead of sliding. What matters is that the strip is emitted LATER, so it covers them:
+    // there is no depth buffer, so the painter's order is the whole of the answer.
+    let strip_background = quads
+        .iter()
+        .position(|quad| quad.rect[1] == 0.0 && quad.rect[2] == WIDTH)
+        .expect("the strip draws a full-width background");
+
+    // A quad *below* the strip's band that is drawn *before* the strip can only have come from the
+    // document — the status bar and the pane are the only other things down there and both draw
+    // after the strip. So finding one proves the document went first, which is the rule.
+    let document_first = quads[..strip_background].iter().any(|quad| {
+        quad.rect[1] > STRIP_HEIGHT && quad.rect[3] < LINE_HEIGHT && quad.rect[2] < ADVANCE
+    });
+
+    assert!(
+        document_first,
+        "the strip's background is at index {strip_background} with no document glyph before it, \
+         so the strip was drawn first and the document paints over it"
+    );
+}
+
+/// And the strip is still actually drawn — the test above would pass trivially if it were not.
+#[test]
+fn the_strip_is_drawn_after_the_document_not_instead_of_it() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("many.md");
+    std::fs::write(&path, document_of(100)).unwrap();
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert!(
+        quads
+            .iter()
+            .any(|quad| quad.rect[1] == 0.0 && quad.rect[2] == WIDTH),
+        "the strip's full-width background should be there"
+    );
+    assert!(
+        rows(&quads).len() > 1,
+        "and the document should still be drawn"
+    );
+}
