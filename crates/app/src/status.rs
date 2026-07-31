@@ -26,6 +26,25 @@ pub const BAR_HEIGHT: f32 = 24.0;
 /// Padding at each end of the bar.
 pub const PADDING: f32 = 10.0;
 
+/// Between the breadcrumb's container and the right-hand fields', so a full one never touches a
+/// full other.
+pub const GAP: f32 = 16.0;
+
+/// The most of the bar the right-hand fields may take, as a share of its width.
+///
+/// They are short and bounded and the breadcrumb is neither, so the fields ask first — but not
+/// without limit, or a long path and a wide window would leave the breadcrumb nothing. Above this
+/// they truncate, and because the fields read left to right with the least important last, what goes
+/// first is the word count, then the line endings, then the encoding, leaving line and column — the
+/// priority order MDEDIT-38 asked for, without needing to encode it.
+const RIGHT_SHARE: f32 = 0.6;
+
+/// How much room the right-hand fields may take in a bar `width` wide.
+#[must_use]
+pub fn right_share(width: f32) -> f32 {
+    (width * RIGHT_SHARE - PADDING).max(0.0)
+}
+
 /// Between breadcrumb steps.
 ///
 /// A single glyph rather than `->`, because the breadcrumb is the widest thing in the bar and every
