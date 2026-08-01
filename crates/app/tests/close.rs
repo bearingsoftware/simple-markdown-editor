@@ -155,15 +155,31 @@ fn cancel_keeps_everything_where_it_was() {
     );
 }
 
+/// **MDEDIT-66 replaced Discard All with Keep for now.** Keep closes the editor without writing —
+/// the stored copy the idle timer already made is what brings the work back next launch.
 #[test]
-fn discard_closes_without_writing() {
+fn keep_closes_without_writing() {
     let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Discard);
+    let prompt = Scripted::saying(Unsaved::Keep);
     let (mut editor, paths) = editor(&dir, 1, &prompt);
     dirty(&mut editor, 0);
 
     assert!(editor.may_close());
     assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "# Note 0\n");
+}
+
+/// Discard is deliberately **not** a window-level answer: throwing away every unsaved buffer in one
+/// click is not a thing to offer on the way out of the door, and it would be Keep with worse words
+/// anyway, since the stored copies would survive it. If a prompt ever returns it, the editor stays
+/// open rather than guessing which the user meant.
+#[test]
+fn discard_is_not_a_window_level_answer() {
+    let dir = TempDir::new().unwrap();
+    let prompt = Scripted::saying(Unsaved::Discard);
+    let (mut editor, _) = editor(&dir, 1, &prompt);
+    dirty(&mut editor, 0);
+
+    assert!(!editor.may_close());
 }
 
 #[test]

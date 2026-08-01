@@ -67,6 +67,10 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
             let rest = names.len() - SHOWN;
             let _ = write!(description, "\n…and {rest} more");
         }
+        // Says what Keep actually does, because "keep for now" on its own could be read as "leave
+        // the editor open" — the opposite of what it does.
+        description
+            .push_str("\n\nKeep for now closes the editor and brings the changes back next time.");
 
         let answer = rfd::MessageDialog::new()
             .set_title("Unsaved changes")
@@ -74,14 +78,14 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
             .set_level(rfd::MessageLevel::Warning)
             .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
                 "Save All".to_owned(),
-                "Discard All".to_owned(),
+                "Keep for now".to_owned(),
                 "Cancel".to_owned(),
             ))
             .show();
 
         match answer {
             rfd::MessageDialogResult::Custom(choice) if choice == "Save All" => Unsaved::Save,
-            rfd::MessageDialogResult::Custom(choice) if choice == "Discard All" => Unsaved::Discard,
+            rfd::MessageDialogResult::Custom(choice) if choice == "Keep for now" => Unsaved::Keep,
             _ => Unsaved::Cancel,
         }
     }
@@ -216,17 +220,15 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
     editor.with_recent(mdedit_session::recent::Recent::beside_session());
 }
 
-/// Writes the session back, and clears the crash-recovery snapshots if there is nothing left to
-/// protect.
+/// Writes the session back, marked as a clean exit.
 ///
-/// The session file records handles rather than content, so this stays cheap however many tabs
-/// there are.
+/// The session file records handles rather than content, so this stays cheap however many tabs there
+/// are.
 ///
-/// **The snapshots are cleared only when nothing is unsaved.** Their survival is precisely the
-/// signal that a run did not end here, and the loop only ends once `Editor::may_close` has said yes
-/// — but if anything else ever ends it, or a save silently failed after the user chose Save All,
-/// then unsaved work is still in front of them and throwing away its snapshot would be the second
-/// half of the bug MDEDIT-64 fixed.
+/// **Nothing is cleared.** Since MDEDIT-66 the stored copies of unsaved buffers survive an ordinary
+/// quit — that is the feature — so the only thing the exit path owes them is the marker that says
+/// this run ended on purpose, which is what stops the next launch calling an ordinary restore a
+/// crash recovery.
 #[cfg(windows)]
 fn wind_down<T: mdedit_text::TextLayout>(
     editor: &mut Editor<T>,
@@ -234,16 +236,8 @@ fn wind_down<T: mdedit_text::TextLayout>(
 ) {
     if let Some(path) = session_path {
         if !editor.workspace().tabs().is_empty() {
-            editor.save_session(path);
+            editor.save_session_on_exit(path);
         }
-    }
-
-    if editor.workspace().has_unsaved_changes() {
-        mdedit_app::log_error!(
-            "exiting with unsaved work; keeping the recovery snapshots rather than clearing them"
-        );
-    } else {
-        editor.discard_snapshots();
     }
 }
 
@@ -350,10 +344,32 @@ fn main() {
             editor.activate_saved_tab();
             editor
         };
-        // Anything the last run left behind means it did not exit cleanly. Restored before the
-        // window exists, so the first frame already shows the recovered work rather than flashing
-        // the on-disk version first.
-        editor.recover_snapshots();
+        // Unsaved work the last run stored, whether it ended on purpose or not. Restored before the
+        // window exists, so the first frame already shows it rather than flashing the on-disk
+        // version first.
+        //
+        // The flag only changes the wording: coming back to your own edits after an ordinary quit is
+        // the feature working, and the same text after the process was killed is worth saying out
+        // loud. Read from the session file before the store, because restoring writes nothing but
+        // the session file is about to be rewritten.
+        let ended_cleanly = session_path
+            .as_deref()
+            .is_some_and(mdedit_session::last_run_ended_cleanly);
+        editor.restore_unsaved_work(ended_cleanly);
+
+        // Clear the marker now that it has been read, so it describes *this* run rather than the
+        // last one. Without this a run that is killed never rewrites the session, the previous clean
+        // exit's `true` survives, and the next launch calls a crash recovery an ordinary restore —
+        // which is exactly what the by-hand check caught.
+        //
+        // One extra session write per launch. The file is handles rather than content, so it is
+        // cheap, and it has the side benefit that the session on disk always describes the tabs that
+        // are actually open.
+        if let Some(path) = session_path.as_deref() {
+            if !editor.workspace().tabs().is_empty() {
+                editor.save_session(path);
+            }
+        }
 
         give_it_dialogs(&mut editor);
         // Opening from Explorer or a terminal is how most people start this editor, and it does not

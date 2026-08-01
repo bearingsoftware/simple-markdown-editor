@@ -1079,29 +1079,18 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Throws the recovery snapshots away, because this run is ending on purpose.
-    ///
-    /// A snapshot that survives is the signal that the last run did not — so a clean exit must leave
-    /// none, or every start would offer to recover work that was saved and closed properly.
-    pub fn discard_snapshots(&mut self) {
-        if let Some(store) = self.snapshots.as_mut() {
-            store.clear();
-        }
-        self.snapshotted.clear();
-    }
-
     /// Restores whatever the last run left behind, and says what it could not.
     ///
     /// Each recovered buffer replaces the text of its tab — opening it if it was only a handle — and
     /// arrives *modified*, so the editor's ordinary unsaved-changes machinery protects it and the
     /// user decides whether to keep it. Untitled buffers come back as untitled tabs.
-    pub fn recover_snapshots(&mut self) {
+    pub fn restore_unsaved_work(&mut self, after_clean_exit: bool) {
         let Some(store) = self.snapshots.as_mut() else {
             return;
         };
         let (recovered, skipped) = store.read_all();
         for reason in skipped {
-            crate::log_error!("recovery: {reason}");
+            crate::log_error!("stored buffer skipped: {reason}");
         }
         if recovered.is_empty() {
             return;
@@ -1111,9 +1100,18 @@ impl<T: TextLayout> Editor<T> {
         for entry in recovered {
             self.restore_one(&entry);
         }
-        crate::log_error!(
-            "recovered {count} unsaved buffer(s) from a previous run that did not exit cleanly"
-        );
+
+        // The two cases deserve different words. Coming back to your own unsaved edits after an
+        // ordinary quit is the feature working and needs no announcement; the same text appearing
+        // after the process was killed is worth saying out loud, because the user did not choose it
+        // and may be wondering what survived.
+        if after_clean_exit {
+            crate::log_error!("restored {count} unsaved buffer(s) from the last session");
+        } else {
+            crate::log_error!(
+                "recovered {count} unsaved buffer(s) from a previous run that did not exit cleanly"
+            );
+        }
     }
 
     /// Puts one recovered buffer back, into the tab it belongs to.
@@ -1156,6 +1154,16 @@ impl<T: TextLayout> Editor<T> {
     /// Handles only, never content — that is what makes restoring one cheap.
     pub fn save_session(&self, path: &Path) {
         if let Err(error) = self.workspace.save_session(path) {
+            crate::log_error!("could not save session: {error}");
+        }
+    }
+
+    /// Writes the tab list and records that this run ended on purpose.
+    ///
+    /// Only the exit path calls this. The marker is what stops the next launch describing an
+    /// ordinary restore as a crash recovery — see [`mdedit_session::last_run_ended_cleanly`].
+    pub fn save_session_on_exit(&self, path: &Path) {
+        if let Err(error) = self.workspace.save_session_on_exit(path) {
             crate::log_error!("could not save session: {error}");
         }
     }
@@ -1697,9 +1705,18 @@ impl<T: TextLayout> Editor<T> {
                     }
                 }
                 Unsaved::Discard => {}
-                Unsaved::Cancel => return false,
+                // Keep is not offered here. Closing one tab is the place a user says what should
+                // happen to *this* document, and "keep it but close it" would leave stored work with
+                // no tab to see it in — which is how a store becomes a place things go missing.
+                Unsaved::Keep | Unsaved::Cancel => return false,
             }
         }
+
+        // Before the tab goes, because afterwards its id is gone from the workspace and nothing
+        // could name the snapshot to remove it. Nothing did this until MDEDIT-66: a leak that did
+        // not matter while snapshots were cleared on every clean exit, and matters a great deal now
+        // they are permanent — a closed tab's stored text would come back for ever.
+        self.forget_snapshot(index);
 
         match self.workspace.close(index) {
             Ok(_) => {
@@ -1711,6 +1728,24 @@ impl<T: TextLayout> Editor<T> {
             Err(error) => {
                 crate::log_error!("could not close tab: {error}");
                 false
+            }
+        }
+    }
+
+    /// Removes the stored copy of tab `index`, if it has one.
+    fn forget_snapshot(&mut self, index: usize) {
+        let Some(id) = self
+            .workspace
+            .tabs()
+            .get(index)
+            .map(mdedit_session::Tab::snapshot_id)
+        else {
+            return;
+        };
+        self.snapshotted.remove(&id);
+        if let Some(store) = self.snapshots.as_mut() {
+            if let Err(error) = store.forget(id) {
+                crate::log_error!("could not remove a stored buffer: {error}");
             }
         }
     }
@@ -1754,8 +1789,12 @@ impl<T: TextLayout> Editor<T> {
         }
 
         match self.prompt.ask_all(&names) {
-            Unsaved::Discard => true,
-            Unsaved::Cancel => false,
+            // The snapshots are already on disk — the idle timer wrote them as the user typed — so
+            // "keep" is a matter of *not* clearing them, and the work is already done.
+            Unsaved::Keep => true,
+            // Not offered by the window-level dialog, and meaningless if it ever were: it would
+            // close the editor and leave the stored copies, which is Keep with worse words.
+            Unsaved::Discard | Unsaved::Cancel => false,
             Unsaved::Save => {
                 self.save_all();
                 // An untitled buffer has nowhere to go, so `save_all` skipped it; it needs a

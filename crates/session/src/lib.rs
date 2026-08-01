@@ -507,6 +507,17 @@ struct SessionFile {
     version: u32,
     active: Option<usize>,
     tabs: Vec<SessionTab>,
+    /// Whether the run that wrote this ended on purpose.
+    ///
+    /// The snapshots used to carry this signal by existing at all — they were cleared on a clean
+    /// exit, so finding one meant the last run had died. MDEDIT-66 made them the store for unsaved
+    /// work generally, so they survive an ordinary quit and can no longer say it.
+    ///
+    /// Moved here because this file is already written at exactly that moment, and because the
+    /// absence of the whole file — a run that died before reaching the exit path — reads as `false`
+    /// through [`Default`], which is the right answer.
+    #[serde(default)]
+    clean_exit: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -526,8 +537,26 @@ impl Workspace {
     ///
     /// [`SessionError::Io`] if the file cannot be written.
     pub fn save_session(&self, path: &Path) -> Result<(), SessionError> {
+        self.write_session(path, false)
+    }
+
+    /// Writes the session and records that this run ended on purpose.
+    ///
+    /// Only the exit path calls this. Everything else uses [`save_session`](Self::save_session),
+    /// which leaves the marker false — so a session written mid-run and then lost to a crash still
+    /// reads as an unclean end, which it was.
+    ///
+    /// # Errors
+    ///
+    /// As [`save_session`](Self::save_session).
+    pub fn save_session_on_exit(&self, path: &Path) -> Result<(), SessionError> {
+        self.write_session(path, true)
+    }
+
+    fn write_session(&self, path: &Path, clean_exit: bool) -> Result<(), SessionError> {
         let session = SessionFile {
             version: FORMAT_VERSION,
+            clean_exit,
             active: self.active,
             // Untitled tabs are left out. The session persists handles, not content — that is what
             // makes restoring one cheap — and an untitled buffer is nothing but content. Writing it
@@ -638,6 +667,28 @@ impl Workspace {
 
         Ok((workspace, skipped))
     }
+}
+
+/// Whether the run that last wrote the session at `path` ended on purpose.
+///
+/// Read on its own rather than returned from [`Workspace::restore_session`], because it is wanted in
+/// cases where there is no session to restore: a first run, an unreadable file, a run launched with
+/// files named on the command line. All of those answer `false`, which is right — none of them is
+/// evidence that the last run reached its exit path.
+///
+/// What it is *for* is the wording. Since MDEDIT-66 the snapshots survive an ordinary quit, so their
+/// presence no longer means the last run died, and restoring work after a clean exit should say
+/// nothing while restoring it after a crash should say so.
+#[must_use]
+pub fn last_run_ended_cleanly(path: &Path) -> bool {
+    // Any failure is "not cleanly". A file that cannot be read cannot vouch for anything, and the
+    // cost of being wrong in this direction is one sentence in a log rather than lost work.
+    std::fs::metadata(path).is_ok_and(|data| data.len() <= MAX_SESSION_BYTES)
+        && std::fs::read(path).ok().and_then(|bytes| {
+            serde_json::from_slice::<SessionFile>(&bytes)
+                .ok()
+                .map(|session| session.clean_exit)
+        }) == Some(true)
 }
 
 /// Where the session file lives for this user.
