@@ -87,11 +87,79 @@ pub(crate) struct History {
     redo: Vec<Group>,
     /// Set when something has ended the current run, so the next edit starts a new group.
     barrier: bool,
+    /// The group being built by an open transaction, if there is one.
+    ///
+    /// While this is `Some`, every edit joins it and nothing can break it — which is the whole
+    /// point: the operations that need a transaction (Replace All, block formatting, line-ending
+    /// conversion) move the caret between edits, and caret movement is exactly what ends a group
+    /// under the ordinary rule.
+    pending: Option<Group>,
+    /// How many transactions are open. Nesting joins the outer one rather than being refused: it is
+    /// friendlier and harder to misuse, and "these edits are one step" composes.
+    depth: u32,
 }
 
 impl History {
+    /// Opens a transaction, or joins one already open.
+    ///
+    /// `before` is where the caret was, and is only taken at the outermost level — undo puts it back
+    /// where the whole operation started, not where some inner step did.
+    pub(crate) fn begin(&mut self, before: Selection) {
+        self.depth += 1;
+        if self.depth == 1 {
+            // Same reason `record` does it: the future being redone no longer follows from the
+            // present. Done here rather than at commit so an empty transaction, which records
+            // nothing, also leaves the redo stack alone.
+            self.pending = Some(Group {
+                edits: Vec::new(),
+                selection_before: before,
+                selection_after: before,
+            });
+        }
+    }
+
+    /// Closes a transaction, and pushes what it collected as one group.
+    ///
+    /// Returns whether anything was recorded. A transaction that made no edits leaves **no** history
+    /// entry, so a Replace All that matched nothing does not cost the user an undo press.
+    pub(crate) fn commit(&mut self) -> bool {
+        self.depth = self.depth.saturating_sub(1);
+        if self.depth > 0 {
+            return false;
+        }
+        let Some(group) = self.pending.take() else {
+            return false;
+        };
+        if group.edits.is_empty() {
+            return false;
+        }
+
+        self.redo.clear();
+        self.undo.push(group);
+        if self.undo.len() > MAX_GROUPS {
+            self.undo.remove(0);
+        }
+        // The next ordinary edit starts its own group rather than joining this one — a transaction
+        // is a complete operation, and typing after it is not a continuation of it.
+        self.barrier = true;
+        true
+    }
+
+    /// Whether a transaction is open.
+    pub(crate) fn in_transaction(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Records an edit, joining the group in front of it when it continues the same motion.
     pub(crate) fn record(&mut self, edit: Edit, before: Selection, after: Selection) {
+        // Inside a transaction every edit joins it, whatever the caret did between them. That is
+        // the entire feature.
+        if let Some(pending) = self.pending.as_mut() {
+            pending.edits.push(edit);
+            pending.selection_after = after;
+            return;
+        }
+
         // Any new edit invalidates the redo stack: the future being redone no longer follows from
         // the present.
         self.redo.clear();
@@ -127,8 +195,13 @@ impl History {
     }
 
     /// Ends the current run, so the next edit starts a new group.
+    ///
+    /// Ignored inside a transaction. Moving the caret is what ordinarily ends a group, and every
+    /// operation a transaction exists for moves the caret between its edits.
     pub(crate) fn break_group(&mut self) {
-        self.barrier = true;
+        if self.pending.is_none() {
+            self.barrier = true;
+        }
     }
 
     pub(crate) fn can_undo(&self) -> bool {

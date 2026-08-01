@@ -68,6 +68,20 @@ fn bench(c: &mut Criterion) {
             );
         });
 
+        // The same edits inside a transaction: N splices and **one** re-parse rather than N. The
+        // difference between this and `type-` above is the whole of what MDEDIT-63 bought, and it is
+        // the case Replace All is in — many edits, one operation.
+        group.bench_function(format!("transact-{KEYSTROKES}/{kib}KiB"), |b| {
+            b.iter_batched(
+                || Document::from(source.as_str()),
+                |mut doc| {
+                    doc.transact(|doc| type_tail(doc, KEYSTROKES));
+                    black_box(doc.len_bytes())
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
+
         // The cost of taking them back: one re-parse for the whole group.
         group.bench_function(format!("undo-{KEYSTROKES}/{kib}KiB"), |b| {
             b.iter_batched(

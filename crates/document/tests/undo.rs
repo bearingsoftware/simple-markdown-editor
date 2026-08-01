@@ -359,3 +359,197 @@ proptest! {
         prop_assert_eq!(doc.to_string(), original);
     }
 }
+
+// ---- transactions (MDEDIT-63) ----
+
+/// Replaces every occurrence of `needle`, from the end backwards.
+///
+/// Backwards because the transaction deliberately does not reorder anything — see `Document::transact`.
+/// Every caller that edits several spans has to do this, and doing it here is what makes these tests
+/// exercise the real shape of a Replace All.
+fn replace_all(doc: &mut Document, needle: &str, with: &str) -> usize {
+    let text = doc.to_string();
+    let sites: Vec<usize> = text.match_indices(needle).map(|(at, _)| at).collect();
+    for at in sites.iter().rev() {
+        let span = ByteSpan::new(ByteOffset::new(*at), ByteOffset::new(at + needle.len()));
+        doc.replace(span, with).unwrap();
+        // Moving the caret between sites is exactly what ends a group without a transaction.
+        doc.set_selection(Selection::caret(ByteOffset::new(*at)));
+    }
+    sites.len()
+}
+
+#[test]
+fn a_transaction_is_one_undo_step() {
+    let mut doc = Document::from("aa bb aa bb aa\n");
+
+    let replaced = doc.transact(|doc| replace_all(doc, "aa", "XX"));
+    assert_eq!(replaced, 3);
+    assert_eq!(doc.to_string(), "XX bb XX bb XX\n");
+
+    assert!(doc.undo());
+    assert_eq!(
+        doc.to_string(),
+        "aa bb aa bb aa\n",
+        "one undo should have put back every site"
+    );
+    assert!(!doc.undo(), "and there should be nothing left to undo");
+}
+
+/// Without the transaction the same edits are three steps, which is the behaviour this exists to
+/// replace — asserted so the test above is measuring something.
+fn count_undos(doc: &mut Document) -> usize {
+    let mut steps = 0;
+    while doc.undo() {
+        steps += 1;
+    }
+    steps
+}
+
+#[test]
+fn without_a_transaction_the_same_edits_are_several_steps() {
+    let mut doc = Document::from("aa bb aa bb aa\n");
+    replace_all(&mut doc, "aa", "XX");
+
+    assert!(
+        count_undos(&mut doc) > 1,
+        "the caret moved between sites, so these should not have grouped on their own"
+    );
+}
+
+#[test]
+fn redo_reapplies_a_transaction_in_one_step() {
+    let mut doc = Document::from("aa bb aa\n");
+    doc.transact(|doc| replace_all(doc, "aa", "XX"));
+    doc.undo();
+
+    assert!(doc.redo());
+    assert_eq!(doc.to_string(), "XX bb XX\n");
+    assert!(!doc.redo());
+}
+
+/// A Replace All that matched nothing must not cost the user an undo press.
+#[test]
+fn an_empty_transaction_records_nothing() {
+    let mut doc = Document::from("hello\n");
+    doc.insert(ByteOffset::new(5), "!").unwrap();
+
+    doc.transact(|doc| replace_all(doc, "nowhere", "x"));
+
+    assert!(doc.undo(), "the insert should still be there to undo");
+    assert_eq!(doc.to_string(), "hello\n");
+    assert!(!doc.undo(), "and the empty transaction added nothing");
+}
+
+/// Undo restores where the whole operation started, not where some step inside it ended.
+#[test]
+fn undo_restores_the_caret_from_before_the_transaction() {
+    let mut doc = Document::from("aa bb aa\n");
+    doc.set_selection(Selection::caret(ByteOffset::new(3)));
+
+    doc.transact(|doc| replace_all(doc, "aa", "XX"));
+    doc.undo();
+
+    assert_eq!(doc.selection().head(), ByteOffset::new(3));
+}
+
+/// Joining rather than refusing: "these edits are one step" composes.
+#[test]
+fn a_nested_transaction_joins_the_outer_one() {
+    let mut doc = Document::from("aa bb aa\n");
+
+    doc.transact(|doc| {
+        doc.replace(ByteSpan::new(ByteOffset::new(0), ByteOffset::new(2)), "XX")
+            .unwrap();
+        doc.transact(|doc| {
+            doc.set_selection(Selection::caret(ByteOffset::new(6)));
+            doc.replace(ByteSpan::new(ByteOffset::new(6), ByteOffset::new(8)), "YY")
+                .unwrap();
+        });
+    });
+    assert_eq!(doc.to_string(), "XX bb YY\n");
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), "aa bb aa\n");
+    assert!(
+        !doc.undo(),
+        "the inner transaction must not be its own step"
+    );
+}
+
+/// The analysis has to be right at the end, however many parses were skipped getting there.
+#[test]
+fn the_segmentation_is_correct_after_a_transaction() {
+    let mut doc = Document::from("# One\n\n*two*\n\n# Three\n");
+    doc.transact(|doc| replace_all(doc, "#", "##"));
+
+    let text = doc.to_string();
+    let rebuilt: String = doc
+        .segments()
+        .iter()
+        .map(|s| s.span().slice(&text))
+        .collect();
+    assert_eq!(rebuilt, text, "the segments must still tile the buffer");
+
+    let fresh = Document::from(text.as_str());
+    assert_eq!(
+        doc.segments(),
+        fresh.segments(),
+        "and must match what parsing the result from scratch gives"
+    );
+}
+
+/// A transaction over a large buffer must leave a whole-document analysis, not a scoped one — its
+/// edits could be anywhere, and a scoped answer would be a claim nothing checked.
+#[test]
+fn a_transaction_leaves_a_whole_document_analysis() {
+    let big = "a paragraph of text\n\n".repeat(2000);
+    let mut doc = Document::from(big.as_str());
+    assert!(
+        doc.len_bytes() > 16 * 1024,
+        "the scoped path needs a large buffer"
+    );
+
+    doc.transact(|doc| {
+        doc.replace(ByteSpan::new(ByteOffset::new(0), ByteOffset::new(1)), "A")
+            .unwrap();
+    });
+
+    assert!(
+        !doc.is_scoped(),
+        "the parse taken at commit should be a whole-document one"
+    );
+}
+
+proptest! {
+    /// The property that matters: however many replacements a transaction makes, one undo puts the
+    /// document back byte for byte.
+    #[test]
+    fn one_undo_restores_a_transaction_byte_for_byte(
+        words in prop::collection::vec("[ab]{1,4}", 1..40),
+    ) {
+        let original = format!("{}\n", words.join(" "));
+        let mut doc = Document::from(original.as_str());
+
+        doc.transact(|doc| replace_all(doc, "a", "LONGER"));
+        doc.undo();
+
+        prop_assert_eq!(doc.to_string(), original);
+    }
+
+    /// And redo puts it back to what the transaction produced.
+    #[test]
+    fn redo_restores_what_the_transaction_produced(
+        words in prop::collection::vec("[ab]{1,4}", 1..40),
+    ) {
+        let original = format!("{}\n", words.join(" "));
+        let mut doc = Document::from(original.as_str());
+
+        doc.transact(|doc| replace_all(doc, "a", "LONGER"));
+        let after = doc.to_string();
+        doc.undo();
+        doc.redo();
+
+        prop_assert_eq!(doc.to_string(), after);
+    }
+}

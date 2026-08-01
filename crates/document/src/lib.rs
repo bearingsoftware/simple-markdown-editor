@@ -451,8 +451,70 @@ impl Document {
         Ok(())
     }
 
+    /// Runs `edits` as one undoable operation.
+    ///
+    /// # What it is for
+    ///
+    /// Undo groups ordinarily break when the caret moves — see [`history`], where that rule is
+    /// documented and defended. It is right for typing and wrong for everything that edits in
+    /// several places at once: Replace All, formatting a multi-line selection, converting a
+    /// document's line endings. Each of those moves the caret between edits, so without this each
+    /// site becomes its own undo step and undoing a 500-match replace takes 500 presses.
+    ///
+    /// So the caller says so. Inside the closure, caret movement does not break the group and every
+    /// edit lands in one history entry; undo restores the pre-transaction bytes *and* the
+    /// pre-transaction caret in one step.
+    ///
+    /// # And it re-parses once
+    ///
+    /// Each edit ordinarily re-parses — a region for a large buffer, the whole thing for a small
+    /// one. Inside a transaction the parse is deferred to the end, so N edits cost one parse rather
+    /// than N. The parse taken at the end is a **whole-document** one: a transaction's edits may be
+    /// anywhere, and N scoped regions spliced together is neither cheaper nor obviously correct.
+    ///
+    /// # What it does not do
+    ///
+    /// **It does not reorder anything.** Offsets shift as edits land, so a caller replacing several
+    /// spans must still work from the end backwards, exactly as it would have to without this.
+    ///
+    /// # Nesting
+    ///
+    /// A transaction inside a transaction joins the outer one. Friendlier than refusing, and harder
+    /// to misuse — "these edits are one step" composes.
+    ///
+    /// # Panics in the closure
+    ///
+    /// Not caught. A panic unwinds out of here with the deferred-parse flag still set, so the
+    /// document is left in a state where further edits would not re-parse. That is acceptable
+    /// because a panic in this editor is terminal — `mdedit_app::log` shows a dialog and the process
+    /// ends — and catching it would need `AssertUnwindSafe` around a `&mut self`, which is a worse
+    /// trade than the one it fixes.
+    pub fn transact<R>(&mut self, edits: impl FnOnce(&mut Self) -> R) -> R {
+        let outermost = !self.history.in_transaction();
+        self.history.begin(self.selection);
+        let revision = self.revision;
+
+        let result = edits(self);
+
+        if outermost {
+            // Whatever the edits did to the analysis, it is stale — every one of them skipped its
+            // re-parse. Only worth doing if anything actually changed.
+            if self.revision != revision {
+                self.resegment();
+            }
+        }
+        self.history.commit();
+        result
+    }
+
     /// Applies a replacement and brings the segmentation up to date.
     fn apply(&mut self, span: ByteSpan, replacement: &str) -> Result<String, EditError> {
+        // Inside a transaction the parse waits for the end — see `transact`. Measured before the
+        // splice either way, because `scope_for` reads the block list as it is *now*.
+        if self.history.in_transaction() {
+            return self.splice(span, replacement);
+        }
+
         let scope = self.scope_for(span);
         let removed = self.splice(span, replacement)?;
         match scope {
