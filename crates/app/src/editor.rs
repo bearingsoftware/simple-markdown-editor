@@ -59,6 +59,17 @@ const RIGHT: usize = 0;
 /// The status bar's breadcrumb.
 const TRAIL: usize = 1;
 
+/// One thing the recovery snapshotter decided to do, gathered before any of it is done.
+///
+/// Gathered first because writing borrows the store and the bookkeeping mutably while the tab list
+/// is still borrowed to read from.
+enum Snapshotting {
+    /// This buffer has unsaved work at this revision, and here it is.
+    Write(u64, Option<PathBuf>, u64, String),
+    /// This buffer is safe on disk; its snapshot should go.
+    Forget(u64),
+}
+
 /// A short string of chrome, laid out and kept until it changes.
 #[derive(Debug, Clone)]
 struct Label {
@@ -542,6 +553,10 @@ pub struct Editor<T: TextLayout> {
     /// How far the pane's list has been scrolled. Its own, not the document's — the two scroll
     /// independently, which is the point of a pane that can hold more files than fit.
     pane_scroll: f32,
+    /// Where unsaved work is kept against a crash. `None` when there is nowhere to put it.
+    snapshots: Option<mdedit_session::snapshot::Store>,
+    /// The document revision each snapshot was taken at, so an unchanged buffer is not rewritten.
+    snapshotted: HashMap<u64, u64>,
     /// Laid-out row labels, keyed by the text.
     ///
     /// The pane redraws every frame and a forty-file pane shows sixteen rows, so laying each name
@@ -683,6 +698,8 @@ impl<T: TextLayout> Editor<T> {
             row_rects: Vec::new(),
             pane_scroll: 0.0,
             row_labels: HashMap::new(),
+            snapshots: mdedit_session::snapshot::Store::beside_session(),
+            snapshotted: HashMap::new(),
             cursor: (0.0, 0.0),
             scroll: Scroll::new(),
             viewport: Viewport::default(),
@@ -801,6 +818,173 @@ impl<T: TextLayout> Editor<T> {
         let index = self.workspace.active().unwrap_or(0);
         if let Err(error) = self.workspace.activate(index) {
             crate::log_error!("could not open tab: {error}");
+        }
+    }
+
+    /// Puts the recovery snapshots somewhere other than the real directory. For tests.
+    pub fn with_snapshot_store(&mut self, store: mdedit_session::snapshot::Store) {
+        self.snapshots = Some(store);
+    }
+
+    /// The work that waits for typing to stop, and whether any of it changed what is drawn.
+    ///
+    /// Three deferred jobs share one timer rather than having three: the whole-document re-parse a
+    /// scoped edit owes (MDEDIT-18), the word count, and the recovery snapshot (MDEDIT-54). Public
+    /// because a test cannot deliver a [`StartCause::ResumeTimeReached`] — the event loop does that
+    /// — and every one of these is a claim worth testing.
+    pub fn on_idle(&mut self) -> bool {
+        let reparsed = self.document_mut().reconcile();
+        if reparsed {
+            // The parse changed its mind about something, so anything derived from it is suspect.
+            // Rare — see `Document::reconcile` — and the alternative is drawing a stale answer.
+            self.layouts.clear();
+            self.heights.clear();
+        }
+
+        let before = self.words;
+        self.recount_words();
+        self.snapshot_dirty_buffers();
+
+        reparsed || before != self.words
+    }
+
+    /// Writes a recovery snapshot for every buffer with unsaved work in it.
+    ///
+    /// On the idle timer, never on the keystroke path: this copies whole buffers to disk. A buffer
+    /// whose revision has not moved since its last snapshot is skipped, which is the common case —
+    /// the timer fires when typing *stops*, so usually exactly one buffer has changed.
+    ///
+    /// Caret and undo history are deliberately not saved. What a crash gives back is the text; a
+    /// recovery that pretended more had survived than did would be worse than an honest one.
+    fn snapshot_dirty_buffers(&mut self) {
+        let Some(store) = self.snapshots.as_mut() else {
+            return;
+        };
+
+        // Gathered first, because writing borrows the store and the bookkeeping mutably while the
+        // tab list is borrowed to read. Only buffers that actually need writing are materialised,
+        // which is the point of the revision check.
+        let mut todo = Vec::new();
+
+        for tab in self.workspace.tabs() {
+            let id = tab.snapshot_id();
+            let Some(open) = tab.open() else {
+                continue;
+            };
+
+            if !tab.is_modified() {
+                // Saved or reverted since the last tick: the snapshot now describes work that is
+                // safely on disk, and leaving it would offer to restore it on the next start.
+                if self.snapshotted.contains_key(&id) {
+                    todo.push(Snapshotting::Forget(id));
+                }
+                continue;
+            }
+
+            let revision = open.document.revision();
+            if self.snapshotted.get(&id) == Some(&revision) {
+                continue;
+            }
+            todo.push(Snapshotting::Write(
+                id,
+                tab.path().map(Path::to_path_buf),
+                revision,
+                open.document.to_string(),
+            ));
+        }
+
+        for item in todo {
+            match item {
+                Snapshotting::Write(id, path, revision, text) => {
+                    if let Err(error) = store.write(id, path.as_deref(), &text) {
+                        crate::log_error!("could not write a recovery snapshot: {error}");
+                        continue;
+                    }
+                    self.snapshotted.insert(id, revision);
+                }
+                Snapshotting::Forget(id) => {
+                    self.snapshotted.remove(&id);
+                    if let Err(error) = store.forget(id) {
+                        crate::log_error!("could not clear a recovery snapshot: {error}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Throws the recovery snapshots away, because this run is ending on purpose.
+    ///
+    /// A snapshot that survives is the signal that the last run did not — so a clean exit must leave
+    /// none, or every start would offer to recover work that was saved and closed properly.
+    pub fn discard_snapshots(&mut self) {
+        if let Some(store) = self.snapshots.as_mut() {
+            store.clear();
+        }
+        self.snapshotted.clear();
+    }
+
+    /// Restores whatever the last run left behind, and says what it could not.
+    ///
+    /// Each recovered buffer replaces the text of its tab — opening it if it was only a handle — and
+    /// arrives *modified*, so the editor's ordinary unsaved-changes machinery protects it and the
+    /// user decides whether to keep it. Untitled buffers come back as untitled tabs.
+    pub fn recover_snapshots(&mut self) {
+        let Some(store) = self.snapshots.as_mut() else {
+            return;
+        };
+        let (recovered, skipped) = store.read_all();
+        for reason in skipped {
+            crate::log_error!("recovery: {reason}");
+        }
+        if recovered.is_empty() {
+            return;
+        }
+
+        let count = recovered.len();
+        for entry in recovered {
+            self.restore_one(&entry);
+        }
+        crate::log_error!(
+            "recovered {count} unsaved buffer(s) from a previous run that did not exit cleanly"
+        );
+    }
+
+    /// Puts one recovered buffer back, into the tab it belongs to.
+    ///
+    /// Recovery runs after the session has been restored, so the file it is recovering is usually
+    /// *already* open — the session recorded the same tab. Adding one unconditionally gave two tabs
+    /// on the same file, one showing the recovered text and one showing what is on disk, which is
+    /// the single most confusing thing this feature could do. So an existing tab is reused.
+    fn restore_one(&mut self, entry: &mdedit_session::snapshot::Recovered) {
+        let index = match &entry.path {
+            Some(path) => {
+                let existing = self
+                    .workspace
+                    .tabs()
+                    .iter()
+                    .position(|tab| tab.path() == Some(path.as_path()));
+                let index = existing.unwrap_or_else(|| self.workspace.add(path.clone()));
+                if self.workspace.activate(index).is_err() {
+                    // The file has gone since the crash. The text still matters, so it comes back
+                    // as an untitled buffer rather than being dropped.
+                    self.workspace.add_untitled()
+                } else {
+                    index
+                }
+            }
+            None => self.workspace.add_untitled(),
+        };
+
+        if self.workspace.activate(index).is_err() {
+            crate::log_error!("could not open a tab to recover into");
+            return;
+        }
+        let Some(open) = self.workspace.active_open_mut() else {
+            return;
+        };
+        let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(open.document.len_bytes()));
+        if let Err(error) = open.document.replace(whole, &entry.text) {
+            crate::log_error!("could not restore a recovered buffer: {error}");
         }
     }
 
@@ -3211,20 +3395,7 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
         }
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        let reparsed = self.document_mut().reconcile();
-        if reparsed {
-            // The parse changed its mind about something, so anything derived from it is suspect.
-            // Rare — see `Document::reconcile` — and the alternative is drawing a stale answer.
-            self.layouts.clear();
-            self.heights.clear();
-        }
-
-        // The other thing too expensive to do per keystroke. It shares this timer rather than having
-        // its own, so typing schedules one wake-up rather than two.
-        let before = self.words;
-        self.recount_words();
-
-        if reparsed || before != self.words {
+        if self.on_idle() {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
@@ -3360,13 +3531,17 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                         window.request_redraw();
                     }
                 }
-                // An edit into a large document re-parses only the region around it, which cannot
-                // see what the rest of the document does to that region. Come back when the typing
-                // stops and parse the whole thing.
-                if self.document().is_scoped() {
-                    event_loop
-                        .set_control_flow(ControlFlow::WaitUntil(Instant::now() + RECONCILE_AFTER));
-                }
+                // Come back when the typing stops. Three things wait on this timer and only one of
+                // them is about large documents: the whole-document re-parse a scoped edit owes
+                // (MDEDIT-18), the word count, and the recovery snapshot (MDEDIT-54).
+                //
+                // It used to be scheduled only when the parse had been scoped, which meant that on
+                // any document under 16 KB the timer never fired at all — so the word count in the
+                // status bar was whatever it had been when the file opened, and MDEDIT-54's
+                // snapshots would never have been written for exactly the small, unsaved buffers
+                // they most exist to protect.
+                event_loop
+                    .set_control_flow(ControlFlow::WaitUntil(Instant::now() + RECONCILE_AFTER));
             }
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}

@@ -120,6 +120,8 @@ pub struct Document {
     /// Where the caret is. Owned here because undo has to put it back where it was.
     selection: Selection,
     history: History,
+    /// How many times the bytes have changed. See [`Document::revision`].
+    revision: u64,
     /// What language this buffer is in.
     ///
     /// A `&'static dyn` rather than a type parameter: the language comes from a file's extension at
@@ -148,6 +150,7 @@ impl Document {
             scoped: false,
             selection: Selection::caret(ByteOffset::ZERO),
             history: History::default(),
+            revision: 0,
             language,
         }
     }
@@ -548,8 +551,21 @@ impl Document {
         if !replacement.is_empty() {
             self.text.insert(char_start.get(), replacement);
         }
+        // Every path that changes a byte comes through here, undo and redo included, so this is the
+        // one place a revision has to be bumped.
+        self.revision = self.revision.wrapping_add(1);
 
         Ok(removed)
+    }
+
+    /// How many times the bytes have changed.
+    ///
+    /// Not a hash and not a timestamp: a cheap way for something that periodically copies the buffer
+    /// — crash recovery, in practice — to ask "is this the same text I last saw?" without walking it
+    /// or holding a copy to compare against.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Where the caret is, and what is selected.

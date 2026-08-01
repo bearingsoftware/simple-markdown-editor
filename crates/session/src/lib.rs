@@ -26,6 +26,7 @@ use mdedit_offsets::ByteOffset;
 use serde::{Deserialize, Serialize};
 
 pub mod path;
+pub mod snapshot;
 
 pub use path::PathRejected;
 
@@ -105,6 +106,8 @@ enum Origin {
 #[derive(Debug)]
 pub struct Tab {
     origin: Origin,
+    /// Identifies this tab's recovery snapshot. See [`Workspace::next_snapshot_id`].
+    snapshot_id: u64,
     /// Where the caret was when the session was saved, restored on materialisation.
     caret: ByteOffset,
     /// `None` while this tab is deferred. The whole point of the type.
@@ -129,6 +132,12 @@ impl Tab {
             Origin::File(path) => Some(path),
             Origin::Untitled(_) => None,
         }
+    }
+
+    /// Identifies this tab's crash-recovery snapshot, stably across other tabs closing.
+    #[must_use]
+    pub fn snapshot_id(&self) -> u64 {
+        self.snapshot_id
     }
 
     /// Whether this tab has never been saved anywhere.
@@ -182,6 +191,10 @@ pub struct Workspace {
     active: Option<usize>,
     /// How many untitled buffers have been made this run, so the next one gets a fresh number.
     next_untitled: u32,
+    /// The next snapshot id. Counts up and is never reused, so a tab keeps its recovery file
+    /// across a close-and-reopen of its neighbours — an index would not, because closing tab 0
+    /// renumbers every tab after it.
+    next_snapshot_id: u64,
     /// How a path becomes a language, or `None` to read everything as the document's default.
     ///
     /// Injected rather than decided here. Choosing a language means knowing which languages exist,
@@ -205,6 +218,12 @@ impl Workspace {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The next unused snapshot id.
+    fn take_snapshot_id(&mut self) -> u64 {
+        self.next_snapshot_id = self.next_snapshot_id.saturating_add(1);
+        self.next_snapshot_id
     }
 
     /// Sets how a path chooses a language. Without one, every file is read as Markdown.
@@ -273,8 +292,10 @@ impl Workspace {
         {
             return existing;
         }
+        let snapshot_id = self.take_snapshot_id();
         self.tabs.push(Tab {
             origin: Origin::File(path),
+            snapshot_id,
             caret: ByteOffset::ZERO,
             open: None,
         });
@@ -288,8 +309,10 @@ impl Workspace {
     /// not make the next one "Untitled 1" again while it is still on screen.
     pub fn add_untitled(&mut self) -> usize {
         self.next_untitled = self.next_untitled.saturating_add(1);
+        let snapshot_id = self.take_snapshot_id();
         self.tabs.push(Tab {
             origin: Origin::Untitled(self.next_untitled),
+            snapshot_id,
             caret: ByteOffset::ZERO,
             open: Some(OpenTab {
                 document: Document::new(),
