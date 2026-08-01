@@ -596,3 +596,107 @@ fn reloading_a_deferred_tab_is_refused() {
     assert!(workspace.reload_tab(deferred).is_err());
     assert_eq!(workspace.materialised_count(), 1);
 }
+
+// ---- the clean-exit marker (MDEDIT-66) ----
+
+/// The signal that replaced "a snapshot survived". Since unsaved work now outlives an ordinary quit,
+/// its presence can no longer say the last run died — this can.
+#[test]
+fn an_exit_records_that_it_was_clean() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    let paths = files(&dir, 1);
+
+    let mut workspace = Workspace::new();
+    workspace.add(paths[0].clone());
+    workspace.save_session_on_exit(&session).unwrap();
+
+    assert!(mdedit_session::last_run_ended_cleanly(&session));
+}
+
+/// A session written mid-run and then lost to a crash must still read as an unclean end, which it
+/// was — so only the exit path sets the marker.
+#[test]
+fn an_ordinary_save_does_not_claim_a_clean_exit() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    let paths = files(&dir, 1);
+
+    let mut workspace = Workspace::new();
+    workspace.add(paths[0].clone());
+    workspace.save_session(&session).unwrap();
+
+    assert!(!mdedit_session::last_run_ended_cleanly(&session));
+}
+
+/// Every way of not knowing answers "not cleanly". A file that cannot be read cannot vouch for
+/// anything, and being wrong in this direction costs one sentence in a log rather than lost work.
+#[test]
+fn anything_unreadable_is_not_a_clean_exit() {
+    let dir = TempDir::new().unwrap();
+
+    assert!(
+        !mdedit_session::last_run_ended_cleanly(&dir.path().join("nothing-here.json")),
+        "a first run has no session at all"
+    );
+
+    let malformed = dir.path().join("malformed.json");
+    std::fs::write(&malformed, "{not json").unwrap();
+    assert!(!mdedit_session::last_run_ended_cleanly(&malformed));
+
+    let empty = dir.path().join("empty.json");
+    std::fs::write(&empty, "").unwrap();
+    assert!(!mdedit_session::last_run_ended_cleanly(&empty));
+}
+
+/// A session written by an older build has no marker at all, and must read as unclean rather than
+/// failing to parse.
+#[test]
+fn a_session_without_the_marker_reads_as_unclean() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    std::fs::write(&session, r#"{"version":1,"active":null,"tabs":[]}"#).unwrap();
+
+    assert!(!mdedit_session::last_run_ended_cleanly(&session));
+}
+
+/// And the marker must not stop such a session restoring — it is one optional field, not a format
+/// change.
+#[test]
+fn a_session_without_the_marker_still_restores() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    std::fs::write(&session, r#"{"version":1,"active":null,"tabs":[]}"#).unwrap();
+
+    assert!(Workspace::restore_session(&session).is_ok());
+}
+
+/// The bug a by-hand check caught and no test did.
+///
+/// The marker is only written on exit, so a run that is *killed* never rewrites it — and the
+/// previous clean exit's `true` would survive to tell the next launch that a crash recovery was an
+/// ordinary restore. Clearing it at startup is what makes it describe the run in progress rather
+/// than the one before.
+#[test]
+fn a_clean_exit_marker_does_not_outlive_the_next_launch() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    let paths = files(&dir, 1);
+
+    let mut workspace = Workspace::new();
+    workspace.add(paths[0].clone());
+
+    // A run that ended properly.
+    workspace.save_session_on_exit(&session).unwrap();
+    assert!(mdedit_session::last_run_ended_cleanly(&session));
+
+    // The next launch reads it and then clears it, which is what `main` does.
+    workspace.save_session(&session).unwrap();
+
+    // This run is now killed — nothing else is written. The marker must not still claim the last
+    // ending was clean, because the last ending was this one.
+    assert!(
+        !mdedit_session::last_run_ended_cleanly(&session),
+        "a killed run must not inherit the previous clean exit's marker"
+    );
+}

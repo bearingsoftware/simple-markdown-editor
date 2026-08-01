@@ -1,4 +1,9 @@
-//! Crash recovery, wired into the editor rather than tested in the store.
+//! Unsaved work, stored and brought back — wired into the editor rather than tested in the store.
+//!
+//! Started as crash recovery (MDEDIT-54) and became the store for unsaved work generally
+//! (MDEDIT-66). The difference is the lifecycle, not the storage: a stored copy now survives an
+//! ordinary quit, is removed when its tab closes, and a *crash* is told apart by a marker in the
+//! session file rather than by whether anything was left behind.
 //!
 //! `mdedit-session`'s own tests cover what the store keeps and refuses. These cover the wiring, which
 //! is where this feature was actually broken: the snapshot rides the idle timer, and that timer used
@@ -101,19 +106,68 @@ fn saving_clears_the_snapshot() {
     assert!(skipped.is_empty(), "{skipped:?}");
 }
 
-/// A run that ends on purpose leaves nothing behind, which is what makes anything left behind mean
-/// "the last run did not end here".
+/// **Changed by MDEDIT-66.** A clean exit used to throw the stored copies away — that was how the
+/// editor told a crash from an ordinary quit. It no longer does: unsaved work surviving a quit is
+/// the whole point, and the clean-exit marker in the session file carries the signal instead.
 #[test]
-fn a_clean_exit_discards_them() {
+fn a_clean_exit_keeps_them() {
     let dir = TempDir::new().unwrap();
     let (mut editor, _) = editor(&dir, "# Notes\n");
 
     type_into(&mut editor, "UNSAVED");
     editor.on_idle();
-    editor.discard_snapshots();
 
-    let (recovered, _) = Store::in_directory(dir.path().join("recovery")).read_all();
-    assert!(recovered.is_empty());
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert_eq!(kept.len(), 1, "the edit should still be stored");
+    assert!(kept[0].text.contains("UNSAVED"));
+}
+
+/// Closing a tab is where a document stops existing, so it is where its stored copy stops existing
+/// too. Nothing did this before MDEDIT-66 — a leak that did not matter while every clean exit
+/// cleared the lot, and matters a great deal now they are permanent.
+#[test]
+fn closing_a_tab_forgets_its_stored_copy() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+
+    type_into(&mut editor, "UNSAVED");
+    editor.on_idle();
+    assert_eq!(
+        Store::in_directory(dir.path().join("recovery"))
+            .read_all()
+            .0
+            .len(),
+        1,
+        "it has to be stored before removing it means anything"
+    );
+
+    editor.with_prompt(Box::new(AlwaysDiscard));
+    assert!(editor.apply_command(mdedit_menu_win::Command::Close));
+
+    let (kept, skipped) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(kept.is_empty(), "the closed tab's copy should have gone");
+    assert!(skipped.is_empty(), "and left nothing dangling: {skipped:?}");
+}
+
+/// Discarding at the *window* level is not offered, and would be wrong if it were: it would close
+/// the editor and leave the stored copies, which is Keep with worse words.
+#[test]
+fn keeping_on_the_way_out_leaves_the_work_stored() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, path) = editor(&dir, "# Notes\n");
+    type_into(&mut editor, "UNSAVED");
+    editor.on_idle();
+
+    editor.with_prompt(Box::new(AlwaysKeep));
+    assert!(editor.may_close(), "Keep must let the editor close");
+
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# Notes\n",
+        "and must not have written anything"
+    );
 }
 
 /// The whole point, end to end: what one editor loses, the next one gets back — modified, so the
@@ -125,12 +179,12 @@ fn the_next_run_gets_the_unsaved_bytes_back() {
 
     type_into(&mut crashed, "UNSAVED");
     crashed.on_idle();
-    // No `discard_snapshots`, and no session written: this is the crash.
+    // No session written and no clean-exit marker: this is the crash.
     drop(crashed);
 
     let mut next = Editor::new("", Grid::new());
     next.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
-    next.recover_snapshots();
+    next.restore_unsaved_work(false);
 
     assert!(
         next.document().to_string().contains("UNSAVED"),
@@ -166,7 +220,7 @@ fn recovering_a_file_already_open_reuses_its_tab() {
     let mut next = Editor::with_workspace(workspace, Grid::new());
     next.activate_saved_tab();
     next.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
-    next.recover_snapshots();
+    next.restore_unsaved_work(false);
 
     assert_eq!(next.workspace().tabs().len(), 1, "one file, one tab");
     assert!(next.document().to_string().contains("UNSAVED"));
@@ -189,7 +243,7 @@ fn an_untitled_buffer_comes_back() {
 
     let mut next = Editor::new("", Grid::new());
     next.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
-    next.recover_snapshots();
+    next.restore_unsaved_work(false);
 
     assert!(next.document().to_string().contains("never saved anywhere"));
     assert!(
@@ -198,4 +252,46 @@ fn an_untitled_buffer_comes_back() {
             .iter()
             .any(|tab| tab.path().is_none() && tab.is_modified())
     );
+}
+
+/// Answers Discard to everything. For the per-tab close, which is the one place it is offered.
+#[derive(Debug)]
+struct AlwaysDiscard;
+
+impl mdedit_app::prompt::UnsavedPrompt for AlwaysDiscard {
+    fn ask(&mut self, _name: &str) -> mdedit_app::prompt::Unsaved {
+        mdedit_app::prompt::Unsaved::Discard
+    }
+}
+
+/// Answers Keep to everything. For the window close, which is the one place *that* is offered.
+#[derive(Debug)]
+struct AlwaysKeep;
+
+impl mdedit_app::prompt::UnsavedPrompt for AlwaysKeep {
+    /// Never reached — this one is only ever asked `ask_all`. Cancel rather than Discard so an
+    /// accidental call cannot silently throw work away.
+    fn ask(&mut self, _name: &str) -> mdedit_app::prompt::Unsaved {
+        mdedit_app::prompt::Unsaved::Cancel
+    }
+
+    fn ask_all(&mut self, _names: &[String]) -> mdedit_app::prompt::Unsaved {
+        mdedit_app::prompt::Unsaved::Keep
+    }
+}
+
+/// Work that was saved is not unsaved work, so nothing keeps a copy of it — the store must not fill
+/// up with documents that are safely on disk.
+#[test]
+fn saving_still_clears_the_stored_copy() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+
+    type_into(&mut editor, "UNSAVED");
+    editor.on_idle();
+    editor.save();
+    editor.on_idle();
+
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(kept.is_empty());
 }

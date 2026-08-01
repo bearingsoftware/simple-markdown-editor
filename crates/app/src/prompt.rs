@@ -19,9 +19,19 @@
 pub enum Unsaved {
     /// Write it, then close.
     Save,
-    /// Close without writing.
+    /// Close without writing, and throw the text away.
+    ///
+    /// Only offered when closing **one** tab, where the user is looking at the document they are
+    /// discarding. Closing the window does not offer it: throwing away every unsaved buffer in one
+    /// click is not a thing to put on the way out of the door — [`Keep`](Self::Keep) is there
+    /// instead.
     Discard,
-    /// Keep the tab.
+    /// Close, but store the text and bring it back next time.
+    ///
+    /// Only offered when closing the **window**. MDEDIT-66: unsaved work stops being something the
+    /// editor makes you deal with before you can leave, and becomes something it holds on to.
+    Keep,
+    /// Change nothing.
     Cancel,
 }
 
