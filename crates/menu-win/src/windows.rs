@@ -27,6 +27,9 @@ pub struct MenuBar {
     /// registers a handler that outlives the call and has to see rebuilds that happen after it —
     /// a clone taken at registration would answer for a menu that no longer exists.
     recent_ids: Arc<Mutex<HashMap<MenuId, usize>>>,
+    /// The ids in the context menu currently being shown, and what each means. Shared and rebuilt
+    /// for the same reasons `recent_ids` is — see `show_context_menu`.
+    context_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -147,6 +150,7 @@ impl MenuBar {
             commands,
             recent,
             recent_ids: Arc::new(Mutex::new(HashMap::new())),
+            context_ids: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -214,6 +218,72 @@ impl MenuBar {
         }
     }
 
+    /// Pops the document's context menu at `(x, y)`, in physical pixels from the window's corner.
+    ///
+    /// `enabled` says which entries are available — see [`crate::ContextState`]. Built fresh each time
+    /// rather than kept and re-enabled, because the state changes with every selection and a menu
+    /// that exists between shows is one more thing to keep in step with the document.
+    ///
+    /// Its items carry the same [`Command`]s the menu bar's do, so they arrive through
+    /// [`Self::forward_to`] like any other: **a second door, never a second implementation.** That
+    /// also means the ids have to be registered before the menu is shown, and unregistered after —
+    /// muda's ids are unique per item, so a menu shown twice would otherwise leak an entry per show.
+    pub fn show_context_menu(&mut self, hwnd: isize, x: f64, y: f64, enabled: crate::ContextState) {
+        use muda::ContextMenu as _;
+
+        let menu = Submenu::new("", true);
+        let items = [
+            ("Cu&t", Command::Cut, enabled.has_selection),
+            ("&Copy", Command::Copy, enabled.has_selection),
+            ("&Paste", Command::Paste, enabled.can_paste),
+        ];
+
+        // Shared with the event handler rather than owned, for the reason `recent_ids` documents:
+        // `forward_to` takes a *clone* of `commands` when it registers, so an id minted after that
+        // — which every context item is — would never resolve through it.
+        let mut ids = match self.context_ids.lock() {
+            Ok(ids) => ids,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Cleared rather than added to: muda mints a fresh id per item, so a menu shown a hundred
+        // times would otherwise leave four hundred dead entries behind.
+        ids.clear();
+
+        for (label, command, is_enabled) in items {
+            let item = MenuItem::new(label, is_enabled, None);
+            ids.insert(item.id().clone(), command);
+            if menu.append(&item).is_err() {
+                return;
+            }
+        }
+        if menu.append(&muda::PredefinedMenuItem::separator()).is_err() {
+            return;
+        }
+        let select_all = MenuItem::new("Select &All", true, None);
+        ids.insert(select_all.id().clone(), Command::SelectAll);
+        if menu.append(&select_all).is_err() {
+            return;
+        }
+        // Released before the menu is shown: `show_context_menu_for_hwnd` runs a modal message loop,
+        // and the event handler it dispatches into needs this same lock to resolve what was chosen.
+        drop(ids);
+
+        // The dropdowns are Windows' own popups, so this is what makes them dark — the same call
+        // `attach` makes, for the same reason (MDEDIT-35). Cheap, and idempotent.
+        crate::dark::use_dark_menus();
+
+        // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
+        // still holds, so it is a valid `HWND` for the duration of the call. `show_context_menu_for_hwnd`
+        // runs its own modal message loop and returns when the menu closes — which is why the ids
+        // are removed on the line after rather than needing to outlive anything.
+        unsafe {
+            let _ = menu.show_context_menu_for_hwnd(
+                hwnd,
+                Some(muda::dpi::PhysicalPosition::new(x, y).into()),
+            );
+        }
+    }
+
     /// Sends every chosen command to `deliver`.
     ///
     /// Pushed rather than polled. muda delivers menu events on a channel of its own, and winit's
@@ -229,8 +299,17 @@ impl MenuBar {
         // Shared, not cloned: the recent submenu is rebuilt after this handler is registered, and a
         // snapshot taken here would keep answering for the menu as it was at startup.
         let recent_ids = Arc::clone(&self.recent_ids);
+        let context_ids = Arc::clone(&self.context_ids);
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if let Some(command) = commands.get(&event.id).copied() {
+                deliver(command);
+                return;
+            }
+            let from_context = match context_ids.lock() {
+                Ok(ids) => ids.get(&event.id).copied(),
+                Err(poisoned) => poisoned.into_inner().get(&event.id).copied(),
+            };
+            if let Some(command) = from_context {
                 deliver(command);
                 return;
             }

@@ -67,6 +67,9 @@ pub enum Command {
     Cut,
     /// Edit → Copy.
     Copy,
+    /// Edit → Select All. Only in the context menu today — the Edit menu has no item for it, which
+    /// is its own small gap.
+    SelectAll,
     /// Edit → Paste.
     Paste,
     /// Help → Keyboard Shortcuts.
@@ -102,6 +105,9 @@ impl MenuBar {
 
     /// Attaches to nothing.
     pub fn attach(&self, _hwnd: isize) {}
+
+    /// Shows nothing, there being no popup to show.
+    pub fn show_context_menu(&mut self, _hwnd: isize, _x: f64, _y: f64, _enabled: ContextState) {}
 
     /// Lists nothing, there being no submenu to list it in.
     pub fn set_recent(&mut self, _labels: &[String]) {}
@@ -177,4 +183,16 @@ pub fn double_click_interval() -> std::time::Duration {
 #[must_use]
 pub fn double_click_interval() -> std::time::Duration {
     std::time::Duration::from_millis(500)
+}
+
+/// Which context-menu entries are available.
+///
+/// Asked of the editor rather than worked out here: whether there is a selection is a fact about the
+/// document, and this crate deliberately knows nothing about documents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextState {
+    /// Whether anything is selected — Cut and Copy are greyed when nothing is.
+    pub has_selection: bool,
+    /// Whether the clipboard holds text worth pasting.
+    pub can_paste: bool,
 }

@@ -1342,6 +1342,10 @@ impl<T: TextLayout> Editor<T> {
                 false
             }
             Command::Paste => self.paste(),
+            Command::SelectAll => {
+                self.select_all();
+                true
+            }
         }
     }
 
@@ -2950,6 +2954,88 @@ impl<T: TextLayout> Editor<T> {
         self.click_at(x, y)
     }
 
+    /// Decides where the caret goes for a right-click at `(x, y)`, and returns whether to show a
+    /// menu.
+    ///
+    /// **The one subtle rule in the context menu.** A right-click *inside* the current selection
+    /// leaves it alone, so Cut and Copy act on what the user can see is selected — moving the caret
+    /// there would collapse the selection and grey out the two entries they were reaching for. A
+    /// right-click *outside* it places the caret first, as every editor does, because otherwise the
+    /// menu would act on something the pointer is nowhere near.
+    ///
+    /// Separate from showing the menu because the menu is a native popup that cannot be driven by a
+    /// test, and this rule can be.
+    pub fn right_click_at(&mut self, x: f32, y: f32) -> bool {
+        // Chrome has no context menu of its own yet, and a document menu popping up over the tab
+        // strip would be worse than nothing. Deliberately not the same as the left-button chain:
+        // there is nothing here for the scrollbar or the strip to do.
+        if !self.content.contains(x, y) {
+            return false;
+        }
+        let Some(offset) = self.offset_at_point(x, y) else {
+            return false;
+        };
+
+        let selection = self.document().selection();
+        let span = selection.span();
+        let inside = span.start() <= offset && offset < span.end();
+        if !inside {
+            self.select(offset, false);
+            // A right-click is not the start of a drag, and a run of them is not a double-click.
+            self.clicks.reset();
+            self.granularity = Granularity::Character;
+            self.anchor_span = None;
+        }
+        true
+    }
+
+    /// Places the caret if it has to, then shows the native context menu at the pointer.
+    ///
+    /// The popup runs its own modal message loop, so this does not return until the menu closes —
+    /// and whatever was chosen has by then already been delivered through the same channel the menu
+    /// bar's commands use. There is nothing to return but "the frame changed", which it did if the
+    /// caret moved.
+    fn popup_context_menu(&mut self, x: f32, y: f32) -> bool {
+        if !self.right_click_at(x, y) {
+            return false;
+        }
+        let state = self.context_state();
+
+        let (Some(window), Some(menu)) = (self.window.as_ref(), self.menu.as_mut()) else {
+            // No window means no popup, and the caret has still been placed — which is the useful
+            // half of a right-click and what a test sees.
+            return true;
+        };
+        let scale = window.scale_factor();
+        let Ok(handle) = window.window_handle() else {
+            return true;
+        };
+        let RawWindowHandle::Win32(win32) = handle.as_raw() else {
+            return true;
+        };
+        // Physical pixels: the popup is positioned by Windows, which knows nothing about the
+        // device-independent space the rest of this file works in.
+        menu.show_context_menu(
+            win32.hwnd.get(),
+            f64::from(x) * scale,
+            f64::from(y) * scale,
+            state,
+        );
+        true
+    }
+
+    /// What the context menu's entries should be able to do, given what is selected.
+    #[must_use]
+    pub fn context_state(&mut self) -> mdedit_menu_win::ContextState {
+        mdedit_menu_win::ContextState {
+            has_selection: !self.document().selection().is_collapsed(),
+            // Asked of the clipboard rather than assumed. A paste with nothing there is harmless,
+            // but a Paste that is greyed when there *is* something is the kind of small wrongness
+            // that makes a menu feel broken.
+            can_paste: self.clipboard.read().is_some_and(|text| !text.is_empty()),
+        }
+    }
+
     /// Acts on a press that landed on the scrollbar.
     ///
     /// The caret does not move for any of this. Scrolling is a view movement, exactly as the page
@@ -3012,6 +3098,15 @@ impl<T: TextLayout> Editor<T> {
                 window.request_redraw();
             }
         }
+    }
+
+    /// Whether the pointer is dragging out a text selection.
+    ///
+    /// A right-click must not start one — the pointer moving afterwards should do nothing, not
+    /// select. There is no other way to observe that, since the guard lives in the winit handler.
+    #[must_use]
+    pub fn dragging(&self) -> bool {
+        self.dragging
     }
 
     /// Whether a scrollbar thumb is being dragged.
@@ -4047,6 +4142,7 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                 let (x, y) = self.cursor;
                 let changed = match button {
                     MouseButton::Left => self.click(x, y),
+                    MouseButton::Right => self.popup_context_menu(x, y),
                     // Middle-click closes, as every editor with tabs does.
                     MouseButton::Middle => {
                         match (
