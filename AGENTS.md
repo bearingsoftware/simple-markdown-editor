@@ -150,15 +150,13 @@ Known gaps, so nobody assumes they are done:
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
   it can be regenerated, and a stale copy of a reference is worse than none.
 - **Closing the window asks once, naming every modified file.** MDEDIT-64. `CloseRequested` used to
-  call `event_loop.exit()` and nothing else, losing every unsaved buffer and then clearing the
-  recovery snapshots that would have got it back — a crash was survivable and a close was not.
-  `Editor::may_close` is the decision and the thing to test; the event arm is one `if` over it.
-  **One dialog, not one per file**: three consecutive dialogs is a thing people dismiss without
-  reading, which turns a safeguard into a formality. Save All writes everything and asks where to put
-  anything untitled; if any work is still unsaved afterwards the close is **cancelled**, because
-  exiting then would lose exactly what the user asked to keep. A cancelled exit is not a clean one,
-  so the snapshots stay — `main` clears them only when nothing is unsaved, which also covers the loop
-  ending by some route that never asked.
+  call `event_loop.exit()` and nothing else, losing every unsaved buffer — a crash was survivable and
+  a close was not. `Editor::may_close` is the decision and the thing to test; the event arm is one
+  `if` over it. **One dialog, not one per file**: three consecutive dialogs is a thing people dismiss
+  without reading, which turns a safeguard into a formality. Save All writes everything and asks
+  where to put anything untitled; if any work is still unsaved afterwards the close is **cancelled**,
+  because exiting then would lose exactly what the user asked to keep. See the stored-work entries
+  below for what the middle button is now and why.
 - **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and
   never written back" — four features were stalled on it. The file is read into a `serde_json::Map`
   as well as the typed `Config`, and a write merges the changed fields into that map, so a key from a
@@ -184,14 +182,40 @@ Known gaps, so nobody assumes they are done:
   all, which froze the word count and, when MDEDIT-54 arrived, would have meant no crash-recovery
   snapshot for exactly the small unsaved buffers the feature exists to protect. `Editor::on_idle` is
   public so a test can run that work without an event loop.
-- **Unsaved work is snapshotted where a crash cannot take it.** MDEDIT-54:
+- **Unsaved work is stored, and comes back — after a crash *or* an ordinary quit.**
   `mdedit-session::snapshot` keeps a copy of each dirty buffer in a `recovery` directory beside the
   session file, addressed by an id rather than a path because the buffer with most to lose is the one
-  that has no path. Written atomically, skipped when `Document::revision` has not moved, and
-  **deleted on save and on clean exit** — which is as much the feature as writing them, because a
-  surviving snapshot is precisely the signal that the last run did not end here. Caret and undo
-  history are not saved: what a crash gives back is the text, and pretending more survived than did
-  would be worse than an honest recovery. The manifest's paths go through `path::validate`.
+  that has no path. Written atomically on the idle timer, skipped when `Document::revision` has not
+  moved. Caret and undo history are not saved: what comes back is the text, and pretending more
+  survived than did would be worse than an honest restore.
+
+  MDEDIT-54 built it for crashes and cleared it on every clean exit. **MDEDIT-66 made it the store
+  for unsaved work generally**: it survives a quit, restore runs on every launch, and a copy is
+  removed only when its buffer is saved or its tab closes. Adding a way to close a tab means adding
+  a `forget` with it, or that document comes back for ever.
+- **A crash is told from a quit by a marker in the session file**, not by whether anything was left
+  behind — that stopped working the moment the store outlived a quit. `clean_exit` is written by the
+  exit path and **cleared at startup**, so it describes the run in progress. The clearing is not
+  optional: a killed run never rewrites the file, so without it the previous quit's `true` survives
+  and the next launch calls a crash recovery an ordinary restore. Only the wording depends on it, but
+  the wording is the whole point — an ordinary restore says nothing, a recovery says so.
+- **Closing the window offers Save All / Keep for now / Cancel; Discard lives on the per-tab close.**
+  Throwing away every unsaved buffer in one click is not a thing to offer on the way out of the door,
+  and it would be Keep with worse words anyway, since the stored copies survive it. Closing *one* tab
+  is where a document is discarded, because the user is looking at it. A scratch tab is asked with
+  "Save As…" rather than "Save" — a button labelled Save that opens a file picker is a small lie, and
+  before MDEDIT-66 picking it did nothing at all.
+- **A stored edit is checked against the file before it is put back.** If something else wrote the
+  file since, restoring silently would put an edit on top of somebody's work — the same hazard
+  MDEDIT-55 answers while the editor runs. Declining removes the stored copy, or the question returns
+  on every launch. `Stamp` holds **milliseconds rather than a `SystemTime`** so it survives JSON
+  exactly; a stamp that shifted in transit would report every restored file as modified.
+- **A missing file is not a hostile one.** `validate`'s last rule is that a path names an existing
+  regular file, and applying it to the store threw away the text of any file that had been *deleted*
+  — the one case where the stored copy is the only copy left. A missing file now downgrades the entry
+  to one with no path and the text survives as a scratch buffer; the three security rules (UNC and
+  device paths, relative paths, traversal) still refuse outright, and there is a test saying so.
+  **When relaxing one rule in a boundary, prove the others are intact in the same commit.**
 - **A file changed on disk is noticed on focus and before every save.** MDEDIT-55: `mdedit-file`
   carries a `Stamp` — modification time *and* length, never a hash, because comparing content means
   reading every open file on every focus. The stamp is taken **before** the read, so a write racing
