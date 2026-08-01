@@ -538,3 +538,61 @@ fn the_session_boundary_is_unchanged() {
         Err(PathRejected::NetworkOrDevice(_))
     ));
 }
+
+/// Re-reading a tab replaces both halves of what `Tab::is_modified` compares, so the buffer cannot
+/// come back from a reload still looking edited.
+#[test]
+fn reloading_a_tab_leaves_it_unmodified() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("note.md");
+    std::fs::write(&path, "# Note\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    let index = workspace.add(path.clone());
+    workspace.activate(index).unwrap();
+
+    let open = workspace.active_open_mut().unwrap();
+    let end = mdedit_offsets::ByteOffset::new(open.document.len_bytes());
+    open.document
+        .replace(mdedit_offsets::ByteSpan::new(end, end), "edited")
+        .unwrap();
+    assert!(workspace.tabs()[index].is_modified());
+
+    std::fs::write(&path, "# Note\n\nrewritten\n").unwrap();
+    workspace.reload_tab(index).unwrap();
+
+    assert!(!workspace.tabs()[index].is_modified());
+    assert!(
+        workspace
+            .active_open()
+            .unwrap()
+            .document
+            .to_string()
+            .contains("rewritten")
+    );
+}
+
+/// There is nothing on disk to re-read, so this is a caller error rather than a silent no-op.
+#[test]
+fn reloading_an_untitled_tab_is_refused() {
+    let mut workspace = Workspace::new();
+    let index = workspace.add_untitled();
+    assert!(workspace.reload_tab(index).is_err());
+    assert!(workspace.reload_tab(99).is_err());
+}
+
+/// A tab that has never been displayed has read nothing, so reloading it would be a first read
+/// dressed up as a refresh — and deferred tabs exist precisely not to do that.
+#[test]
+fn reloading_a_deferred_tab_is_refused() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 2);
+
+    let mut workspace = Workspace::new();
+    workspace.add(paths[0].clone());
+    let deferred = workspace.add(paths[1].clone());
+    workspace.activate(0).unwrap();
+
+    assert!(workspace.reload_tab(deferred).is_err());
+    assert_eq!(workspace.materialised_count(), 1);
+}

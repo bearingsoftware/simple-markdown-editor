@@ -44,3 +44,51 @@ impl UnsavedPrompt for KeepEverything {
         Unsaved::Cancel
     }
 }
+
+/// What to do when the file on disk has changed under a buffer that also has edits.
+///
+/// There is deliberately no "merge". This is an editor, not a version control system, and the two
+/// versions are a buffer and a file rather than two commits with a common ancestor. Offering a merge
+/// would mean writing one, badly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conflict {
+    /// Take what is on disk, discarding the edits in the buffer.
+    Reload,
+    /// Write the buffer over the newer file. Only ever offered when saving — a check that was not
+    /// going to write anything has nothing to overwrite.
+    Overwrite,
+    /// Change nothing: keep the buffer as it is and leave the file as it is.
+    Cancel,
+}
+
+/// Why the question is being asked, which is what decides the wording and the choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Conflicting {
+    /// Noticed on returning to the window. The buffer has edits and so does the file; nothing is
+    /// being written yet. [`Conflict::Overwrite`] is not among the answers.
+    Found,
+    /// Noticed at the moment of saving. This is the one that prevents data loss:
+    /// [`Conflict::Overwrite`] is a choice the user makes rather than one saving makes for them.
+    Saving,
+}
+
+/// Something that can ask what to do about a file that changed underneath.
+pub trait ConflictPrompt {
+    /// Asks about the file called `name`.
+    fn ask(&mut self, name: &str, why: Conflicting) -> Conflict;
+}
+
+/// What an editor with nobody to ask does about a conflict: nothing.
+///
+/// [`Conflict::Cancel`] in both cases, and it is the safe answer in both for different reasons. On
+/// [`Conflicting::Found`] it keeps the buffer, so no edits are lost. On [`Conflicting::Saving`] it
+/// abandons the save, so the other tool's write is not overwritten — the buffer stays in memory,
+/// where crash recovery is now holding a copy of it anyway.
+#[derive(Debug, Default)]
+pub struct ChangeNothing;
+
+impl ConflictPrompt for ChangeNothing {
+    fn ask(&mut self, _name: &str, _why: Conflicting) -> Conflict {
+        Conflict::Cancel
+    }
+}

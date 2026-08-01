@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use mdedit_document::{Document, Selection};
 use mdedit_file::LoadedFile;
 use mdedit_language::Language;
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use serde::{Deserialize, Serialize};
 
 pub mod path;
@@ -270,6 +270,53 @@ impl Workspace {
         if let Some(open) = self.active_open_mut() {
             open.file = Some(file);
         }
+    }
+
+    /// Forgets what tab `index` believed was on disk, because it is not there any more.
+    ///
+    /// Not the same as closing it: the buffer stays, and [`Tab::is_modified`] falls through to the
+    /// rule for a buffer that has never been on disk, so anything in it counts as unsaved work.
+    pub fn forget_file(&mut self, index: usize) {
+        if let Some(open) = self.tabs.get_mut(index).and_then(|tab| tab.open.as_mut()) {
+            open.file = None;
+        }
+    }
+
+    /// Re-reads tab `index` from disk, replacing whatever is in its buffer.
+    ///
+    /// The buffer becomes unmodified by construction: both halves of what
+    /// [`Tab::is_modified`] compares are replaced together, so they cannot disagree. Re-read with
+    /// [`mdedit_file::reload`] rather than `load`, so a file opened as windows-1252 does not come
+    /// back as UTF-8 because the caller happened to reload it.
+    ///
+    /// The edit goes through [`Document::replace`] and so lands in the undo history. Deliberate: a
+    /// reload that discarded local edits is the one operation in this editor a user is most likely
+    /// to want back, and Ctrl+Z gives it to them.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::NoSuchTab`] if there is no such tab, or if it is untitled or has never been
+    /// displayed — in either case there is nothing on disk to re-read. Reading failures propagate as
+    /// [`SessionError::File`].
+    pub fn reload_tab(&mut self, index: usize) -> Result<(), SessionError> {
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(SessionError::NoSuchTab(index))?;
+        let Origin::File(path) = &tab.origin else {
+            return Err(SessionError::NoSuchTab(index));
+        };
+        let path = path.clone();
+        let open = tab.open.as_mut().ok_or(SessionError::NoSuchTab(index))?;
+        let previous = open.file.as_ref().ok_or(SessionError::NoSuchTab(index))?;
+
+        let file = mdedit_file::reload(&path, previous)?;
+        let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(open.document.len_bytes()));
+        // The only way this fails is a span outside the document, and the span is the document.
+        if open.document.replace(whole, file.text()).is_ok() {
+            open.file = Some(file);
+        }
+        Ok(())
     }
 
     /// How many tabs have actually been read from disk.

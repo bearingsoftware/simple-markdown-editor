@@ -51,6 +51,62 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
     }
 }
 
+/// The file-changed-on-disk dialog.
+///
+/// Here for the same manifest reason as `NativePrompt`, which documents it.
+#[cfg(windows)]
+struct NativeConflict;
+
+#[cfg(windows)]
+impl mdedit_app::prompt::ConflictPrompt for NativeConflict {
+    fn ask(
+        &mut self,
+        name: &str,
+        why: mdedit_app::prompt::Conflicting,
+    ) -> mdedit_app::prompt::Conflict {
+        use mdedit_app::prompt::{Conflict, Conflicting};
+
+        // The wording differs because the stakes do. On a focus check nothing is being written and
+        // the question is which version to look at. On a save, one of the two versions is about to
+        // stop existing, and the button that does that says so.
+        let (description, keep) = match why {
+            Conflicting::Found => (
+                format!("{name} has changed on disk, and you have unsaved changes to it."),
+                "Keep mine",
+            ),
+            Conflicting::Saving => (
+                format!(
+                    "{name} has changed on disk since you opened it. Saving will replace those \
+                     changes."
+                ),
+                "Overwrite",
+            ),
+        };
+
+        let answer = rfd::MessageDialog::new()
+            .set_title("File changed on disk")
+            .set_description(description)
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                keep.to_owned(),
+                "Reload".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .show();
+
+        match answer {
+            rfd::MessageDialogResult::Custom(choice) if choice == keep => match why {
+                Conflicting::Found => Conflict::Cancel,
+                Conflicting::Saving => Conflict::Overwrite,
+            },
+            rfd::MessageDialogResult::Custom(choice) if choice == "Reload" => Conflict::Reload,
+            // Cancel, or the dialog being dismissed. Changes nothing either way, which is the only
+            // safe default when the two versions are both somebody's work.
+            _ => Conflict::Cancel,
+        }
+    }
+}
+
 /// Tells the user a panic happened, and where to find the detail.
 ///
 /// Supplied to the library rather than living in it: `rfd` is loadable from this executable and not
@@ -71,6 +127,30 @@ fn report_panic(message: &str, log_path: Option<&std::path::Path>) {
 /// Off Windows there is no dialog to show; the log has it either way.
 #[cfg(not(windows))]
 fn report_panic(_message: &str, _log_path: Option<&std::path::Path>) {}
+
+/// Hands the editor everything that has to ask the user something, and the settings.
+///
+/// All of it lives out here rather than in the library for the manifest reason `NativePrompt`
+/// documents. The defaults inside the library are all the do-nothing answer, so an editor that never
+/// gets this call is safe but inert: it keeps every tab, writes nothing anybody did not choose, and
+/// saves nowhere it was not told to.
+#[cfg(windows)]
+fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
+    // Read once, at startup, and never written back — see `mdedit_app::config`.
+    editor.with_config(mdedit_app::config::Config::load());
+    // The editor keeps every tab by default when it has nobody to ask. This is the asking.
+    editor.with_prompt(Box::new(NativePrompt));
+    // Without this the editor answers Cancel to every conflict — safe, but it means a save over an
+    // externally changed file silently does nothing.
+    editor.with_conflict_prompt(Box::new(NativeConflict));
+    editor.with_file_picker(Box::new(|suggested| {
+        let mut dialog = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"]);
+        if let Some(name) = suggested {
+            dialog = dialog.set_file_name(name);
+        }
+        dialog.save_file()
+    }));
+}
 
 /// Opens the log and installs the panic hook, before anything that could need either.
 ///
@@ -176,17 +256,7 @@ fn main() {
         // the on-disk version first.
         editor.recover_snapshots();
 
-        // Read once, at startup, and never written back — see `mdedit_app::config`.
-        editor.with_config(mdedit_app::config::Config::load());
-        // The editor keeps every tab by default when it has nobody to ask. This is the asking.
-        editor.with_prompt(Box::new(NativePrompt));
-        editor.with_file_picker(Box::new(|suggested| {
-            let mut dialog = rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"]);
-            if let Some(name) = suggested {
-                dialog = dialog.set_file_name(name);
-            }
-            dialog.save_file()
-        }));
+        give_it_dialogs(&mut editor);
         // Menu commands arrive on muda's own channel; this is what carries them into the loop.
         editor.forward_menu(event_loop.create_proxy());
 
