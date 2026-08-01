@@ -223,3 +223,55 @@ fn select_the_word(editor: &mut Editor<Grid>) {
             mdedit_offsets::ByteOffset::new(4),
         ));
 }
+
+// ---- block formatting (MDEDIT-51) ----
+
+/// Typora's convention, and the one place a number key means something other than zoom.
+#[test]
+fn ctrl_1_to_6_set_heading_levels() {
+    for (character, expected) in [("1", "# "), ("3", "### "), ("6", "###### ")] {
+        let dir = TempDir::new().unwrap();
+        let (mut editor, _, _) = editor(&dir, None);
+        editor.insert_text("a line");
+
+        editor.apply_chord(character, false);
+        assert!(
+            editor.document().to_string().starts_with(expected),
+            "Ctrl+{character} should have produced {expected:?}, got {:?}",
+            editor.document().to_string()
+        );
+    }
+}
+
+/// Clearing back to a paragraph is pressing the same level again, because Ctrl+0 belongs to zoom.
+#[test]
+fn pressing_the_same_level_again_clears_it() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("a line");
+
+    editor.apply_chord("2", false);
+    assert!(editor.document().to_string().starts_with("## "));
+
+    editor.apply_chord("2", false);
+    assert!(
+        !editor.document().to_string().starts_with('#'),
+        "got {:?}",
+        editor.document().to_string()
+    );
+}
+
+/// And Ctrl+0 is still zoom, not a seventh heading level.
+#[test]
+fn ctrl_0_is_still_zoom() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("a line");
+    editor.apply_chord("=", false);
+    let zoomed = editor.body_size();
+
+    editor.apply_chord("0", false);
+
+    assert!(editor.body_size() < zoomed, "Ctrl+0 should have reset zoom");
+    assert!(!editor.document().to_string().starts_with('#'));
+}

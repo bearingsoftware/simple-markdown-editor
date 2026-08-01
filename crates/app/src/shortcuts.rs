@@ -72,6 +72,10 @@ pub const ALL: &[Group] = &[
                 "Ctrl+K",
                 "Link — uses a URL on the clipboard if there is one",
             ),
+            key(
+                "Ctrl+1 … Ctrl+6",
+                "Heading level — press the same level again to clear it",
+            ),
         ],
     },
     Group {

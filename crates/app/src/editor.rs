@@ -2024,6 +2024,13 @@ impl<T: TextLayout> Editor<T> {
             "=" | "+" => self.zoom_by(1),
             "-" | "_" => self.zoom_by(-1),
             "0" => self.reset_zoom(),
+            // Typora's convention. Typora also uses Ctrl+0 for "clear to paragraph", but that key
+            // belongs to zoom here and zoom's claim on it is the wider convention — so clearing is
+            // done by invoking the level a line already has, which is what `set_block` does.
+            "1" | "2" | "3" | "4" | "5" | "6" => {
+                let level = character.as_bytes().first().map_or(1, |byte| byte - b'0');
+                self.document_mut().set_block(format::Block::Heading(level))
+            }
             // The file pane, moved here from Ctrl+B. VS Code's chord for its explorer, which is the
             // convention people arriving from anywhere else already have.
             "e" | "E" => {
