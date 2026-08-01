@@ -222,7 +222,15 @@ impl FileFormat {
 /// focus and would get the feature turned off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stamp {
-    modified: Option<std::time::SystemTime>,
+    /// Milliseconds since the Unix epoch, or `None` when the filesystem would not say.
+    ///
+    /// Milliseconds rather than a `SystemTime` so this survives being written to a file and read
+    /// back **exactly** — MDEDIT-66 stores it alongside a buffer's stored copy, and a stamp that
+    /// changed slightly on the way through JSON would report every restored file as modified.
+    ///
+    /// No loss worth naming: the comparison already tolerates timestamps far coarser than this, as
+    /// this type's own documentation explains, and a length is the other half of the answer.
+    modified_ms: Option<u64>,
     len: u64,
 }
 
@@ -230,11 +238,37 @@ impl Stamp {
     /// Reads the stamp of whatever is at `path`, or `None` if it cannot be looked at.
     #[must_use]
     pub fn of(path: &Path) -> Option<Self> {
-        let metadata = fs::metadata(path).ok()?;
-        Some(Self {
-            modified: metadata.modified().ok(),
+        Some(Self::from_metadata(&fs::metadata(path).ok()?))
+    }
+
+    /// The stamp `metadata` describes.
+    ///
+    /// Always answers: a filesystem that will not report a modification time gives `None` for that
+    /// half and the length still stands, which is a weaker check rather than no check.
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        Self {
+            modified_ms: metadata.modified().ok().and_then(|at| {
+                at.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|since| u64::try_from(since.as_millis()).ok())
+            }),
             len: metadata.len(),
-        })
+        }
+    }
+
+    /// The stamp as two plain numbers, for storing somewhere that has no notion of a time.
+    #[must_use]
+    pub fn parts(self) -> (Option<u64>, u64) {
+        (self.modified_ms, self.len)
+    }
+
+    /// Rebuilds a stamp from [`parts`](Self::parts).
+    ///
+    /// Exact: the parts *are* the stamp, which is why the modification time is kept as a number
+    /// rather than as a `SystemTime`.
+    #[must_use]
+    pub fn from_parts(modified_ms: Option<u64>, len: u64) -> Self {
+        Self { modified_ms, len }
     }
 }
 
@@ -257,23 +291,25 @@ pub enum DiskState {
 /// the user as a dialog rather than on this function as a wrong return value.
 #[must_use]
 pub fn disk_state(path: &Path, file: &LoadedFile) -> DiskState {
-    let Some(recorded) = file.stamp else {
-        return DiskState::Unchanged;
-    };
+    file.stamp.map_or(DiskState::Unchanged, |recorded| {
+        matches_stamp(path, recorded)
+    })
+}
+
+/// Whether the file at `path` still looks as it did when `stamp` was taken.
+///
+/// What [`disk_state`] is, for a caller holding a stamp on its own rather than a whole
+/// [`LoadedFile`] — which is the position anything restoring a *stored* buffer is in: it has the
+/// text and the stamp it was written with, and no loaded file at all.
+#[must_use]
+pub fn matches_stamp(path: &Path, stamp: Stamp) -> DiskState {
     match fs::metadata(path) {
-        Ok(metadata) => {
-            let now = Stamp {
-                modified: metadata.modified().ok(),
-                len: metadata.len(),
-            };
-            if now == recorded {
-                DiskState::Unchanged
-            } else {
-                DiskState::Changed
-            }
-        }
+        Ok(metadata) if Stamp::from_metadata(&metadata) != stamp => DiskState::Changed,
         Err(error) if error.kind() == io::ErrorKind::NotFound => DiskState::Gone,
-        Err(_) => DiskState::Unchanged,
+        // Either it matches, or the metadata will not read for a reason other than absence. The
+        // second is "unchanged" for the reason `disk_state` documents: claiming a change on no
+        // evidence costs the user a dialog, and being wrong this way costs nothing.
+        _ => DiskState::Unchanged,
     }
 }
 

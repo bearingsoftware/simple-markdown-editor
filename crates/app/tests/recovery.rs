@@ -520,3 +520,183 @@ fn scratch_buffers_come_back_in_a_stable_order() {
     assert!(texts[1].contains("second"), "{texts:?}");
     assert!(texts[2].contains("third"), "{texts:?}");
 }
+
+// ---- restoring over a file that moved (MDEDIT-66 slice 3) ----
+
+/// Answers the file-changed question as told, and counts the asking.
+#[derive(Debug)]
+struct Conflicted(std::rc::Rc<std::cell::RefCell<(usize, mdedit_app::prompt::Conflict)>>);
+
+impl Conflicted {
+    fn saying(answer: mdedit_app::prompt::Conflict) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new((0, answer))))
+    }
+
+    fn share(&self) -> Self {
+        Self(std::rc::Rc::clone(&self.0))
+    }
+
+    fn asked(&self) -> usize {
+        self.0.borrow().0
+    }
+}
+
+impl mdedit_app::prompt::ConflictPrompt for Conflicted {
+    fn ask(
+        &mut self,
+        _name: &str,
+        _why: mdedit_app::prompt::Conflicting,
+    ) -> mdedit_app::prompt::Conflict {
+        let mut state = self.0.borrow_mut();
+        state.0 += 1;
+        state.1
+    }
+}
+
+/// Stores an edit to `path`, then hands back a fresh editor ready to restore it.
+fn stored_edit(dir: &TempDir, contents: &str) -> std::path::PathBuf {
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, contents).unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(path.clone());
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+    editor.insert_text("MY EDIT");
+    editor.on_idle();
+    path
+}
+
+fn restoring(dir: &TempDir, conflict: &Conflicted) -> Editor<Grid> {
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+    editor.with_conflict_prompt(Box::new(conflict.share()));
+    editor
+}
+
+/// The ordinary case: nothing else touched the file, so nothing is asked.
+#[test]
+fn an_unchanged_file_restores_without_asking() {
+    let dir = TempDir::new().unwrap();
+    stored_edit(&dir, "# Notes\n");
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Reload);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert_eq!(conflict.asked(), 0, "there was no conflict to ask about");
+    assert!(editor.document().to_string().contains("MY EDIT"));
+}
+
+/// The case this slice exists for. Reinstating silently would put an edit back on top of whatever
+/// else wrote the file.
+#[test]
+fn a_file_that_changed_underneath_is_asked_about() {
+    let dir = TempDir::new().unwrap();
+    let path = stored_edit(&dir, "# Notes\n");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, "# Notes\n\nsomething else wrote this\n").unwrap();
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Cancel);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert_eq!(conflict.asked(), 1);
+    assert!(
+        editor.document().to_string().contains("MY EDIT"),
+        "Cancel means keep mine, which is what restoring is"
+    );
+}
+
+/// Choosing the file drops the stored edit — and drops it *for good*, or the same question would be
+/// asked on every launch from now on.
+#[test]
+fn choosing_the_file_discards_the_stored_edit_for_good() {
+    let dir = TempDir::new().unwrap();
+    let path = stored_edit(&dir, "# Notes\n");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, "# Notes\n\nsomething else wrote this\n").unwrap();
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Reload);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert!(
+        !editor.document().to_string().contains("MY EDIT"),
+        "the stored edit should not have been put back"
+    );
+
+    let (left, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(
+        left.is_empty(),
+        "and it should be gone, or every launch asks again"
+    );
+}
+
+/// A scratch buffer has no file to conflict with, so it is never asked about however long it has
+/// been sitting there.
+#[test]
+fn a_scratch_buffer_is_never_asked_about() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+    editor.on_idle();
+    drop(editor);
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Reload);
+    let mut next = restoring(&dir, &conflict);
+    next.restore_unsaved_work(true);
+
+    assert_eq!(conflict.asked(), 0);
+    assert!(next.document().to_string().contains("a thought"));
+}
+
+/// A file deleted since is not a conflict: the stored text is then the only copy of itself, and it
+/// comes back as a scratch buffer rather than being argued about.
+#[test]
+fn a_deleted_file_is_not_a_conflict() {
+    let dir = TempDir::new().unwrap();
+    let path = stored_edit(&dir, "# Notes\n");
+    std::fs::remove_file(&path).unwrap();
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Reload);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert_eq!(conflict.asked(), 0, "there is nothing to conflict with");
+    assert!(editor.document().to_string().contains("MY EDIT"));
+}
+
+/// A copy stored by a build older than the stamp has nothing to compare against. Restoring it is
+/// right: refusing would lose work over a missing field.
+#[test]
+fn a_copy_with_no_stamp_is_restored() {
+    let dir = TempDir::new().unwrap();
+    let recovery = dir.path().join("recovery");
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "# Notes\n").unwrap();
+    std::fs::create_dir_all(&recovery).unwrap();
+    std::fs::write(recovery.join("1.snapshot"), "AN OLD EDIT\n").unwrap();
+    std::fs::write(
+        recovery.join("manifest.json"),
+        format!(
+            r#"{{"entries":[{{"id":1,"path":"{}"}}]}}"#,
+            // Windows separators need escaping for JSON.
+            path.display().to_string().replace('\\', "\\\\")
+        ),
+    )
+    .unwrap();
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Reload);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert_eq!(conflict.asked(), 0);
+    assert!(editor.document().to_string().contains("AN OLD EDIT"));
+}
