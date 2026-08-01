@@ -27,6 +27,7 @@ pub mod log;
 pub mod pane;
 pub mod prompt;
 pub mod scroll;
+pub mod scrollbar;
 pub mod shortcuts;
 pub mod status;
 pub mod tabs;

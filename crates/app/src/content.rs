@@ -98,6 +98,15 @@ impl ContentRect {
         self.left
     }
 
+    /// Where the document starts down the window, chrome and margin included.
+    ///
+    /// The scrollbar wants this: its track runs beside the document rather than beside the window,
+    /// so a tab strip above the text pushes the top of the bar down with it.
+    #[must_use]
+    pub fn top_edge(self) -> f32 {
+        self.top
+    }
+
     /// Whether a window point is inside the document's area rather than over chrome.
     #[must_use]
     pub fn contains(self, x: f32, y: f32) -> bool {
