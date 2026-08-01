@@ -1,8 +1,11 @@
-//! Crash recovery: what survives, what is refused, and what must not linger.
+//! Unsaved work: what survives, what is refused, and what must not linger.
 //!
-//! The lifecycle claims matter more than the happy path. A snapshot that outlives the work it
-//! protects offers to restore something already on disk, which teaches people to dismiss the offer —
-//! so "deleted on save" and "cleared on clean exit" are as much the feature as "written at all".
+//! The lifecycle claims matter more than the happy path. A stored copy that outlives the work it
+//! holds offers to restore something already on disk, which teaches people to dismiss the offer — so
+//! "deleted on save" and "deleted when its tab closes" are as much the feature as "written at all".
+//!
+//! Since MDEDIT-66 a copy is **not** cleared on a clean exit: surviving an ordinary quit is the
+//! point.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -82,17 +85,23 @@ fn forgetting_removes_it() {
     assert_eq!(recovered[0].text, "b\n");
 }
 
-/// The signal the whole feature rests on: something left behind means the last run did not end here.
+/// Forgetting the last entry takes the manifest with it, so an empty store leaves no file behind to
+/// be read, refused or worried about.
+///
+/// **Replaces `a_clean_exit_leaves_nothing_to_recover`.** A clean exit used to clear the lot — that
+/// was how the editor told a crash from a quit — and MDEDIT-66 removed both the clearing and the
+/// `clear` method with it. Forgetting one at a time is the only way entries leave now.
 #[test]
-fn a_clean_exit_leaves_nothing_to_recover() {
+fn forgetting_everything_leaves_nothing_behind() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
     writer.write(1, None, "a\n").unwrap();
     writer.write(2, None, "b\n").unwrap();
-    writer.clear();
+    writer.forget(1).unwrap();
+    writer.forget(2).unwrap();
 
     let (recovered, skipped) = store(&dir).read_all();
-    assert!(recovered.is_empty(), "a clean exit must leave nothing");
+    assert!(recovered.is_empty());
     assert!(skipped.is_empty(), "and nothing to complain about");
 }
 
@@ -181,4 +190,81 @@ fn writing_leaves_no_temporary_behind() {
 fn an_unwritable_directory_is_an_error_not_a_panic() {
     let mut writer = Store::in_directory(std::path::PathBuf::from("\0invalid"));
     assert!(writer.write(1, None, "x").is_err());
+}
+
+/// A missing file is not a hostile one.
+///
+/// `validate`'s last rule is that the path names an existing regular file. A stored edit whose file
+/// has been *deleted* fails it — and dropping the entry took the text with it, in exactly the case
+/// where the stored copy is the only copy left. It now comes back with no path instead.
+#[test]
+fn a_deleted_file_keeps_its_text_and_loses_its_path() {
+    let dir = TempDir::new().unwrap();
+    let path = a_file(&dir, "notes.md");
+
+    let mut writer = store(&dir);
+    writer.write(1, Some(&path), "the only copy\n").unwrap();
+    std::fs::remove_file(&path).unwrap();
+
+    let (recovered, skipped) = store(&dir).read_all();
+    assert_eq!(recovered.len(), 1, "the text must survive");
+    assert_eq!(recovered[0].text, "the only copy\n");
+    assert!(
+        recovered[0].path.is_none(),
+        "and come back with no file, since there is none"
+    );
+    assert_eq!(skipped.len(), 1, "said out loud rather than silently");
+}
+
+/// And relaxing that one rule relaxed nothing else. These are the security rules, and they still
+/// refuse outright rather than downgrading — a UNC path is not a file that happens to be missing.
+#[test]
+fn the_security_rules_still_refuse_outright() {
+    let dir = TempDir::new().unwrap();
+    let recovery = dir.path().join("recovery");
+    std::fs::create_dir_all(&recovery).unwrap();
+    std::fs::write(recovery.join("1.snapshot"), "content\n").unwrap();
+    std::fs::write(recovery.join("2.snapshot"), "content\n").unwrap();
+    std::fs::write(
+        recovery.join("manifest.json"),
+        r#"{"entries":[
+            {"id":1,"path":"\\\\evil.example\\share\\x.md"},
+            {"id":2,"path":"relative/note.md"}
+        ]}"#,
+    )
+    .unwrap();
+
+    let (recovered, skipped) = store(&dir).read_all();
+    assert!(
+        recovered.is_empty(),
+        "neither may come back, with or without its path: {recovered:?}"
+    );
+    assert_eq!(skipped.len(), 2);
+    assert!(skipped.iter().all(|s| s.contains("refused")), "{skipped:?}");
+}
+
+/// The stamp is stored alongside the text, and comes back exactly — a stamp that shifted on the way
+/// through JSON would report every restored file as modified.
+#[test]
+fn the_stamp_round_trips_exactly() {
+    let dir = TempDir::new().unwrap();
+    let path = a_file(&dir, "notes.md");
+    let taken = mdedit_file::Stamp::of(&path).unwrap();
+
+    let mut writer = store(&dir);
+    writer.write(1, Some(&path), "unsaved\n").unwrap();
+
+    let (recovered, _) = store(&dir).read_all();
+    assert_eq!(recovered[0].stamp, Some(taken));
+}
+
+/// A buffer with no file has no stamp to store.
+#[test]
+fn a_scratch_buffer_has_no_stamp() {
+    let dir = TempDir::new().unwrap();
+    let mut writer = store(&dir);
+    writer.write(1, None, "a thought\n").unwrap();
+
+    let (recovered, _) = store(&dir).read_all();
+    assert!(recovered[0].stamp.is_none());
 }

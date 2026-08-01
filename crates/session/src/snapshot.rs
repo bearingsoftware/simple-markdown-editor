@@ -16,8 +16,12 @@
 //! leave the *previous* snapshot intact rather than a half-written one; a recovery file that cannot
 //! be trusted is worse than none, because the user will trust it.
 //!
-//! **Deleted on save and on clean exit.** A snapshot outliving the work it protects would offer to
-//! restore something already on disk, which teaches people to dismiss the offer.
+//! **Deleted on save, and when its tab closes.** A stored copy outliving the work it holds would
+//! offer to restore something already on disk, which teaches people to dismiss the offer.
+//!
+//! It is **not** deleted on a clean exit any more (MDEDIT-66). Surviving an ordinary quit is the
+//! point: unsaved work comes back next time. A crash is told apart by a marker in the session file
+//! instead — see `last_run_ended_cleanly`.
 //!
 //! # The trust boundary is the manifest, not the content
 //!
@@ -31,7 +35,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::path::validate;
+use crate::path::{PathRejected, validate};
 
 /// Largest snapshot manifest that will be read.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -42,10 +46,21 @@ const MAX_SNAPSHOT_BYTES: u64 = 64 * 1024 * 1024;
 /// One recovered buffer.
 #[derive(Debug)]
 pub struct Recovered {
+    /// Which stored copy this is, so a caller that decides against it can remove it.
+    ///
+    /// Without this a stored edit the user declined would be offered again on every launch, which
+    /// turns a safeguard into a nuisance and then into something people click through.
+    pub id: u64,
     /// The file it belonged to, or `None` if it was never saved anywhere.
     pub path: Option<PathBuf>,
     /// What was in the buffer when it was last snapshotted.
     pub text: String,
+    /// What the file looked like when this copy was stored.
+    ///
+    /// `None` for a buffer with no file, and for one stored by a build before MDEDIT-66 added this.
+    /// A caller with no stamp cannot tell whether the file has moved on, and should say so rather
+    /// than assume either way.
+    pub stamp: Option<mdedit_file::Stamp>,
 }
 
 /// What the manifest records about one snapshot.
@@ -56,6 +71,16 @@ struct Entry {
     /// The file the buffer came from, absent for an untitled one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     path: Option<PathBuf>,
+    /// The file's modification time in milliseconds when this copy was stored.
+    ///
+    /// Two plain numbers rather than a [`mdedit_file::Stamp`] because this file is JSON and that
+    /// type is not `serde`'s business — see [`mdedit_file::Stamp::parts`], which exists for exactly
+    /// this and round-trips exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modified_ms: Option<u64>,
+    /// The file's length when this copy was stored. Absent together with `modified_ms`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    len: Option<u64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -113,6 +138,15 @@ impl Store {
         std::fs::create_dir_all(&self.directory)?;
         write_atomically(&self.snapshot_path(id), text.as_bytes())?;
 
+        // What the file looked like at the moment this copy was taken, so a later restore can tell
+        // whether anything else has written it since. `None` for a buffer with no file.
+        let (modified_ms, len) =
+            path.and_then(mdedit_file::Stamp::of)
+                .map_or((None, None), |stamp| {
+                    let (modified_ms, len) = stamp.parts();
+                    (modified_ms, Some(len))
+                });
+
         if let Some(entry) = self
             .manifest
             .entries
@@ -120,10 +154,14 @@ impl Store {
             .find(|entry| entry.id == id)
         {
             entry.path = path.map(Path::to_path_buf);
+            entry.modified_ms = modified_ms;
+            entry.len = len;
         } else {
             self.manifest.entries.push(Entry {
                 id,
                 path: path.map(Path::to_path_buf),
+                modified_ms,
+                len,
             });
         }
         self.write_manifest()
@@ -142,17 +180,6 @@ impl Store {
             return Ok(());
         }
         self.write_manifest()
-    }
-
-    /// Removes everything. Called on a clean exit, which is what makes a surviving snapshot mean
-    /// "the last run did not end cleanly".
-    pub fn clear(&mut self) {
-        for entry in &self.manifest.entries {
-            let _ = std::fs::remove_file(self.snapshot_path(entry.id));
-        }
-        self.manifest.entries.clear();
-        let _ = std::fs::remove_file(self.manifest_path());
-        let _ = std::fs::remove_dir(&self.directory);
     }
 
     /// Reads whatever survived, and reports anything refused.
@@ -193,10 +220,31 @@ impl Store {
         for entry in &manifest.entries {
             // The same boundary the session file has, for the same reason: this is a file this
             // process wrote into a directory something else may be able to write too.
-            if let Some(path) = &entry.path {
-                if let Err(reason) = validate(path) {
-                    skipped.push(format!("recovery entry refused: {reason}"));
-                    continue;
+            //
+            // **One rejection is not a refusal.** `validate`'s last rule is that the path names an
+            // existing regular file, and a stored edit whose file has since been *deleted* fails it
+            // — which used to drop the entry and with it the text, in precisely the case where the
+            // stored copy is the only copy left in the world. So a missing file downgrades the entry
+            // to one with no path, and the text survives as a scratch buffer.
+            //
+            // The other three rules are the security ones — UNC and device paths, relative paths,
+            // traversal — and they still refuse outright. Nothing here loosens them, and the path is
+            // dropped rather than carried forward, so nothing downstream can open it.
+            let mut path = entry.path.clone();
+            if let Some(named) = &entry.path {
+                match validate(named) {
+                    Ok(()) => {}
+                    Err(PathRejected::NotAFile(_)) => {
+                        skipped.push(format!(
+                            "{} has gone; its unsaved text comes back with no file",
+                            named.display()
+                        ));
+                        path = None;
+                    }
+                    Err(reason) => {
+                        skipped.push(format!("recovery entry refused: {reason}"));
+                        continue;
+                    }
                 }
             }
 
@@ -210,8 +258,14 @@ impl Store {
             }
             match std::fs::read_to_string(&snapshot) {
                 Ok(text) => recovered.push(Recovered {
-                    path: entry.path.clone(),
+                    id: entry.id,
+                    path,
                     text,
+                    // Both halves or neither: a length with no time, or the other way round, is not
+                    // a stamp and must not be treated as one.
+                    stamp: entry
+                        .len
+                        .map(|len| mdedit_file::Stamp::from_parts(entry.modified_ms, len)),
                 }),
                 Err(error) => skipped.push(format!("{}: {error}", snapshot.display())),
             }

@@ -1123,12 +1123,20 @@ impl<T: TextLayout> Editor<T> {
     /// showing what is on disk. Relied on rather than re-implemented here; pinned by a test, because
     /// it is a guarantee of `add` that this depends on rather than an accident.
     fn restore_one(&mut self, entry: &mdedit_session::snapshot::Recovered) {
+        // A stored edit is only about the bytes it was taken from. If something else has written the
+        // file since, reinstating it silently would put an edit back on top of somebody's work — the
+        // same hazard MDEDIT-55 answers when the editor is running, answered here the same way.
+        if !self.stored_edit_is_wanted(entry) {
+            return;
+        }
+
         let index = match &entry.path {
             Some(path) => {
                 let index = self.workspace.add(path.clone());
                 if self.workspace.activate(index).is_err() {
-                    // The file has gone since the crash. The text still matters, so it comes back
-                    // as an untitled buffer rather than being dropped.
+                    // The file has gone since. The text still matters, so it comes back as an
+                    // untitled buffer rather than being dropped — which is what MDEDIT-55 already
+                    // does for a file deleted under a live tab.
                     self.workspace.add_untitled()
                 } else {
                     index
@@ -1147,6 +1155,53 @@ impl<T: TextLayout> Editor<T> {
         let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(open.document.len_bytes()));
         if let Err(error) = open.document.replace(whole, &entry.text) {
             crate::log_error!("could not restore a recovered buffer: {error}");
+        }
+    }
+
+    /// Whether a stored edit should be put back, asking if the file has moved on since.
+    ///
+    /// Three cases, and only the middle one asks:
+    ///
+    /// - **Nothing to compare against** — a scratch buffer, or a copy stored by a build older than
+    ///   the stamp. Restored. A scratch buffer has no file to conflict with, and refusing to restore
+    ///   an old copy would lose work over a missing field.
+    /// - **The file has changed** — ask. Reinstating silently would put an edit back on top of
+    ///   whatever else wrote it, which is the hazard MDEDIT-55 exists to prevent while the editor is
+    ///   running; a copy that has been sitting on disk since the last session is if anything more
+    ///   likely to be stale.
+    /// - **Unchanged, or gone** — restored. Gone is not a conflict: the stored text is then the only
+    ///   copy, and `restore_one` brings it back as a scratch buffer that remembers its path.
+    fn stored_edit_is_wanted(&mut self, entry: &mdedit_session::snapshot::Recovered) -> bool {
+        let (Some(path), Some(stamp)) = (entry.path.as_deref(), entry.stamp) else {
+            return true;
+        };
+        if mdedit_file::matches_stamp(path, stamp) != mdedit_file::DiskState::Changed {
+            return true;
+        }
+
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        // `Found` rather than `Saving`: nothing is being written, and the question is which version
+        // to look at — which is exactly what that wording says.
+        match self.conflict.ask(&name, Conflicting::Found) {
+            // Take the stored edit, which is what restoring is.
+            Conflict::Cancel => true,
+            // Take what is on disk. The stored copy goes, or the same question would be asked on
+            // every launch from now on — which is how a safeguard becomes a nuisance and then
+            // becomes something people click through without reading.
+            Conflict::Reload | Conflict::Overwrite => {
+                crate::log_error!(
+                    "{name} changed on disk; keeping the file rather than the stored edit"
+                );
+                if let Some(store) = self.snapshots.as_mut() {
+                    if let Err(error) = store.forget(entry.id) {
+                        crate::log_error!("could not remove the stored edit: {error}");
+                    }
+                }
+                false
+            }
         }
     }
 
