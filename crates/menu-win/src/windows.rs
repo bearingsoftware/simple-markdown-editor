@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
-use muda::{Menu, MenuEvent, MenuId, MenuItem, MenuTheme, Submenu};
+use muda::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, MenuTheme, Submenu};
 
 use crate::Command;
 
@@ -30,6 +30,9 @@ pub struct MenuBar {
     /// The ids in the context menu currently being shown, and what each means. Shared and rebuilt
     /// for the same reasons `recent_ids` is — see `show_context_menu`.
     context_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
+    /// The View menu's three toggles, kept so their ticks can be made to match the editor. See
+    /// [`Self::set_view`].
+    view_toggles: [CheckMenuItem; 3],
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -54,83 +57,12 @@ impl MenuBar {
 
         let file = Submenu::new("&File", true);
         let edit = Submenu::new("&Edit", true);
+        let view = Submenu::new("&View", true);
         let help = Submenu::new("&Help", true);
 
-        // Accelerator text only — see the crate docs. The key handler owns the chords.
-        let items = [
-            (
-                &file,
-                "&New",
-                Command::New,
-                Some((Modifiers::CONTROL, Code::KeyN)),
-            ),
-            (
-                &file,
-                "&Open…",
-                Command::Open,
-                Some((Modifiers::CONTROL, Code::KeyO)),
-            ),
-            (
-                &file,
-                "&Save",
-                Command::Save,
-                Some((Modifiers::CONTROL, Code::KeyS)),
-            ),
-            (
-                &file,
-                "Save &As…",
-                Command::SaveAs,
-                Some((Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyS)),
-            ),
-            (&file, "Save A&ll", Command::SaveAll, None),
-            (
-                &file,
-                "&Close",
-                Command::Close,
-                Some((Modifiers::CONTROL, Code::KeyW)),
-            ),
-            (&file, "Close A&ll", Command::CloseAll, None),
-            (
-                &edit,
-                "&Undo",
-                Command::Undo,
-                Some((Modifiers::CONTROL, Code::KeyZ)),
-            ),
-            (
-                &edit,
-                "&Redo",
-                Command::Redo,
-                Some((Modifiers::CONTROL, Code::KeyY)),
-            ),
-            (
-                &edit,
-                "Cu&t",
-                Command::Cut,
-                Some((Modifiers::CONTROL, Code::KeyX)),
-            ),
-            (
-                &edit,
-                "&Copy",
-                Command::Copy,
-                Some((Modifiers::CONTROL, Code::KeyC)),
-            ),
-            (
-                &edit,
-                "&Paste",
-                Command::Paste,
-                Some((Modifiers::CONTROL, Code::KeyV)),
-            ),
-            (&help, "&Keyboard Shortcuts", Command::Shortcuts, None),
-            (&help, "&About", Command::About, None),
-        ];
+        add_items(&file, &edit, &view, &help, &mut commands)?;
 
-        for (menu, label, command, chord) in items {
-            let accelerator =
-                chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
-            let item = MenuItem::new(label, true, accelerator);
-            commands.insert(item.id().clone(), command);
-            menu.append(&item).ok()?;
-        }
+        let view_toggles = add_view_toggles(&view, &mut commands)?;
 
         // Empty and disabled until the app fills it in — see `set_recent`. Placed after Open, where
         // every editor puts it.
@@ -144,6 +76,7 @@ impl MenuBar {
 
         menu.append(&file).ok()?;
         menu.append(&edit).ok()?;
+        menu.append(&view).ok()?;
         menu.append(&help).ok()?;
         Some(Self {
             menu,
@@ -151,7 +84,20 @@ impl MenuBar {
             recent,
             recent_ids: Arc::new(Mutex::new(HashMap::new())),
             context_ids: Arc::new(Mutex::new(HashMap::new())),
+            view_toggles,
         })
+    }
+
+    /// Makes the View menu's ticks match the editor.
+    ///
+    /// Called after anything that could have changed one — including a *chord*, which is the case a
+    /// menu that only watched its own clicks would get wrong. Cheap enough to call every time rather
+    /// than working out whether it was needed.
+    pub fn set_view(&self, state: crate::ViewState) {
+        let [plain_markup, file_pane, line_numbers] = &self.view_toggles;
+        plain_markup.set_checked(state.plain_markup);
+        file_pane.set_checked(state.file_pane);
+        line_numbers.set_checked(state.line_numbers);
     }
 
     /// Replaces the Open Recent submenu with `labels`, most recent first.
@@ -322,4 +268,164 @@ impl MenuBar {
             }
         }));
     }
+}
+
+/// Puts the three toggles at the top of the View menu, and says what each means.
+///
+/// **Check items, not plain ones**, and that is the reason those three are in a menu at all: a chord
+/// can toggle something but cannot tell you which way it is now. [`MenuBar::set_view`] keeps the
+/// ticks true — including when the *chord* was used, which is the case a menu that only knew about
+/// its own clicks would get wrong.
+///
+/// Inserted at the top rather than appended, because the zoom items went in with the rest of the
+/// menu bar and what the view *is* belongs above how big it is drawn.
+fn add_view_toggles(
+    view: &Submenu,
+    commands: &mut HashMap<MenuId, Command>,
+) -> Option<[CheckMenuItem; 3]> {
+    let plain_markup = CheckMenuItem::new(
+        "&Plain Markup",
+        true,
+        false,
+        Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Slash)),
+    );
+    let file_pane = CheckMenuItem::new(
+        "&File Pane",
+        true,
+        false,
+        Some(Accelerator::new(
+            Some(Modifiers::CONTROL | Modifiers::SHIFT),
+            Code::KeyE,
+        )),
+    );
+    // No accelerator, because there is no chord: this one has never had one and does not need one.
+    let line_numbers = CheckMenuItem::new("&Line Numbers", true, false, None);
+
+    for (index, (item, command)) in [
+        (&plain_markup, Command::PlainMarkup),
+        (&file_pane, Command::FilePane),
+        (&line_numbers, Command::LineNumbers),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        commands.insert(item.id().clone(), command);
+        view.insert(item, index).ok()?;
+    }
+    view.insert(&muda::PredefinedMenuItem::separator(), 3)
+        .ok()?;
+
+    Some([plain_markup, file_pane, line_numbers])
+}
+
+/// Puts every ordinary item in its submenu, and says what each means.
+///
+/// One table rather than four builders: the shape is identical everywhere and a list reads better
+/// than a sequence of calls. The accelerators are **labels only** — see the crate docs for why that
+/// is deliberate and must stay that way.
+fn add_items(
+    file: &Submenu,
+    edit: &Submenu,
+    view: &Submenu,
+    help: &Submenu,
+    commands: &mut HashMap<MenuId, Command>,
+) -> Option<()> {
+    let items = [
+        (
+            file,
+            "&New",
+            Command::New,
+            Some((Modifiers::CONTROL, Code::KeyN)),
+        ),
+        (
+            file,
+            "&Open…",
+            Command::Open,
+            Some((Modifiers::CONTROL, Code::KeyO)),
+        ),
+        (
+            file,
+            "&Save",
+            Command::Save,
+            Some((Modifiers::CONTROL, Code::KeyS)),
+        ),
+        (
+            file,
+            "Save &As…",
+            Command::SaveAs,
+            Some((Modifiers::CONTROL | Modifiers::SHIFT, Code::KeyS)),
+        ),
+        (file, "Save A&ll", Command::SaveAll, None),
+        (
+            file,
+            "&Close",
+            Command::Close,
+            Some((Modifiers::CONTROL, Code::KeyW)),
+        ),
+        (file, "Close A&ll", Command::CloseAll, None),
+        (
+            edit,
+            "&Undo",
+            Command::Undo,
+            Some((Modifiers::CONTROL, Code::KeyZ)),
+        ),
+        (
+            edit,
+            "&Redo",
+            Command::Redo,
+            Some((Modifiers::CONTROL, Code::KeyY)),
+        ),
+        (
+            edit,
+            "Cu&t",
+            Command::Cut,
+            Some((Modifiers::CONTROL, Code::KeyX)),
+        ),
+        (
+            edit,
+            "&Copy",
+            Command::Copy,
+            Some((Modifiers::CONTROL, Code::KeyC)),
+        ),
+        (
+            edit,
+            "&Paste",
+            Command::Paste,
+            Some((Modifiers::CONTROL, Code::KeyV)),
+        ),
+        (
+            edit,
+            "Select &All",
+            Command::SelectAll,
+            Some((Modifiers::CONTROL, Code::KeyA)),
+        ),
+        (
+            view,
+            "Zoom &In",
+            Command::ZoomIn,
+            Some((Modifiers::CONTROL, Code::Equal)),
+        ),
+        (
+            view,
+            "Zoom &Out",
+            Command::ZoomOut,
+            Some((Modifiers::CONTROL, Code::Minus)),
+        ),
+        (
+            view,
+            "&Reset Zoom",
+            Command::ResetZoom,
+            Some((Modifiers::CONTROL, Code::Digit0)),
+        ),
+        (help, "&Keyboard Shortcuts", Command::Shortcuts, None),
+        (help, "&About", Command::About, None),
+    ];
+
+    for (menu, label, command, chord) in items {
+        let accelerator = chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
+        let item = MenuItem::new(label, true, accelerator);
+        commands.insert(item.id().clone(), command);
+        menu.append(&item).ok()?;
+    }
+    Some(())
 }

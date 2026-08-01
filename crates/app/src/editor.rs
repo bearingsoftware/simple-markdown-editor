@@ -1341,6 +1341,21 @@ impl<T: TextLayout> Editor<T> {
             }
             Command::Open => self.open_prompted(),
             Command::OpenRecent(index) => self.open_recent(index),
+            Command::PlainMarkup => {
+                self.toggle_mode();
+                true
+            }
+            Command::FilePane => {
+                self.toggle_chrome();
+                true
+            }
+            Command::LineNumbers => {
+                self.toggle_line_numbers();
+                true
+            }
+            Command::ZoomIn => self.zoom_by(1),
+            Command::ZoomOut => self.zoom_by(-1),
+            Command::ResetZoom => self.reset_zoom(),
             Command::Shortcuts => self.show_shortcuts(),
             Command::About => {
                 (self.show_about)();
@@ -1396,9 +1411,10 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         self.menu = Some(menu);
-        // The list was read before the window existed, so this is the first chance the submenu has
-        // had to be filled in.
+        // Both were decided before the window existed — the recent list from its file, the view
+        // toggles from the settings — so this is the first chance either has had to reach the menu.
         self.refresh_recent_menu();
+        self.refresh_view_menu();
     }
 
     /// Carries menu commands into this editor's event loop.
@@ -2609,6 +2625,7 @@ impl<T: TextLayout> Editor<T> {
         // markers have appeared, and every heading has changed size. Bring it back into view rather
         // than leaving the reader hunting for it.
         self.follow_caret = true;
+        self.refresh_view_menu();
     }
 
     /// Which view the document is drawn in.
@@ -3090,6 +3107,41 @@ impl<T: TextLayout> Editor<T> {
         // rather than here — see `crate::config`.
         let chrome = self.chrome;
         self.settings.update(|config| config.chrome = chrome);
+        self.refresh_view_menu();
+    }
+
+    /// Shows or hides the line-number gutter, and remembers which.
+    ///
+    /// The setting existed from MDEDIT-22 and could only be changed by editing the file and
+    /// restarting. MDEDIT-60 gave it somewhere to be written and this gives it somewhere to be
+    /// clicked.
+    pub fn toggle_line_numbers(&mut self) {
+        self.config.line_numbers = !self.config.line_numbers;
+        let on = self.config.line_numbers;
+        self.settings.update(|config| config.line_numbers = on);
+        // The gutter changes the document's width, so every chunk wraps differently — and a layout
+        // cached at the old width would draw the old wrapping.
+        self.layouts.clear();
+        self.heights.clear();
+        self.digits = None;
+        self.refresh_view_menu();
+    }
+
+    /// Makes the View menu's ticks match the editor.
+    ///
+    /// Called from every path that changes one, **including the chords** — a menu that only knew
+    /// about its own clicks would show the wrong state the moment anybody pressed Ctrl+/. That is
+    /// the cost of check items, and the reason they are worth it: a chord can toggle something but
+    /// cannot tell you which way it is now.
+    fn refresh_view_menu(&self) {
+        let Some(menu) = self.menu.as_ref() else {
+            return;
+        };
+        menu.set_view(mdedit_menu_win::ViewState {
+            plain_markup: self.mode == view::Mode::Plain,
+            file_pane: self.chrome == Chrome::Pane,
+            line_numbers: self.config.line_numbers,
+        });
     }
 
     /// A left-click anywhere in the window.
