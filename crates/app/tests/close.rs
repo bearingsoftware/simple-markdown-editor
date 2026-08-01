@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use mdedit_app::editor::Editor;
-use mdedit_app::prompt::{Unsaved, UnsavedPrompt};
+use mdedit_app::prompt::{Closing, Unsaved, UnsavedPrompt};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
@@ -47,7 +47,7 @@ impl Scripted {
 }
 
 impl UnsavedPrompt for Scripted {
-    fn ask(&mut self, name: &str) -> Unsaved {
+    fn ask(&mut self, name: &str, _what: Closing) -> Unsaved {
         let mut asked = self.0.borrow_mut();
         asked.dialogs.push(vec![name.to_owned()]);
         asked.answer.expect("asked without a scripted answer")

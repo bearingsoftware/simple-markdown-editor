@@ -30,22 +30,37 @@ struct NativePrompt;
 
 #[cfg(windows)]
 impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
-    fn ask(&mut self, name: &str) -> mdedit_app::prompt::Unsaved {
-        use mdedit_app::prompt::Unsaved;
+    fn ask(
+        &mut self,
+        name: &str,
+        what: mdedit_app::prompt::Closing,
+    ) -> mdedit_app::prompt::Unsaved {
+        use mdedit_app::prompt::{Closing, Unsaved};
+
+        // A scratch buffer has nowhere to go, so the button that saves it opens a picker. Labelling
+        // that "Save" would be a small lie, and the description says where the text lives now — the
+        // one place it exists is the editor's own store.
+        let (save, description) = match what {
+            Closing::File => ("Save".to_owned(), format!("{name} has unsaved changes.")),
+            Closing::Scratch => (
+                "Save As…".to_owned(),
+                format!("{name} has never been saved anywhere.\n\nDiscarding it loses it."),
+            ),
+        };
 
         let answer = rfd::MessageDialog::new()
             .set_title("Unsaved changes")
-            .set_description(format!("{name} has unsaved changes."))
+            .set_description(description)
             .set_level(rfd::MessageLevel::Warning)
             .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-                "Save".to_owned(),
+                save.clone(),
                 "Discard".to_owned(),
                 "Cancel".to_owned(),
             ))
             .show();
 
         match answer {
-            rfd::MessageDialogResult::Custom(choice) if choice == "Save" => Unsaved::Save,
+            rfd::MessageDialogResult::Custom(choice) if choice == save => Unsaved::Save,
             rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
             // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work is
             // the one outcome that must never be the default.

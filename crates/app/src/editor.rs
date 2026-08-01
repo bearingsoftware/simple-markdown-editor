@@ -40,7 +40,8 @@ use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::pane;
 use crate::prompt::{
-    ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved, UnsavedPrompt,
+    self, ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved,
+    UnsavedPrompt,
 };
 use crate::scroll::{self, Scroll};
 use crate::status;
@@ -1682,23 +1683,33 @@ impl<T: TextLayout> Editor<T> {
             .is_some_and(mdedit_session::Tab::is_modified);
 
         if modified {
-            let name = self
-                .workspace
-                .tabs()
-                .get(index)
-                .map_or_else(|| "this file".to_owned(), mdedit_session::Tab::display_name);
+            let (name, scratch) = self.workspace.tabs().get(index).map_or_else(
+                || ("this file".to_owned(), false),
+                |tab| (tab.display_name(), tab.is_untitled()),
+            );
+            let what = if scratch {
+                prompt::Closing::Scratch
+            } else {
+                prompt::Closing::File
+            };
 
-            match self.prompt.ask(&name) {
+            match self.prompt.ask(&name, what) {
                 Unsaved::Save => {
                     // Saving the tab being closed means showing it first: `save` works on the
                     // active tab, which is the only one whose bytes we hold.
                     if self.workspace.activate(index).is_err() {
                         return false;
                     }
-                    self.save();
-                    // A failed save leaves the buffer dirty, and closing then would lose it. That
-                    // includes an untitled buffer, where `save` has nowhere to write and does
-                    // nothing at all.
+                    // A scratch buffer has nowhere to go, so Save means asking where. Before
+                    // MDEDIT-66 this called `save`, which declined silently — the user pressed Save,
+                    // nothing happened, and the only evidence was a line in the log.
+                    if scratch {
+                        self.save_as_prompted();
+                    } else {
+                        self.save();
+                    }
+                    // A failed save leaves the buffer dirty, and closing then would lose it —
+                    // including a Save As the user declined.
                     if self.is_modified() {
                         crate::log_error!("not closing {name}: the save did not succeed");
                         return false;

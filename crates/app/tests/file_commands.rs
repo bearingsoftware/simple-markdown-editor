@@ -298,7 +298,7 @@ impl Answers {
 }
 
 impl UnsavedPrompt for Answers {
-    fn ask(&mut self, _name: &str) -> Unsaved {
+    fn ask(&mut self, _name: &str, _what: mdedit_app::prompt::Closing) -> Unsaved {
         let mut state = self.0.borrow_mut();
         state.1 += 1;
         state.0
