@@ -35,7 +35,7 @@
 //! the only bytes that change are the delimiters, which the user asked for. Toggling twice restores
 //! the original exactly, and that is property-tested rather than asserted.
 
-use mdedit_language::{Marker, SegmentKind};
+use mdedit_language::{BlockKind, Marker, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 
 use crate::{Document, Selection};
@@ -274,6 +274,553 @@ impl Document {
             } else {
                 doc.set_selection(Selection::caret(end));
             }
+        });
+        true
+    }
+}
+
+// ---- block formatting (MDEDIT-51) ----
+
+/// A line-wise construct that can be turned on and off.
+///
+/// Quote is deliberately not here: it is *orthogonal* to the rest and sits outside them — a quoted
+/// list is `> - item` — so it toggles on its own and does not have to be stripped to change a list
+/// into a heading. See [`Document::toggle_quote`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Block {
+    /// An ATX heading of this level, 1–6.
+    Heading(u8),
+    /// `- ` in front of each line.
+    Bullet,
+    /// `1. `, renumbered from one on every application.
+    Ordered,
+    /// `- [ ] `, a bullet with a checkbox.
+    Task,
+}
+
+/// A line taken apart into the pieces block formatting rewrites.
+///
+/// Splitting rather than pattern-matching whole lines is what makes the operations compose: changing
+/// a bullet into a heading is a change to one field, and quoting it is a change to another, so the
+/// two cannot corrupt each other.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Parts {
+    /// Leading whitespace. Kept exactly, so an indented continuation line stays where it was.
+    indent: String,
+    /// The run of `> ` prefixes, however many deep.
+    quotes: String,
+    /// The heading or list marker, with its trailing space. Empty for a paragraph.
+    marker: String,
+    /// Everything after it.
+    content: String,
+}
+
+impl Parts {
+    /// Puts the line back together.
+    fn joined(&self) -> String {
+        format!(
+            "{}{}{}{}",
+            self.indent, self.quotes, self.marker, self.content
+        )
+    }
+
+    /// Whether this line already carries `what`.
+    fn is(&self, what: Block) -> bool {
+        match what {
+            Block::Heading(level) => self.marker.trim_end() == "#".repeat(level as usize),
+            // A task is a bullet whose content starts with a checkbox, so it has to be tested before
+            // plain bullet or every task would answer to both.
+            Block::Task => is_bullet(&self.marker) && checkbox_len(&self.content).is_some(),
+            Block::Bullet => is_bullet(&self.marker) && checkbox_len(&self.content).is_none(),
+            Block::Ordered => is_ordered(&self.marker),
+        }
+    }
+}
+
+/// Whether `marker` is a bullet marker.
+fn is_bullet(marker: &str) -> bool {
+    matches!(marker.trim_end(), "-" | "*" | "+")
+}
+
+/// Whether `marker` is an ordered-list marker.
+fn is_ordered(marker: &str) -> bool {
+    let trimmed = marker.trim_end();
+    let Some(digits) = trimmed.strip_suffix(['.', ')']) else {
+        return false;
+    };
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// How many bytes of `content` are a task checkbox, if it opens with one.
+fn checkbox_len(content: &str) -> Option<usize> {
+    let rest = content.strip_prefix('[')?;
+    let mut chars = rest.chars();
+    let state = chars.next()?;
+    if !matches!(state, ' ' | 'x' | 'X') {
+        return None;
+    }
+    let after = chars.as_str().strip_prefix(']')?;
+    // The trailing space is part of the checkbox: `[ ]text` is not one.
+    let space = usize::from(after.starts_with(' '));
+    (space == 1).then_some(1 + state.len_utf8() + 1 + space)
+}
+
+/// Splits one line's text into [`Parts`].
+fn split_line(line: &str) -> Parts {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+
+    let indent: String = line
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let mut rest = &line[indent.len()..];
+
+    // Quotes come outermost and may repeat, so they are taken before anything else.
+    let mut quotes = String::new();
+    while let Some(after) = rest.strip_prefix('>') {
+        quotes.push('>');
+        if let Some(after) = after.strip_prefix(' ') {
+            quotes.push(' ');
+            rest = after;
+        } else {
+            rest = after;
+        }
+    }
+
+    let marker = leading_marker(rest);
+    Parts {
+        indent,
+        quotes,
+        content: rest[marker.len()..].to_owned(),
+        marker,
+    }
+}
+
+/// The heading or list marker at the start of `rest`, with its trailing space.
+fn leading_marker(rest: &str) -> String {
+    let hashes: String = rest.chars().take_while(|c| *c == '#').collect();
+    if (1..=6).contains(&hashes.len()) && rest[hashes.len()..].starts_with(' ') {
+        return format!("{hashes} ");
+    }
+
+    if let Some(after) = rest.strip_prefix(['-', '*', '+']) {
+        if after.starts_with(' ') {
+            return rest[..2].to_owned();
+        }
+    }
+
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if !digits.is_empty() {
+        let after = &rest[digits.len()..];
+        if let Some(tail) = after.strip_prefix(['.', ')']) {
+            if tail.starts_with(' ') {
+                return rest[..digits.len() + 2].to_owned();
+            }
+        }
+    }
+
+    String::new()
+}
+
+impl Document {
+    /// Turns `what` on for every line the caret or selection touches, or off if they all have it.
+    ///
+    /// # Mixed selections apply uniformly
+    ///
+    /// When some selected lines are already listed and some are not, this makes them **all** listed
+    /// rather than toggling each. One more invocation then clears them all. That is what Typora and
+    /// VS Code both do, and per-line toggling produces a mess nobody asked for — half a list is not
+    /// a thing anyone means.
+    ///
+    /// # One undo step
+    ///
+    /// However many lines it rewrites. Prefixing twenty lines is twenty edits, and a single press
+    /// must undo as a single press — which is what MDEDIT-63's transaction is for.
+    ///
+    /// Returns whether anything changed.
+    pub fn set_block(&mut self, what: Block) -> bool {
+        // A setext heading is two lines — the text and the `===` or `---` under it — and only the
+        // block list knows that. Prefixing the first line would leave the underline behind, still
+        // making it a heading and now a different one, so the whole construct is replaced instead.
+        if let Some(span) = self.enclosing_setext() {
+            return self.rewrite_setext(span, what);
+        }
+
+        let lines = self.selected_lines();
+        if lines.is_empty() {
+            return false;
+        }
+
+        let text = self.to_string();
+        let parsed: Vec<Parts> = lines
+            .iter()
+            .map(|span| split_line(span.slice(&text)))
+            .collect();
+        // Off only when every line already has it — see the mixed-selection rule above.
+        let clearing = parsed.iter().all(|parts| parts.is(what));
+
+        let mut number = 0_u32;
+        let rewritten: Vec<String> = parsed
+            .into_iter()
+            .map(|mut parts| {
+                strip_block_marker(&mut parts);
+                if !clearing {
+                    number += 1;
+                    parts.marker = marker_for(what, number);
+                    if what == Block::Task {
+                        parts.content = format!("[ ] {}", parts.content);
+                    }
+                }
+                parts.joined()
+            })
+            .collect();
+
+        self.rewrite_lines(&lines, &rewritten)
+    }
+
+    /// Adds or removes one level of `> ` on every line the caret or selection touches.
+    ///
+    /// Separate from [`set_block`](Self::set_block) because quoting is orthogonal to it: a quoted
+    /// list is `> - item`, so making a list quoted must not disturb the list, and unquoting must not
+    /// disturb it either.
+    pub fn toggle_quote(&mut self) -> bool {
+        let lines = self.selected_lines();
+        if lines.is_empty() {
+            return false;
+        }
+
+        let text = self.to_string();
+        let parsed: Vec<Parts> = lines
+            .iter()
+            .map(|span| split_line(span.slice(&text)))
+            .collect();
+        let quoted = parsed.iter().all(|parts| !parts.quotes.is_empty());
+
+        let rewritten: Vec<String> = parsed
+            .into_iter()
+            .map(|mut parts| {
+                if quoted {
+                    // One level, not all of them: a doubly-quoted line becomes singly quoted, which
+                    // is what "remove a quote" means.
+                    parts.quotes = parts
+                        .quotes
+                        .strip_prefix("> ")
+                        .or_else(|| parts.quotes.strip_prefix('>'))
+                        .unwrap_or("")
+                        .to_owned();
+                } else {
+                    parts.quotes.insert_str(0, "> ");
+                }
+                parts.joined()
+            })
+            .collect();
+
+        self.rewrite_lines(&lines, &rewritten)
+    }
+
+    /// The source lines the caret or selection touches, in order.
+    ///
+    /// A selection ending exactly at the start of a line does not include that line — otherwise
+    /// selecting one whole line and pressing a chord would format two.
+    fn selected_lines(&self) -> Vec<ByteSpan> {
+        let span = self.selection().span();
+        let mut lines = Vec::new();
+        let mut at = self.source_line(span.start());
+        loop {
+            lines.push(at);
+            if at.end() >= span.end() {
+                break;
+            }
+            let next = self.source_line(at.end());
+            if next.start() <= at.start() || next.start() >= ByteOffset::new(self.len_bytes()) {
+                break;
+            }
+            at = next;
+        }
+        lines
+    }
+
+    /// Replaces each of `lines` with the matching entry in `rewritten`, as one undoable operation.
+    ///
+    /// Backwards, because a transaction deliberately does not reorder anything and each edit shifts
+    /// every offset after it.
+    fn rewrite_lines(&mut self, lines: &[ByteSpan], rewritten: &[String]) -> bool {
+        let text = self.to_string();
+        if lines
+            .iter()
+            .zip(rewritten)
+            .all(|(span, new)| line_body(span.slice(&text)) == new)
+        {
+            return false;
+        }
+
+        let selection = self.selection();
+        let collapsed = selection.is_collapsed();
+        // How much longer the whole run gets. Every offset after the first line moves by this, which
+        // is what puts the selection back over the same lines rather than over the same bytes.
+        let delta: isize = lines
+            .iter()
+            .zip(rewritten)
+            .map(|(span, new)| {
+                new.len().cast_signed() - line_body(span.slice(&text)).len().cast_signed()
+            })
+            .sum();
+
+        self.transact(|doc| {
+            for (span, new) in lines.iter().zip(rewritten).rev() {
+                let body = ByteSpan::new(
+                    span.start(),
+                    ByteOffset::new(span.start().get() + line_body(span.slice(&text)).len()),
+                );
+                let _ = doc.replace(body, new);
+            }
+
+            // **The selection has to survive**, or "one more invocation clears them all" is a rule
+            // nobody can reach: the second press would see a caret and format one line. Kept over
+            // the same *lines*, since the bytes have moved.
+            let len = doc.len_bytes();
+            if collapsed {
+                // Roughly where it was. The line changed length, so the exact byte is gone — and
+                // landing in the right line is what a user notices, not the column.
+                let at = shifted(selection.head(), delta, lines, len);
+                doc.set_selection(Selection::caret(at));
+            } else {
+                let anchor = shifted(selection.span().start(), 0, lines, len);
+                let head = shifted(selection.span().end(), delta, lines, len);
+                doc.set_selection(Selection::new(anchor, head));
+            }
+        });
+        true
+    }
+}
+
+/// A line without its trailing newline, which block formatting never rewrites.
+fn line_body(line: &str) -> &str {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    line.strip_suffix('\r').unwrap_or(line)
+}
+
+/// Removes whatever heading or list marker a line has, and any task checkbox with it.
+///
+/// Called before applying a new one, which is what makes bullet → ordered → task a *swap* rather
+/// than a stack of prefixes.
+fn strip_block_marker(parts: &mut Parts) {
+    if is_bullet(&parts.marker) {
+        if let Some(len) = checkbox_len(&parts.content) {
+            parts.content.drain(..len);
+        }
+    }
+    parts.marker.clear();
+}
+
+/// The marker for `what`, for the `number`-th line of the run.
+fn marker_for(what: Block, number: u32) -> String {
+    match what {
+        Block::Heading(level) => format!("{} ", "#".repeat(level.clamp(1, 6) as usize)),
+        Block::Bullet | Block::Task => "- ".to_owned(),
+        // Renumbered from one on every application, so a list that was edited in the middle comes
+        // out consecutive rather than carrying whatever numbers happened to be there.
+        Block::Ordered => format!("{number}. "),
+    }
+}
+
+impl Document {
+    /// Wraps the selected lines in a fenced code block, or removes the fence the caret is inside.
+    ///
+    /// Removing uses the **block extent**, not a search for backticks: `Document::block_at` knows
+    /// exactly where the fence starts and ends, which is the same span-precision argument the inline
+    /// toggles rest on. A fence containing a line that merely looks like a fence is why guessing
+    /// does not work.
+    ///
+    /// When wrapping, the caret parks on the info string — the first thing anybody types after
+    /// making a code block is the language.
+    pub fn toggle_fence(&mut self) -> bool {
+        if let Some(span) = self.enclosing_fence() {
+            return self.unwrap_fence(span);
+        }
+
+        let lines = self.selected_lines();
+        let Some(first) = lines.first() else {
+            return false;
+        };
+        let last = lines.last().copied().unwrap_or(*first);
+        let text = self.to_string();
+        // A fence has to start its own line, and the closing one has to end with a newline or the
+        // text after it joins the fence.
+        let closing = if text[..last.end().get()].ends_with('\n') {
+            "```\n".to_owned()
+        } else {
+            "\n```\n".to_owned()
+        };
+
+        self.transact(|doc| {
+            let _ = doc.replace(ByteSpan::new(last.end(), last.end()), &closing);
+            let _ = doc.replace(ByteSpan::new(first.start(), first.start()), "```\n");
+            // On the info string: immediately after the opening backticks, before the newline.
+            doc.set_selection(Selection::caret(ByteOffset::new(first.start().get() + 3)));
+        });
+        true
+    }
+
+    /// Puts a thematic break on its own line, with the blank lines CommonMark wants around it.
+    ///
+    /// `---` directly under a paragraph is a setext heading, not a rule — which is the single
+    /// easiest way to get this wrong, and why the blank line above is not decoration.
+    pub fn insert_rule(&mut self) -> bool {
+        let line = self.source_line(self.selection().head());
+        let text = self.to_string();
+        let at = line.end();
+
+        let before = if text[..at.get()].ends_with("\n\n") || at.get() == 0 {
+            ""
+        } else if text[..at.get()].ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        // The blank line *after* only matters when something follows, and CommonMark needs one there
+        // for the same reason as above. At the end of the document it would be litter.
+        let rest = &text[at.get()..];
+        let after = if rest.is_empty() || rest.starts_with('\n') {
+            "---\n"
+        } else {
+            "---\n\n"
+        };
+
+        let rule = format!("{before}{after}");
+        self.transact(|doc| {
+            let _ = doc.replace(ByteSpan::new(at, at), &rule);
+            doc.set_selection(Selection::caret(ByteOffset::new(at.get() + rule.len())));
+        });
+        true
+    }
+
+    /// The span of the fenced code block the caret is in, if it is in one.
+    fn enclosing_fence(&self) -> Option<ByteSpan> {
+        let at = self.selection().head();
+        self.blocks()
+            .iter()
+            .filter(|block| {
+                block.kind() == BlockKind::CodeBlock
+                    && block.span().start() <= at
+                    && at <= block.span().end()
+            })
+            // The innermost, for the same reason `code_block_at` takes the deepest.
+            .max_by_key(|block| block.depth())
+            .map(mdedit_language::Block::span)
+    }
+
+    /// Removes a fence's first and last lines, leaving the code where it was.
+    fn unwrap_fence(&mut self, span: ByteSpan) -> bool {
+        let text = self.to_string();
+        let body = span.slice(&text);
+        // An *indented* code block has no fence lines to remove — its marker is the indent — so
+        // there is nothing here to do rather than something wrong to do.
+        if !body.trim_start().starts_with("```") {
+            return false;
+        }
+
+        let opening = self.source_line(span.start());
+        // The last line of the block, which for a well-formed fence is the closing one.
+        let closing_start = ByteOffset::new(
+            span.end().get()
+                - body
+                    .strip_suffix('\n')
+                    .unwrap_or(body)
+                    .rsplit('\n')
+                    .next()
+                    .map_or(0, str::len),
+        );
+        let closing = self.source_line(closing_start);
+        if closing.start() <= opening.start() {
+            // One line: a fence with nothing in it and no separate closing line to remove.
+            return false;
+        }
+
+        let caret = ByteOffset::new(
+            self.selection()
+                .head()
+                .get()
+                .saturating_sub(opening.end().get() - opening.start().get()),
+        );
+        self.transact(|doc| {
+            let _ = doc.replace(closing, "");
+            let _ = doc.replace(opening, "");
+            doc.set_selection(Selection::caret(ByteOffset::new(
+                caret.get().min(doc.len_bytes()),
+            )));
+        });
+        true
+    }
+}
+
+/// Moves an offset by `delta` if it sits at or after the run being rewritten, and clamps it.
+///
+/// An offset before the first rewritten line has not moved at all; one after has moved by the whole
+/// change. Anything inside is approximated to the run's start plus the change, which is close enough
+/// to keep a selection over the lines it was over.
+fn shifted(at: ByteOffset, delta: isize, lines: &[ByteSpan], len: usize) -> ByteOffset {
+    let Some(first) = lines.first() else {
+        return ByteOffset::new(at.get().min(len));
+    };
+    if at <= first.start() {
+        return ByteOffset::new(at.get().min(len));
+    }
+    let moved = at.get().saturating_add_signed(delta);
+    ByteOffset::new(moved.min(len))
+}
+
+impl Document {
+    /// The span of the setext heading the caret is in, if it is in one.
+    ///
+    /// A setext heading is a heading whose block covers more than the line the text is on: the
+    /// underline is part of the construct. An ATX heading (`## like this`) is one line and is
+    /// handled by the ordinary prefix path.
+    fn enclosing_setext(&self) -> Option<ByteSpan> {
+        // Only for a caret or a selection inside one heading. A selection spanning several blocks is
+        // the multi-line path, and mixing the two would need a rule nobody has asked for yet.
+        let selection = self.selection().span();
+        let block = self.block_at(selection.start())?;
+        if !matches!(block.kind(), BlockKind::Heading(_)) {
+            return None;
+        }
+        let span = block.span();
+        if selection.end() > span.end() {
+            return None;
+        }
+        // One line means ATX, which the prefix path already does correctly.
+        (self.source_line(span.start()).end() < span.end()).then_some(span)
+    }
+
+    /// Replaces a whole setext heading with `what` applied to its text.
+    fn rewrite_setext(&mut self, span: ByteSpan, what: Block) -> bool {
+        let text = self.to_string();
+        let body = span.slice(&text);
+        // The heading's text is everything above the underline.
+        let title = body
+            .lines()
+            .next()
+            .map_or(String::new(), |line| line.trim_end().to_owned());
+
+        let mut parts = split_line(&title);
+        strip_block_marker(&mut parts);
+        // Whatever it is becoming, it stops being a setext heading — the underline goes with the
+        // construct either way. A list also picks up its checkbox here, as the prefix path does.
+        parts.marker = marker_for(what, 1);
+        if what == Block::Task {
+            parts.content = format!("[ ] {}", parts.content);
+        }
+
+        // Whether the block ended with a newline, so the document does not lose or gain one.
+        let trailing = if body.ends_with('\n') { "\n" } else { "" };
+        let replacement = format!("{}{trailing}", parts.joined());
+
+        self.transact(|doc| {
+            let _ = doc.replace(span, &replacement);
+            doc.set_selection(Selection::caret(ByteOffset::new(
+                (span.start().get() + replacement.trim_end().len()).min(doc.len_bytes()),
+            )));
         });
         true
     }
