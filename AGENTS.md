@@ -55,11 +55,15 @@ crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only;
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
 crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsafe call that
                         #   attaches it. Windows-only. Where shell integration will go.
-crates/file/            # mdedit-file: reads and writes files without changing an unedited byte
-crates/session/         # mdedit-session: tabs as handles, and the session file that restores them
+crates/file/            # mdedit-file: reads and writes files without changing an unedited byte,
+                        #   and the mtime+length stamp that says when something else has
+crates/session/         # mdedit-session: tabs as handles, the session file that restores them, the
+                        #   crash-recovery snapshots, and the recent-files list — the last two
+                        #   behind the same path boundary as the session file
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, per-block layout and its cache, the settings file, the status
-                        #   bar, the tab strip and file pane, and the keystroke latency harness.
+                        #   bar, the tab strip and file pane, click counting, the generated
+                        #   shortcuts reference, and the keystroke latency harness.
                         #   Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in memory. Re-runnable
@@ -108,10 +112,30 @@ Known gaps, so nobody assumes they are done:
   `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
-- **There is a File and Edit menu, a status bar, and the open files shown either as a tab strip or
-  as a left pane.** No scrollbar, no View menu, no context menu on right-click, no recent files. The
-  plain-markup toggle is Ctrl+/ and the strip/pane toggle is Ctrl+B; neither has a menu item, because
-  there is still no View menu to put one in.
+- **There is a File, Edit and Help menu, a status bar, and the open files shown either as a tab strip
+  or as a left pane.** No scrollbar, no View menu, no context menu on right-click. The plain-markup
+  toggle is Ctrl+/ and the strip/pane toggle is Ctrl+B; neither has a menu item, because there is
+  still no View menu to put one in.
+- **The recent-files list is state, and is treated as untrusted input.** MDEDIT-41 put it beside the
+  session file rather than in `config.json` — the config file is read-only by design and may not name
+  a path at all, and nobody hand-writes a recent list. That puts it in the session file's threat
+  model: every entry goes through `path::validate` **on the way out and on the way in**, the second
+  direction so the list cannot launder a path past the boundary by storing it now and reading it back
+  later. `validate`'s last rule is that the path names a regular file, so a deleted file falls out of
+  the menu without anything having to prune it.
+- **Help → Keyboard Shortcuts is a Markdown document in a tab, not a dialog.** The editor showing its
+  own help as Markdown is the cheapest demonstration that it renders headings, tables and inline code,
+  and it costs no UI. It is generated from one list in `crates/app/src/shortcuts.rs` so the page and
+  the bindings cannot drift silently. That needed `Origin::Generated`: a tab that is untitled but
+  *not modified*, carrying its own text as its record of disk, because a reference document asking to
+  be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
+  it can be regenerated, and a stale copy of a reference is worse than none.
+- **Closing the window discards unsaved work without asking.** `WindowEvent::CloseRequested` calls
+  `event_loop.exit()` and nothing else, so Alt+F4 or the close button loses every unsaved buffer with
+  no prompt — and then the clean-exit path clears the recovery snapshots that would have got it back.
+  A *crash* is survivable and a *close* is not, which is exactly backwards. The unsaved-changes
+  prompt already exists and already works for Ctrl+W; the window close path simply does not use it.
+  MDEDIT-64 carries the fix, which needs a decision about what a multi-tab close asks.
 - **Which chrome is showing is not remembered.** Ctrl+B swaps the strip for the pane and the editor
   starts on the strip every time — the config file is read once and never written back, so there is
   nowhere to put it that survives a restart. A `chrome` setting is the obvious home when someone
@@ -127,6 +151,29 @@ Known gaps, so nobody assumes they are done:
   buffer and doing it per frame would undo MDEDIT-17 and MDEDIT-18. While you type, the number shown
   is the one from before you started. A document nobody has typed in yet is counted once, on its
   first frame.
+
+  **Three things share that timer, and it is now scheduled after any edit.** It used to be set only
+  when the parse had been scoped — i.e. only above 16 KB — so on an ordinary note it never fired at
+  all, which froze the word count and, when MDEDIT-54 arrived, would have meant no crash-recovery
+  snapshot for exactly the small unsaved buffers the feature exists to protect. `Editor::on_idle` is
+  public so a test can run that work without an event loop.
+- **Unsaved work is snapshotted where a crash cannot take it.** MDEDIT-54:
+  `mdedit-session::snapshot` keeps a copy of each dirty buffer in a `recovery` directory beside the
+  session file, addressed by an id rather than a path because the buffer with most to lose is the one
+  that has no path. Written atomically, skipped when `Document::revision` has not moved, and
+  **deleted on save and on clean exit** — which is as much the feature as writing them, because a
+  surviving snapshot is precisely the signal that the last run did not end here. Caret and undo
+  history are not saved: what a crash gives back is the text, and pretending more survived than did
+  would be worse than an honest recovery. The manifest's paths go through `path::validate`.
+- **A file changed on disk is noticed on focus and before every save.** MDEDIT-55: `mdedit-file`
+  carries a `Stamp` — modification time *and* length, never a hash, because comparing content means
+  reading every open file on every focus. The stamp is taken **before** the read, so a write racing
+  it leaves a stamp older than the bytes and the next check says "changed" (harmless) rather than
+  "unchanged" about a file rewritten underneath (the whole failure). The focus check keeps buffers
+  fresh; the save check is the one that prevents data loss, and lives inside `write_active_to` so
+  every route to a save passes it. **No filesystem watcher** — `notify` brings threads and four
+  platform backends for a case that happens between focus changes; the gap is a file rewritten while
+  the window stays focused, which costs freshness rather than work.
 - **The breadcrumb shows headings, and nothing else.** A caret above the document's first heading
   gets an empty breadcrumb rather than a root. Nothing in the bar is clickable.
 - **The status bar is two containers that truncate, not one row that overflows.** The right-hand
@@ -145,13 +192,31 @@ Known gaps, so nobody assumes they are done:
   fire: muda's accelerators need the message loop to call `TranslateAcceleratorW`, and winit's does
   not. That is deliberate — the key handler owns those chords, and two things acting on one Ctrl+Z
   would undo twice.
+
+  **The cost is that a label and a binding can disagree with nothing to catch it.** MDEDIT-65 was
+  exactly that: Ctrl+Shift+S was labelled "Save As" and plain-saved over the file, because winit
+  reports Shift+S as `"S"` and the arm did not read Shift. Nothing *could* have caught it — a chord
+  arrives as a winit `KeyEvent`, which carries a private platform field and cannot be constructed by
+  a test. So the character dispatch is now `Editor::apply_chord(character, shift)` and every chord is
+  reachable from `crates/app/tests/chords.rs`. When adding a chord, add it there and to
+  `crates/app/src/shortcuts.rs`, whose test asserts every implemented chord is written down.
 - **The clipboard is text only, and a paste keeps its own line endings.** An image on the clipboard
   is ignored, because a Markdown buffer cannot hold one and deciding where to write the file would be
   a feature rather than a paste. Pasted text goes in verbatim, so pasting CRLF into an LF file leaves
   mixed endings — the byte-preserving choice, and the opposite of what VS Code does. Revisit if it
   annoys anyone.
-- **No double-click to select a word**, and no triple-click for a line. Every selection is a drag or
-  a shift — and there is no menu to reach copy and paste from, only the chords.
+- **A word is a Unicode word, and that is decided once for the whole editor.** MDEDIT-57 took
+  `unicode-segmentation` (UAX #29) rather than an alphanumeric-run classifier, which splits `café` at
+  a decomposed accent, takes a whole CJK run as one word, and cuts `don't` in half. Ctrl+arrows and
+  MDEDIT-50's wrap-the-word want the same definition. One deviation, deliberate: UAX #29 breaks a run
+  of punctuation into one segment per character, so runs of *non-word* segments are joined — word
+  segments are not, because joining those is the CJK failure again. See `Document::word_at`.
+- **Clicks are counted in the editor, because winit does not count them.** The double-click interval
+  is injected rather than hardcoded: Windows has a setting for it and somebody who lengthened it did
+  so because the default fails them. `GetDoubleClickTime` is read in `mdedit-menu-win`, where the
+  `unsafe` belongs. Being a parameter is also what makes click counting testable without sleeping.
+  A run wraps at three, so a fourth click is a caret again.
+- **There is no menu to reach copy and paste from**, only the chords. A context menu is MDEDIT-58.
 - **Startup costs ~250 ms before anything is drawn, and none of it is ours to fix.** MDEDIT-20
   attributed it with `spikes/startup-attribution`: creating the window is 60–79 ms, `request_adapter`
   70–100, `request_device` 62–72, `surface.configure` 39–54. Shader compilation is **0.3 ms** and
@@ -246,6 +311,7 @@ Window/input      winit + muda (native menus) + rfd (dialogs)
 Renderer          wgpu, hand-written quad + glyph pipeline    [NOT vello]
 Text layout       parley + harfrust + fontique + skrifa       [layout only, NOT parley's editor]
 Buffer            ropey 1.x                                   [pin 1.x; 2.0 has been beta ~21 months]
+Word boundaries   unicode-segmentation                        [UAX #29; one definition of "word"]
 Markdown parse    pulldown-cmark                              [full re-parse; no incremental]
 Code fences       syntect + two-face, lazy, per-block cached
 Accessibility     accesskit
