@@ -35,10 +35,26 @@ pub enum Unsaved {
     Cancel,
 }
 
+/// What kind of tab is being closed, which decides what "save" can even mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closing {
+    /// A file. Save writes it back where it came from, and the dialog can say "Save".
+    File,
+    /// A buffer that has never been saved anywhere. Save has nowhere to write, so it has to ask
+    /// where first — and the dialog says "Save As…", because a button labelled "Save" that opens a
+    /// file picker is a small lie.
+    Scratch,
+}
+
 /// Something that can ask about unsaved work and get an answer.
 pub trait UnsavedPrompt {
     /// Asks about the tab called `name`.
-    fn ask(&mut self, name: &str) -> Unsaved;
+    ///
+    /// `what` is there so the dialog can offer "Save As…" for a buffer that has nowhere to go. It
+    /// used to offer "Save" for both, and picking it on an untitled buffer did nothing at all: the
+    /// save had no path, silently declined, and the tab refused to close with only a line in the log
+    /// to say why.
+    fn ask(&mut self, name: &str, what: Closing) -> Unsaved;
 
     /// Asks about all of `names` at once, on the way out of the editor.
     ///
@@ -50,7 +66,9 @@ pub trait UnsavedPrompt {
     /// single-file dialog still compiles and still asks *something*. The native one overrides it;
     /// the answer applies to every file either way.
     fn ask_all(&mut self, names: &[String]) -> Unsaved {
-        names.first().map_or(Unsaved::Cancel, |name| self.ask(name))
+        names
+            .first()
+            .map_or(Unsaved::Cancel, |name| self.ask(name, Closing::File))
     }
 }
 
@@ -63,7 +81,7 @@ pub trait UnsavedPrompt {
 pub struct KeepEverything;
 
 impl UnsavedPrompt for KeepEverything {
-    fn ask(&mut self, _name: &str) -> Unsaved {
+    fn ask(&mut self, _name: &str, _what: Closing) -> Unsaved {
         Unsaved::Cancel
     }
 }

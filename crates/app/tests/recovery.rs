@@ -259,7 +259,11 @@ fn an_untitled_buffer_comes_back() {
 struct AlwaysDiscard;
 
 impl mdedit_app::prompt::UnsavedPrompt for AlwaysDiscard {
-    fn ask(&mut self, _name: &str) -> mdedit_app::prompt::Unsaved {
+    fn ask(
+        &mut self,
+        _name: &str,
+        _what: mdedit_app::prompt::Closing,
+    ) -> mdedit_app::prompt::Unsaved {
         mdedit_app::prompt::Unsaved::Discard
     }
 }
@@ -271,7 +275,11 @@ struct AlwaysKeep;
 impl mdedit_app::prompt::UnsavedPrompt for AlwaysKeep {
     /// Never reached — this one is only ever asked `ask_all`. Cancel rather than Discard so an
     /// accidental call cannot silently throw work away.
-    fn ask(&mut self, _name: &str) -> mdedit_app::prompt::Unsaved {
+    fn ask(
+        &mut self,
+        _name: &str,
+        _what: mdedit_app::prompt::Closing,
+    ) -> mdedit_app::prompt::Unsaved {
         mdedit_app::prompt::Unsaved::Cancel
     }
 
@@ -294,4 +302,221 @@ fn saving_still_clears_the_stored_copy() {
 
     let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
     assert!(kept.is_empty());
+}
+
+// ---- scratch buffers (MDEDIT-66 slice 2) ----
+
+/// Records what it was asked about, and answers as told.
+#[derive(Debug)]
+struct Watching(
+    std::rc::Rc<
+        std::cell::RefCell<(
+            Vec<mdedit_app::prompt::Closing>,
+            mdedit_app::prompt::Unsaved,
+        )>,
+    >,
+);
+
+impl Watching {
+    fn saying(answer: mdedit_app::prompt::Unsaved) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new((
+            Vec::new(),
+            answer,
+        ))))
+    }
+
+    fn share(&self) -> Self {
+        Self(std::rc::Rc::clone(&self.0))
+    }
+
+    fn asked(&self) -> Vec<mdedit_app::prompt::Closing> {
+        self.0.borrow().0.clone()
+    }
+}
+
+impl mdedit_app::prompt::UnsavedPrompt for Watching {
+    fn ask(
+        &mut self,
+        _name: &str,
+        what: mdedit_app::prompt::Closing,
+    ) -> mdedit_app::prompt::Unsaved {
+        let mut state = self.0.borrow_mut();
+        state.0.push(what);
+        state.1
+    }
+}
+
+/// An untitled tab nobody has typed into is not work, and must not fill the store with blanks.
+#[test]
+fn an_empty_scratch_buffer_is_not_stored() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    editor.on_idle();
+
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(kept.is_empty(), "an empty scratch buffer is not work");
+}
+
+/// And typing into one makes it work, which is stored.
+#[test]
+fn a_scratch_buffer_with_anything_in_it_is_stored() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+    editor.on_idle();
+
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert_eq!(kept.len(), 1);
+    assert!(kept[0].path.is_none(), "it belongs to no file");
+    assert!(kept[0].text.contains("a thought"));
+}
+
+/// Emptying one again takes it back out — the store follows the buffer rather than accumulating
+/// every state it has been in.
+#[test]
+fn emptying_a_scratch_buffer_removes_its_stored_copy() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+    editor.on_idle();
+    assert_eq!(
+        Store::in_directory(dir.path().join("recovery"))
+            .read_all()
+            .0
+            .len(),
+        1
+    );
+
+    editor.select_all();
+    editor.insert_text("");
+    editor.on_idle();
+
+    let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(kept.is_empty());
+}
+
+/// Closing a scratch tab asks a different question from closing a file, because Save means
+/// something different: there is nowhere to write it yet.
+#[test]
+fn closing_a_scratch_tab_asks_as_a_scratch_tab() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+
+    let prompt = Watching::saying(mdedit_app::prompt::Unsaved::Discard);
+    editor.with_prompt(Box::new(prompt.share()));
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+
+    assert!(editor.apply_command(mdedit_menu_win::Command::Close));
+    assert_eq!(prompt.asked(), vec![mdedit_app::prompt::Closing::Scratch]);
+}
+
+/// And closing a file tab still asks as a file.
+#[test]
+fn closing_a_file_tab_asks_as_a_file() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+    type_into(&mut editor, "EDITED");
+
+    let prompt = Watching::saying(mdedit_app::prompt::Unsaved::Discard);
+    editor.with_prompt(Box::new(prompt.share()));
+
+    assert!(editor.apply_command(mdedit_menu_win::Command::Close));
+    assert_eq!(prompt.asked(), vec![mdedit_app::prompt::Closing::File]);
+}
+
+/// The wart this slice fixes. Choosing Save on a scratch tab used to call `save`, which has no path,
+/// declined silently, and left the tab refusing to close with only a line in the log to say why.
+#[test]
+fn save_on_a_scratch_tab_asks_where_to_put_it() {
+    let dir = TempDir::new().unwrap();
+    let target = dir.path().join("chosen.md");
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+    editor.with_prompt(Box::new(Watching::saying(
+        mdedit_app::prompt::Unsaved::Save,
+    )));
+
+    let chosen = target.clone();
+    editor.with_file_picker(Box::new(move |_| Some(chosen.clone())));
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+
+    assert!(
+        editor.apply_command(mdedit_menu_win::Command::Close),
+        "with somewhere to put it, the tab should close"
+    );
+    assert!(
+        std::fs::read_to_string(&target)
+            .unwrap()
+            .contains("a thought"),
+        "and the text should be where the picker said"
+    );
+}
+
+/// Declining the location leaves the tab open with its text, rather than closing over it.
+#[test]
+fn declining_the_location_keeps_the_scratch_tab() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+    editor.with_prompt(Box::new(Watching::saying(
+        mdedit_app::prompt::Unsaved::Save,
+    )));
+    // The default picker declines.
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    type_into(&mut editor, "a thought");
+    let before = editor.workspace().tabs().len();
+
+    assert!(!editor.apply_command(mdedit_menu_win::Command::Close));
+    assert_eq!(editor.workspace().tabs().len(), before);
+}
+
+/// Scratch buffers come back in the order they were first stored, so a run with several of them is
+/// not a lucky dip.
+#[test]
+fn scratch_buffers_come_back_in_a_stable_order() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+
+    for text in ["first thought", "second thought", "third thought"] {
+        let index = editor.workspace_mut().add_untitled();
+        editor.workspace_mut().activate(index).unwrap();
+        type_into(&mut editor, text);
+        editor.on_idle();
+    }
+    drop(editor);
+
+    let mut next = Editor::new("", Grid::new());
+    next.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+    next.restore_unsaved_work(true);
+
+    let texts: Vec<String> = next
+        .workspace()
+        .tabs()
+        .iter()
+        .filter_map(mdedit_session::Tab::open)
+        .map(|open| open.document.to_string())
+        .collect();
+    assert_eq!(texts.len(), 3, "{texts:?}");
+    assert!(texts[0].contains("first"), "{texts:?}");
+    assert!(texts[1].contains("second"), "{texts:?}");
+    assert!(texts[2].contains("third"), "{texts:?}");
 }
