@@ -42,6 +42,13 @@
 pub enum Command {
     /// File → New.
     New,
+    /// File → Open.
+    Open,
+    /// File → Open Recent → one of the entries, by its position in the list.
+    ///
+    /// The index rather than the path, because the menu is rebuilt from the list and the two would
+    /// otherwise have to be kept in step by hand. The app reads it back against the same list.
+    OpenRecent(usize),
     /// File → Save.
     Save,
     /// File → Save As.
@@ -62,6 +69,10 @@ pub enum Command {
     Copy,
     /// Edit → Paste.
     Paste,
+    /// Help → Keyboard Shortcuts.
+    Shortcuts,
+    /// Help → About.
+    About,
 }
 
 #[cfg(windows)]
@@ -91,6 +102,9 @@ impl MenuBar {
 
     /// Attaches to nothing.
     pub fn attach(&self, _hwnd: isize) {}
+
+    /// Lists nothing, there being no submenu to list it in.
+    pub fn set_recent(&mut self, _labels: &[String]) {}
 
     /// Forwards nothing, because nothing can be chosen.
     pub fn forward_to(&self, _deliver: impl Fn(Command) + Send + Sync + 'static) {}

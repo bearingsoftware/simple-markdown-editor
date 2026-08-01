@@ -328,6 +328,30 @@ impl LoadedFile {
     }
 }
 
+/// A [`LoadedFile`] for text that has never been on disk and is not going there.
+///
+/// For a buffer the editor generates rather than reads — the keyboard-shortcuts reference is the
+/// only one today. Such a buffer needs *something* to compare against or it counts as unsaved work
+/// the moment it has anything in it, and would ask to be saved on the way out; giving it its own
+/// text as its record of disk makes it unmodified, which is what it is.
+///
+/// UTF-8, no BOM, and no [`Stamp`] — there is no file to have one, so [`disk_state`] answers
+/// `Unchanged` for ever, which is true.
+#[must_use]
+pub fn in_memory(text: &str) -> LoadedFile {
+    LoadedFile {
+        format: FileFormat {
+            encoding: UTF_8,
+            bom: false,
+            newline: Newline::detect(text),
+        },
+        original: text.as_bytes().to_vec(),
+        text: text.to_owned(),
+        round_trips: true,
+        stamp: None,
+    }
+}
+
 /// Reads a file, honouring a byte-order mark and otherwise assuming UTF-8.
 ///
 /// # Errors

@@ -17,6 +17,7 @@ use mdedit_document::{Document, Selection};
 use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
+use mdedit_session::recent::Recent;
 use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
 use winit::application::ApplicationHandler;
 use winit::event::{
@@ -98,6 +99,10 @@ use mdedit_menu_win::{Command, MenuBar};
 /// Asks the user where to save something. Given the current name as a suggestion; `None` if they
 /// decline, or if there is nobody to ask.
 pub type SavePathPicker = Box<dyn Fn(Option<&str>) -> Option<PathBuf>>;
+
+/// Asks which files to open. Returns `None` when the dialog was dismissed, and an empty list is the
+/// same thing said differently.
+pub type OpenPathPicker = Box<dyn Fn() -> Option<Vec<PathBuf>>>;
 
 /// Left and top margin, in device-independent pixels.
 const MARGIN: f32 = 24.0;
@@ -621,6 +626,12 @@ pub struct Editor<T: TextLayout> {
     prompt: Box<dyn UnsavedPrompt>,
     /// Asks where to save something that has nowhere to go. Declines by default.
     pick_save_path: SavePathPicker,
+    /// Asks which files to open. Opens nothing by default.
+    pick_open_paths: OpenPathPicker,
+    /// Shows the About dialog. Does nothing by default — the dialog lives in the binary.
+    show_about: Box<dyn Fn()>,
+    /// The files opened lately, for the Open Recent submenu.
+    recent: Recent,
     /// Concealed, or shown as it is. See [`crate::view::Mode`].
     mode: view::Mode,
     /// What the user chose. Read once at startup; see [`crate::config`].
@@ -734,6 +745,9 @@ impl<T: TextLayout> Editor<T> {
             prompt: Box::new(KeepEverything),
             conflict: Box::new(ChangeNothing),
             pick_save_path: Box::new(|_| None),
+            pick_open_paths: Box::new(|| None),
+            show_about: Box::new(|| {}),
+            recent: Recent::default(),
             mode: view::Mode::default(),
             config: Config::default(),
             digits: None,
@@ -1177,10 +1191,18 @@ impl<T: TextLayout> Editor<T> {
             return false;
         };
         match mdedit_file::load(path) {
-            Ok(file) => self
-                .workspace
-                .bind_to_path(index, path.to_path_buf(), file)
-                .is_ok(),
+            Ok(file) => {
+                let bound = self
+                    .workspace
+                    .bind_to_path(index, path.to_path_buf(), file)
+                    .is_ok();
+                if bound {
+                    // A tab now lives somewhere it has not been before, which is an open as far as
+                    // the recent list is concerned.
+                    self.remember(path);
+                }
+                bound
+            }
             // The bytes are on disk. Only our record of the tab is stale, which matters for the next
             // save rather than for this one.
             Err(error) => {
@@ -1275,6 +1297,13 @@ impl<T: TextLayout> Editor<T> {
                 self.new_file();
                 true
             }
+            Command::Open => self.open_prompted(),
+            Command::OpenRecent(index) => self.open_recent(index),
+            Command::Shortcuts => self.show_shortcuts(),
+            Command::About => {
+                (self.show_about)();
+                false
+            }
             Command::Save => {
                 self.save();
                 true
@@ -1321,6 +1350,9 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         self.menu = Some(menu);
+        // The list was read before the window existed, so this is the first chance the submenu has
+        // had to be filled in.
+        self.refresh_recent_menu();
     }
 
     /// Carries menu commands into this editor's event loop.
@@ -1338,12 +1370,150 @@ impl<T: TextLayout> Editor<T> {
         self.pick_save_path = picker;
     }
 
+    /// Supplies the "which files?" dialog. See [`with_file_picker`](Self::with_file_picker).
+    pub fn with_open_picker(&mut self, picker: OpenPathPicker) {
+        self.pick_open_paths = picker;
+    }
+
+    /// Points the recent-files list somewhere other than beside the session file. For tests.
+    pub fn with_recent(&mut self, recent: Recent) {
+        self.recent = recent;
+        self.refresh_recent_menu();
+    }
+
+    /// The files opened lately, most recent first.
+    #[must_use]
+    pub fn recent(&self) -> &Recent {
+        &self.recent
+    }
+
     /// Opens an empty buffer that has never been saved, and shows it.
     pub fn new_file(&mut self) {
         let index = self.workspace.add_untitled();
         if let Err(error) = self.workspace.activate(index) {
             crate::log_error!("could not open a new file: {error}");
         }
+    }
+
+    /// Asks which files to open, then opens them.
+    ///
+    /// The asking is somebody else's, as saving's is: an editor with no dialog opens nothing rather
+    /// than guessing. Returns whether anything was opened.
+    pub fn open_prompted(&mut self) -> bool {
+        let Some(paths) = (self.pick_open_paths)() else {
+            return false;
+        };
+        self.open_paths(&paths)
+    }
+
+    /// Opens each of `paths` in its own tab, showing the last one that worked.
+    ///
+    /// A path already open activates its existing tab rather than making a second one, which
+    /// `Workspace::add` does by returning the index it already has.
+    ///
+    /// Every path goes through [`path::from_command_line`], not `path::validate`: these came from a
+    /// person choosing in a dialog or clicking their own recent list, which is the same trust as a
+    /// command-line argument. `validate` guards the files *this process wrote* — see
+    /// [`mdedit_session::path`] for why they are different functions.
+    ///
+    /// [`path::from_command_line`]: mdedit_session::path::from_command_line
+    pub fn open_paths(&mut self, paths: &[PathBuf]) -> bool {
+        let mut opened = false;
+        for path in paths {
+            let resolved = match mdedit_session::path::from_command_line(path) {
+                Ok(resolved) => resolved,
+                Err(reason) => {
+                    // A recent entry whose file has been deleted lands here. Dropped from the list
+                    // rather than left to fail again every time the menu is opened.
+                    crate::log_error!("could not open: {reason}");
+                    self.recent.forget(path);
+                    continue;
+                }
+            };
+            let index = self.workspace.add(resolved.clone());
+            if let Err(error) = self.workspace.activate(index) {
+                crate::log_error!("could not open {}: {error}", resolved.display());
+                continue;
+            }
+            self.recent.record(&resolved);
+            opened = true;
+        }
+
+        if opened {
+            // A different tab is showing, so the caret and the view belong to a different document.
+            self.follow_caret = true;
+            self.scroll.to_top();
+        }
+        self.refresh_recent_menu();
+        opened
+    }
+
+    /// Records that `path` was opened, without opening it.
+    ///
+    /// For the routes into a document that do not go through [`open_paths`](Self::open_paths): the
+    /// command line, Explorer, and Save As, which puts a tab somewhere it has not been before. A
+    /// recent list that only knew about the Open dialog would be empty for the way most people start
+    /// this editor.
+    pub fn remember(&mut self, path: &Path) {
+        self.recent.record(path);
+        self.refresh_recent_menu();
+    }
+
+    /// Supplies the About dialog. Does nothing by default, as every other dialog seam does.
+    pub fn with_about(&mut self, show: Box<dyn Fn()>) {
+        self.show_about = show;
+    }
+
+    /// Shows the keyboard-shortcuts reference in a tab.
+    ///
+    /// Opening it twice shows the one already open rather than making a second, which is what a
+    /// menu item people click twice needs to do.
+    pub fn show_shortcuts(&mut self) -> bool {
+        let existing = self
+            .workspace
+            .tabs()
+            .iter()
+            .position(|tab| tab.display_name() == crate::shortcuts::TITLE);
+        let index = existing.unwrap_or_else(|| {
+            self.workspace
+                .add_generated(crate::shortcuts::TITLE, &crate::shortcuts::document())
+        });
+        if let Err(error) = self.workspace.activate(index) {
+            crate::log_error!("could not show the shortcuts: {error}");
+            return false;
+        }
+        self.follow_caret = true;
+        self.scroll.to_top();
+        true
+    }
+
+    /// Opens the recent-list entry at `index`, if it is still there.
+    ///
+    /// The index is read back against the same list the menu was built from, which is what makes an
+    /// index safe to send through a menu event at all.
+    pub fn open_recent(&mut self, index: usize) -> bool {
+        let Some(path) = self.recent.paths().get(index).cloned() else {
+            return false;
+        };
+        self.open_paths(&[path])
+    }
+
+    /// Rewrites the Open Recent submenu from the current list.
+    ///
+    /// Full paths rather than file names. A recent menu of six `README.md` is no menu at all, and
+    /// there is nowhere to put the directory except in the label — muda has no second column and no
+    /// tooltip.
+    fn refresh_recent_menu(&mut self) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        let labels: Vec<String> = self
+            .recent
+            .paths()
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        menu.set_recent(&labels);
     }
 
     /// Saves every tab that has somewhere to go, reporting the ones that did not.
@@ -1535,6 +1705,11 @@ impl<T: TextLayout> Editor<T> {
             "s" | "S" => {
                 self.save();
                 false
+            }
+            "o" | "O" => self.open_prompted(),
+            "n" | "N" => {
+                self.new_file();
+                true
             }
             // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
             "z" if !self.modifiers.shift_key() => self.document_mut().undo(),

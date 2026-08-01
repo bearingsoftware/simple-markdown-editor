@@ -26,6 +26,7 @@ pub mod log;
 pub mod pane;
 pub mod prompt;
 pub mod scroll;
+pub mod shortcuts;
 pub mod status;
 pub mod tabs;
 pub mod view;
