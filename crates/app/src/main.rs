@@ -12,6 +12,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
+use std::fmt::Write as _;
+
+#[cfg(windows)]
 use mdedit_app::{SAMPLE, editor::Editor};
 #[cfg(windows)]
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -46,6 +49,39 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
             rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
             // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work is
             // the one outcome that must never be the default.
+            _ => Unsaved::Cancel,
+        }
+    }
+
+    fn ask_all(&mut self, names: &[String]) -> mdedit_app::prompt::Unsaved {
+        use mdedit_app::prompt::Unsaved;
+
+        // Named, not counted. "3 files have unsaved changes" makes the user reconstruct which, and
+        // the whole reason for one dialog rather than three is that the answer should be informed.
+        // Capped, because a hundred names is a dialog taller than the screen — and past a handful
+        // the list has stopped being the useful part anyway.
+        const SHOWN: usize = 10;
+        let listed: Vec<&str> = names.iter().take(SHOWN).map(String::as_str).collect();
+        let mut description = format!("These files have unsaved changes:\n\n{}", listed.join("\n"));
+        if names.len() > SHOWN {
+            let rest = names.len() - SHOWN;
+            let _ = write!(description, "\n…and {rest} more");
+        }
+
+        let answer = rfd::MessageDialog::new()
+            .set_title("Unsaved changes")
+            .set_description(description)
+            .set_level(rfd::MessageLevel::Warning)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                "Save All".to_owned(),
+                "Discard All".to_owned(),
+                "Cancel".to_owned(),
+            ))
+            .show();
+
+        match answer {
+            rfd::MessageDialogResult::Custom(choice) if choice == "Save All" => Unsaved::Save,
+            rfd::MessageDialogResult::Custom(choice) if choice == "Discard All" => Unsaved::Discard,
             _ => Unsaved::Cancel,
         }
     }
@@ -180,6 +216,37 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
     editor.with_recent(mdedit_session::recent::Recent::beside_session());
 }
 
+/// Writes the session back, and clears the crash-recovery snapshots if there is nothing left to
+/// protect.
+///
+/// The session file records handles rather than content, so this stays cheap however many tabs
+/// there are.
+///
+/// **The snapshots are cleared only when nothing is unsaved.** Their survival is precisely the
+/// signal that a run did not end here, and the loop only ends once `Editor::may_close` has said yes
+/// — but if anything else ever ends it, or a save silently failed after the user chose Save All,
+/// then unsaved work is still in front of them and throwing away its snapshot would be the second
+/// half of the bug MDEDIT-64 fixed.
+#[cfg(windows)]
+fn wind_down<T: mdedit_text::TextLayout>(
+    editor: &mut Editor<T>,
+    session_path: Option<&std::path::Path>,
+) {
+    if let Some(path) = session_path {
+        if !editor.workspace().tabs().is_empty() {
+            editor.save_session(path);
+        }
+    }
+
+    if editor.workspace().has_unsaved_changes() {
+        mdedit_app::log_error!(
+            "exiting with unsaved work; keeping the recovery snapshots rather than clearing them"
+        );
+    } else {
+        editor.discard_snapshots();
+    }
+}
+
 /// Opens the log and installs the panic hook, before anything that could need either.
 ///
 /// The dialog is supplied from here rather than from the library for the `rfd` reason documented on
@@ -307,17 +374,7 @@ fn main() {
             std::process::exit(1);
         }
 
-        // Written on the way out so the next launch reopens what was open. Only handles, so this
-        // stays cheap however many tabs there are.
-        if let Some(path) = session_path.as_deref() {
-            if !editor.workspace().tabs().is_empty() {
-                editor.save_session(path);
-            }
-        }
-
-        // This run is ending on purpose, so the recovery snapshots have nothing left to protect.
-        // Their survival is precisely the signal that a run did *not* end here.
-        editor.discard_snapshots();
+        wind_down(&mut editor, session_path.as_deref());
 
         // Printed on exit so a manual session doubles as a measurement run, which is how the
         // battery numbers in the PR body are produced.
