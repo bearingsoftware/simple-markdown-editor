@@ -46,7 +46,7 @@ use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
 use crate::view::Chrome;
-use mdedit_document::format::Inline;
+use mdedit_document::format::{self, Inline};
 
 /// The status bar's right-hand fields.
 const RIGHT: usize = 0;
@@ -1796,6 +1796,7 @@ impl<T: TextLayout> Editor<T> {
             // this one open; Ctrl+E is the choice, because it is free here and is what several
             // Markdown comment editors use. Weaker ground than the two above, and marked as such.
             "e" | "E" if !shift => self.document_mut().toggle_inline(Inline::Code),
+            "k" | "K" => self.link(),
             // The file pane, moved here from Ctrl+B. VS Code's chord for its explorer, which is the
             // convention people arriving from anywhere else already have.
             "e" | "E" => {
@@ -1961,7 +1962,32 @@ impl<T: TextLayout> Editor<T> {
             return false;
         }
         self.follow_caret = true;
+
+        // Pasting a URL over selected text makes a link of it rather than replacing it. Small, and
+        // the thing people are most delighted to find works — it is what every chat client and
+        // note-taking app they use already does, so its absence reads as a missing feature rather
+        // than as a deliberate simplicity.
+        //
+        // Only over a *selection*: pasting a URL into empty space is a paste, and turning it into
+        // `[](url)` would be inventing link text nobody wrote.
+        if !self.document().selection().is_collapsed() && format::looks_like_url(&text) {
+            return self.document_mut().make_link(Some(text.trim()));
+        }
         self.insert(&text)
+    }
+
+    /// Makes a link of the selection, or of the word at the caret.
+    ///
+    /// Uses the clipboard when it holds something URL-shaped, which is the case that needs no
+    /// dialog at all — copy a link, select some words, press Ctrl+K, done. Otherwise the destination
+    /// is left empty with the caret in it, ready to type into.
+    pub fn link(&mut self) -> bool {
+        let url = self
+            .clipboard
+            .read()
+            .filter(|text| format::looks_like_url(text));
+        self.follow_caret = true;
+        self.document_mut().make_link(url.as_deref().map(str::trim))
     }
 
     /// Selects the whole buffer.

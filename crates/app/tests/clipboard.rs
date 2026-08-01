@@ -313,3 +313,69 @@ fn the_system_clipboard_round_trips() {
     system.write(text);
     assert_eq!(system.read().as_deref(), Some(text));
 }
+
+// ---- links from the clipboard (MDEDIT-50) ----
+
+/// Copy a link, select some words, press Ctrl+K — done, with no dialog at all. The case the whole
+/// clipboard-URL path exists for.
+#[test]
+fn ctrl_k_uses_a_url_from_the_clipboard() {
+    let clipboard = Fake::holding("https://example.com");
+    let mut editor = editor_with("see the docs here\n", &clipboard);
+    select(&mut editor, 4, 12);
+
+    assert!(editor.link());
+    assert_eq!(
+        editor.document().to_string(),
+        "see [the docs](https://example.com) here\n"
+    );
+}
+
+/// With something that is not a URL on the clipboard, the destination is left empty rather than
+/// being filled with whatever happened to be copied.
+#[test]
+fn ctrl_k_ignores_a_clipboard_that_is_not_a_url() {
+    let clipboard = Fake::holding("some copied prose");
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 5);
+
+    editor.link();
+    assert_eq!(editor.document().to_string(), "[hello]() world\n");
+}
+
+/// Pasting a URL over a selection links it. What every chat client and note app does, so its
+/// absence reads as missing rather than as deliberate simplicity.
+#[test]
+fn pasting_a_url_over_a_selection_makes_a_link() {
+    let clipboard = Fake::holding("https://example.com");
+    let mut editor = editor_with("see the docs here\n", &clipboard);
+    select(&mut editor, 4, 12);
+
+    assert!(editor.paste());
+    assert_eq!(
+        editor.document().to_string(),
+        "see [the docs](https://example.com) here\n"
+    );
+}
+
+/// And with nothing selected it is still a paste — turning it into `[](url)` would invent link text
+/// nobody wrote.
+#[test]
+fn pasting_a_url_with_nothing_selected_is_still_a_paste() {
+    let clipboard = Fake::holding("https://example.com");
+    let mut editor = editor_with("", &clipboard);
+
+    editor.paste();
+    assert_eq!(editor.document().to_string(), "https://example.com");
+}
+
+/// Pasting ordinary text over a selection replaces it, exactly as it always did.
+#[test]
+fn pasting_prose_over_a_selection_still_replaces_it() {
+    let clipboard = Fake::holding("goodbye");
+    let mut editor = editor_with("hello world\n", &clipboard);
+    select(&mut editor, 0, 5);
+
+    editor.paste();
+    assert_eq!(editor.document().to_string(), "goodbye world\n");
+}
