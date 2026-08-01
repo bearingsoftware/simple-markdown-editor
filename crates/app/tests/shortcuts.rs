@@ -45,6 +45,8 @@ const IMPLEMENTED: &[&str] = &[
     "Ctrl+E",
     "Ctrl+K",
     "Ctrl+Shift+E",
+    "Ctrl+= / Ctrl+-",
+    "Ctrl+0",
     "Ctrl+Tab",
 ];
 

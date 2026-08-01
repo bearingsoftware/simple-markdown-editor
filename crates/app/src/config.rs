@@ -88,9 +88,9 @@ pub struct Config {
 /// Not preferences — bounds on a number read from a file. Below the floor the text is unreadable and
 /// above the ceiling a single glyph fills the window, and either would look like the editor is
 /// broken rather than like a setting is wrong.
-const MIN_ZOOM: f32 = 0.5;
+pub const MIN_ZOOM: f32 = 0.5;
 /// See [`MIN_ZOOM`].
-const MAX_ZOOM: f32 = 4.0;
+pub const MAX_ZOOM: f32 = 4.0;
 
 impl Default for Config {
     fn default() -> Self {
