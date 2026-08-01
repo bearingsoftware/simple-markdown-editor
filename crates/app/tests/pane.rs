@@ -16,8 +16,9 @@
     clippy::float_cmp
 )]
 
-use mdedit_app::editor::{Chrome, Editor};
+use mdedit_app::editor::Editor;
 use mdedit_app::pane::{self, Hit, PANE_WIDTH, ROW_HEIGHT};
+use mdedit_app::view::Chrome;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
@@ -321,5 +322,28 @@ fn a_still_frame_lays_out_no_pane_labels() {
         since <= 2,
         "a second frame of an unchanged 40-file pane should lay out the caret's chunk at most, \
          not {since}"
+    );
+}
+
+/// The point of MDEDIT-60: the editor used to open on the strip every time, whatever you had
+/// chosen. Toggling now records it, and a fresh editor reading the same file opens on it.
+#[test]
+fn the_chrome_choice_survives_a_restart() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("config.json");
+
+    let mut editor = Editor::new("hello\n", Grid::new());
+    editor.with_settings(mdedit_app::config::Settings::at(file.clone()));
+    editor.toggle_chrome();
+    assert_eq!(editor.chrome(), Chrome::Pane);
+    // Written on the idle timer, not on the keystroke — which is why this has to be asked for.
+    editor.on_idle();
+
+    let mut next = Editor::new("hello\n", Grid::new());
+    next.with_settings(mdedit_app::config::Settings::at(file));
+    assert_eq!(
+        next.chrome(),
+        Chrome::Pane,
+        "the next run should open on whichever was chosen"
     );
 }

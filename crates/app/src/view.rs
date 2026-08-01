@@ -465,3 +465,20 @@ pub fn colour_at(runs: &[ViewRun<'_>], offset: ByteOffset, fallback: Rgba) -> Rg
     });
     found.map_or(fallback, |index| runs[index].colour)
 }
+
+/// Where the list of open files is shown.
+///
+/// One or the other, never both: they are two presentations of the same list, and showing both would
+/// be two places to click for one action and two pieces of chrome taking room from the document.
+///
+/// Here rather than in `editor` because it is a setting as well as a view state — `crate::config`
+/// persists it, and the config module should not have to reach into the editor to name it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Chrome {
+    /// A strip of tabs across the top. The default, and what MDEDIT-15 built.
+    #[default]
+    Strip,
+    /// A vertical list down the left.
+    Pane,
+}
