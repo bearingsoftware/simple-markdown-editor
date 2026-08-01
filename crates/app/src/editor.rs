@@ -1701,7 +1701,24 @@ impl<T: TextLayout> Editor<T> {
         let Key::Character(character) = &event.logical_key else {
             return false;
         };
-        match character.as_str() {
+        self.apply_chord(character.as_str(), self.modifiers.shift_key())
+    }
+
+    /// Does what Ctrl plus `character` means, with `shift` said explicitly.
+    ///
+    /// Split out of [`Self::handle_chord`] to be callable by a test, which cannot construct a winit
+    /// [`KeyEvent`] — it carries a private platform-specific field, which is why no test in this
+    /// crate drives a key. That gap is not academic: MDEDIT-65 was Ctrl+Shift+S landing in the
+    /// plain-save arm, labelled "Save As" in the menu and saving over the file instead, and nothing
+    /// could have caught it. Every chord is reachable from here, so now something can.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn apply_chord(&mut self, character: &str, shift: bool) -> bool {
+        match character {
+            // Split on Shift, as the undo/redo arms are: winit reports Shift+S as "S", so without
+            // this the shifted chord fell into the plain-save arm. The menu has always labelled
+            // Ctrl+Shift+S as Save As, and the label was the thing telling the truth.
+            "s" | "S" if shift => self.save_as_prompted(),
             "s" | "S" => {
                 self.save();
                 false
@@ -1712,10 +1729,10 @@ impl<T: TextLayout> Editor<T> {
                 true
             }
             // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
-            "z" if !self.modifiers.shift_key() => self.document_mut().undo(),
+            "z" if !shift => self.document_mut().undo(),
             "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
             "w" | "W" => self.close_tab(),
-            "	" => self.cycle_tab(!self.modifiers.shift_key()),
+            "	" => self.cycle_tab(!shift),
             "c" | "C" => {
                 self.copy();
                 false
