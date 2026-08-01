@@ -53,6 +53,7 @@
 
 use std::ops::Range;
 
+pub mod format;
 mod history;
 pub mod outline;
 
