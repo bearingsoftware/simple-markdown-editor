@@ -136,8 +136,9 @@ fn report_panic(_message: &str, _log_path: Option<&std::path::Path>) {}
 /// saves nowhere it was not told to.
 #[cfg(windows)]
 fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
-    // Read once, at startup, and never written back — see `mdedit_app::config`.
-    editor.with_config(mdedit_app::config::Config::load());
+    // Read at startup, and written back on the idle timer when something changes — see
+    // `mdedit_app::config` for the unknown-key rule that makes writing safe.
+    editor.with_settings(mdedit_app::config::Settings::load());
     // The editor keeps every tab by default when it has nobody to ask. This is the asking.
     editor.with_prompt(Box::new(NativePrompt));
     // Without this the editor answers Cancel to every conflict — safe, but it means a save over an

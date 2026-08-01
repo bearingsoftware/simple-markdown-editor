@@ -45,19 +45,7 @@ use crate::prompt::{
 use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
-
-/// Where the list of open files is shown.
-///
-/// One or the other, never both: they are two presentations of the same list, and showing both would
-/// be two places to click for one action and two pieces of chrome taking room from the document.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Chrome {
-    /// A strip of tabs across the top. The default, and what MDEDIT-15 built.
-    #[default]
-    Strip,
-    /// A vertical list down the left.
-    Pane,
-}
+use crate::view::Chrome;
 
 /// The status bar's right-hand fields.
 const RIGHT: usize = 0;
@@ -650,6 +638,8 @@ pub struct Editor<T: TextLayout> {
     mode: view::Mode,
     /// What the user chose. Read once at startup; see [`crate::config`].
     config: Config,
+    /// The settings file and the write path onto it. See [`crate::config`].
+    settings: crate::config::Settings,
     /// The ten digits and their advance, laid out once. See [`Self::digits`].
     digits: Option<[(GlyphKey, f32); 10]>,
     /// The last word count, and `None` until one has finished.
@@ -769,6 +759,7 @@ impl<T: TextLayout> Editor<T> {
             recent: Recent::default(),
             mode: view::Mode::default(),
             config: Config::default(),
+            settings: crate::config::Settings::nowhere(),
             digits: None,
             words: None,
             status_labels: [None, None],
@@ -818,6 +809,22 @@ impl<T: TextLayout> Editor<T> {
     /// Applies settings read from the config file.
     pub fn with_config(&mut self, config: Config) {
         self.config = config;
+        self.chrome = config.chrome;
+    }
+
+    /// Uses these settings, and applies what they say.
+    ///
+    /// The settings own the write path, so this is how a change made in the editor ever reaches the
+    /// file. Pointing it at a temporary one is also how a test avoids touching the user's.
+    pub fn with_settings(&mut self, settings: crate::config::Settings) {
+        self.with_config(settings.config());
+        self.settings = settings;
+    }
+
+    /// The settings, for a caller that wants to know what is stored. For tests.
+    #[must_use]
+    pub fn settings(&self) -> &crate::config::Settings {
+        &self.settings
     }
 
     /// What the user chose.
@@ -997,6 +1004,9 @@ impl<T: TextLayout> Editor<T> {
         let before = self.words;
         self.recount_words();
         self.snapshot_dirty_buffers();
+        // Debounced onto this timer rather than written on the keystroke that changed it, so a run
+        // of rapid toggles costs one write. Not on exit — see `crate::config`.
+        self.settings.flush();
 
         reparsed || before != self.words
     }
@@ -2930,6 +2940,10 @@ impl<T: TextLayout> Editor<T> {
             Chrome::Pane => Chrome::Strip,
         };
         self.pane_scroll = 0.0;
+        // Remembered, so the next launch opens on whichever was chosen. Written on the idle timer
+        // rather than here — see `crate::config`.
+        let chrome = self.chrome;
+        self.settings.update(|config| config.chrome = chrome);
     }
 
     /// A left-click anywhere in the window.

@@ -27,7 +27,10 @@ const HEIGHT: f32 = MARGIN + 400.0;
 
 fn editor_with(source: &str, line_numbers: bool) -> Editor<Grid> {
     let mut editor = Editor::new(source, Grid::new());
-    editor.with_config(Config { line_numbers });
+    editor.with_config(Config {
+        line_numbers,
+        ..Config::default()
+    });
     editor
 }
 
