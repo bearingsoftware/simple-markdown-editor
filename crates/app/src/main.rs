@@ -72,17 +72,21 @@ fn report_panic(message: &str, log_path: Option<&std::path::Path>) {
 #[cfg(not(windows))]
 fn report_panic(_message: &str, _log_path: Option<&std::path::Path>) {}
 
+/// Opens the log and installs the panic hook, before anything that could need either.
+///
+/// The dialog is supplied from here rather than from the library for the `rfd` reason documented on
+/// `NativePrompt` — the manifest that makes `rfd` loadable belongs to this executable.
+fn start_reporting() {
+    mdedit_app::log::start();
+    mdedit_app::log::install_panic_hook(report_panic);
+}
+
 fn main() {
     // Reattach to the terminal that launched us, if there was one. The binary is windows-subsystem
     // so Explorer gets no console flash; the cost is no standard handles at all, which would take
     // the latency harness's output with it. See `attach_parent_console`.
     mdedit_menu_win::attach_parent_console();
-
-    // Before anything that can fail, so that what it says survives an Explorer launch. The dialog
-    // is supplied from here rather than from the library for the `rfd` reason documented below on
-    // `NativePrompt` — the manifest that makes `rfd` loadable belongs to this executable.
-    mdedit_app::log::start();
-    mdedit_app::log::install_panic_hook(report_panic);
+    start_reporting();
 
     #[cfg(not(windows))]
     {
@@ -167,6 +171,11 @@ fn main() {
             editor.activate_saved_tab();
             editor
         };
+        // Anything the last run left behind means it did not exit cleanly. Restored before the
+        // window exists, so the first frame already shows the recovered work rather than flashing
+        // the on-disk version first.
+        editor.recover_snapshots();
+
         // Read once, at startup, and never written back — see `mdedit_app::config`.
         editor.with_config(mdedit_app::config::Config::load());
         // The editor keeps every tab by default when it has nobody to ask. This is the asking.
@@ -197,6 +206,10 @@ fn main() {
                 editor.save_session(path);
             }
         }
+
+        // This run is ending on purpose, so the recovery snapshots have nothing left to protect.
+        // Their survival is precisely the signal that a run did *not* end here.
+        editor.discard_snapshots();
 
         // Printed on exit so a manual session doubles as a measurement run, which is how the
         // battery numbers in the PR body are produced.

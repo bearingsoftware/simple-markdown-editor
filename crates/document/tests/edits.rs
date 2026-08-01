@@ -199,3 +199,25 @@ fn parses_from_a_string() {
     let doc: Document = "**bold**".parse().unwrap_or_else(|e| match e {});
     assert_eq!(doc.to_string(), "**bold**");
 }
+
+/// MDEDIT-54's cheap "has this changed" signal: crash recovery asks it on a timer, and walking the
+/// buffer or holding a copy to compare against would defeat the point of asking cheaply.
+#[test]
+fn the_revision_moves_only_when_the_bytes_do() {
+    let mut doc = Document::from("hello\n");
+    let start = doc.revision();
+
+    doc.set_selection(mdedit_document::Selection::caret(ByteOffset::new(1)));
+    assert_eq!(doc.revision(), start, "moving the caret changes no bytes");
+
+    doc.insert(ByteOffset::new(0), "x").unwrap();
+    let after_insert = doc.revision();
+    assert_ne!(after_insert, start, "an insert does");
+
+    doc.undo();
+    assert_ne!(doc.revision(), after_insert, "and so does undoing it");
+
+    // Same bytes as the start, but a later revision: this is a change counter, not a content hash,
+    // and a caller that needs to know "are these the same bytes" must compare the bytes.
+    assert_eq!(doc.to_string(), "hello\n");
+}
