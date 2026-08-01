@@ -36,7 +36,9 @@ use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::pane;
-use crate::prompt::{KeepEverything, Unsaved, UnsavedPrompt};
+use crate::prompt::{
+    ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved, UnsavedPrompt,
+};
 use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
@@ -63,6 +65,19 @@ const TRAIL: usize = 1;
 ///
 /// Gathered first because writing borrows the store and the bookkeeping mutably while the tab list
 /// is still borrowed to read from.
+/// What checking a tab against its file concluded. See [`Editor::check_one`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Checked {
+    /// The file is as it was read, or there was no file to check.
+    Nothing,
+    /// The buffer now holds what is on disk.
+    Reloaded,
+    /// The file changed and the buffer was kept. On a save, that means not writing.
+    KeptMine,
+    /// The file changed and the user chose to write over it anyway.
+    Overwrite,
+}
+
 enum Snapshotting {
     /// This buffer has unsaved work at this revision, and here it is.
     Write(u64, Option<PathBuf>, u64, String),
@@ -600,6 +615,8 @@ pub struct Editor<T: TextLayout> {
     desired_x: Option<f32>,
     /// Whether the pointer is dragging out a selection.
     dragging: bool,
+    /// Asks what to do when a file changed on disk under a modified buffer. See [`crate::prompt`].
+    conflict: Box<dyn ConflictPrompt>,
     /// Asks about unsaved work when a tab is closing. See [`crate::prompt`].
     prompt: Box<dyn UnsavedPrompt>,
     /// Asks where to save something that has nowhere to go. Declines by default.
@@ -715,6 +732,7 @@ impl<T: TextLayout> Editor<T> {
             content: ContentRect::default(),
             clipboard: Box::new(System),
             prompt: Box::new(KeepEverything),
+            conflict: Box::new(ChangeNothing),
             pick_save_path: Box::new(|_| None),
             mode: view::Mode::default(),
             config: Config::default(),
@@ -798,6 +816,108 @@ impl<T: TextLayout> Editor<T> {
     /// see [`crate::prompt`] for why merely linking `rfd` stops a test binary from starting.
     pub fn with_prompt(&mut self, prompt: Box<dyn UnsavedPrompt>) {
         self.prompt = prompt;
+    }
+
+    /// Checks every open file for an external change, and redraws if one turned up.
+    fn on_focus(&mut self) {
+        if self.check_disk() {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Answers the file-changed-on-disk question. See [`with_prompt`](Self::with_prompt).
+    pub fn with_conflict_prompt(&mut self, conflict: Box<dyn ConflictPrompt>) {
+        self.conflict = conflict;
+    }
+
+    /// Notices files that changed on disk while the editor was not looking.
+    ///
+    /// Called on regaining window focus, which is when an external edit has almost always happened —
+    /// somebody alt-tabbed away, ran a formatter or pulled a branch, and came back. Polling on the
+    /// event rather than watching the filesystem is a deliberate limit: `notify` brings threads and
+    /// four platform backends for a case that, in a Markdown editor, happens between focus changes.
+    /// A file rewritten *while* the window stays focused is not noticed until the next save, which
+    /// is the check that actually prevents data loss.
+    ///
+    /// Every open tab is checked, not only the visible one, because a background tab quietly holding
+    /// stale bytes is how the wrong thing gets saved later.
+    ///
+    /// Returns whether anything changed, so the caller knows to redraw.
+    pub fn check_disk(&mut self) -> bool {
+        let mut changed = false;
+        for index in 0..self.workspace.tabs().len() {
+            changed |= self.check_one(index, Conflicting::Found) == Checked::Reloaded;
+        }
+        if changed {
+            // Every cached layout is keyed on bytes that are no longer in the buffer.
+            self.layouts.clear();
+            self.heights.clear();
+        }
+        changed
+    }
+
+    /// Checks one tab against its file, asking if it has to.
+    ///
+    /// One function for both callers rather than two that drift, which is why the answer is richer
+    /// than either needs on its own: the focus check acts on `Reloaded` and ignores the rest, while
+    /// the save path treats `Nothing` and `Overwrite` as permission to write.
+    fn check_one(&mut self, index: usize, why: Conflicting) -> Checked {
+        let Some(tab) = self.workspace.tabs().get(index) else {
+            return Checked::Nothing;
+        };
+        // Deferred or untitled: nothing has been read, so nothing can have gone stale under it.
+        let (Some(path), Some(open)) = (tab.path(), tab.open()) else {
+            return Checked::Nothing;
+        };
+        let Some(file) = open.file.as_ref() else {
+            return Checked::Nothing;
+        };
+
+        let modified = tab.is_modified();
+        let name = tab.display_name();
+        match mdedit_file::disk_state(path, file) {
+            mdedit_file::DiskState::Unchanged => Checked::Nothing,
+            mdedit_file::DiskState::Gone => {
+                // Not an error, and specifically not a reload: the buffer is now the only copy of
+                // itself. Dropping the record of what was on disk makes `Tab::is_modified` fall
+                // through to its untitled rule — anything in the buffer counts as unsaved — so the
+                // tab behaves like an untitled one that happens to know where it wants to go, and
+                // saving it writes the file back.
+                self.workspace.forget_file(index);
+                crate::log_error!("{name} has been deleted; its buffer is now the only copy of it");
+                Checked::Nothing
+            }
+            mdedit_file::DiskState::Changed if !modified => {
+                // Nothing to lose, so nothing to ask. What VS Code does, and right: with no local
+                // edits the buffer is only a view of the file, and the file moved.
+                self.reload(index, &name)
+            }
+            mdedit_file::DiskState::Changed => match self.conflict.ask(&name, why) {
+                Conflict::Reload => self.reload(index, &name),
+                Conflict::Overwrite => Checked::Overwrite,
+                Conflict::Cancel => Checked::KeptMine,
+            },
+        }
+    }
+
+    /// Re-reads a tab, reporting a failure as having done nothing rather than as having reloaded.
+    fn reload(&mut self, index: usize, name: &str) -> Checked {
+        match self.workspace.reload_tab(index) {
+            Ok(()) => {
+                // Recorded even when it discarded nothing. A buffer changing under the user without
+                // their asking is the sort of thing that gets reported as "it lost my work", and the
+                // log is the only place that question can be answered afterwards.
+                crate::log_error!("{name} changed on disk and was reloaded");
+                Checked::Reloaded
+            }
+            Err(error) => {
+                crate::log_error!("could not reload {name}: {error}");
+                // The buffer is untouched and the stamp is unchanged, so the next check asks again.
+                Checked::KeptMine
+            }
+        }
     }
 
     /// The tabs, for a caller that wants to report on them.
@@ -952,18 +1072,14 @@ impl<T: TextLayout> Editor<T> {
     /// Puts one recovered buffer back, into the tab it belongs to.
     ///
     /// Recovery runs after the session has been restored, so the file it is recovering is usually
-    /// *already* open — the session recorded the same tab. Adding one unconditionally gave two tabs
-    /// on the same file, one showing the recovered text and one showing what is on disk, which is
-    /// the single most confusing thing this feature could do. So an existing tab is reused.
+    /// *already* open. `Workspace::add` returns the existing tab for a path it already holds, which
+    /// is what stops a recovered file appearing twice — once showing the recovered text and once
+    /// showing what is on disk. Relied on rather than re-implemented here; pinned by a test, because
+    /// it is a guarantee of `add` that this depends on rather than an accident.
     fn restore_one(&mut self, entry: &mdedit_session::snapshot::Recovered) {
         let index = match &entry.path {
             Some(path) => {
-                let existing = self
-                    .workspace
-                    .tabs()
-                    .iter()
-                    .position(|tab| tab.path() == Some(path.as_path()));
-                let index = existing.unwrap_or_else(|| self.workspace.add(path.clone()));
+                let index = self.workspace.add(path.clone());
                 if self.workspace.activate(index).is_err() {
                     // The file has gone since the crash. The text still matters, so it comes back
                     // as an untitled buffer rather than being dropped.
@@ -1076,6 +1192,30 @@ impl<T: TextLayout> Editor<T> {
 
     /// Writes the visible tab's buffer to `path`. Returns whether it got there.
     fn write_active_to(&mut self, path: &Path) -> bool {
+        // The check that actually prevents data loss. The focus check keeps the buffer fresh and is
+        // a convenience; this one stands between someone else's work and being written over, and it
+        // is here rather than at the call sites so that every route to a save passes it — Ctrl+S,
+        // the menu, Save All, and the save arm of the close prompt.
+        //
+        // Only when saving over the tab's *own* file: Save As to a different path is not this
+        // situation, and a Save As onto an existing file is an overwrite the user just chose in a
+        // dialog that asked.
+        if self.workspace.active_path() == Some(path) {
+            if let Some(index) = self.workspace.active() {
+                match self.check_one(index, Conflicting::Saving) {
+                    Checked::Nothing | Checked::Overwrite => {}
+                    Checked::Reloaded => {
+                        // The buffer now holds what is on disk, so there is nothing left to write —
+                        // and writing would put the discarded edits back.
+                        self.layouts.clear();
+                        self.heights.clear();
+                        return false;
+                    }
+                    Checked::KeptMine => return false,
+                }
+            }
+        }
+
         let Some(open) = self.workspace.active_open() else {
             return false;
         };
@@ -3435,6 +3575,9 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            // Coming back to the window is when an external edit has almost always happened: the
+            // user went away, something ran, and they returned. See `check_disk`.
+            WindowEvent::Focused(true) => self.on_focus(),
             WindowEvent::Resized(size) => {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);

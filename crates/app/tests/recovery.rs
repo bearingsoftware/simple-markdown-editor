@@ -147,7 +147,11 @@ fn the_next_run_gets_the_unsaved_bytes_back() {
 
 /// Recovery runs after the session has been restored, so the file is normally already open. Two tabs
 /// on one file — one holding the recovered text, one holding what is on disk — is the most confusing
-/// thing this feature could do, and is what it did until the tab was reused.
+/// thing this feature could do.
+///
+/// It does not happen, because `Workspace::add` returns the existing tab for a path it already
+/// holds. This pins that, since recovery depends on it: a change to `add` that dropped the dedupe
+/// would break recovery in a way nothing in `mdedit-session` would notice.
 #[test]
 fn recovering_a_file_already_open_reuses_its_tab() {
     let dir = TempDir::new().unwrap();

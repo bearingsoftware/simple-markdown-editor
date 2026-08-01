@@ -208,6 +208,75 @@ impl FileFormat {
     }
 }
 
+/// What a file looked like from the outside when it was read.
+///
+/// Modification time and length together, because neither is enough alone. Filesystem timestamp
+/// granularity is coarse — FAT32 rounds to two seconds, and even NTFS is not fine enough to
+/// distinguish two writes in the same instant — so a change can leave the time untouched. A length
+/// alone misses any edit that happens to preserve it, which is most of them.
+///
+/// Deliberately *not* a hash. Comparing content means reading the whole file on every window focus,
+/// which is the cost this exists to avoid. The residual false negative — same length, same coarse
+/// timestamp, different bytes — needs a write inside the timestamp's granularity that keeps the
+/// length exactly; rare enough to accept, where a false *positive* would mean a dialog on every
+/// focus and would get the feature turned off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+impl Stamp {
+    /// Reads the stamp of whatever is at `path`, or `None` if it cannot be looked at.
+    #[must_use]
+    pub fn of(path: &Path) -> Option<Self> {
+        let metadata = fs::metadata(path).ok()?;
+        Some(Self {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        })
+    }
+}
+
+/// What the file at a path is doing relative to the copy that was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskState {
+    /// As it was read, as far as [`Stamp`] can tell.
+    Unchanged,
+    /// Something else has written it since.
+    Changed,
+    /// It is not there any more.
+    Gone,
+}
+
+/// Asks what has happened to `path` since `file` was read from it.
+///
+/// [`DiskState::Unchanged`] is the answer whenever the question cannot be answered — a stamp that
+/// could not be taken at load, or metadata that will not read now for a reason other than the file
+/// being absent. The alternative is claiming a change on no evidence, and the cost of that lands on
+/// the user as a dialog rather than on this function as a wrong return value.
+#[must_use]
+pub fn disk_state(path: &Path, file: &LoadedFile) -> DiskState {
+    let Some(recorded) = file.stamp else {
+        return DiskState::Unchanged;
+    };
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            let now = Stamp {
+                modified: metadata.modified().ok(),
+                len: metadata.len(),
+            };
+            if now == recorded {
+                DiskState::Unchanged
+            } else {
+                DiskState::Changed
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => DiskState::Gone,
+        Err(_) => DiskState::Unchanged,
+    }
+}
+
 /// A file, decoded, with everything needed to write it back unchanged.
 #[derive(Debug, Clone)]
 pub struct LoadedFile {
@@ -215,6 +284,9 @@ pub struct LoadedFile {
     format: FileFormat,
     original: Vec<u8>,
     round_trips: bool,
+    /// What the file looked like from outside when these bytes were read. `None` when the metadata
+    /// could not be taken, which makes every later comparison say "unchanged".
+    stamp: Option<Stamp>,
 }
 
 impl LoadedFile {
@@ -245,6 +317,15 @@ impl LoadedFile {
     pub fn round_trips(&self) -> bool {
         self.round_trips
     }
+
+    /// What the file looked like from outside when these bytes were read.
+    ///
+    /// `None` when the metadata could not be taken, which makes [`disk_state`] answer "unchanged"
+    /// for ever after — see there for why that is the right way to be wrong.
+    #[must_use]
+    pub fn stamp(&self) -> Option<Stamp> {
+        self.stamp
+    }
 }
 
 /// Reads a file, honouring a byte-order mark and otherwise assuming UTF-8.
@@ -254,9 +335,15 @@ impl LoadedFile {
 /// [`FileError::Io`] if the file cannot be read, or [`FileError::Malformed`] if the bytes are not
 /// valid in the encoding the BOM implied. No charset guessing happens — see [`load_as`].
 pub fn load(path: &Path) -> Result<LoadedFile, FileError> {
+    // Stamped *before* the read, never after. A write landing between the two then leaves a stamp
+    // older than the bytes, so the next comparison says "changed" about a file that has not changed
+    // since — harmless. Stamping afterwards would leave a stamp *newer* than the bytes, and the
+    // next comparison would say "unchanged" about a file that had been rewritten under us, which is
+    // the failure this whole mechanism exists to prevent.
+    let stamp = Stamp::of(path);
     let bytes = fs::read(path).map_err(|e| FileError::io("reading", path, e))?;
     let encoding = Encoding::for_bom(&bytes).map_or(UTF_8, |(encoding, _)| encoding);
-    decode(path, bytes, encoding)
+    decode(path, bytes, encoding, stamp)
 }
 
 /// Reads a file as `encoding`, ignoring what a byte-order mark would have said.
@@ -268,8 +355,9 @@ pub fn load(path: &Path) -> Result<LoadedFile, FileError> {
 ///
 /// As [`load`].
 pub fn load_as(path: &Path, encoding: &'static Encoding) -> Result<LoadedFile, FileError> {
+    let stamp = Stamp::of(path);
     let bytes = fs::read(path).map_err(|e| FileError::io("reading", path, e))?;
-    decode(path, bytes, encoding)
+    decode(path, bytes, encoding, stamp)
 }
 
 /// Re-reads a file with the encoding it was originally read as.
@@ -289,6 +377,7 @@ fn decode(
     path: &Path,
     bytes: Vec<u8>,
     encoding: &'static Encoding,
+    stamp: Option<Stamp>,
 ) -> Result<LoadedFile, FileError> {
     // `decode` strips a BOM for the encoding it belongs to, which is what we want: the BOM is
     // format, not content, and is put back on save.
@@ -318,6 +407,7 @@ fn decode(
         format,
         original: bytes,
         round_trips,
+        stamp,
     })
 }
 
