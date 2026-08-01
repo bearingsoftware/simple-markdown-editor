@@ -13,6 +13,7 @@
 //! now a clipboard to do something with what you selected.
 
 pub mod blocks;
+pub mod clicks;
 pub mod clipboard;
 pub mod config;
 pub mod content;

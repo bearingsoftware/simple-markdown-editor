@@ -1013,6 +1013,7 @@ dependencies = [
  "proptest",
  "ropey",
  "thiserror 2.0.19",
+ "unicode-segmentation",
 ]
 
 [[package]]

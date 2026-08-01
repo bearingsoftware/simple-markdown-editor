@@ -163,6 +163,7 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
     // A dialog rather than a tab, unlike the shortcuts reference: there is nothing here to scroll,
     // search or copy out, and a version number in a document nobody would keep open is a tab that
     // exists to be closed.
+    editor.with_double_click_interval(mdedit_menu_win::double_click_interval());
     editor.with_about(Box::new(|| {
         let _ = rfd::MessageDialog::new()
             .set_title("About Simple Markdown Editor")

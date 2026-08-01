@@ -27,6 +27,9 @@ repository = "https://github.com/bearingsoftware/simple-markdown-editor"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 thiserror = "2"
+# Unicode word boundaries, for double-click and eventually Ctrl+arrows and MDEDIT-50. Pure Rust,
+# no build script, MIT/Apache — see `Document::word_at` for why the alternative was rejected.
+unicode-segmentation = "1.12"
 # `version` alongside `path` is not redundant: without it this is a wildcard dependency,
 # which deny.toml rejects.
 mdedit-language = { path = "crates/language", version = "0.1.0" }

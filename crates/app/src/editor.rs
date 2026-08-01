@@ -13,6 +13,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::clicks::{Clicks, Granularity};
 use mdedit_document::{Document, Selection};
 use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -618,6 +619,12 @@ pub struct Editor<T: TextLayout> {
     /// Remembered across a run of them so that passing through a short line does not drag the caret
     /// to its end and leave it there. Any horizontal movement or edit clears it.
     desired_x: Option<f32>,
+    /// Counts presses into double- and triple-clicks. See [`crate::clicks`].
+    clicks: Clicks,
+    /// What one click currently selects: a position, a word, or a line.
+    granularity: Granularity,
+    /// The unit the drag started from, so extending grows by the same unit in both directions.
+    anchor_span: Option<ByteSpan>,
     /// Whether the pointer is dragging out a selection.
     dragging: bool,
     /// Asks what to do when a file changed on disk under a modified buffer. See [`crate::prompt`].
@@ -739,6 +746,9 @@ impl<T: TextLayout> Editor<T> {
             caret_area: None,
             last_frame: None,
             desired_x: None,
+            clicks: Clicks::default(),
+            granularity: Granularity::default(),
+            anchor_span: None,
             dragging: false,
             content: ContentRect::default(),
             clipboard: Box::new(System),
@@ -2880,7 +2890,21 @@ impl<T: TextLayout> Editor<T> {
     /// handler so that a test clicks the same way the window does — a test that reached past this
     /// into [`click_at`](Self::click_at) would be exercising a dispatch the app does not use.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
-        self.click_strip(x, y) || self.click_pane(x, y) || self.click_at(x, y)
+        if self.click_strip(x, y) || self.click_pane(x, y) {
+            // The pointer was on chrome, not on text. Ending the run stops a click on a tab
+            // followed by one in the document from counting as a double-click on the document.
+            self.clicks.reset();
+            return true;
+        }
+        self.click_at(x, y)
+    }
+
+    /// Sets the double-click interval, which on Windows is a system setting.
+    ///
+    /// Supplied by the binary rather than read here: it is `GetDoubleClickTime`, and this crate is
+    /// not where Win32 calls live. See [`crate::clicks`] for why it is a setting worth honouring.
+    pub fn with_double_click_interval(&mut self, interval: std::time::Duration) {
+        self.clicks = Clicks::with_interval(interval);
     }
 
     /// Resolves a click in the file pane.
@@ -3121,21 +3145,92 @@ impl<T: TextLayout> Editor<T> {
     /// selection whose far end you got wrong. Returns whether anything was under the pointer.
     /// Public so a headless test can point at the document without a mouse.
     pub fn click_at(&mut self, x: f32, y: f32) -> bool {
+        self.click_at_time(x, y, Instant::now())
+    }
+
+    /// [`click_at`](Self::click_at) with the press time said explicitly.
+    ///
+    /// A test cannot wait half a second between clicks and should not have to, so the moment a press
+    /// happened is a parameter rather than a call to the clock. See [`crate::clicks`].
+    pub fn click_at_time(&mut self, x: f32, y: f32, at: Instant) -> bool {
         let Some(offset) = self.offset_at_point(x, y) else {
             return false;
         };
-        self.select(offset, self.modifiers.shift_key());
+
+        // Shift+click extends the existing selection and is not part of a run. Counting it would
+        // make shift-clicking twice in a place select a word, which is not what either gesture
+        // means.
+        if self.modifiers.shift_key() {
+            self.clicks.reset();
+            self.granularity = Granularity::Character;
+            self.anchor_span = None;
+            self.select(offset, true);
+            self.dragging = true;
+            return true;
+        }
+
+        self.granularity = Granularity::of(self.clicks.press(at, x, y));
+        let span = self.unit_at(offset);
+        self.anchor_span = Some(span);
+
+        match self.granularity {
+            // Unchanged from before this existed, deliberately: a slow click must behave exactly as
+            // it always did, and the counting wraps the old path rather than replacing it.
+            Granularity::Character => self.select(offset, false),
+            Granularity::Word | Granularity::Line => self.select_span(span),
+        }
         self.dragging = true;
         true
     }
 
     /// Drags the far end of the selection to a point in the window.
+    ///
+    /// The unit the drag started with sticks: after a double-click the selection grows by whole
+    /// words, after a triple-click by whole lines. That is the part casual implementations leave
+    /// out, and the part people notice immediately, because dragging out of the word they just
+    /// double-clicked otherwise snaps back to a character selection.
     pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
         let Some(offset) = self.offset_at_point(x, y) else {
             return false;
         };
-        self.select(offset, true);
+        let Some(anchor) = self
+            .anchor_span
+            .filter(|_| !matches!(self.granularity, Granularity::Character))
+        else {
+            self.select(offset, true);
+            return true;
+        };
+
+        // Both ends of the unit under the pointer, so dragging backwards takes the whole of the word
+        // the pointer is in rather than the part of it after the pointer.
+        let reached = self.unit_at(offset);
+        if reached.start() < anchor.start() {
+            self.select_between(anchor.end(), reached.start());
+        } else {
+            self.select_between(anchor.start(), reached.end());
+        }
         true
+    }
+
+    /// The word or line at `offset`, according to the drag's current unit.
+    fn unit_at(&self, offset: ByteOffset) -> ByteSpan {
+        match self.granularity {
+            Granularity::Character => ByteSpan::new(offset, offset),
+            Granularity::Word => self.document().word_at(offset),
+            Granularity::Line => self.document().source_line(offset),
+        }
+    }
+
+    /// Selects a span, with the caret at its end.
+    fn select_span(&mut self, span: ByteSpan) {
+        self.select_between(span.start(), span.end());
+    }
+
+    /// Selects from `anchor` to `head`, leaving the caret at `head`.
+    fn select_between(&mut self, anchor: ByteOffset, head: ByteOffset) {
+        self.document_mut()
+            .set_selection(Selection::new(anchor, head));
+        self.desired_x = None;
     }
 
     /// Moves the caret one visual line, extending the selection if asked.

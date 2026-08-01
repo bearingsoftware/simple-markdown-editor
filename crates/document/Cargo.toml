@@ -15,6 +15,7 @@ mdedit-markers.workspace = true
 mdedit-offsets.workspace = true
 ropey.workspace = true
 thiserror.workspace = true
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 criterion = "0.7"

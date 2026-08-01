@@ -103,6 +103,14 @@ fn push_merged(out: &mut Vec<Segment>, segment: Segment) {
     out.push(segment);
 }
 
+/// Whether a segment is a word rather than a run of punctuation or space.
+///
+/// Alphanumeric is the test rather than "not punctuation" because it is what decides whether joining
+/// this segment to its neighbour would merge two *words*. See [`Document::word_at`].
+fn is_word(segment: &str) -> bool {
+    segment.chars().any(char::is_alphanumeric)
+}
+
 /// Below this, a whole-document parse is already well inside the keystroke budget, so a small
 /// document takes exactly the path it always did — one parse, no splicing, nothing to reconcile.
 const WHOLE_DOCUMENT_LIMIT: usize = 16 * 1024;
@@ -306,6 +314,98 @@ impl Document {
         let line = self.text.byte_to_line(byte);
         let column = self.text.byte_to_char(byte) - self.text.line_to_char(line);
         (LineIndex::new(line), CharOffset::new(column))
+    }
+
+    /// The word `offset` sits in or beside, for a double-click.
+    ///
+    /// # What counts as a word
+    ///
+    /// Unicode word boundaries (UAX #29), via `unicode-segmentation`. The alternative — an
+    /// alphanumeric-run classifier — is a few lines and is wrong on most of the world's text: it
+    /// splits `café` at the accent when the é is decomposed, treats a run of CJK as one enormous
+    /// word, and cuts `don't` in half. This is the definition of "word" for the whole editor, so it
+    /// is worth a small pure dependency rather than a bespoke approximation in each place that needs
+    /// one.
+    ///
+    /// A position **between** two words belongs to the one on its left when there is one, which is
+    /// what puts the caret at the end of a word rather than the start of the next after a click at
+    /// its edge.
+    ///
+    /// Whitespace and punctuation are words too. Double-clicking a run of spaces selects the run,
+    /// and a run of `---` selects the run, which is what every editor does and what makes a
+    /// double-click never select nothing.
+    #[must_use]
+    pub fn word_at(&self, offset: ByteOffset) -> ByteSpan {
+        use unicode_segmentation::UnicodeSegmentation as _;
+
+        let len = self.text.len_bytes();
+        let at = offset.get().min(len);
+        // The line rather than the whole document: segmentation is linear in what it is given, and
+        // a word never crosses a line break. A double-click in a 300 KB paragraph should not walk
+        // 300 KB.
+        let line = self.text.byte_to_line(at);
+        let start = self.text.line_to_byte(line);
+        let text: std::borrow::Cow<'_, str> = self.text.line(line).into();
+        let within = at - start;
+
+        // UAX #29 breaks a run of punctuation into one segment per character, so a double-click on
+        // `---` would select a single dash. Runs of *non-word* segments are therefore joined, which
+        // is what every editor does and what the ticket asked for. Word segments are deliberately
+        // left alone: joining those as well would take a whole run of CJK as one word, which is the
+        // exact failure Unicode segmentation was chosen to avoid.
+        let mut segments = text.split_word_bound_indices().peekable();
+        let mut last_end = 0;
+        while let Some((offset_in_line, segment)) = segments.next() {
+            let mut end = offset_in_line + segment.len();
+            if !is_word(segment) {
+                while let Some((_, next)) = segments.peek() {
+                    if is_word(next) {
+                        break;
+                    }
+                    end += next.len();
+                    segments.next();
+                }
+            }
+            // `<` rather than `<=`, so a position sitting exactly on a boundary falls through to the
+            // word on its left — settled below by the `last_end` fallback.
+            if within < end {
+                return ByteSpan::new(
+                    ByteOffset::new(start + offset_in_line),
+                    ByteOffset::new(start + end),
+                );
+            }
+            last_end = end;
+        }
+        // Past the last word on the line: the end of the line, which is where a click beyond the
+        // text lands. An empty line gives an empty span at the caret, and selecting nothing is the
+        // honest answer there.
+        ByteSpan::new(
+            ByteOffset::new(start + last_end),
+            ByteOffset::new(start + last_end),
+        )
+    }
+
+    /// The whole source line `offset` is on, for a triple-click.
+    ///
+    /// **Source line, not visual row** — the same thing the gutter numbers. A wrapped paragraph is
+    /// one line however many rows it draws, which is what makes triple-click select a paragraph
+    /// rather than the arbitrary slice of it that happened to fit the window.
+    ///
+    /// The trailing newline is **included**, when there is one. That is what VS Code does, and it is
+    /// what makes a triple-click followed by a delete remove the line rather than leave a blank one
+    /// behind. The last line of a document with no final newline simply has none to include.
+    #[must_use]
+    pub fn source_line(&self, offset: ByteOffset) -> ByteSpan {
+        let len = self.text.len_bytes();
+        let at = offset.get().min(len);
+        let line = self.text.byte_to_line(at);
+        let start = self.text.line_to_byte(line);
+        let end = if line + 1 < self.text.len_lines() {
+            self.text.line_to_byte(line + 1)
+        } else {
+            len
+        };
+        ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end))
     }
 
     /// The innermost code block containing `offset`, if there is one.
