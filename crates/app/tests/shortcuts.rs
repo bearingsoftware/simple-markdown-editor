@@ -27,8 +27,20 @@ fn claimed() -> Vec<&'static str> {
 /// no test fail — but one added here and not to the reference does, which is the direction the
 /// drift actually goes.
 const IMPLEMENTED: &[&str] = &[
-    "Ctrl+N", "Ctrl+O", "Ctrl+S", "Ctrl+W", "Ctrl+Z", "Ctrl+Y", "Ctrl+X", "Ctrl+C", "Ctrl+V",
-    "Ctrl+A", "Ctrl+/", "Ctrl+B", "Ctrl+Tab",
+    "Ctrl+N",
+    "Ctrl+O",
+    "Ctrl+S",
+    "Ctrl+Shift+S",
+    "Ctrl+W",
+    "Ctrl+Z",
+    "Ctrl+Y",
+    "Ctrl+X",
+    "Ctrl+C",
+    "Ctrl+V",
+    "Ctrl+A",
+    "Ctrl+/",
+    "Ctrl+B",
+    "Ctrl+Tab",
 ];
 
 #[test]

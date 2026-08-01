@@ -43,6 +43,7 @@ pub const ALL: &[Group] = &[
             key("Ctrl+N", "New file"),
             key("Ctrl+O", "Open a file"),
             key("Ctrl+S", "Save"),
+            key("Ctrl+Shift+S", "Save as a new file"),
             key("Ctrl+W", "Close the current tab"),
             key("Ctrl+Tab", "Next tab"),
             key("Ctrl+Shift+Tab", "Previous tab"),
