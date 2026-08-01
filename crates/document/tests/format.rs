@@ -285,3 +285,80 @@ fn selecting_a_whole_construct_wraps_it_again() {
     );
     let _ = ByteSpan::new(ByteOffset::ZERO, ByteOffset::ZERO);
 }
+
+// ---- links ----
+
+#[test]
+fn a_selection_becomes_a_link() {
+    let mut doc = selecting("see the docs here\n", 4, 12);
+    assert!(doc.make_link(Some("https://example.com")));
+    assert_eq!(
+        doc.to_string(),
+        "see [the docs](https://example.com) here\n"
+    );
+}
+
+/// With no destination the slot is left empty and the caret parks in it — the "no UI at all" case,
+/// where the next thing typed is the destination.
+#[test]
+fn a_link_with_no_url_parks_the_caret_in_the_slot() {
+    let mut doc = selecting("hello world\n", 0, 5);
+    doc.make_link(None);
+    assert_eq!(doc.to_string(), "[hello]() world\n");
+
+    // Typing now should land inside the parentheses.
+    doc.insert(doc.selection().head(), "https://x.example")
+        .unwrap();
+    assert_eq!(doc.to_string(), "[hello](https://x.example) world\n");
+}
+
+/// With a destination supplied there is nothing left to type, so the caret goes past the construct.
+#[test]
+fn a_link_with_a_url_leaves_the_caret_after_it() {
+    let mut doc = selecting("hello world\n", 0, 5);
+    doc.make_link(Some("https://x.example"));
+
+    doc.insert(doc.selection().head(), "!").unwrap();
+    assert_eq!(doc.to_string(), "[hello](https://x.example)! world\n");
+}
+
+#[test]
+fn a_caret_mid_word_links_the_word() {
+    let mut doc = at("see docs here\n", 5);
+    doc.make_link(Some("https://x.example"));
+    assert_eq!(doc.to_string(), "see [docs](https://x.example) here\n");
+}
+
+#[test]
+fn making_a_link_is_one_undo_step() {
+    let original = "hello world\n";
+    let mut doc = selecting(original, 0, 5);
+    doc.make_link(Some("https://x.example"));
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), original);
+    assert!(!doc.undo());
+}
+
+/// A false positive turns a paste into a link nobody wanted, which is worse than a false negative —
+/// so this is strict, and these are the cases that decide it.
+#[test]
+fn what_counts_as_a_url() {
+    use mdedit_document::format::looks_like_url;
+
+    assert!(looks_like_url("https://example.com"));
+    assert!(looks_like_url("http://example.com/a/b?c=d"));
+    assert!(looks_like_url("mailto:someone@example.com"));
+    assert!(looks_like_url("  https://example.com  "), "trimmed first");
+
+    assert!(!looks_like_url("example.com"), "a bare host is also a word");
+    assert!(!looks_like_url("www.example.com"), "and so is this");
+    assert!(!looks_like_url("some words here"));
+    assert!(!looks_like_url("https://a b"), "a space rules it out");
+    assert!(
+        !looks_like_url("https://"),
+        "a scheme with nothing after it"
+    );
+    assert!(!looks_like_url(""));
+    assert!(!looks_like_url("see https://example.com for more"));
+}

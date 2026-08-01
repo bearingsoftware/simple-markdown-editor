@@ -68,6 +68,10 @@ pub const ALL: &[Group] = &[
             key("Ctrl+I", "Italic"),
             key("Ctrl+Shift+X", "Strikethrough"),
             key("Ctrl+E", "Inline code"),
+            key(
+                "Ctrl+K",
+                "Link — uses a URL on the clipboard if there is one",
+            ),
         ],
     },
     Group {

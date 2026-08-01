@@ -40,6 +40,25 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 
 use crate::{Document, Selection};
 
+/// Whether `text` looks enough like a URL to use as a link destination without asking.
+///
+/// Deliberately strict, and deliberately not a parser. This decides whether the editor acts on the
+/// clipboard *without asking*, so a false positive turns a paste into a link the user did not want —
+/// which is worse than a false negative, where they simply type the destination themselves.
+///
+/// So: a known scheme, no whitespace, and something after the scheme. `www.example.com` is not
+/// accepted, because a bare host is also just a word somebody might have copied.
+#[must_use]
+pub fn looks_like_url(text: &str) -> bool {
+    let text = text.trim();
+    if text.split_whitespace().count() != 1 {
+        return false;
+    }
+    ["https://", "http://", "mailto:", "ftp://"]
+        .iter()
+        .any(|scheme| text.len() > scheme.len() && text.starts_with(scheme))
+}
+
 /// An inline construct that can be toggled on and off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inline {
@@ -109,6 +128,41 @@ impl Document {
         }
         let target = self.target_span();
         self.wrap(target, what)
+    }
+
+    /// Turns the selection, or the word at the caret, into a link.
+    ///
+    /// `url` goes in the destination slot. With `None` the slot is left empty and the caret parks
+    /// inside it, ready to type or paste into — which is the whole of the "no UI needed" claim: the
+    /// editor asks nothing, and the next thing typed is the destination.
+    ///
+    /// Returns whether anything changed.
+    ///
+    /// One undo step. Unlike a toggle this is not reversible by pressing again — a link is a
+    /// construct with content the user supplied, and "un-linking" is a different operation nobody
+    /// has asked for. Ctrl+Z is how it comes off.
+    pub fn make_link(&mut self, url: Option<&str>) -> bool {
+        let target = self.target_span();
+        let destination = url.unwrap_or_default();
+        // Built as one string so the closing half is a single edit: `](url)` has no interesting
+        // interior, and splitting it would only make the transaction longer.
+        let closing = format!("]({destination})");
+
+        self.transact(|doc| {
+            // Backwards, as everything here is: the opening edit would shift the closing one.
+            let _ = doc.replace(ByteSpan::new(target.end(), target.end()), &closing);
+            let _ = doc.replace(ByteSpan::new(target.start(), target.start()), "[");
+
+            // The caret goes where the next thing to type goes. With a destination already supplied
+            // that is after the whole construct; without one it is inside the empty parentheses.
+            let after_open = target.end().get() + 1;
+            let caret = match url {
+                Some(_) => after_open + closing.len(),
+                None => after_open + 2,
+            };
+            doc.set_selection(Selection::caret(ByteOffset::new(caret)));
+        });
+        true
     }
 
     /// The span a toggle should act on when there is no construct to remove.
