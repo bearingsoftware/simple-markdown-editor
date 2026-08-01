@@ -114,7 +114,7 @@ Known gaps, so nobody assumes they are done:
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
 - **There is a File, Edit and Help menu, a status bar, and the open files shown either as a tab strip
   or as a left pane.** No scrollbar, no View menu, no context menu on right-click. The plain-markup
-  toggle is Ctrl+/ and the strip/pane toggle is Ctrl+B; neither has a menu item, because there is
+  toggle is Ctrl+/ and the strip/pane toggle is Ctrl+Shift+E; neither has a menu item, because there is
   still no View menu to put one in.
 - **The recent-files list is state, and is treated as untrusted input.** MDEDIT-41 put it beside the
   session file rather than in `config.json` — the config file is read-only by design and may not name
@@ -136,10 +136,14 @@ Known gaps, so nobody assumes they are done:
   A *crash* is survivable and a *close* is not, which is exactly backwards. The unsaved-changes
   prompt already exists and already works for Ctrl+W; the window close path simply does not use it.
   MDEDIT-64 carries the fix, which needs a decision about what a multi-tab close asks.
-- **Which chrome is showing is not remembered.** Ctrl+B swaps the strip for the pane and the editor
-  starts on the strip every time — the config file is read once and never written back, so there is
-  nowhere to put it that survives a restart. A `chrome` setting is the obvious home when someone
-  wants one.
+- **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and
+  never written back" — four features were stalled on it. The file is read into a `serde_json::Map`
+  as well as the typed `Config`, and a write merges the changed fields into that map, so a key from a
+  newer build or one added by hand passes through untouched. **That rule is load-bearing**: a
+  typed-struct rewrite silently deletes the future. Writes are atomic, and happen on the idle timer
+  when something changes rather than on exit — a run that crashes never reaches its exit path. The
+  one thing it cannot preserve is a malformed file's contents, because there was nothing valid to
+  preserve. Which chrome is showing, and the zoom, persist through it.
 - **A pane row truncates its name; it does not ellipsise it, and there is no hover.** MDEDIT-28's
   plan asked for eliding with the full path on hover. Truncation is what the tab strip already does
   and what this matches; an ellipsis needs its own measurement pass, and a tooltip needs a hover
@@ -216,6 +220,21 @@ Known gaps, so nobody assumes they are done:
   so because the default fails them. `GetDoubleClickTime` is read in `mdedit-menu-win`, where the
   `unsafe` belongs. Being a parameter is also what makes click counting testable without sleeping.
   A run wraps at three, so a fourth click is a caret again.
+- **Inline formatting removes delimiters it can point at, not ones it guessed.** MDEDIT-50:
+  `Document::toggle_inline` uses the marker spans, so `**a _b_ c**` with the caret in `b` takes off
+  the italic pair and nothing else. That is the differentiator — every editor that bolts Markdown
+  buttons onto a text widget does un-bolding with a regular expression and gets nested emphasis
+  wrong. Toggling twice is byte-identical, property-tested.
+
+  **Ctrl+B is bold, and the file pane moved to Ctrl+Shift+E.** Non-negotiable: a Markdown editor
+  where Ctrl+B moves a sidebar is wrong in a way people notice within a minute. Ctrl+I is italic,
+  Ctrl+Shift+X strikethrough, Ctrl+E inline code — the last is this project's choice rather than the
+  ticket's, and the weakest of the four.
+
+  **Inside a code span the inline toggles do nothing.** `**` there is not markup, so a second press
+  could not find it to take away, and a toggle that cannot be un-toggled is not one. The empty pair a
+  press with no selection leaves behind *is* matched, textually and narrowly, for the same reason —
+  otherwise pressing the chord twice by mistake leaves `****` with no way off but backspace.
 - **There is no menu to reach copy and paste from**, only the chords. A context menu is MDEDIT-58.
 - **Startup costs ~250 ms before anything is drawn, and none of it is ours to fix.** MDEDIT-20
   attributed it with `spikes/startup-attribution`: creating the window is 60–79 ms, `request_adapter`

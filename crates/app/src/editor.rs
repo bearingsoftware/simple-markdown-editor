@@ -46,6 +46,7 @@ use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
 use crate::view::Chrome;
+use mdedit_document::format::Inline;
 
 /// The status bar's right-hand fields.
 const RIGHT: usize = 0;
@@ -1770,6 +1771,9 @@ impl<T: TextLayout> Editor<T> {
                 self.copy();
                 false
             }
+            // Before the cut arm, and it has to be: winit reports Ctrl+Shift+X as "X", which `"x" |
+            // "X"` below would otherwise swallow. Exactly the class of mistake MDEDIT-65 was.
+            "x" | "X" if shift => self.document_mut().toggle_inline(Inline::Strikethrough),
             "x" | "X" => self.cut(),
             "v" | "V" => self.paste(),
             "a" | "A" => {
@@ -1782,9 +1786,19 @@ impl<T: TextLayout> Editor<T> {
                 self.toggle_mode();
                 true
             }
-            // What VS Code, Sublime and Zed all use for showing and hiding the sidebar. There is no
-            // menu item, because there is still no View menu to put one in.
-            "b" | "B" => {
+            // Bold and italic are not negotiable: in every editor an end user has formatted text in,
+            // these are what these two keys do. MDEDIT-50 took Ctrl+B off the file pane for exactly
+            // that reason — a Markdown editor where Ctrl+B moves a sidebar is wrong in a way people
+            // notice within a minute.
+            "b" | "B" => self.document_mut().toggle_inline(Inline::Bold),
+            "i" | "I" => self.document_mut().toggle_inline(Inline::Italic),
+            // Inline code. The ticket named chords for bold, italic, strikethrough and link and left
+            // this one open; Ctrl+E is the choice, because it is free here and is what several
+            // Markdown comment editors use. Weaker ground than the two above, and marked as such.
+            "e" | "E" if !shift => self.document_mut().toggle_inline(Inline::Code),
+            // The file pane, moved here from Ctrl+B. VS Code's chord for its explorer, which is the
+            // convention people arriving from anywhere else already have.
+            "e" | "E" => {
                 self.toggle_chrome();
                 true
             }

@@ -62,6 +62,15 @@ pub const ALL: &[Group] = &[
         ],
     },
     Group {
+        name: "Formatting",
+        shortcuts: &[
+            key("Ctrl+B", "Bold"),
+            key("Ctrl+I", "Italic"),
+            key("Ctrl+Shift+X", "Strikethrough"),
+            key("Ctrl+E", "Inline code"),
+        ],
+    },
+    Group {
         name: "Moving about",
         shortcuts: &[
             key("Home / End", "Start or end of the document"),
@@ -77,7 +86,7 @@ pub const ALL: &[Group] = &[
                 "Ctrl+/",
                 "Show the Markdown as plain text, or conceal it again",
             ),
-            key("Ctrl+B", "Swap the tab strip for the file pane"),
+            key("Ctrl+Shift+E", "Swap the tab strip for the file pane"),
         ],
     },
 ];

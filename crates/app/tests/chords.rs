@@ -130,3 +130,96 @@ fn select_all_ignores_shift() {
     assert!(editor.apply_chord("a", false));
     assert!(editor.apply_chord("A", true));
 }
+
+// ---- inline formatting, and the chord it took (MDEDIT-50) ----
+
+/// The reassignment. In every editor an end user has formatted text in, Ctrl+B is bold — a Markdown
+/// editor where it moves a sidebar is wrong in a way people notice within a minute.
+#[test]
+fn ctrl_b_is_bold_and_no_longer_the_file_pane() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("word");
+    select_the_word(&mut editor);
+
+    let before = editor.chrome();
+    editor.apply_chord("b", false);
+
+    assert!(editor.document().to_string().contains("**word**"));
+    assert_eq!(editor.chrome(), before, "the pane must not have moved");
+}
+
+#[test]
+fn ctrl_shift_e_is_the_file_pane() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    let before = editor.chrome();
+
+    editor.apply_chord("E", true);
+
+    assert_ne!(editor.chrome(), before);
+}
+
+#[test]
+fn the_other_three_inline_chords_do_what_they_say() {
+    for (character, shift, expected) in [
+        ("i", false, "*word*"),
+        ("X", true, "~~word~~"),
+        ("e", false, "`word`"),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let (mut editor, _, _) = editor(&dir, None);
+        editor.insert_text("word");
+        select_the_word(&mut editor);
+
+        editor.apply_chord(character, shift);
+        assert!(
+            editor.document().to_string().contains(expected),
+            "{character:?} shift={shift} should have produced {expected}"
+        );
+    }
+}
+
+/// Ctrl+Shift+X is strikethrough and Ctrl+X is still cut — winit reports the shifted one as "X",
+/// so the arms have to be in the right order. Exactly the mistake MDEDIT-65 was.
+#[test]
+fn ctrl_x_is_still_cut() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("word");
+    editor.apply_chord("a", false);
+
+    editor.apply_chord("x", false);
+
+    assert!(
+        !editor.document().to_string().contains("word"),
+        "Ctrl+X should still cut"
+    );
+}
+
+/// And Ctrl+E is code while Ctrl+Shift+E is the pane, which is the other pair sharing a letter.
+#[test]
+fn ctrl_e_and_ctrl_shift_e_are_different_things() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("word");
+    select_the_word(&mut editor);
+    let chrome = editor.chrome();
+
+    editor.apply_chord("e", false);
+    assert!(editor.document().to_string().contains("`word`"));
+    assert_eq!(editor.chrome(), chrome);
+}
+
+/// Selects the `word` these tests insert at the start of the buffer.
+///
+/// Explicitly, rather than relying on the caret: `insert_text` leaves it at the end of what it
+/// inserted, which is a word *boundary*, and the mid-word rule deliberately does not fire there.
+fn select_the_word(editor: &mut Editor<Grid>) {
+    editor
+        .document_mut()
+        .set_selection(mdedit_document::Selection::new(
+            mdedit_offsets::ByteOffset::new(0),
+            mdedit_offsets::ByteOffset::new(4),
+        ));
+}
