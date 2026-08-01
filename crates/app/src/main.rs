@@ -150,6 +150,32 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
         }
         dialog.save_file()
     }));
+    // Multi-select, because opening four files at once is the case a File → Open exists for; each
+    // lands in its own tab. The filters name what the editor highlights, and All Files is last
+    // rather than absent — nothing stops a Markdown document being called something else.
+    editor.with_open_picker(Box::new(|| {
+        rfd::FileDialog::new()
+            .add_filter("Markdown", &["md", "markdown"])
+            .add_filter("Data", &["json", "yaml", "yml"])
+            .add_filter("All Files", &["*"])
+            .pick_files()
+    }));
+    // A dialog rather than a tab, unlike the shortcuts reference: there is nothing here to scroll,
+    // search or copy out, and a version number in a document nobody would keep open is a tab that
+    // exists to be closed.
+    editor.with_about(Box::new(|| {
+        let _ = rfd::MessageDialog::new()
+            .set_title("About Simple Markdown Editor")
+            .set_description(format!(
+                "Simple Markdown Editor {}\n\nA native WYSIWYG Markdown editor.\nThe buffer is the \
+                 source of truth: opening a file and saving it changes no byte you did not edit.",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .show();
+    }));
+    // Read from beside the session file. Done here rather than in `Editor::new` so a test gets an
+    // editor that touches nothing of the user's.
+    editor.with_recent(mdedit_session::recent::Recent::beside_session());
 }
 
 /// Opens the log and installs the panic hook, before anything that could need either.
@@ -210,6 +236,9 @@ fn main() {
         let arguments: Vec<std::path::PathBuf> =
             std::env::args_os().skip(1).map(Into::into).collect();
         let session_path = mdedit_session::default_session_path();
+        // Resolved paths from the command line or Explorer, to go into the recent list once there
+        // is one. It is read in `give_it_dialogs`, below, which is after this.
+        let mut opened: Vec<std::path::PathBuf> = Vec::new();
 
         let mut editor = if arguments.is_empty() {
             // Nothing named, so restore what was open. Only the active tab is read; the rest stay
@@ -239,7 +268,8 @@ fn main() {
                 // typing. See `mdedit_session::path` for why they are separate functions.
                 match mdedit_session::path::from_command_line(&path) {
                     Ok(resolved) => {
-                        workspace.add(resolved);
+                        workspace.add(resolved.clone());
+                        opened.push(resolved);
                     }
                     Err(reason) => {
                         mdedit_app::log_error!("could not open: {reason}");
@@ -257,6 +287,12 @@ fn main() {
         editor.recover_snapshots();
 
         give_it_dialogs(&mut editor);
+        // Opening from Explorer or a terminal is how most people start this editor, and it does not
+        // go through `Editor::open_paths` — so without this the recent list would only ever know
+        // about files opened from its own dialog. Reversed, so the last one named ends up first.
+        for path in opened.iter().rev() {
+            editor.remember(path);
+        }
         // Menu commands arrive on muda's own channel; this is what carries them into the loop.
         editor.forward_menu(event_loop.create_proxy());
 

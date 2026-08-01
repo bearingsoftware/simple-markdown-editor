@@ -26,6 +26,7 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 use serde::{Deserialize, Serialize};
 
 pub mod path;
+pub mod recent;
 pub mod snapshot;
 
 pub use path::PathRejected;
@@ -97,6 +98,10 @@ enum Origin {
     /// Never saved anywhere. Carries the number that names it, so "Untitled 2" stays "Untitled 2"
     /// when "Untitled 1" is closed.
     Untitled(u32),
+    /// Written by the editor rather than by a person — the keyboard-shortcuts reference. Carries its
+    /// own name, and is never written to the session file: it can be regenerated, and restoring a
+    /// stale copy of a reference document is worse than not restoring it.
+    Generated(String),
 }
 
 /// A file that is open in the editor.
@@ -130,7 +135,7 @@ impl Tab {
     pub fn path(&self) -> Option<&Path> {
         match &self.origin {
             Origin::File(path) => Some(path),
-            Origin::Untitled(_) => None,
+            Origin::Untitled(_) | Origin::Generated(_) => None,
         }
     }
 
@@ -155,6 +160,7 @@ impl Tab {
                 |name| name.to_string_lossy().into_owned(),
             ),
             Origin::Untitled(number) => format!("Untitled {number}"),
+            Origin::Generated(name) => name.clone(),
         }
     }
 
@@ -364,6 +370,31 @@ impl Workspace {
             open: Some(OpenTab {
                 document: Document::new(),
                 file: None,
+            }),
+        });
+        self.tabs.len() - 1
+    }
+
+    /// Adds a tab holding text the editor generated, named `name`, and returns its index.
+    ///
+    /// Untitled, because it has never been on disk — but *not modified*, because it carries its own
+    /// text as its record of what it would be on disk. A generated reference that asked to be saved
+    /// on the way out would be a nuisance rather than a safeguard.
+    ///
+    /// Save As still works on it and writes exactly what is shown, which is the one thing anybody
+    /// would want to do with such a buffer.
+    pub fn add_generated(&mut self, name: &str, text: &str) -> usize {
+        let snapshot_id = self.take_snapshot_id();
+        // Markdown, whatever the resolver would say: there is no path to resolve from, and what
+        // this is for is a Markdown document the editor wrote.
+        let document = Document::from(text);
+        self.tabs.push(Tab {
+            origin: Origin::Generated(name.to_owned()),
+            snapshot_id,
+            caret: ByteOffset::ZERO,
+            open: Some(OpenTab {
+                document,
+                file: Some(mdedit_file::in_memory(text)),
             }),
         });
         self.tabs.len() - 1

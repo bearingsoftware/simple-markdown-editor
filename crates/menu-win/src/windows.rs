@@ -5,6 +5,7 @@
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{Menu, MenuEvent, MenuId, MenuItem, MenuTheme, Submenu};
@@ -17,6 +18,15 @@ pub struct MenuBar {
     /// muda identifies items by an opaque id, so the mapping back to a command is kept here rather
     /// than inferred from the label — a label is what the user reads, not an identifier.
     commands: HashMap<MenuId, Command>,
+    /// File → Open Recent, kept so its contents can be replaced as files are opened.
+    recent: Submenu,
+    /// The ids currently in `recent`, and which position each stands for.
+    ///
+    /// Separate from `commands` because it is thrown away and rebuilt every time the list changes,
+    /// and muda hands out fresh ids each time. Shared rather than owned because [`Self::forward_to`]
+    /// registers a handler that outlives the call and has to see rebuilds that happen after it —
+    /// a clone taken at registration would answer for a menu that no longer exists.
+    recent_ids: Arc<Mutex<HashMap<MenuId, usize>>>,
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -41,6 +51,7 @@ impl MenuBar {
 
         let file = Submenu::new("&File", true);
         let edit = Submenu::new("&Edit", true);
+        let help = Submenu::new("&Help", true);
 
         // Accelerator text only — see the crate docs. The key handler owns the chords.
         let items = [
@@ -49,6 +60,12 @@ impl MenuBar {
                 "&New",
                 Command::New,
                 Some((Modifiers::CONTROL, Code::KeyN)),
+            ),
+            (
+                &file,
+                "&Open…",
+                Command::Open,
+                Some((Modifiers::CONTROL, Code::KeyO)),
             ),
             (
                 &file,
@@ -100,6 +117,8 @@ impl MenuBar {
                 Command::Paste,
                 Some((Modifiers::CONTROL, Code::KeyV)),
             ),
+            (&help, "&Keyboard Shortcuts", Command::Shortcuts, None),
+            (&help, "&About", Command::About, None),
         ];
 
         for (menu, label, command, chord) in items {
@@ -110,13 +129,61 @@ impl MenuBar {
             menu.append(&item).ok()?;
         }
 
+        // Empty and disabled until the app fills it in — see `set_recent`. Placed after Open, where
+        // every editor puts it.
+        let recent = Submenu::new("Open &Recent", false);
+        file.insert(&recent, 2).ok()?;
+
         // A separator between saving and closing, because they are different kinds of decision.
-        file.insert(&muda::PredefinedMenuItem::separator(), 4)
+        // Index 6 rather than 4: Open and Open Recent went in above it.
+        file.insert(&muda::PredefinedMenuItem::separator(), 6)
             .ok()?;
 
         menu.append(&file).ok()?;
         menu.append(&edit).ok()?;
-        Some(Self { menu, commands })
+        menu.append(&help).ok()?;
+        Some(Self {
+            menu,
+            commands,
+            recent,
+            recent_ids: Arc::new(Mutex::new(HashMap::new())),
+        })
+    }
+
+    /// Replaces the Open Recent submenu with `labels`, most recent first.
+    ///
+    /// Rebuilt rather than updated in place: muda has no way to shorten a submenu except by removing
+    /// items, so keeping N items and hiding the unused ones would be the same work with a worse
+    /// failure mode. The submenu is disabled outright when the list is empty, which is what stops it
+    /// being a menu that opens onto nothing.
+    ///
+    /// The index a click reports is the position in `labels`, so the caller must read it back
+    /// against the same list it passed in.
+    pub fn set_recent(&mut self, labels: &[String]) {
+        while self.recent.remove_at(0).is_some() {}
+        // Poisoning would mean a panic while a menu was being rebuilt, which has nothing to hold
+        // half-written: the map is replaced wholesale below either way.
+        let mut ids = match self.recent_ids.lock() {
+            Ok(ids) => ids,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ids.clear();
+
+        for (index, label) in labels.iter().enumerate() {
+            // `&` opens a mnemonic in a Win32 menu, and these labels are file paths — a directory
+            // called `R&D` would silently eat its own ampersand and put the underline in the wrong
+            // place. Doubling is how Win32 spells a literal one.
+            let escaped = label.replace('&', "&&");
+            // The leading digit is the accelerator people actually use in a recent menu, and it is
+            // positional, so it is prepended here rather than stored in the label.
+            let item = MenuItem::new(format!("&{} {escaped}", index + 1), true, None);
+            ids.insert(item.id().clone(), index);
+            if self.recent.append(&item).is_err() {
+                break;
+            }
+        }
+        drop(ids);
+        self.recent.set_enabled(!labels.is_empty());
     }
 
     /// Puts the menu bar on a window.
@@ -159,9 +226,20 @@ impl MenuBar {
     /// command over — anything that touches the document belongs on the far side.
     pub fn forward_to(&self, deliver: impl Fn(Command) + Send + Sync + 'static) {
         let commands = self.commands.clone();
+        // Shared, not cloned: the recent submenu is rebuilt after this handler is registered, and a
+        // snapshot taken here would keep answering for the menu as it was at startup.
+        let recent_ids = Arc::clone(&self.recent_ids);
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if let Some(command) = commands.get(&event.id).copied() {
                 deliver(command);
+                return;
+            }
+            let index = match recent_ids.lock() {
+                Ok(ids) => ids.get(&event.id).copied(),
+                Err(poisoned) => poisoned.into_inner().get(&event.id).copied(),
+            };
+            if let Some(index) = index {
+                deliver(Command::OpenRecent(index));
             }
         }));
     }
