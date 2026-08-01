@@ -811,6 +811,9 @@ impl<T: TextLayout> Editor<T> {
     pub fn with_config(&mut self, config: Config) {
         self.config = config;
         self.chrome = config.chrome;
+        // Applied here rather than left for the first zoom press, so a document opens at the size it
+        // was last read at.
+        self.theme.body_size = Theme::default().body_size * config.zoom;
     }
 
     /// Uses these settings, and applies what they say.
@@ -1163,6 +1166,15 @@ impl<T: TextLayout> Editor<T> {
         self.workspace
             .active_open()
             .map_or(&self.scratch, |open| &open.document)
+    }
+
+    /// The text size the theme is currently drawing at.
+    ///
+    /// For a test that cannot see pixels: the stub backend is a fixed grid and ignores the size it
+    /// is handed, so the *effect* of a zoom is invisible to it and this is what can be asserted.
+    #[must_use]
+    pub fn body_size(&self) -> f32 {
+        self.theme.body_size
     }
 
     /// The text engine, for a test that wants to know what was asked of it.
@@ -1886,6 +1898,11 @@ impl<T: TextLayout> Editor<T> {
             // Markdown comment editors use. Weaker ground than the two above, and marked as such.
             "e" | "E" if !shift => self.document_mut().toggle_inline(Inline::Code),
             "k" | "K" => self.link(),
+            // Ctrl+= is the practical spelling of "Ctrl and plus": `+` needs Shift on most layouts,
+            // so an editor that only bound `+` would answer to a chord nobody presses. Both work.
+            "=" | "+" => self.zoom_by(1),
+            "-" | "_" => self.zoom_by(-1),
+            "0" => self.reset_zoom(),
             // The file pane, moved here from Ctrl+B. VS Code's chord for its explorer, which is the
             // convention people arriving from anywhere else already have.
             "e" | "E" => {
@@ -3262,6 +3279,93 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn scrollbar(&self) -> Option<Bar> {
         self.scrollbar
+    }
+
+    /// Steps the text size up or down. Negative steps shrink it.
+    ///
+    /// A multiplicative ladder rather than a fixed number of pixels: the difference between 16 and
+    /// 17 px matters far more than between 39 and 40, and a ratio is what makes each press feel like
+    /// the same amount of change.
+    pub fn zoom_by(&mut self, steps: i32) -> bool {
+        /// One press. 1.1 gives about seven presses across the useful range, which is enough to land
+        /// where you meant without being enough to lose count.
+        const STEP: f32 = 1.1;
+
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "steps is a handful of key presses, not a count of anything"
+        )]
+        let factor = STEP.powf(steps as f32);
+        self.set_zoom(self.settings.config().zoom * factor)
+    }
+
+    /// Puts the text back to its normal size.
+    pub fn reset_zoom(&mut self) -> bool {
+        self.set_zoom(1.0)
+    }
+
+    /// How much larger or smaller than normal the text currently is.
+    #[must_use]
+    pub fn zoom(&self) -> f32 {
+        self.settings.config().zoom
+    }
+
+    /// Rescales the text, and throws away everything that was laid out at the old size.
+    ///
+    /// # The cache discipline *is* this feature
+    ///
+    /// Text sizes come from the theme at layout time and are **not** in [`ChunkKey`] — which carries
+    /// a content hash, a width, the drawing mode and whether the chunk holds the caret. So changing
+    /// the size without clearing leaves every cached chunk drawing at the old one.
+    ///
+    /// The choice was to put the size in every key or to clear on zoom. **Clear**, because it is
+    /// correct by construction and because a size in every key is a per-frame cost paid for ever, to
+    /// serve an event that happens perhaps twice in a session.
+    ///
+    /// Five things hold laid-out text and four of them are cleared here: the chunk layouts, the
+    /// measured heights, the gutter's digits, the status bar's two labels, and the file pane's row
+    /// labels. The tab strip's labels are measured every frame and so need nothing — which is worth
+    /// stating, because "it is already fine" and "it was forgotten" look identical from here.
+    ///
+    /// # And the viewport must not jump
+    ///
+    /// The anchor holds a chunk's content hash and how far *in pixels* the viewport's top sits into
+    /// it. Those pixels mean something different at a new size, so both they and the scroll offset
+    /// are scaled by the same ratio the text was. Without that, zooming halfway down a document
+    /// throws the reader somewhere else in it.
+    fn set_zoom(&mut self, zoom: f32) -> bool {
+        let previous = self.settings.config().zoom;
+        let zoom = zoom.clamp(crate::config::MIN_ZOOM, crate::config::MAX_ZOOM);
+        if (zoom - previous).abs() < f32::EPSILON {
+            return false;
+        }
+
+        self.settings.update(|config| config.zoom = zoom);
+        // Read back rather than assumed: the settings clamp too, and the theme must follow what was
+        // actually stored.
+        let zoom = self.settings.config().zoom;
+        self.theme.body_size = Theme::default().body_size * zoom;
+
+        self.layouts.clear();
+        self.heights.clear();
+        self.digits = None;
+        self.status_labels = [None, None];
+        self.row_labels.clear();
+
+        let ratio = zoom / previous;
+        if let Some(anchor) = self.anchor.as_mut() {
+            anchor.into_chunk *= ratio;
+            anchor.offset *= ratio;
+        }
+        self.scroll.set(
+            self.scroll.offset() * ratio,
+            self.viewport.content * ratio,
+            self.viewport.height,
+        );
+        // The pane's rows are a fixed height, so its scroll is unaffected — but its clamp is against
+        // a row count that has not changed either, and re-clamping costs nothing.
+        self.pane_scroll = self.pane_scroll.max(0.0);
+        true
     }
 
     /// Sets the double-click interval, which on Windows is a system setting.
