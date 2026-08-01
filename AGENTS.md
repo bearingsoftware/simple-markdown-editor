@@ -31,8 +31,14 @@ flow).
 
 ## Repo state
 
-**Document core only — no renderer, no window, no file I/O.** Everything that exists is headless and
-platform-agnostic.
+**A working editor on Windows.** It opens, edits and saves files without changing a byte nobody
+touched; it has a window, a renderer, menus, tabs, a file pane, a scrollbar, a status bar, undo,
+inline formatting, crash recovery and a settings file. There is **no find or replace yet**
+(MDEDIT-44 and MDEDIT-45), and it does not run at all off Windows — there is no portable text
+backend, which is the first known gap below.
+
+The crates below the app are still headless and platform-agnostic, and that is the line worth
+keeping: everything that can be tested without a window is.
 
 ```
 crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos,
@@ -48,8 +54,9 @@ crates/markers/         # mdedit-markers: Markdown's implementation of that trai
                         #   source into marker and content spans, and reports block extents — one
                         #   parse for both
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
-                        #   selection, the reveal-on-cursor predicate, and the heading trail to a
-                        #   position
+                        #   selection, the reveal-on-cursor predicate, the heading trail to a
+                        #   position, word and line extents, the undo transaction, and the inline
+                        #   formatting toggles that use the marker spans rather than guessing
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the two
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
@@ -112,10 +119,22 @@ Known gaps, so nobody assumes they are done:
   `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
-- **There is a File, Edit and Help menu, a status bar, and the open files shown either as a tab strip
-  or as a left pane.** No scrollbar, no View menu, no context menu on right-click. The plain-markup
-  toggle is Ctrl+/ and the strip/pane toggle is Ctrl+Shift+E; neither has a menu item, because there is
-  still no View menu to put one in.
+- **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
+  and the open files shown either as a tab strip or as a left pane.** Every view toggle now has a
+  menu item as well as a chord.
+- **The View menu's toggles are check items, and the ticks follow the *chord* as well as the click.**
+  MDEDIT-40. That is the whole reason a toggle belongs in a menu rather than only on a chord: a chord
+  can toggle something but cannot tell you which way it is now. The cost is that every path which
+  changes one has to call `refresh_view_menu` — a menu that only knew about its own clicks would be
+  wrong the moment anybody pressed Ctrl+/.
+- **Zoom is a multiplier, and clearing the caches is the whole of the feature.** MDEDIT-43: Ctrl+= /
+  Ctrl+- / Ctrl+0, a 1.1 ladder. Text sizes come from the theme at layout time and are **not** in
+  `ChunkKey`, so changing one without clearing leaves every cached chunk drawing at the old size.
+  Five things hold laid-out text; four are cleared on zoom — chunk layouts, measured heights, the
+  gutter's digits, the status bar's labels, the pane's row labels — and the tab strip's are measured
+  per frame so need nothing. The anchor's `into_chunk` is in *pixels*, so it and the scroll offset
+  are scaled by the same ratio or zooming mid-document throws the reader somewhere else. Adding
+  anything else that caches laid-out text means adding it to `set_zoom`.
 - **The recent-files list is state, and is treated as untrusted input.** MDEDIT-41 put it beside the
   session file rather than in `config.json` — the config file is read-only by design and may not name
   a path at all, and nobody hand-writes a recent list. That puts it in the session file's threat
@@ -193,9 +212,12 @@ Known gaps, so nobody assumes they are done:
 - **Line and column count characters.** Not bytes, and not display columns — a tab is one column
   here. `ByteOffset` and `CharOffset` exist as separate types so this cannot be fudged; see
   `Document::line_and_column`.
-- **The drawing mode is global and not remembered.** Toggling to plain markup switches every tab,
-  and the editor opens previewed every time — the session file records handles rather than view
-  state, and there is no config to put a default in until MDEDIT-22.
+- **The drawing mode is global and deliberately not remembered.** Toggling to plain markup switches
+  every tab, and the editor opens previewed every time. Unlike the chrome choice, the zoom and the
+  line numbers — all three of which persist since MDEDIT-60 — this one is left per-run on purpose:
+  it is a way of looking at a document for a moment rather than a preference, and an editor that
+  opened in plain markup because you glanced at the source last week would be wrong.
+  `plain_markup_does_not_persist` pins it, so changing it is a decision rather than an accident.
 - **Menu accelerators are labels, not bindings.** The items show "Ctrl+S" and so on, but they do not
   fire: muda's accelerators need the message loop to call `TranslateAcceleratorW`, and winit's does
   not. That is deliberate — the key handler owns those chords, and two things acting on one Ctrl+Z
@@ -268,11 +290,13 @@ Known gaps, so nobody assumes they are done:
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
-- **One setting, and no UI to change it.** `%APPDATA%\SimpleMarkdownEditor\config.json` holds
-  `line_numbers`, read once at startup and never written back, so changing it means editing the file
-  and restarting. **No setting may name a path** — see `crates/app/src/config.rs` for why that is a
-  rule rather than a caution. JSON because `serde_json` was already here; the lack of comments is the
-  known cost, and TOML is the thing to revisit if this grows past a handful of keys.
+- **Three settings, all reachable from the View menu.** `%APPDATA%\SimpleMarkdownEditor\config.json`
+  holds `line_numbers`, `chrome` and `zoom`. Read at startup and written back on the idle timer when
+  one changes — see the settings entry above for the unknown-key rule that makes writing safe.
+  **No setting may name a path** — see `crates/app/src/config.rs` for why that is a rule rather than
+  a caution. JSON because `serde_json` was already here; the lack of comments is the known cost, and
+  TOML is the thing to revisit if this grows past a handful of keys — preserving unknown keys removed
+  the strongest reason a hand-editor would object to JSON.
 - **A line number counts source lines, not rows.** A wrapped paragraph is numbered once, at its first
   row, which is what every editor does. The gutter is sized for the largest number the document can
   show, with a two-digit floor, so it does not visibly resize as you pass line 9.
@@ -357,7 +381,7 @@ cargo test --all-features
 cargo doc --no-deps --all-features # broken intra-doc links are denied, and CI runs this
 cargo deny check                   # licences + advisories
 cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
-cargo bench -p mdedit-document     # what an undo group costs against typing the same edits
+cargo bench -p mdedit-document     # what an undo group and a transaction cost against typing
 ```
 
 CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
