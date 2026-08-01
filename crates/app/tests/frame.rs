@@ -609,7 +609,14 @@ fn a_selection_is_drawn_and_an_empty_one_is_not() {
         "the highlight should add quads: {plain} then {highlighted}"
     );
 
-    editor.click_at(column(2.0), line_y(0.0));
+    // Explicitly a *slow* click. Two presses in the same place in quick succession are a
+    // double-click since MDEDIT-57, which selects a word rather than collapsing to a caret — so
+    // this has to be the gesture it means rather than whatever `click_at` happens to count as.
+    editor.click_at_time(
+        column(2.0),
+        line_y(0.0),
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+    );
     assert_eq!(
         editor.build_frame(WIDTH, HEIGHT, 1.0).len(),
         plain,

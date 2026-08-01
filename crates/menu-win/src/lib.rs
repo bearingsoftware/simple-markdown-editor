@@ -147,3 +147,34 @@ pub fn attach_parent_console() {
 /// Off Windows there is no console to reattach to.
 #[cfg(not(windows))]
 pub fn attach_parent_console() {}
+
+/// How long Windows says a double-click may take.
+///
+/// # Why this is asked rather than assumed
+///
+/// It is a system setting, reachable from Ease of Access, and somebody who has lengthened it has
+/// done so because the default does not work for them. A hardcoded 500 ms in the editor quietly
+/// overrides that — the kind of accessibility failure that is invisible to everyone it does not
+/// affect. See `mdedit_app::clicks`, which takes this as a parameter for exactly that reason.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "the platform layer; see this function's docs for why it is here"
+)]
+#[must_use]
+pub fn double_click_interval() -> std::time::Duration {
+    // SAFETY: `GetDoubleClickTime` takes no arguments, touches no memory, and cannot fail — it
+    // returns the current setting in milliseconds. It is in this crate rather than in `mdedit-app`
+    // because `AGENTS.md` makes `unsafe` outside a platform crate a review block, and one Win32 call
+    // is not a reason to mint a crate.
+    let milliseconds =
+        unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() };
+    std::time::Duration::from_millis(u64::from(milliseconds))
+}
+
+/// Off Windows there is no such setting, so the conventional default stands.
+#[cfg(not(windows))]
+#[must_use]
+pub fn double_click_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(500)
+}
