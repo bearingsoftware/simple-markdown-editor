@@ -1687,6 +1687,95 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Asks about every unsaved buffer, once, and says whether the editor may close.
+    ///
+    /// # Why this exists at all
+    ///
+    /// `WindowEvent::CloseRequested` used to call `event_loop.exit()` and nothing else, so Alt+F4
+    /// or the close button lost every unsaved buffer without a word — and then the clean-exit path
+    /// cleared the crash-recovery snapshots that would have got it back. A *crash* was survivable
+    /// and a *close* was not, which is exactly backwards. MDEDIT-64.
+    ///
+    /// # One dialog
+    ///
+    /// Three modified tabs must not mean three consecutive dialogs. That is a thing people dismiss
+    /// without reading, which turns a safeguard into a formality — so the files are named in one
+    /// message and the answer applies to all of them.
+    ///
+    /// # What each answer does
+    ///
+    /// **Save** writes every file that has somewhere to go, and asks where to put anything untitled.
+    /// If anything is still unsaved afterwards — a save that failed, a location the user declined to
+    /// choose — the close is **cancelled**, because exiting then would lose exactly the work they
+    /// just asked to keep.
+    ///
+    /// **Discard** closes. **Cancel** does not, and a cancelled exit is not a clean one: the
+    /// recovery snapshots stay where they are, which `main` relies on by only clearing them once
+    /// this has said yes.
+    pub fn may_close(&mut self) -> bool {
+        let names: Vec<String> = self
+            .workspace
+            .tabs()
+            .iter()
+            .filter(|tab| tab.is_modified())
+            .map(mdedit_session::Tab::display_name)
+            .collect();
+
+        if names.is_empty() {
+            return true;
+        }
+
+        match self.prompt.ask_all(&names) {
+            Unsaved::Discard => true,
+            Unsaved::Cancel => false,
+            Unsaved::Save => {
+                self.save_all();
+                // An untitled buffer has nowhere to go, so `save_all` skipped it; it needs a
+                // location chosen, which is a question rather than a save.
+                self.save_untitled_buffers();
+
+                let unsaved = self.workspace.has_unsaved_changes();
+                if unsaved {
+                    // Not an error to report and dismiss — the editor stays open, which is the
+                    // message. Logged because the reason (a full disk, a declined dialog) is not
+                    // otherwise recoverable afterwards.
+                    crate::log_error!("not closing: some files are still unsaved");
+                }
+                !unsaved
+            }
+        }
+    }
+
+    /// Asks where to put each untitled buffer that has anything in it.
+    ///
+    /// One dialog each, which is the one place a file-at-a-time question is right: each needs its
+    /// own answer, and there is nothing to batch.
+    fn save_untitled_buffers(&mut self) {
+        let was_active = self.workspace.active();
+
+        for index in 0..self.workspace.tabs().len() {
+            let needs_a_home = self
+                .workspace
+                .tabs()
+                .get(index)
+                .is_some_and(|tab| tab.is_untitled() && tab.is_modified());
+            if !needs_a_home {
+                continue;
+            }
+            if self.workspace.activate(index).is_err() {
+                continue;
+            }
+            // The answer is deliberately not checked. Declining, or a write that failed, leaves the
+            // tab modified — which is exactly what `may_close` reads as "do not close", so there is
+            // nothing to do here but carry on and ask about the next one.
+            let _ = self.save_as_prompted();
+        }
+
+        if let Some(index) = was_active {
+            let _ = self.workspace.activate(index);
+        }
+    }
+
     /// The window title: the file name, marked when there are unsaved changes, with a tab count.
     pub fn title(&self) -> String {
         // The tab's own name, so an untitled buffer shows as "Untitled 1" rather than falling back
@@ -4137,7 +4226,17 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // Not `event_loop.exit()` on its own, which is what this was and what lost people's
+            // work. See `may_close`.
+            WindowEvent::CloseRequested => {
+                if self.may_close() {
+                    event_loop.exit();
+                } else if let Some(window) = self.window.as_ref() {
+                    // Saving may have written files and changed what the title bar and tab strip
+                    // should say, and the window is staying open to show it.
+                    window.request_redraw();
+                }
+            }
             // Coming back to the window is when an external edit has almost always happened: the
             // user went away, something ran, and they returned. See `check_disk`.
             WindowEvent::Focused(true) => self.on_focus(),

@@ -130,12 +130,16 @@ Known gaps, so nobody assumes they are done:
   *not modified*, carrying its own text as its record of disk, because a reference document asking to
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
   it can be regenerated, and a stale copy of a reference is worse than none.
-- **Closing the window discards unsaved work without asking.** `WindowEvent::CloseRequested` calls
-  `event_loop.exit()` and nothing else, so Alt+F4 or the close button loses every unsaved buffer with
-  no prompt — and then the clean-exit path clears the recovery snapshots that would have got it back.
-  A *crash* is survivable and a *close* is not, which is exactly backwards. The unsaved-changes
-  prompt already exists and already works for Ctrl+W; the window close path simply does not use it.
-  MDEDIT-64 carries the fix, which needs a decision about what a multi-tab close asks.
+- **Closing the window asks once, naming every modified file.** MDEDIT-64. `CloseRequested` used to
+  call `event_loop.exit()` and nothing else, losing every unsaved buffer and then clearing the
+  recovery snapshots that would have got it back — a crash was survivable and a close was not.
+  `Editor::may_close` is the decision and the thing to test; the event arm is one `if` over it.
+  **One dialog, not one per file**: three consecutive dialogs is a thing people dismiss without
+  reading, which turns a safeguard into a formality. Save All writes everything and asks where to put
+  anything untitled; if any work is still unsaved afterwards the close is **cancelled**, because
+  exiting then would lose exactly what the user asked to keep. A cancelled exit is not a clean one,
+  so the snapshots stay — `main` clears them only when nothing is unsaved, which also covers the loop
+  ending by some route that never asked.
 - **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and
   never written back" — four features were stalled on it. The file is read into a `serde_json::Map`
   as well as the typed `Config`, and a write merges the changed fields into that map, so a key from a
