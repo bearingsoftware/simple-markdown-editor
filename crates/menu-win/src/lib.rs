@@ -72,6 +72,18 @@ pub enum Command {
     SelectAll,
     /// Edit → Paste.
     Paste,
+    /// View → Plain Markup.
+    PlainMarkup,
+    /// View → File Pane.
+    FilePane,
+    /// View → Line Numbers.
+    LineNumbers,
+    /// View → Zoom In.
+    ZoomIn,
+    /// View → Zoom Out.
+    ZoomOut,
+    /// View → Reset Zoom.
+    ResetZoom,
     /// Help → Keyboard Shortcuts.
     Shortcuts,
     /// Help → About.
@@ -108,6 +120,9 @@ impl MenuBar {
 
     /// Shows nothing, there being no popup to show.
     pub fn show_context_menu(&mut self, _hwnd: isize, _x: f64, _y: f64, _enabled: ContextState) {}
+
+    /// Ticks nothing, there being no menu to tick.
+    pub fn set_view(&self, _state: ViewState) {}
 
     /// Lists nothing, there being no submenu to list it in.
     pub fn set_recent(&mut self, _labels: &[String]) {}
@@ -183,6 +198,24 @@ pub fn double_click_interval() -> std::time::Duration {
 #[must_use]
 pub fn double_click_interval() -> std::time::Duration {
     std::time::Duration::from_millis(500)
+}
+
+/// Which of the View menu's toggles are currently on.
+///
+/// The menu shows these as ticks, which is the whole reason those three are in a menu rather than
+/// merely being chords: a chord can toggle something but cannot tell you which way it is now.
+///
+/// It follows that the ticks have to be updated when the *chord* is used, not only when the item is
+/// clicked — a menu that only knew about its own clicks would be wrong the moment anybody pressed
+/// Ctrl+/.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewState {
+    /// Whether the Markdown is shown as plain text rather than concealed.
+    pub plain_markup: bool,
+    /// Whether the open files are shown as a pane rather than a strip.
+    pub file_pane: bool,
+    /// Whether source-line numbers are shown.
+    pub line_numbers: bool,
 }
 
 /// Which context-menu entries are available.

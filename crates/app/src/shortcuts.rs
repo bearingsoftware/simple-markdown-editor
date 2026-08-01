@@ -91,6 +91,10 @@ pub const ALL: &[Group] = &[
                 "Show the Markdown as plain text, or conceal it again",
             ),
             key("Ctrl+Shift+E", "Swap the tab strip for the file pane"),
+            key(
+                "(View menu)",
+                "Line numbers — no chord, and it does not need one",
+            ),
             key("Ctrl+= / Ctrl+-", "Make the text bigger or smaller"),
             key("Ctrl+0", "Back to the normal size"),
         ],
