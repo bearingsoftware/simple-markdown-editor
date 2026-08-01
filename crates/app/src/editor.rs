@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::clicks::{Clicks, Granularity};
+use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
 use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -619,6 +620,12 @@ pub struct Editor<T: TextLayout> {
     /// Remembered across a run of them so that passing through a short line does not drag the caret
     /// to its end and leave it there. Any horizontal movement or edit clears it.
     desired_x: Option<f32>,
+    /// Where the scrollbar was last frame, or `None` when the document fits. See
+    /// [`crate::scrollbar`].
+    scrollbar: Option<Bar>,
+    /// How far into the thumb the pointer was when a thumb drag started, so the thumb does not jump
+    /// to centre itself under the pointer on the first press.
+    thumb_grab: Option<f32>,
     /// Counts presses into double- and triple-clicks. See [`crate::clicks`].
     clicks: Clicks,
     /// What one click currently selects: a position, a word, or a line.
@@ -746,6 +753,8 @@ impl<T: TextLayout> Editor<T> {
             caret_area: None,
             last_frame: None,
             desired_x: None,
+            scrollbar: None,
+            thumb_grab: None,
             clicks: Clicks::default(),
             granularity: Granularity::default(),
             anchor_span: None,
@@ -2133,11 +2142,47 @@ impl<T: TextLayout> Editor<T> {
         quads.append(&mut self.build_tab_strip(width, scale));
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
+        self.draw_scrollbar(&mut quads, width, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the scrollbar down the right edge, and remembers where it went.
+    ///
+    /// Last of all the chrome, so it overlays the status bar's right end as well as the text — the
+    /// bar is the thing you reach for without looking, and it should not have a gap at the bottom
+    /// where something else was drawn later.
+    ///
+    /// Nothing is drawn, and nothing is stored, when the document fits: an always-present bar with a
+    /// full-height thumb is a decoration that costs a click target.
+    fn draw_scrollbar(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
+        let logical_width = width / scale;
+        // The track starts under whatever chrome is above the document and stops above the status
+        // bar, so it measures the part of the window the document actually occupies.
+        let top = self.content.top_edge() - MARGIN;
+        self.scrollbar = scrollbar::layout(
+            logical_width,
+            top.max(0.0),
+            self.viewport.height,
+            self.viewport.content,
+            self.scroll.offset(),
+        );
+
+        let Some(bar) = self.scrollbar else {
+            return;
+        };
+        quads.push(Self::solid(
+            [
+                bar.x * scale,
+                bar.thumb_top * scale,
+                scrollbar::WIDTH * scale,
+                bar.thumb_height * scale,
+            ],
+            self.theme.scrollbar_thumb,
+        ));
     }
 
     /// Draws the status bar across the foot of the window.
@@ -2890,6 +2935,12 @@ impl<T: TextLayout> Editor<T> {
     /// handler so that a test clicks the same way the window does — a test that reached past this
     /// into [`click_at`](Self::click_at) would be exercising a dispatch the app does not use.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
+        // The scrollbar first, because it *overlays* the text rather than taking width from it —
+        // a press on the bar must never also land in the document underneath.
+        if let Some(hit) = scrollbar::hit_test(self.scrollbar, x, y) {
+            self.clicks.reset();
+            return self.click_scrollbar(hit, y);
+        }
         if self.click_strip(x, y) || self.click_pane(x, y) {
             // The pointer was on chrome, not on text. Ending the run stops a click on a tab
             // followed by one in the document from counting as a double-click on the document.
@@ -2897,6 +2948,82 @@ impl<T: TextLayout> Editor<T> {
             return true;
         }
         self.click_at(x, y)
+    }
+
+    /// Acts on a press that landed on the scrollbar.
+    ///
+    /// The caret does not move for any of this. Scrolling is a view movement, exactly as the page
+    /// keys already are, and a scrollbar that moved the caret would lose the user's place every time
+    /// they looked somewhere else in the document.
+    fn click_scrollbar(&mut self, hit: scrollbar::Hit, y: f32) -> bool {
+        match hit {
+            scrollbar::Hit::Thumb => {
+                // Where in the thumb the press landed, kept so dragging moves the thumb *with* the
+                // pointer rather than jumping it so its top is under the pointer.
+                self.thumb_grab = self.scrollbar.map(|bar| y - bar.thumb_top);
+                // Not `self.dragging`: that one extends a text selection, and this must not.
+                true
+            }
+            scrollbar::Hit::PageUp => {
+                self.page(-1.0);
+                true
+            }
+            scrollbar::Hit::PageDown => {
+                self.page(1.0);
+                true
+            }
+        }
+    }
+
+    /// Moves the view to follow a thumb being dragged, if one is.
+    ///
+    /// Returns whether anything moved, so the caller knows whether the press belonged to the bar.
+    ///
+    /// The mapping is against the *current* content height, not the one the drag started with. As a
+    /// drag reaches parts of the document nobody has measured, chunks are laid out and the estimated
+    /// total corrects — so the thumb shifts slightly under the pointer. That is the design working;
+    /// see [`crate::scrollbar`] for why it must not be smoothed away.
+    fn drag_thumb(&mut self, y: f32) -> bool {
+        let (Some(grab), Some(bar)) = (self.thumb_grab, self.scrollbar) else {
+            return false;
+        };
+        let offset = scrollbar::offset_for_thumb(&bar, self.viewport.content, y - grab);
+        self.scroll
+            .set(offset, self.viewport.content, self.viewport.height);
+        // The caret is wherever it was, and must not be dragged back on the next frame.
+        self.follow_caret = false;
+        true
+    }
+
+    /// Continues whichever drag is in progress, if either is.
+    ///
+    /// The thumb first, and exclusively: the two cannot both be happening, and testing the text
+    /// drag first would let a thumb drag that wandered over the document start selecting it.
+    fn on_pointer_moved(&mut self, point: (f32, f32)) {
+        if self.drag_thumb(point.1) {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+            return;
+        }
+
+        if self.dragging && self.drag_to(point.0, point.1) {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Whether a scrollbar thumb is being dragged.
+    #[must_use]
+    pub fn dragging_thumb(&self) -> bool {
+        self.thumb_grab.is_some()
+    }
+
+    /// Where the scrollbar is, or `None` when the document fits. For a test.
+    #[must_use]
+    pub fn scrollbar(&self) -> Option<Bar> {
+        self.scrollbar
     }
 
     /// Sets the double-click interval, which on Windows is a system setting.
@@ -3893,16 +4020,7 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                 )]
                 let point = ((position.x / scale) as f32, (position.y / scale) as f32);
                 self.cursor = point;
-
-                // Dragging extends the selection from wherever the press landed.
-                if self.dragging {
-                    if let Some(offset) = self.offset_at_point(point.0, point.1) {
-                        self.select(offset, true);
-                        if let Some(window) = self.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
-                }
+                self.on_pointer_moved(point);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.wheel(delta);
@@ -3914,7 +4032,13 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => self.dragging = false,
+            } => {
+                self.dragging = false;
+                // A thumb drag captures the pointer for as long as the button is down — the pointer
+                // leaves the bar's x almost immediately on any real drag, and letting that end the
+                // drag would make the bar unusable. Releasing anywhere ends it.
+                self.thumb_grab = None;
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button,

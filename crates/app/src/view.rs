@@ -84,6 +84,9 @@ pub struct Theme {
     pub token_literal: Rgba,
     /// Braces, brackets, commas, colons. Dimmed: structure the eye skips over.
     pub token_punctuation: Rgba,
+    /// The scrollbar thumb. No hover or pressed variant — there is no hover affordance in the
+    /// editor, and inventing one for this is not what MDEDIT-56 was for.
+    pub scrollbar_thumb: Rgba,
     /// A comment, in the dialects that permit one.
     pub token_comment: Rgba,
 }
@@ -109,6 +112,10 @@ impl Default for Theme {
             token_literal: Rgba::rgb(0x56, 0x9c, 0xd6),
             token_punctuation: Rgba::rgb(0x9a, 0x9a, 0x9a),
             token_comment: Rgba::rgb(0x6a, 0x99, 0x55),
+            // Light enough to find against the page, dark enough not to compete with the text it
+            // overlays. Deliberately no track colour: the track is the background, so a bar over a
+            // short line looks like nothing rather than like a gutter.
+            scrollbar_thumb: Rgba::rgb(0x50, 0x50, 0x50),
         }
     }
 }
