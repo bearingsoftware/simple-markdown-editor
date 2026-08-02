@@ -16,7 +16,7 @@ use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
 mod stub;
-use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
+use stub::{ADVANCE, Grid, LINE_HEIGHT};
 
 const WIDTH: f32 = 600.0;
 const HEIGHT: f32 = 400.0;
@@ -41,11 +41,15 @@ fn editor(text: &str) -> Editor<Grid> {
 }
 
 /// The window position of character `column` on row 0.
-fn at(column: usize) -> (f32, f32) {
+///
+/// Asked of the content rect rather than assumed to be `MARGIN`: chrome above the document moves
+/// its top edge, and a test that hardcodes the edge fails the day a bar is added rather than the day
+/// the hit-testing breaks.
+fn at(editor: &Editor<Grid>, column: usize) -> (f32, f32) {
     #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
     (
-        ADVANCE.mul_add(column as f32, MARGIN) + ADVANCE / 2.0,
-        MARGIN + LINE_HEIGHT / 2.0,
+        ADVANCE.mul_add(column as f32, editor.content_rect().left_edge()) + ADVANCE / 2.0,
+        editor.content_rect().to_window(0.0, 0.0, 0.0).1 + LINE_HEIGHT / 2.0,
     )
 }
 
@@ -62,7 +66,7 @@ fn a_right_click_inside_the_selection_keeps_it() {
     let mut editor = editor("hello world\n");
     select(&mut editor, 0, 5);
 
-    let (x, y) = at(2);
+    let (x, y) = at(&editor, 2);
     assert!(editor.right_click_at(x, y));
 
     assert_eq!(
@@ -83,7 +87,7 @@ fn a_right_click_outside_the_selection_moves_the_caret() {
     let mut editor = editor("hello world\n");
     select(&mut editor, 0, 5);
 
-    let (x, y) = at(8);
+    let (x, y) = at(&editor, 8);
     assert!(editor.right_click_at(x, y));
 
     assert!(
@@ -100,7 +104,7 @@ fn the_end_of_the_selection_counts_as_outside() {
     let mut editor = editor("hello world\n");
     select(&mut editor, 0, 5);
 
-    let (x, y) = at(5);
+    let (x, y) = at(&editor, 5);
     editor.right_click_at(x, y);
 
     assert!(editor.document().selection().is_collapsed());
@@ -110,7 +114,7 @@ fn the_end_of_the_selection_counts_as_outside() {
 fn a_right_click_with_nothing_selected_just_places_the_caret() {
     let mut editor = editor("hello world\n");
 
-    let (x, y) = at(6);
+    let (x, y) = at(&editor, 6);
     assert!(editor.right_click_at(x, y));
 
     assert!(editor.document().selection().is_collapsed());
@@ -165,10 +169,9 @@ fn paste_is_offered_only_when_the_clipboard_has_text() {
 /// guards on — calling `drag_to` directly would step over the guard and test nothing.
 #[test]
 fn a_right_click_does_not_arm_a_selection_drag() {
-    let (x, y) = at(2);
-
     // A left click does arm one, which is what makes the assertion below mean something.
     let mut left = editor("hello world\n");
+    let (x, y) = at(&left, 2);
     left.click(x, y);
     assert!(left.dragging());
 

@@ -32,7 +32,7 @@ fn at(column: usize, row: usize) -> (f32, f32) {
     #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
     (
         ADVANCE.mul_add(column as f32, MARGIN) + ADVANCE / 2.0,
-        LINE_HEIGHT.mul_add(row as f32, MARGIN) + LINE_HEIGHT / 2.0,
+        LINE_HEIGHT.mul_add(row as f32, MARGIN + mdedit_app::toolbar::HEIGHT) + LINE_HEIGHT / 2.0,
     )
 }
 

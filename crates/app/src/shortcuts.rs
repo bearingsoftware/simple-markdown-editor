@@ -99,6 +99,10 @@ pub const ALL: &[Group] = &[
                 "(View menu)",
                 "Line numbers — no chord, and it does not need one",
             ),
+            key(
+                "(View menu)",
+                "Formatting bar — every button here is one of the chords above",
+            ),
             key("Ctrl+= / Ctrl+-", "Make the text bigger or smaller"),
             key("Ctrl+0", "Back to the normal size"),
         ],
