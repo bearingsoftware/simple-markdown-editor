@@ -33,8 +33,8 @@ flow).
 
 **A working editor on Windows.** It opens, edits and saves files without changing a byte nobody
 touched; it has a window, a renderer, menus, tabs, a file pane, a scrollbar, a status bar, undo,
-inline formatting, crash recovery and a settings file. There is **no find or replace yet**
-(MDEDIT-44 and MDEDIT-45), and it does not run at all off Windows — there is no portable text
+inline formatting, crash recovery and a settings file. There is **find but no replace yet**
+(MDEDIT-45), and it does not run at all off Windows — there is no portable text
 backend, which is the first known gap below.
 
 The crates below the app are still headless and platform-agnostic, and that is the line worth
@@ -70,7 +70,8 @@ crates/session/         # mdedit-session: tabs as handles, the session file that
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, per-block layout and its cache, the settings file, the status
                         #   bar, the tab strip and file pane, click counting, the generated
-                        #   shortcuts reference, and the keystroke latency harness.
+                        #   shortcuts reference, the single-line text field and the find bar built
+                        #   on it, and the keystroke latency harness.
                         #   Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in memory. Re-runnable
@@ -134,6 +135,38 @@ Known gaps, so nobody assumes they are done:
   accesskit pass). Lighting is lookups only: `is_inside` asks the segments, `carries` and `is_quoted`
   read the caret's line out of the rope, and headings ask the block list so a setext one still
   lights. Rule and Link never light, because neither is a state.
+- **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
+  it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
+  is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it
+  rather than grow a second half-copy. It is a `String` and two byte offsets — no rope, no undo
+  history, and one line, so a paste of several arrives flattened. **It takes committed text only:**
+  `WindowEvent::Ime` still goes to the document, so composing CJK into the search box does not work.
+  That is a real gap for the user most likely to want it, and it is written down rather than left to
+  be found.
+
+  **The focus model is one flag and it has to stay that way.** Exactly one of {document, field} takes
+  a key, and `find_focused` is consulted in one place at the top of `handle_key`. Chords are
+  deliberately *not* swallowed — Ctrl+S saves while the caret is in the box, because anything else
+  would be a search box that quietly disables the editor. Only select-all, copy, cut and paste are
+  taken by the field.
+
+  **The search is over the source, so `**` is findable**, and the current match is simply the
+  selection — which is why the reveal, the scroll and the highlight all follow with nothing new
+  written for them. Matches are lit *under* the selection quad, so "the one you are on" needs no
+  second colour and no index kept in step.
+
+  **It rescans on the keystroke path, and the number is why that is allowed.** The first
+  implementation cost **5.8 ms p50** per keystroke on a 224 KB document with 3,000 matches, against
+  a 3 ms budget — so `find::matches` gained an ASCII path (a byte comparison for the first character,
+  and `eq_ignore_ascii_case` for the rest) and it is now **1.13 ms p50 against 0.63 closed**. The
+  ticket said to debounce; the measurement said it was not needed, and `crates/app/tests/find_cost.rs`
+  is the harness that decides which of those is true after the next change. The non-ASCII path is
+  unchanged and still correct: `İ` lowercases to two characters, so a match may not end half way
+  through one character's expansion, and there is a test saying so.
+
+  **The match list's key includes which document it is.** A revision counts one document's edits and
+  says nothing about which — two tabs neither has typed in are both at revision zero — so without it
+  switching tab kept the first one's offsets. Same shape, and same reason, as `floating_for`.
 - **A settled selection also gets a bar that floats over it, and "settled" is the whole feature.**
   MDEDIT-53. It appears on mouse *release*, or on the idle timer for a selection extended with Shift
   — never during a drag, because a bar that chases the pointer is the classic bad implementation of
@@ -152,6 +185,13 @@ Known gaps, so nobody assumes they are done:
   Its buttons are the inline set plus three heading levels. The list and block actions stay on the
   fixed bar: they act on lines rather than on a selection. The selection **survives** a press, which
   is what makes bold-then-italic two clicks instead of two selections.
+
+  **It does not appear for a selection the search made.** `found_selection` says where the current
+  one came from, and `settle_selection` refuses while it is set. Both halves of that were found by
+  eye rather than by a test: every press of Find Next put a bar over the prose, and then Esc — the
+  gesture that dismisses chrome — raised one as a parting gift, because closing the find bar leaves
+  the match selected. Keying it on where the selection came from rather than on whether the find bar
+  is open is what fixes the second.
 - **The View menu's toggles are check items, and the ticks follow the *chord* as well as the click.**
   MDEDIT-40. That is the whole reason a toggle belongs in a menu rather than only on a chord: a chord
   can toggle something but cannot tell you which way it is now. The cost is that every path which
