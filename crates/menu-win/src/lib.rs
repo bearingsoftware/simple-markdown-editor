@@ -78,6 +78,10 @@ pub enum Command {
     FindNext,
     /// Edit → Find Previous.
     FindPrevious,
+    /// Edit → Replace.
+    Replace,
+    /// Edit → Go to Line.
+    GoToLine,
     /// View → Plain Markup.
     PlainMarkup,
     /// View → File Pane.

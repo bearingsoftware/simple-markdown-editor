@@ -811,6 +811,57 @@ impl Document {
         self.replace(span, "")
     }
 
+    /// Replaces every span in `sites` with `replacement`, as one undoable operation.
+    ///
+    /// Returns how many were replaced.
+    ///
+    /// # It works from the end backwards, and that is the whole of it
+    ///
+    /// Each replacement shifts everything after it by the difference between the two lengths, so a
+    /// caller going forwards has to adjust every remaining site as it goes — arithmetic that is easy
+    /// to get subtly wrong and impossible to notice on a document where the two lengths happen to
+    /// match. Going backwards, no site ever moves before it is used, and no arithmetic is needed at
+    /// all. [`transact`](Self::transact) says outright that it will not reorder for you; this is the
+    /// function that does.
+    ///
+    /// `sites` may be in any order and is not required to be sorted — it is sorted here — but the
+    /// spans must not overlap — a search never produces them. Overlapping spans are a caller error,
+    /// and what matters is that the buffer stays coherent rather than which of the two wins: the
+    /// loop runs backwards, so the later one is applied first and the earlier one, which now reaches
+    /// into bytes that have gone, is skipped.
+    ///
+    /// # One undo step
+    ///
+    /// The reason this is not a loop at the call site. Undo groups ordinarily break when the caret
+    /// moves and every replacement moves it, so a Replace All over 500 sites would otherwise cost 500
+    /// presses of Ctrl+Z. Undo restores the original bytes exactly — property-tested — because the
+    /// history keeps the bytes it removed rather than re-deriving them.
+    ///
+    /// A call that replaces nothing records no history at all, so a Replace All that matched nothing
+    /// does not leave an undo press that appears to do nothing.
+    #[must_use]
+    pub fn replace_all(&mut self, sites: &[ByteSpan], replacement: &str) -> usize {
+        let mut ordered: Vec<ByteSpan> = sites.to_vec();
+        ordered.sort_unstable_by_key(|span| span.start().get());
+
+        self.transact(|document| {
+            let mut done = 0;
+            let mut previous_start = usize::MAX;
+            for site in ordered.iter().rev() {
+                // Overlap check, in the direction the loop runs: a site reaching into the one after
+                // it addresses bytes that replacement has already taken away.
+                if site.end().get() > previous_start {
+                    continue;
+                }
+                previous_start = site.start().get();
+                if document.replace(*site, replacement).is_ok() {
+                    done += 1;
+                }
+            }
+            done
+        })
+    }
+
     /// Recomputes the partition from the current buffer.
     fn resegment(&mut self) {
         // One parse for both. `analyze` exists precisely so the block list does not cost a second

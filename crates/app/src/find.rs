@@ -211,18 +211,52 @@ pub fn within(spans: &[ByteSpan], within: ByteSpan) -> &[ByteSpan] {
     &spans[from..to]
 }
 
-/// How tall the bar is. The formatting bar's height, because two bands of chrome that differ by
-/// three pixels look like a mistake rather than like a distinction.
+/// What the bar is being used for.
+///
+/// Three, because they are three things a user is doing rather than three settings — and because the
+/// bar is a different shape for each: Replace is two rows, and Go to Line has no matches to count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    /// Find only.
+    #[default]
+    Find,
+    /// Find, with a second field to replace with.
+    Replace,
+    /// A line number.
+    GoTo,
+}
+
+/// Which of a bar's fields is taking keys.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Focus {
+    /// The search term, or the line number — whichever the mode has on its first row.
+    #[default]
+    Primary,
+    /// The replacement. Only reachable in [`Mode::Replace`].
+    Secondary,
+}
+
+/// How tall one row of the bar is. The formatting bar's height, because two bands of chrome that
+/// differ by three pixels look like a mistake rather than like a distinction.
 pub const HEIGHT: f32 = 30.0;
+
+/// How tall the whole bar is in `mode`.
+#[must_use]
+pub fn height(mode: Mode) -> f32 {
+    if mode == Mode::Replace {
+        HEIGHT * 2.0
+    } else {
+        HEIGHT
+    }
+}
 
 /// Space at the bar's edges and between its parts.
 const PADDING: f32 = 6.0;
 
-/// How wide a button is. Fixed rather than measured: all four glyphs are one or two characters, and
-/// a row of buttons that are each a different width reads as ragged.
+/// The narrowest a button may be. Wider ones are measured — see [`layout`].
 const BUTTON: f32 = 24.0;
 
-/// The narrowest the text box is allowed to get before the buttons stop being given their room.
+/// The narrowest the text box is allowed to get before the count stops being given its room.
 ///
 /// Below this the field is unusable, and a window that narrow has bigger problems than the count
 /// label — so the count is what goes, and the field keeps its floor.
@@ -239,14 +273,18 @@ pub enum Button {
     Next,
     /// Close the bar.
     Close,
+    /// Replace the current match and move on.
+    Replace,
+    /// Replace every match, as one undo step.
+    ReplaceAll,
 }
 
 impl Button {
     /// What is drawn on it.
     ///
-    /// Text, like the formatting bar's, and monochrome for the same reason MDEDIT-52 gave up on `☑`
-    /// and `🔗`: an arrow taken from the emoji block resolves to the colour font and reads as a lit
-    /// button sitting in a row of unlit ones.
+    /// Text, like the formatting bar's, and monochrome for the same reason MDEDIT-52 gave up on the
+    /// ballot box and the link emoji: a glyph taken from the emoji block resolves to the colour font
+    /// and reads as a lit button sitting in a row of unlit ones.
     #[must_use]
     pub fn glyph(self) -> &'static str {
         match self {
@@ -254,12 +292,49 @@ impl Button {
             Self::Previous => "<",
             Self::Next => ">",
             Self::Close => "X",
+            Self::Replace => "Replace",
+            Self::ReplaceAll => "All",
+        }
+    }
+
+    /// Which row of the bar it sits on, counting from the top.
+    ///
+    /// A row *number* rather than a y offset, so deciding which buttons share a row is an integer
+    /// comparison. Comparing two `f32`s for equality to group them would work and would still be
+    /// the kind of thing that fails once somebody scales a height.
+    #[must_use]
+    pub fn row(self) -> usize {
+        match self {
+            Self::Replace | Self::ReplaceAll => 1,
+            _ => 0,
         }
     }
 }
 
-/// The buttons, left to right, as they are drawn.
-pub const BUTTONS: [Button; 4] = [Button::Case, Button::Previous, Button::Next, Button::Close];
+const FIND_BUTTONS: [Button; 4] = [Button::Case, Button::Previous, Button::Next, Button::Close];
+
+const REPLACE_BUTTONS: [Button; 6] = [
+    Button::Case,
+    Button::Previous,
+    Button::Next,
+    Button::Close,
+    Button::Replace,
+    Button::ReplaceAll,
+];
+
+/// Go to Line has no matches to walk and nothing to match case against, so it gets the one button
+/// that still means something. Enter is what performs it.
+const GOTO_BUTTONS: [Button; 1] = [Button::Close];
+
+/// The buttons `mode` shows, in the order they are drawn.
+#[must_use]
+pub fn buttons(mode: Mode) -> &'static [Button] {
+    match mode {
+        Mode::Find => &FIND_BUTTONS,
+        Mode::Replace => &REPLACE_BUTTONS,
+        Mode::GoTo => &GOTO_BUTTONS,
+    }
+}
 
 /// Where a button landed.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -268,23 +343,29 @@ pub struct ButtonRect {
     pub button: Button,
     /// Left edge, from the window's.
     pub x: f32,
+    /// Top edge, from the bar's.
+    pub y: f32,
     /// How wide.
     pub width: f32,
 }
 
 impl ButtonRect {
-    /// Whether a window x is over this button.
+    /// Whether a point in the bar is over this button, `y` measured from the bar's top edge.
     #[must_use]
-    pub fn contains(self, x: f32) -> bool {
-        x >= self.x && x < self.x + self.width
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + HEIGHT
     }
 }
 
 /// Where every part of the bar goes, in device-independent pixels from the window's left edge.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
-    /// The text box: left edge, then width.
+    /// What it was laid out for.
+    pub mode: Mode,
+    /// The first row's text box: left edge, then width.
     pub field: (f32, f32),
+    /// The second row's, in [`Mode::Replace`] only.
+    pub replace: Option<(f32, f32)>,
     /// Left edge of the "3 of 17" label.
     pub count: f32,
     /// The buttons.
@@ -292,63 +373,96 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Whether a window x is over the text box.
+    /// Which field a point in the bar is over, `y` measured from the bar's top edge.
     #[must_use]
-    pub fn over_field(&self, x: f32) -> bool {
-        x >= self.field.0 && x < self.field.0 + self.field.1
+    pub fn over_field(&self, x: f32, y: f32) -> Option<Focus> {
+        let inside = |box_: (f32, f32)| x >= box_.0 && x < box_.0 + box_.1;
+        if (0.0..HEIGHT).contains(&y) && inside(self.field) {
+            return Some(Focus::Primary);
+        }
+        match self.replace {
+            Some(box_) if (HEIGHT..HEIGHT * 2.0).contains(&y) && inside(box_) => {
+                Some(Focus::Secondary)
+            }
+            _ => None,
+        }
     }
 
-    /// Which button a window point is over, `y` measured from the bar's own top edge.
+    /// Which button a point in the bar is over, `y` measured from the bar's top edge.
     #[must_use]
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Button> {
-        if !(0.0..HEIGHT).contains(&y) {
-            return None;
-        }
         self.buttons
             .iter()
-            .find(|rect| rect.contains(x))
+            .find(|rect| rect.contains(x, y))
             .map(|rect| rect.button)
     }
 }
 
 /// Works out where the bar's parts go in a window `width` wide.
 ///
-/// The buttons are packed against the right edge and get their room first, because they are the
-/// only fixed-size things here and a button that has been squeezed out cannot be pressed at all.
-/// The count sits to their left. The field takes the rest, down to a floor, after which it
-/// takes the count's space instead — a bar too narrow to say "3 of 17" is still a bar you can type
-/// in.
+/// `widths` is how wide each of [`buttons`]`(mode)`'s glyphs measured, in the same order. Measured
+/// rather than assumed because two of them are words: "Replace" at a fixed 24 pixels would be a
+/// button with three letters on it. A cell is never narrower than the symbols' width, so the four
+/// on the first row still line up as a row of squares.
+///
+/// Each row's buttons are packed against the right edge and get their room first — they are the only
+/// fixed-size things here, and a button squeezed out cannot be pressed at all. The count sits to
+/// their left on the first row. Each field takes what is left of its own row, down to a floor, after
+/// which it takes the count's space too: a bar too narrow to say "3 of 17" is still a bar you can
+/// type in.
 #[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "there are four buttons, and there is no count of anything else here"
-)]
-pub fn layout(width: f32, count_width: f32) -> Layout {
-    let buttons_width = BUTTON * BUTTONS.len() as f32;
-    let buttons_left = (width - PADDING - buttons_width).max(PADDING);
-    let buttons = BUTTONS
-        .iter()
-        .enumerate()
-        .map(|(index, &button)| ButtonRect {
-            button,
-            x: BUTTON.mul_add(index as f32, buttons_left),
-            width: BUTTON,
-        })
-        .collect();
-
-    let count = (buttons_left - PADDING - count_width).max(PADDING);
-    let field_width = count - PADDING - PADDING;
-    // Under the floor the count is not drawn at all — `count_label` is asked for nothing to show —
-    // and the field runs up to the buttons instead.
-    let field = if field_width < MIN_FIELD {
-        (PADDING, (buttons_left - PADDING - PADDING).max(1.0))
-    } else {
-        (PADDING, field_width)
+pub fn layout(mode: Mode, width: f32, count_width: f32, widths: &[f32]) -> Layout {
+    let all = buttons(mode);
+    let cell = |index: usize| {
+        widths
+            .get(index)
+            .map_or(BUTTON, |measured| (measured + PADDING * 2.0).max(BUTTON))
     };
+
+    let mut rects = Vec::with_capacity(all.len());
+    // Where each row's leftmost button starts, which is also where that row's field has to stop.
+    let mut row_left = [width - PADDING, width - PADDING];
+    for (row, left) in row_left.iter_mut().enumerate() {
+        let on_this_row: Vec<usize> = (0..all.len()).filter(|&at| all[at].row() == row).collect();
+        if on_this_row.is_empty() {
+            continue;
+        }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "two rows, and the index is which one"
+        )]
+        let top = row as f32 * HEIGHT;
+        let total: f32 = on_this_row.iter().map(|&at| cell(at)).sum();
+        let mut x = (width - PADDING - total).max(PADDING);
+        *left = x;
+        for at in on_this_row {
+            rects.push(ButtonRect {
+                button: all[at],
+                x,
+                y: top,
+                width: cell(at),
+            });
+            x += cell(at);
+        }
+    }
+
+    let count = (row_left[0] - PADDING - count_width).max(PADDING);
+    let room = count - PADDING - PADDING;
+    // Under the floor the count is not drawn at all and the field runs up to the buttons instead.
+    let field = if room < MIN_FIELD {
+        (PADDING, (row_left[0] - PADDING - PADDING).max(1.0))
+    } else {
+        (PADDING, room)
+    };
+    let replace =
+        (mode == Mode::Replace).then(|| (PADDING, (row_left[1] - PADDING - PADDING).max(1.0)));
+
     Layout {
+        mode,
         field,
+        replace,
         count,
-        buttons,
+        buttons: rects,
     }
 }
 
@@ -357,22 +471,34 @@ pub fn layout(width: f32, count_width: f32) -> Layout {
 /// # It recomputes exactly when it must
 ///
 /// [`refresh`](Self::refresh) is given the document's text and revision every frame the bar is
-/// open, and rescans only when one of the three things a match list depends on has changed: the
-/// needle, the case flag, or the document. So typing in the document with the bar open costs one
+/// open, and rescans only when one of the things a match list depends on has changed: the needle,
+/// the case flag, the mode, or the document. So typing in the document with the bar open costs one
 /// scan per edit, typing in the field costs one per keystroke, and a still frame costs a comparison.
 ///
 /// The alternative was to put the scan on the idle timer, as the word count is. It is not, because
-/// a stale highlight sits over the wrong bytes and looks like a bug, whereas a stale word count just
-/// looks like an old number.
+/// a stale highlight sits over the wrong bytes and looks like a bug where a stale word count just
+/// looks like an old number — and because it measured cheap enough not to need it. See
+/// `crates/app/tests/find_cost.rs`, which is the thing that decides that again.
 #[derive(Debug, Clone, Default)]
 pub struct Bar {
     /// What is being searched for.
     pub field: Field,
+    /// What a replacement puts in its place.
+    pub replace: Field,
+    /// The line number Go to Line will jump to.
+    ///
+    /// Its own field rather than the search term's, so Ctrl+G does not throw away what you were
+    /// looking for and Esc then Ctrl+F still has it.
+    pub line: Field,
     /// Whether case matters. Off by default, which is what people expect of a search box and the
     /// opposite of what a programmer's editor usually does.
     pub case_sensitive: bool,
+    /// What the bar is for.
+    pub mode: Mode,
+    /// Which field is taking keys.
+    pub focus: Focus,
     matches: Vec<ByteSpan>,
-    /// The needle, case flag, document and revision `matches` was computed from.
+    /// The needle, case flag, mode, document and revision `matches` was computed from.
     computed: Option<Stamp>,
 }
 
@@ -381,32 +507,96 @@ pub struct Bar {
 /// The document is in here because a revision counts a document's own edits and says nothing about
 /// *which* document — two tabs opened and not yet typed in are both at revision zero, so without it
 /// switching between them would keep the first one's offsets and light the wrong bytes.
-type Stamp = (String, bool, usize, u64);
+type Stamp = (String, bool, Mode, usize, u64);
 
 /// A key press the find bar answers to, decoded from a winit event.
 ///
 /// The same reason [`field::Press`](crate::field::Press) exists, one level up: a winit
 /// [`KeyEvent`](winit::event::KeyEvent) cannot be built by a test, so if Enter meant Find Next only
 /// inside a `match` on one, nothing could check that it did. Decoding is the one untestable step and
-/// it is three lines; everything after it is reachable from
+/// it is a dozen lines; everything after it is reachable from
 /// [`Editor::apply_find_key`](crate::editor::Editor::apply_find_key).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
-    /// Goes to the text field.
+    /// Goes to whichever field has focus.
     Edit(crate::field::Press),
-    /// Enter, or F3.
+    /// Enter, or F3. In [`Mode::GoTo`] this is what performs the jump.
     Next,
     /// Shift+Enter, or Shift+F3.
     Previous,
     /// Escape.
     Close,
+    /// Tab, which moves between the two fields of [`Mode::Replace`] and does nothing elsewhere.
+    NextField,
 }
 
 impl Bar {
-    /// Every match, in order.
+    /// Every match, in order. Always empty in [`Mode::GoTo`], which searches for nothing.
     #[must_use]
     pub fn matches(&self) -> &[ByteSpan] {
         &self.matches
+    }
+
+    /// The field keys are going to.
+    #[must_use]
+    pub fn active(&self) -> &Field {
+        match (self.mode, self.focus) {
+            (Mode::GoTo, _) => &self.line,
+            (Mode::Replace, Focus::Secondary) => &self.replace,
+            _ => &self.field,
+        }
+    }
+
+    /// The field keys are going to, to be written into.
+    pub fn active_mut(&mut self) -> &mut Field {
+        match (self.mode, self.focus) {
+            (Mode::GoTo, _) => &mut self.line,
+            (Mode::Replace, Focus::Secondary) => &mut self.replace,
+            _ => &mut self.field,
+        }
+    }
+
+    /// Sends one press to whichever field has focus. Returns whether the text changed.
+    ///
+    /// **Go to Line takes digits only**, filtered here rather than at the call site so a paste is
+    /// treated the same as a keystroke. Nothing else about the field changes, so Backspace, the
+    /// arrows and a selection all still work.
+    pub fn press(&mut self, press: &crate::field::Press, shift: bool) -> bool {
+        let digits_only = self.mode == Mode::GoTo;
+        let field = self.active_mut();
+        if digits_only {
+            if let crate::field::Press::Text(text) = press {
+                let kept: String = text.chars().filter(char::is_ascii_digit).collect();
+                if kept.is_empty() {
+                    return false;
+                }
+                field.insert(&kept);
+                return true;
+            }
+        }
+        field.apply(press, shift)
+    }
+
+    /// Moves between the two fields of [`Mode::Replace`]. Returns whether anything moved.
+    pub fn next_field(&mut self) -> bool {
+        if self.mode != Mode::Replace {
+            return false;
+        }
+        self.focus = match self.focus {
+            Focus::Primary => Focus::Secondary,
+            Focus::Secondary => Focus::Primary,
+        };
+        true
+    }
+
+    /// The line the Go to Line field names, counting from 1 as the status bar does.
+    ///
+    /// `None` while the field is empty, holds only zeroes, or holds a number too large for a
+    /// `usize` — which is the only way something that is not a number gets here, since the field
+    /// takes digits only.
+    #[must_use]
+    pub fn line_number(&self) -> Option<usize> {
+        self.line.text().parse().ok().filter(|&line| line >= 1)
     }
 
     /// Rescans if anything the match list depends on has moved. Returns whether it did.
@@ -414,13 +604,21 @@ impl Bar {
         let key = (
             self.field.text().to_owned(),
             self.case_sensitive,
+            self.mode,
             document,
             revision,
         );
         if self.computed.as_ref() == Some(&key) {
             return false;
         }
-        self.matches = matches(source, self.field.text(), self.case_sensitive);
+        // Go to Line searches for nothing. Keeping the old list would light matches from a search
+        // the user has moved on from, and computing a new one would be work for a mode with no use
+        // for it.
+        self.matches = if self.mode == Mode::GoTo {
+            Vec::new()
+        } else {
+            matches(source, self.field.text(), self.case_sensitive)
+        };
         self.computed = Some(key);
         true
     }
@@ -428,10 +626,11 @@ impl Bar {
     /// What the bar says about where you are: `"3 of 17"`, `"No results"`, or nothing.
     ///
     /// Nothing while the field is empty, because a bar that says "No results" before anything has
-    /// been typed is telling the user off for not having started.
+    /// been typed is telling the user off for not having started. Nothing in [`Mode::GoTo`] either,
+    /// which is not counting anything.
     #[must_use]
     pub fn count_label(&self, selection: ByteSpan) -> Option<String> {
-        if self.field.is_empty() {
+        if self.mode == Mode::GoTo || self.field.is_empty() {
             return None;
         }
         if self.matches.is_empty() {

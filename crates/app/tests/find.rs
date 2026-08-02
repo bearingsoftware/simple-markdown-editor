@@ -1,6 +1,8 @@
 //! Searching, and the bar's arithmetic — everything about find that needs no window.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
+use mdedit_app::field::Press;
 use mdedit_app::find::{self, Bar, Button};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 
@@ -205,9 +207,34 @@ fn the_count_says_so_when_there_are_none() {
     );
 }
 
+// ---- geometry ----
+
+/// Symbol buttons measure about a symbol wide; `Replace` and `All` are words and measure wider. The
+/// numbers do not have to be right, only proportionate — `layout` pads and floors them.
+fn widths(mode: find::Mode) -> Vec<f32> {
+    find::buttons(mode)
+        .iter()
+        .map(|button| match button.glyph().len() {
+            1..=2 => 12.0,
+            length => length as f32 * 6.0,
+        })
+        .collect()
+}
+
+fn laid_out(mode: find::Mode, width: f32, count: f32) -> find::Layout {
+    find::layout(mode, width, count, &widths(mode))
+}
+
+#[test]
+fn find_is_one_row_and_replace_is_two() {
+    assert_eq!(find::height(find::Mode::Find), find::HEIGHT);
+    assert_eq!(find::height(find::Mode::GoTo), find::HEIGHT);
+    assert_eq!(find::height(find::Mode::Replace), find::HEIGHT * 2.0);
+}
+
 #[test]
 fn the_buttons_are_packed_against_the_right_edge() {
-    let layout = find::layout(800.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     let last = layout.buttons.last().expect("four buttons");
     assert!(
         (last.x + last.width - 794.0).abs() < 0.01,
@@ -219,14 +246,14 @@ fn the_buttons_are_packed_against_the_right_edge() {
 
 #[test]
 fn the_field_takes_what_the_buttons_and_the_count_leave() {
-    let layout = find::layout(800.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     assert!(layout.field.0 > 0.0);
     assert!(layout.field.0 + layout.field.1 <= layout.count);
 }
 
 #[test]
 fn a_narrow_window_keeps_the_field_and_drops_the_count() {
-    let layout = find::layout(160.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 160.0, 50.0);
     // The field runs up to the buttons instead of stopping short for a count there is no room for.
     let first = layout.buttons.first().expect("four buttons");
     assert!(
@@ -239,7 +266,7 @@ fn a_narrow_window_keeps_the_field_and_drops_the_count() {
 
 #[test]
 fn a_click_lands_on_the_button_under_it() {
-    let layout = find::layout(800.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     for rect in &layout.buttons {
         let middle = rect.x + rect.width / 2.0;
         assert_eq!(
@@ -251,7 +278,7 @@ fn a_click_lands_on_the_button_under_it() {
 
 #[test]
 fn a_click_above_or_below_the_bar_hits_nothing() {
-    let layout = find::layout(800.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     let middle = layout.buttons[0].x + 1.0;
     assert_eq!(layout.hit_test(middle, -1.0), None);
     assert_eq!(layout.hit_test(middle, find::HEIGHT), None);
@@ -259,16 +286,187 @@ fn a_click_above_or_below_the_bar_hits_nothing() {
 
 #[test]
 fn a_click_in_the_text_box_is_not_a_button() {
-    let layout = find::layout(800.0, 50.0);
+    let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     let inside = layout.field.0 + 1.0;
-    assert!(layout.over_field(inside));
+    assert_eq!(
+        layout.over_field(inside, find::HEIGHT / 2.0),
+        Some(find::Focus::Primary)
+    );
     assert_eq!(layout.hit_test(inside, find::HEIGHT / 2.0), None);
 }
 
 #[test]
 fn every_button_draws_something() {
-    for button in find::BUTTONS {
-        assert!(!button.glyph().is_empty());
+    for mode in [find::Mode::Find, find::Mode::Replace, find::Mode::GoTo] {
+        for button in find::buttons(mode) {
+            assert!(!button.glyph().is_empty());
+        }
     }
     assert_eq!(Button::Case.glyph(), "Aa");
+}
+
+// ---- the second row ----
+
+#[test]
+fn replace_puts_its_two_buttons_on_the_second_row() {
+    let layout = laid_out(find::Mode::Replace, 800.0, 50.0);
+    let second: Vec<Button> = layout
+        .buttons
+        .iter()
+        .filter(|rect| rect.y > 0.0)
+        .map(|rect| rect.button)
+        .collect();
+    assert_eq!(second, [Button::Replace, Button::ReplaceAll]);
+}
+
+/// The two word buttons are measured rather than given the symbols' width, or "Replace" would be a
+/// button with three letters showing.
+#[test]
+fn a_word_button_is_wider_than_a_symbol_one() {
+    let layout = laid_out(find::Mode::Replace, 800.0, 50.0);
+    let width_of = |button| {
+        layout
+            .buttons
+            .iter()
+            .find(|rect| rect.button == button)
+            .map(|rect| rect.width)
+            .expect("on the bar")
+    };
+    assert!(width_of(Button::Replace) > width_of(Button::Close));
+}
+
+#[test]
+fn the_second_row_gets_its_own_field() {
+    let layout = laid_out(find::Mode::Replace, 800.0, 50.0);
+    let replace = layout.replace.expect("a replacement box");
+    assert!(replace.1 > 0.0);
+    assert_eq!(
+        layout.over_field(replace.0 + 1.0, find::HEIGHT + 4.0),
+        Some(find::Focus::Secondary)
+    );
+    // And the row above it is still the search term, not the replacement.
+    assert_eq!(
+        layout.over_field(replace.0 + 1.0, 4.0),
+        Some(find::Focus::Primary)
+    );
+}
+
+#[test]
+fn only_replace_has_a_second_field() {
+    assert!(laid_out(find::Mode::Find, 800.0, 50.0).replace.is_none());
+    assert!(laid_out(find::Mode::GoTo, 800.0, 50.0).replace.is_none());
+}
+
+#[test]
+fn a_second_row_button_is_not_hit_from_the_first() {
+    let layout = laid_out(find::Mode::Replace, 800.0, 50.0);
+    let rect = layout
+        .buttons
+        .iter()
+        .find(|rect| rect.button == Button::ReplaceAll)
+        .expect("on the bar");
+    let middle = rect.x + rect.width / 2.0;
+    assert_eq!(
+        layout.hit_test(middle, find::HEIGHT + 4.0),
+        Some(Button::ReplaceAll)
+    );
+    assert_ne!(layout.hit_test(middle, 4.0), Some(Button::ReplaceAll));
+}
+
+#[test]
+fn go_to_line_keeps_only_the_close_button() {
+    let layout = laid_out(find::Mode::GoTo, 800.0, 50.0);
+    let shown: Vec<Button> = layout.buttons.iter().map(|rect| rect.button).collect();
+    assert_eq!(shown, [Button::Close]);
+}
+
+// ---- the bar's three fields ----
+
+#[test]
+fn keys_go_to_the_focused_field() {
+    let mut bar = Bar::default();
+    bar.mode = find::Mode::Replace;
+    bar.press(&Press::Text("old".to_owned()), false);
+    bar.next_field();
+    bar.press(&Press::Text("new".to_owned()), false);
+
+    assert_eq!(bar.field.text(), "old");
+    assert_eq!(bar.replace.text(), "new");
+}
+
+#[test]
+fn tab_does_nothing_outside_replace() {
+    let mut bar = Bar::default();
+    assert!(!bar.next_field(), "find has one field");
+    bar.mode = find::Mode::GoTo;
+    assert!(!bar.next_field());
+    bar.mode = find::Mode::Replace;
+    assert!(bar.next_field());
+    assert_eq!(bar.focus, find::Focus::Secondary);
+    assert!(bar.next_field());
+    assert_eq!(bar.focus, find::Focus::Primary, "and back again");
+}
+
+#[test]
+fn go_to_line_takes_digits_only() {
+    let mut bar = Bar::default();
+    bar.mode = find::Mode::GoTo;
+    bar.press(&Press::Text("4".to_owned()), false);
+    bar.press(&Press::Text("x".to_owned()), false);
+    bar.press(&Press::Text("2".to_owned()), false);
+    assert_eq!(bar.line.text(), "42");
+    assert_eq!(bar.line_number(), Some(42));
+}
+
+/// A paste is filtered the same way a keystroke is, which is why the rule lives in `press` rather
+/// than in the key handler.
+#[test]
+fn a_paste_into_go_to_line_keeps_only_its_digits() {
+    let mut bar = Bar::default();
+    bar.mode = find::Mode::GoTo;
+    bar.press(&Press::Text("line 17 of the file".to_owned()), false);
+    assert_eq!(bar.line.text(), "17");
+}
+
+#[test]
+fn backspace_still_works_in_go_to_line() {
+    let mut bar = Bar::default();
+    bar.mode = find::Mode::GoTo;
+    bar.press(&Press::Text("123".to_owned()), false);
+    bar.press(&Press::Backspace, false);
+    assert_eq!(bar.line.text(), "12");
+}
+
+#[test]
+fn a_line_number_of_nothing_or_zero_is_no_line() {
+    let mut bar = Bar::default();
+    bar.mode = find::Mode::GoTo;
+    assert_eq!(bar.line_number(), None);
+    bar.press(&Press::Text("0".to_owned()), false);
+    assert_eq!(bar.line_number(), None, "lines count from one");
+}
+
+/// Go to Line is not searching, so it must not keep lighting the matches of a search the user has
+/// moved on from.
+#[test]
+fn go_to_line_has_no_matches() {
+    let mut bar = Bar::default();
+    bar.field.insert("a");
+    bar.refresh("a b a", 0, 1);
+    assert_eq!(bar.matches().len(), 2);
+
+    bar.mode = find::Mode::GoTo;
+    assert!(bar.refresh("a b a", 0, 1), "the mode changed");
+    assert!(bar.matches().is_empty());
+    assert_eq!(bar.count_label(ByteSpan::empty_at(ByteOffset::ZERO)), None);
+}
+
+#[test]
+fn the_search_term_survives_a_trip_through_go_to_line() {
+    let mut bar = Bar::default();
+    bar.field.insert("alpha");
+    bar.mode = find::Mode::GoTo;
+    bar.press(&Press::Text("12".to_owned()), false);
+    bar.mode = find::Mode::Find;
+    assert_eq!(bar.field.text(), "alpha");
 }

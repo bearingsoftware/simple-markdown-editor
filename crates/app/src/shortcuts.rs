@@ -89,6 +89,13 @@ pub const ALL: &[Group] = &[
                 "(the bar's Aa button)",
                 "Match case — off to begin with, as a search box should be",
             ),
+            key("Ctrl+H", "Replace — the same bar, with a second box"),
+            key("Tab", "Move between the two boxes"),
+            key(
+                "(the bar's Replace / All buttons)",
+                "Replace this match, or every match as one undo step",
+            ),
+            key("Ctrl+G", "Go to line — digits only, and Enter goes"),
         ],
     },
     Group {
