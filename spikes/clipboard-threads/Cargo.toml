@@ -1,0 +1,13 @@
+[package]
+name = "clipboard-threads-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+description = "Spike (MDEDIT-67): which arboard clipboard operation, at what concurrency, corrupts the heap?"
+
+[dependencies]
+# The same version the editor depends on. Bumping the editor's means re-running this.
+arboard = { version = "3.6.1", default-features = false }
+
+[workspace]

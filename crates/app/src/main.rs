@@ -233,6 +233,10 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
     // Read from beside the session file. Done here rather than in `Editor::new` so a test gets an
     // editor that touches nothing of the user's.
     editor.with_recent(mdedit_session::recent::Recent::beside_session());
+    // Same rule, and MDEDIT-67 is what breaking it cost: while the real clipboard was the default,
+    // every test binary read it — from as many threads as the harness runs tests on, which corrupts
+    // the heap. See `mdedit_app::clipboard::System`.
+    editor.with_clipboard(Box::new(mdedit_app::clipboard::System::default()));
 }
 
 /// Writes the session back, marked as a clean exit.

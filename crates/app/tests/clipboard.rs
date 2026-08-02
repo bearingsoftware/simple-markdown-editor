@@ -295,8 +295,35 @@ fn pasted_bytes_survive_a_round_trip_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
-// The real one.
+// The real one, and the default that must not be it.
 // ---------------------------------------------------------------------------
+
+/// MDEDIT-67. An editor nobody has handed a clipboard to must not reach the machine's.
+///
+/// This is the whole of that bug. `Editor::new` used to install the system clipboard, so every test
+/// binary read the real one — from as many threads as the harness runs tests on, and reading the
+/// Windows clipboard from two threads of one process corrupts the heap. `context_menu` aborted with
+/// `STATUS_HEAP_CORRUPTION` 15 runs in 20 because three of its tests ask `context_state()` whether
+/// there is anything to paste.
+///
+/// Asserted on the default rather than on the crash, because the crash needs a race to show itself
+/// and this does not. Every other collaborator that touches the user's machine — the prompts, the
+/// file pickers, the recent-files list — already defaults to an inert one; this pins the clipboard to
+/// the same rule.
+#[test]
+fn a_fresh_editor_has_no_clipboard_of_the_users() {
+    let mut editor = Editor::new("hello\n", Grid::new());
+
+    assert!(
+        !editor.context_state().can_paste,
+        "the default clipboard must hold nothing, whatever the machine has copied"
+    );
+
+    // And it takes a copy without passing it on, so nothing a test does reaches the real one either.
+    editor.select_all();
+    editor.copy();
+    assert!(!editor.context_state().can_paste);
+}
 
 /// Proves the `arboard` integration actually works, rather than only the trait around it.
 ///
@@ -308,7 +335,7 @@ fn pasted_bytes_survive_a_round_trip_unchanged() {
 fn the_system_clipboard_round_trips() {
     use mdedit_app::clipboard::System;
 
-    let mut system = System;
+    let mut system = System::default();
     let text = "mdedit round trip 日本語 🦀";
     system.write(text);
     assert_eq!(system.read().as_deref(), Some(text));

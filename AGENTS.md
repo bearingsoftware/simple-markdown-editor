@@ -78,6 +78,9 @@ spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in me
 spikes/startup-attribution/
                         # MDEDIT-20 probe: where the ~250 ms before first paint goes. Re-runnable,
                         #   and worth re-running whenever wgpu is bumped
+spikes/clipboard-threads/
+                        # MDEDIT-67 probe: reading the Windows clipboard from two threads of one
+                        #   process corrupts the heap. Re-run when arboard is bumped
 docs/research/          # 7 briefs; read README.md first
   README.md             # verdicts, recommended stack, top 3 risks
   01-editor-landscape.md
@@ -349,6 +352,22 @@ Known gaps, so nobody assumes they are done:
   a feature rather than a paste. Pasted text goes in verbatim, so pasting CRLF into an LF file leaves
   mixed endings — the byte-preserving choice, and the opposite of what VS Code does. Revisit if it
   annoys anyone.
+- **Reading the real clipboard is a UI-thread-only operation, and the compiler enforces it.**
+  MDEDIT-67: reading the Windows clipboard from two threads of one process corrupts the heap.
+  `arboard`'s read path sizes a conversion buffer from a clipboard handle and then converts into it,
+  and that handle is valid only while *this process* has the clipboard open — but `CloseClipboard` is
+  process-wide, so any other thread finishing its own clipboard work invalidates it mid-read. Measured
+  in `spikes/clipboard-threads`: one thread reading 2,000 times is clean, two threads reading abort
+  8 runs in 8, and one reader against eight writers aborts 4–6 in 8 — so it is not two readers racing
+  each other, and two threads are enough. `clipboard::System` is therefore `!Send`.
+
+  **And an `Editor` is built with a clipboard that holds nothing; `main` installs the real one.** That
+  is what the bug actually was. Every other collaborator touching the user's machine — the prompts,
+  the file pickers, the recent-files list — already defaulted to inert with the real one wired in
+  `give_it_dialogs`, and the clipboard was the sole exception. So every test binary read the real
+  clipboard, on as many threads as the harness runs tests on: `context_menu` aborted with
+  `STATUS_HEAP_CORRUPTION` 15 runs in 20. Adding a collaborator that touches the machine means adding
+  it to `give_it_dialogs`, not to `Editor::new`.
 - **A word is a Unicode word, and that is decided once for the whole editor.** MDEDIT-57 took
   `unicode-segmentation` (UAX #29) rather than an alphanumeric-run classifier, which splits `café` at
   a decomposed accent, takes a whole CJK run as one word, and cuts `don't` in half. Ctrl+arrows and

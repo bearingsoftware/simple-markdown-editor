@@ -31,7 +31,7 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowId};
 
 use crate::blocks;
-use crate::clipboard::{Clipboard, System};
+use crate::clipboard::{Clipboard, HoldNothing};
 use crate::config::Config;
 use crate::content::{ContentRect, Insets};
 use crate::field;
@@ -887,7 +887,7 @@ impl<T: TextLayout> Editor<T> {
             anchor_span: None,
             dragging: false,
             content: ContentRect::default(),
-            clipboard: Box::new(System),
+            clipboard: Box::new(HoldNothing),
             prompt: Box::new(KeepEverything),
             conflict: Box::new(ChangeNothing),
             pick_save_path: Box::new(|_| None),
