@@ -33,9 +33,8 @@ flow).
 
 **A working editor on Windows.** It opens, edits and saves files without changing a byte nobody
 touched; it has a window, a renderer, menus, tabs, a file pane, a scrollbar, a status bar, undo,
-inline formatting, crash recovery and a settings file. There is **find but no replace yet**
-(MDEDIT-45), and it does not run at all off Windows — there is no portable text
-backend, which is the first known gap below.
+inline formatting, crash recovery and a settings file. It finds, replaces and goes to a line. It does
+not run at all off Windows — there is no portable text backend, which is the first known gap below.
 
 The crates below the app are still headless and platform-agnostic, and that is the line worth
 keeping: everything that can be tested without a window is.
@@ -55,8 +54,9 @@ crates/markers/         # mdedit-markers: Markdown's implementation of that trai
                         #   parse for both
 crates/document/        # mdedit-document: rope buffer keeping that partition current, plus
                         #   selection, the reveal-on-cursor predicate, the heading trail to a
-                        #   position, word and line extents, the undo transaction, and the inline
-                        #   formatting toggles that use the marker spans rather than guessing
+                        #   position, word and line extents, the undo transaction and the
+                        #   many-site replace built on it, and the inline formatting toggles that
+                        #   use the marker spans rather than guessing
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the two
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
@@ -70,8 +70,8 @@ crates/session/         # mdedit-session: tabs as handles, the session file that
 crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, the decoration
                         #   step, per-block layout and its cache, the settings file, the status
                         #   bar, the tab strip and file pane, click counting, the generated
-                        #   shortcuts reference, the single-line text field and the find bar built
-                        #   on it, and the keystroke latency harness.
+                        #   shortcuts reference, the single-line text field and the find, replace
+                        #   and go-to-line bar built on it, and the keystroke latency harness.
                         #   Binary: `mdedit`.
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in memory. Re-runnable
@@ -167,6 +167,26 @@ Known gaps, so nobody assumes they are done:
   **The match list's key includes which document it is.** A revision counts one document's edits and
   says nothing about which — two tabs neither has typed in are both at revision zero — so without it
   switching tab kept the first one's offsets. Same shape, and same reason, as `floating_for`.
+- **The same bar does Replace and Go to Line, and the mode is what makes it a different shape.**
+  MDEDIT-45. Ctrl+H adds a second row with its own field and a Replace / All pair; Ctrl+G is one row,
+  one field, digits only. `find::Mode` is in the match list's key too, so switching to Go to Line
+  clears the highlights rather than leaving a search the user has moved on from lit up. **Three
+  fields, not one reused**: Ctrl+G would otherwise throw away what you were looking for.
+
+  **Replace All is one undo step, and that is what the ticket was waiting for.** `Document::replace_all`
+  works **from the end backwards** inside MDEDIT-63's `transact`, so no site moves before it is used
+  and no offset arithmetic is needed — undo restores the original bytes, property-tested. A call that
+  replaces nothing records no history, so a Replace All that matched nothing does not cost a press of
+  Ctrl+Z that appears to do nothing.
+
+  **Replace with the caret away from a match moves to one rather than replacing what is nearby.** The
+  second press is what edits. A Replace that acted on the nearest thing is how a find-and-replace
+  loses work.
+
+  The two word buttons are **measured**, not given the symbols' fixed width — "Replace" at 24 pixels
+  would be a button with three letters on it. `Button::row` returns a row *number* rather than a y
+  offset so grouping buttons by row is an integer comparison; comparing two `f32`s for equality would
+  work today and fail the first time a height is scaled.
 - **A settled selection also gets a bar that floats over it, and "settled" is the whole feature.**
   MDEDIT-53. It appears on mouse *release*, or on the idle timer for a selection extended with Shift
   — never during a drag, because a bar that chases the pointer is the classic bad implementation of

@@ -451,6 +451,18 @@ fn edit_items(edit: &Submenu) -> Vec<Item<'_>> {
             Command::FindPrevious,
             Some((Modifiers::SHIFT, Code::F3)),
         ),
+        (
+            edit,
+            "&Replace…",
+            Command::Replace,
+            Some((Modifiers::CONTROL, Code::KeyH)),
+        ),
+        (
+            edit,
+            "&Go to Line…",
+            Command::GoToLine,
+            Some((Modifiers::CONTROL, Code::KeyG)),
+        ),
     ]
 }
 
