@@ -72,6 +72,12 @@ pub enum Command {
     SelectAll,
     /// Edit → Paste.
     Paste,
+    /// Edit → Find.
+    Find,
+    /// Edit → Find Next.
+    FindNext,
+    /// Edit → Find Previous.
+    FindPrevious,
     /// View → Plain Markup.
     PlainMarkup,
     /// View → File Pane.

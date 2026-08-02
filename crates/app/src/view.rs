@@ -66,6 +66,9 @@ pub struct Theme {
     pub caret: Rgba,
     /// Behind selected text. Drawn under the glyphs, so it tints rather than covers.
     pub selection: Rgba,
+    /// Behind a search match that is not the current one. Drawn under the selection as well as under
+    /// the glyphs, so the match the caret is on is simply the one wearing the selection colour.
+    pub find_match: Rgba,
     /// Background of the tab strip behind the tabs.
     pub strip: Rgba,
     /// Background of the tab being shown.
@@ -100,6 +103,10 @@ impl Default for Theme {
             marker: Rgba::rgb(0x6a, 0x9c, 0x6a),
             caret: Rgba::rgb(0xff, 0xd7, 0x4a),
             selection: Rgba::rgb(0x2d, 0x4f, 0x6b),
+            // Warm where the selection is cool, so the two are told apart by hue rather than by
+            // brightness — the one distinction that survives being looked at out of the corner of
+            // an eye, and the one a colour-blind reader keeps.
+            find_match: Rgba::rgb(0x6b, 0x53, 0x1e),
             strip: Rgba::rgb(0x14, 0x14, 0x14),
             tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
             tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),

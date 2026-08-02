@@ -34,6 +34,8 @@ use crate::blocks;
 use crate::clipboard::{Clipboard, System};
 use crate::config::Config;
 use crate::content::{ContentRect, Insets};
+use crate::field;
+use crate::find;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
 use crate::ime::{Action, Composition};
@@ -77,6 +79,20 @@ enum Snapshotting {
     Write(u64, Option<PathBuf>, u64, String),
     /// This buffer is safe on disk; its snapshot should go.
     Forget(u64),
+}
+
+/// One visual row being drawn, gathered so a helper can be given it rather than seven arguments.
+#[derive(Clone, Copy)]
+struct Row<'a> {
+    cached: &'a Cached,
+    chunk: blocks::Chunk,
+    /// The whole document's text, which is what chunk spans index into.
+    text: &'a str,
+    /// Which row of the chunk's layout.
+    index: usize,
+    /// Where the row's top edge is, in document coordinates.
+    top: f32,
+    height: f32,
 }
 
 /// A short string of chrome, laid out and kept until it changes.
@@ -127,6 +143,16 @@ const TOOLBAR_TEXT: f32 = 0.62;
 
 /// How thick the floating bar's outline is.
 const FLOAT_BORDER: f32 = 1.0;
+
+/// How far the find bar's text box is inset from the bar around it.
+const FIND_INSET: f32 = 4.0;
+
+/// The longest selection Ctrl+F carries into the search box.
+///
+/// A whole paragraph flattened onto one line is not a search term, and putting one there means the
+/// first thing the chord does is something the user has to undo. Above this the previous term is
+/// kept instead.
+const FIND_SEED_LIMIT: usize = 120;
 /// Thickness of the line under text an input method is still composing.
 const UNDERLINE_WIDTH: f32 = 1.0;
 /// How much width a selected line break shows as, so a selection spanning lines reads as one shape
@@ -619,6 +645,31 @@ pub struct Editor<T: TextLayout> {
     /// is kept for the IME. `None` when nothing is selected or the selection has scrolled off, and
     /// the bar hides in both cases.
     selection_anchor: Option<toolbar::Anchor>,
+    /// The find bar, when it is open. `None` is closed, and there is no other flag for it.
+    ///
+    /// Kept on the editor rather than per tab: a search is a thing you are doing, not a property of
+    /// a document, and every editor lets you carry a term from one file to the next. What *is* per
+    /// tab is the match list, which is why switching tab invalidates it.
+    find: find::Bar,
+    /// Whether it is showing. Separate from the bar itself so closing it keeps the term and the
+    /// case flag — Esc then Ctrl+F then Enter repeats the last search, which is what every editor
+    /// does and what a bar thrown away on close cannot do.
+    find_open: bool,
+    /// Whether keys go to the find field rather than to the document.
+    ///
+    /// The whole focus model. Exactly one of the two has it, and with the bar closed it is always
+    /// the document — so this is only ever consulted alongside `find`.
+    find_focused: bool,
+    /// Where the bar's parts landed last frame, for the click chain. `None` when it is closed.
+    find_layout: Option<find::Layout>,
+    /// Whether the selection was made by landing on a search match rather than by the user.
+    ///
+    /// The floating formatting bar arms on a settled selection, and a match is one by that rule — so
+    /// without this every press of Find Next put a bar over the prose. Held on the editor rather
+    /// than keyed off whether the find bar is open, because the selection outlives the bar: Esc
+    /// closes it and leaves the match selected, and a bar appearing *then* would be chrome arriving
+    /// from the gesture that dismisses chrome.
+    found_selection: bool,
     /// Where the open files are shown. See [`Chrome`].
     chrome: Chrome,
     /// The pane's visible rows, kept for the next click, as `tab_rects` is for the strip.
@@ -797,6 +848,11 @@ impl<T: TextLayout> Editor<T> {
             floating_at: None,
             floating_for: None,
             selection_anchor: None,
+            find: find::Bar::default(),
+            find_open: false,
+            find_focused: false,
+            find_layout: None,
+            found_selection: false,
             chrome: Chrome::Strip,
             row_rects: Vec::new(),
             pane_scroll: 0.0,
@@ -1494,6 +1550,9 @@ impl<T: TextLayout> Editor<T> {
                 self.toggle_toolbar();
                 true
             }
+            Command::Find => self.open_find(),
+            Command::FindNext => self.find_next(),
+            Command::FindPrevious => self.find_previous(),
             Command::ZoomIn => self.zoom_by(1),
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
@@ -2096,6 +2155,7 @@ impl<T: TextLayout> Editor<T> {
             // Markdown comment editors use. Weaker ground than the two above, and marked as such.
             "e" | "E" if !shift => self.document_mut().toggle_inline(Inline::Code),
             "k" | "K" => self.link(),
+            "f" | "F" => self.open_find(),
             // Ctrl+= is the practical spelling of "Ctrl and plus": `+` needs Shift on most layouts,
             // so an editor that only bound `+` would answer to a chord nobody presses. Both work.
             "=" | "+" => self.zoom_by(1),
@@ -2127,6 +2187,22 @@ impl<T: TextLayout> Editor<T> {
         // say so themselves, below.
         self.follow_caret = true;
 
+        // F3 works wherever focus is, which is the point of having it as well as Enter — it is how
+        // you step through matches while typing in the document.
+        if matches!(&event.logical_key, Key::Named(NamedKey::F3)) {
+            return if self.modifiers.shift_key() {
+                self.find_previous()
+            } else {
+                self.find_next()
+            };
+        }
+
+        // Everything else goes to whichever of the two has focus, and the find field having it is
+        // the only case where the document does not. That is the whole focus model.
+        if self.find_focused() {
+            return self.find_key(event);
+        }
+
         // Chords first, so a modified key never inserts its own letter. Deliberately **above** the
         // dismissal: Ctrl+B is one of the bar's own actions arriving by keyboard, and taking the bar
         // away only to have the idle timer put it back is a flicker for no rule.
@@ -2139,8 +2215,10 @@ impl<T: TextLayout> Editor<T> {
         // "settles" rule for the keyboard, and why this can be blunt.
         let dismissed = self.dismiss_floating();
         if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
-            // Esc has no other job in this editor yet, so it is the dismissal and nothing else.
-            return dismissed;
+            // Esc closes the find bar even when focus has gone back to the document — the bar is
+            // still taking room and still lighting matches, so leaving it open would make Esc do
+            // half of what it looks like it does.
+            return self.close_find() || dismissed;
         }
 
         let caret = self.document().selection().head();
@@ -2219,6 +2297,80 @@ impl<T: TextLayout> Editor<T> {
             Key::Character(text) => self.insert(text),
             _ => false,
         }
+    }
+
+    /// Routes one key press to the find field.
+    ///
+    /// Chords are **not** swallowed. Ctrl+S saves the document while the caret is in the search box,
+    /// which is what anyone would expect; only the three that mean something to a text field —
+    /// select all, copy, paste and cut — are taken here, and the rest go where they always went.
+    fn find_key(&mut self, event: &KeyEvent) -> bool {
+        let shift = self.modifiers.shift_key();
+        if self.modifiers.control_key() {
+            let Key::Character(character) = &event.logical_key else {
+                return self.handle_chord(event);
+            };
+            return match character.as_str() {
+                "a" | "A" => self.press_find(&field::Press::SelectAll, false),
+                "c" | "C" => {
+                    self.copy_find();
+                    false
+                }
+                "x" | "X" if !shift => {
+                    self.copy_find();
+                    self.press_find(&field::Press::Backspace, false)
+                }
+                "v" | "V" => self.paste_find(),
+                _ => self.handle_chord(event),
+            };
+        }
+
+        let decoded = match &event.logical_key {
+            Key::Named(NamedKey::Escape) => find::Key::Close,
+            Key::Named(NamedKey::Enter) if shift => find::Key::Previous,
+            Key::Named(NamedKey::Enter) => find::Key::Next,
+            Key::Named(NamedKey::Backspace) => find::Key::Edit(field::Press::Backspace),
+            Key::Named(NamedKey::Delete) => find::Key::Edit(field::Press::Delete),
+            Key::Named(NamedKey::ArrowLeft) => find::Key::Edit(field::Press::Left),
+            Key::Named(NamedKey::ArrowRight) => find::Key::Edit(field::Press::Right),
+            Key::Named(NamedKey::Home) => find::Key::Edit(field::Press::Home),
+            Key::Named(NamedKey::End) => find::Key::Edit(field::Press::End),
+            Key::Named(NamedKey::Space) => find::Key::Edit(field::Press::Text(" ".to_owned())),
+            Key::Character(text) => find::Key::Edit(field::Press::Text(text.to_string())),
+            // Up, Down and the paging keys do nothing here. Deliberately *nothing* rather than
+            // falling through to the document: a key that scrolled the text behind a focused search
+            // box would be the focus model leaking.
+            _ => return false,
+        };
+        self.apply_find_key(&decoded, shift)
+    }
+
+    /// Does what one key press means to the find bar, with Shift said explicitly.
+    ///
+    /// The testable half of [`Self::find_key`] — see [`find::Key`] for why the two are separate.
+    pub fn apply_find_key(&mut self, key: &find::Key, shift: bool) -> bool {
+        match key {
+            find::Key::Edit(press) => self.press_find(press, shift),
+            find::Key::Next => self.find_next(),
+            find::Key::Previous => self.find_previous(),
+            find::Key::Close => self.close_find(),
+        }
+    }
+
+    /// Puts the field's selection on the clipboard.
+    fn copy_find(&mut self) {
+        let Some(text) = self.find.field.selected_text().map(str::to_owned) else {
+            return;
+        };
+        self.clipboard.write(&text);
+    }
+
+    /// Types the clipboard into the field.
+    fn paste_find(&mut self) -> bool {
+        let Some(text) = self.clipboard.read() else {
+            return false;
+        };
+        self.press_find(&field::Press::Text(text), false)
     }
 
     /// Applies one input-method event. Returns whether a redraw is needed.
@@ -2314,6 +2466,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Selects the whole buffer.
     pub fn select_all(&mut self) {
+        self.found_selection = false;
         let end = ByteOffset::new(self.document().len_bytes());
         self.document_mut()
             .set_selection(Selection::new(ByteOffset::ZERO, end));
@@ -2440,6 +2593,15 @@ impl<T: TextLayout> Editor<T> {
         let visible = content.height();
         let mut frame = self.measure(content.width());
 
+        // The one place the document's contiguous text already exists, so searching it costs no
+        // second `to_string`. Rescans only when the needle, the case flag or the revision has moved
+        // — see `find::Bar::refresh` — so a still frame with the bar open costs three comparisons.
+        let document = self.find_document();
+        let revision = self.document().revision();
+        if self.find_open {
+            self.find.refresh(&frame.text, document, revision);
+        }
+
         self.hold_anchor(&frame, visible);
         if self.follow_caret {
             if let Some((index, caret)) = self.caret_position(&frame) {
@@ -2524,6 +2686,7 @@ impl<T: TextLayout> Editor<T> {
         // Anything added here goes after the document too, or it will be drawn on.
         quads.append(&mut self.build_tab_strip(width, scale));
         self.draw_toolbar(&mut quads, width, scale);
+        self.draw_find(&mut quads, width, scale);
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
         self.draw_scrollbar(&mut quads, width, scale);
@@ -2723,6 +2886,14 @@ impl<T: TextLayout> Editor<T> {
     /// mouse release, and on the idle timer for a selection extended with the keyboard.
     pub fn settle_selection(&mut self) -> bool {
         if self.dragging || self.document().selection().is_collapsed() {
+            return false;
+        }
+        // A search-made selection is not one to hang a bar on. Every match landed on is a settled
+        // selection by this method.s own rule, so without this Find Next put a formatting bar over
+        // the prose on every press, and Esc — which closes the find bar — raised one as a parting
+        // gift. Both found by eye in MDEDIT-44, and both invisible to a test that only ever asks
+        // where the selection is.
+        if self.found_selection {
             return false;
         }
         let was = self.floating;
@@ -3190,8 +3361,8 @@ impl<T: TextLayout> Editor<T> {
         // `inner_size` reports — accounting for it here would take it off twice and leave a strip of
         // the document permanently below the fold.
         Insets {
-            // The bar sits below the strip and above the document, so the two add.
-            top: self.strip_height() + self.toolbar_height(),
+            // The bars sit below the strip and above the document, so the three add.
+            top: self.strip_height() + self.toolbar_height() + self.find_height(),
             // The pane and the gutter both take from the left, and they add rather than compete —
             // which is exactly the arithmetic `ContentRect` exists to keep in one place.
             left: self.pane_width() + self.gutter_width(),
@@ -3741,12 +3912,19 @@ impl<T: TextLayout> Editor<T> {
             self.clicks.reset();
             return self.click_scrollbar(hit, y);
         }
-        if self.click_toolbar(x, y) || self.click_strip(x, y) || self.click_pane(x, y) {
+        if self.click_find(x, y)
+            || self.click_toolbar(x, y)
+            || self.click_strip(x, y)
+            || self.click_pane(x, y)
+        {
             // The pointer was on chrome, not on text. Ending the run stops a click on a tab
             // followed by one in the document from counting as a double-click on the document.
             self.clicks.reset();
             return true;
         }
+        // Clicking into the text is how focus comes back without closing the bar, which is what
+        // makes "find it, then edit it there" one gesture rather than two.
+        self.find_focused = false;
         self.click_at(x, y)
     }
 
@@ -4125,6 +4303,387 @@ impl<T: TextLayout> Editor<T> {
         self.toolbar
     }
 
+    /// Opens the find bar, or refocuses it if it is already open.
+    ///
+    /// A selection in the document is carried into the field, which is what every editor does with
+    /// Ctrl+F over a highlighted word and is the difference between the chord being useful and being
+    /// a box you then have to type into. Multi-line selections come in flattened rather than
+    /// refused — see [`Field::set_text`](crate::field::Field::set_text).
+    ///
+    /// The bar takes room out of the content rect, so every cached layout width is now wrong. Cleared
+    /// rather than chased, exactly as the pane and the formatting bar do it.
+    pub fn open_find(&mut self) -> bool {
+        let seed = self
+            .selected_text()
+            .filter(|text| !text.trim().is_empty() && text.len() <= FIND_SEED_LIMIT);
+
+        self.find_open = true;
+        let bar = &mut self.find;
+        match seed {
+            Some(text) => bar.field.set_text(&text),
+            // Reopened with nothing selected: keep the previous term and select it, so Ctrl+F then
+            // Enter repeats the last search and Ctrl+F then typing starts a new one.
+            None => bar.field.select_all(),
+        }
+        self.find_focused = true;
+        self.dismiss_floating();
+        self.layouts.clear();
+        self.heights.clear();
+        true
+    }
+
+    /// Closes the find bar and gives the document the keyboard back.
+    ///
+    /// Returns whether it was open, which is what lets Esc fall through to the floating bar's
+    /// dismissal when it was not.
+    pub fn close_find(&mut self) -> bool {
+        if !self.find_open {
+            return false;
+        }
+        self.find_open = false;
+        self.find_focused = false;
+        self.find_layout = None;
+        self.layouts.clear();
+        self.heights.clear();
+        true
+    }
+
+    /// Whether the find bar is open.
+    #[must_use]
+    pub fn find_open(&self) -> bool {
+        self.find_open
+    }
+
+    /// Whether keys are going to the find field rather than to the document.
+    #[must_use]
+    pub fn find_focused(&self) -> bool {
+        self.find_open && self.find_focused
+    }
+
+    /// The find bar, for a test to look at what it found and what it says.
+    #[must_use]
+    pub fn find_bar(&self) -> Option<&find::Bar> {
+        self.find_open.then_some(&self.find)
+    }
+
+    /// Where the bar's parts were drawn last frame.
+    #[must_use]
+    pub fn find_layout(&self) -> Option<&find::Layout> {
+        self.find_layout.as_ref()
+    }
+
+    /// Sends one key press to the find field, and searches again if it changed the term.
+    ///
+    /// Reachable without a winit event on purpose — see [`field::Press`].
+    pub fn press_find(&mut self, press: &field::Press, shift: bool) -> bool {
+        if !self.find_open {
+            return false;
+        }
+        self.find.field.apply(press, shift);
+        // Rescanning is [`find::Bar::refresh`]'s job and happens on the way to drawing, because the
+        // document's text is not held here — `measure` is what has it. So this only has to say the
+        // frame is stale.
+        true
+    }
+
+    /// Selects the next match, wrapping at the end. Returns whether the caret moved.
+    pub fn find_next(&mut self) -> bool {
+        self.go_to_match(true)
+    }
+
+    /// Selects the previous match, wrapping at the start.
+    pub fn find_previous(&mut self) -> bool {
+        self.go_to_match(false)
+    }
+
+    /// Moves the selection to the match on one side of it.
+    ///
+    /// Searching from the *far* end of the current selection in each direction is what stops Find
+    /// Next landing on the match it is already sitting on: forward from its end, back from its
+    /// start.
+    fn go_to_match(&mut self, forward: bool) -> bool {
+        // The match list is refreshed while drawing, so a chord pressed before the first frame after
+        // a change would navigate a stale list. Refreshing here costs a comparison in the ordinary
+        // case and is the difference between correct and nearly.
+        self.refresh_find();
+
+        if !self.find_open {
+            return false;
+        }
+        let bar = &self.find;
+        let selected = self.document().selection().span();
+        let at = if forward {
+            find::next(bar.matches(), selected.end())
+        } else {
+            find::previous(bar.matches(), selected.start())
+        };
+        let Some(span) = at.map(|at| bar.matches()[at]) else {
+            return false;
+        };
+
+        // Anchor first, head last, so the head is the end going forwards — which is what `go_to_match`
+        // reads back on the next press, and what puts the caret where the reveal wants it.
+        self.document_mut()
+            .set_selection(Selection::new(span.start(), span.end()));
+        self.found_selection = true;
+        self.follow_caret = true;
+        true
+    }
+
+    /// Turns case-sensitivity on or off.
+    pub fn toggle_find_case(&mut self) -> bool {
+        if !self.find_open {
+            return false;
+        }
+        self.find.case_sensitive = !self.find.case_sensitive;
+        true
+    }
+
+    /// Brings the match list up to date with the document, the needle and the case flag.
+    ///
+    /// Costs a `to_string` of the buffer when something has moved and three comparisons when nothing
+    /// has. With the bar closed it is not reached at all.
+    fn refresh_find(&mut self) {
+        if !self.find_open {
+            return;
+        }
+        let source = self.document().to_string();
+        let document = self.find_document();
+        let revision = self.document().revision();
+        self.find.refresh(&source, document, revision);
+    }
+
+    /// Which document the match list's offsets are into.
+    ///
+    /// The active tab, or a value no tab index can be for the scratch buffer. Held as part of the
+    /// match list's key rather than hooked into the eight paths that activate a tab — the same
+    /// answer, and for the same reason, as the floating bar's `floating_for`.
+    fn find_document(&self) -> usize {
+        self.workspace.active().unwrap_or(usize::MAX)
+    }
+
+    /// Height the find bar occupies, which is nothing when it is closed.
+    fn find_height(&self) -> f32 {
+        if self.find_open { find::HEIGHT } else { 0.0 }
+    }
+
+    /// Draws the find bar below whatever chrome is above it, and remembers where its parts went.
+    fn draw_find(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
+        self.find_layout = None;
+        if !self.find_open {
+            return;
+        }
+
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        // The four button glyphs share the formatting bar's cache: they are short, fixed strings
+        // laid out at the same size, and a second cache of the same kind would be the per-frame
+        // layout trap paid for a sixth time. `set_zoom` already clears it.
+        for button in find::BUTTONS {
+            let glyph = button.glyph().to_owned();
+            if !self.toolbar_labels.contains_key(&glyph) {
+                if let Some(label) = self.lay_out_label(&glyph, style) {
+                    self.toolbar_labels.insert(glyph, label);
+                }
+            }
+        }
+
+        let selection = self.document().selection().span();
+        let count = self.find.count_label(selection);
+        // Laid out per frame rather than cached, because it changes with every keystroke and every
+        // navigation — a cache keyed on "3 of 17" would hold a new entry per match in the document.
+        // One short string a frame is what the tab strip's labels already cost.
+        let count_label = count
+            .as_deref()
+            .and_then(|text| self.lay_out_label(text, style));
+        let count_width = count_label.as_ref().map_or(0.0, |label| label.width);
+
+        let logical_width = width / scale;
+        let layout = find::layout(logical_width, count_width);
+        let top = self.strip_height() + self.toolbar_height();
+
+        quads.push(Self::solid(
+            [0.0, top * scale, width, find::HEIGHT * scale],
+            self.theme.strip,
+        ));
+        // The text box, so it reads as somewhere to type rather than as a gap in the bar.
+        quads.push(Self::solid(
+            [
+                layout.field.0 * scale,
+                (top + FIND_INSET) * scale,
+                layout.field.1 * scale,
+                (find::HEIGHT - FIND_INSET * 2.0) * scale,
+            ],
+            self.theme.background,
+        ));
+
+        let baseline = top + find::HEIGHT / 2.0 + self.theme.body_size * 0.3;
+        self.draw_find_term(quads, &layout, baseline, scale);
+
+        if let Some(label) = count_label {
+            let where_ = LabelAt {
+                x: layout.count,
+                baseline,
+                scale,
+                colour: self.theme.marker,
+            };
+            self.draw_label_glyphs(quads, &label.glyphs, where_);
+        }
+
+        let case = self.find.case_sensitive;
+        for rect in &layout.buttons.clone() {
+            if rect.button == find::Button::Case && case {
+                quads.push(Self::solid(
+                    [
+                        rect.x * scale,
+                        (top + 3.0) * scale,
+                        rect.width * scale,
+                        (find::HEIGHT - 6.0) * scale,
+                    ],
+                    self.theme.tab_active,
+                ));
+            }
+            let Some(label) = self.toolbar_labels.get(rect.button.glyph()) else {
+                continue;
+            };
+            let where_ = LabelAt {
+                x: rect.x + (rect.width - label.width) / 2.0,
+                baseline,
+                scale,
+                colour: self.theme.text,
+            };
+            let glyphs = label.glyphs.clone();
+            self.draw_label_glyphs(quads, &glyphs, where_);
+        }
+
+        self.find_layout = Some(layout);
+    }
+
+    /// Draws what has been typed into the field, its selection, and its caret.
+    ///
+    /// Clipped to the box by dropping glyphs past its right edge — truncated rather than scrolled.
+    /// A field that scrolled with the caret needs an offset of its own and a measurement pass to
+    /// place it; a search term long enough to need one is rare enough to leave until it is asked
+    /// for.
+    fn draw_find_term(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        layout: &find::Layout,
+        baseline: f32,
+        scale: f32,
+    ) {
+        let bar = &self.find;
+        let text = bar.field.text().to_owned();
+        let caret_at = bar.field.caret();
+        let (from, to) = bar.field.selection();
+        let focused = self.find_focused;
+
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        let label = (!text.is_empty())
+            .then(|| self.lay_out_label(&text, style))
+            .flatten();
+
+        let left = layout.field.0 + FIND_INSET * 2.0;
+        let right = layout.field.0 + layout.field.1 - FIND_INSET;
+        // Where a byte sits along the laid-out term: the glyph that starts at or after it, or past
+        // the last one. The same rule `row_selection` uses, and it has to be, or the caret would sit
+        // half a glyph away from the highlight.
+        let x_of = |label: Option<&Label>, offset: usize| -> f32 {
+            label.map_or(0.0, |label| {
+                label
+                    .glyphs
+                    .iter()
+                    .find(|glyph| glyph.source.start().get() >= offset)
+                    .map_or_else(
+                        || {
+                            label
+                                .glyphs
+                                .last()
+                                .map_or(0.0, |glyph| glyph.pos.x + glyph.advance)
+                        },
+                        |glyph| glyph.pos.x,
+                    )
+            })
+        };
+
+        if from < to {
+            let (start, end) = (x_of(label.as_ref(), from), x_of(label.as_ref(), to));
+            quads.push(Self::solid(
+                [
+                    (left + start) * scale,
+                    (baseline - self.theme.body_size * 0.7) * scale,
+                    (end - start).max(1.0) * scale,
+                    (self.theme.body_size * 0.95) * scale,
+                ],
+                self.theme.selection,
+            ));
+        }
+
+        if let Some(label) = &label {
+            let glyphs: Vec<_> = label
+                .glyphs
+                .iter()
+                .take_while(|glyph| left + glyph.pos.x < right)
+                .copied()
+                .collect();
+            let where_ = LabelAt {
+                x: left,
+                baseline,
+                scale,
+                colour: self.theme.text,
+            };
+            self.draw_label_glyphs(quads, &glyphs, where_);
+        }
+
+        // Only the focused thing shows a caret. Two carets on screen at once is the classic way a
+        // focus model that is not really one shows itself.
+        if focused {
+            quads.push(Self::solid(
+                [
+                    (left + x_of(label.as_ref(), caret_at)) * scale,
+                    (baseline - self.theme.body_size * 0.7) * scale,
+                    CARET_WIDTH * scale,
+                    (self.theme.body_size * 0.95) * scale,
+                ],
+                self.theme.caret,
+            ));
+        }
+    }
+
+    /// Resolves a click on the find bar. Returns whether it was one.
+    fn click_find(&mut self, x: f32, y: f32) -> bool {
+        let Some(layout) = self.find_layout.clone() else {
+            return false;
+        };
+        let top = self.strip_height() + self.toolbar_height();
+        let inside = y - top;
+        if !(0.0..find::HEIGHT).contains(&inside) {
+            return false;
+        }
+
+        if layout.over_field(x) {
+            self.find_focused = true;
+            return true;
+        }
+        match layout.hit_test(x, inside) {
+            Some(find::Button::Case) => {
+                self.toggle_find_case();
+            }
+            Some(find::Button::Previous) => {
+                self.find_previous();
+            }
+            Some(find::Button::Next) => {
+                self.find_next();
+            }
+            Some(find::Button::Close) => {
+                self.close_find();
+            }
+            // The bar's own background. Swallowed rather than let through, or a click on the strip
+            // between two buttons would put the caret in the document underneath it.
+            None => {}
+        }
+        true
+    }
+
     /// Shows the tab at `index`, as a click on the strip would.
     ///
     /// The strip and the pane both reach `Workspace::activate` through their own hit-testing, and a
@@ -4283,6 +4842,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Puts the caret at `offset`, or drags the selection to it.
     fn select(&mut self, offset: ByteOffset, extend: bool) {
+        self.found_selection = false;
         let selection = if extend {
             Selection::new(self.document().selection().anchor(), offset)
         } else {
@@ -4373,6 +4933,7 @@ impl<T: TextLayout> Editor<T> {
     /// A test cannot wait half a second between clicks and should not have to, so the moment a press
     /// happened is a parameter rather than a call to the clock. See [`crate::clicks`].
     pub fn click_at_time(&mut self, x: f32, y: f32, at: Instant) -> bool {
+        self.found_selection = false;
         let Some(offset) = self.offset_at_point(x, y) else {
             return false;
         };
@@ -4609,6 +5170,14 @@ impl<T: TextLayout> Editor<T> {
             );
 
             let selected = frame.selection.span();
+            // The matches this chunk covers, taken once per chunk rather than once per row, and
+            // binary-searched out of the list rather than filtered. Both matter for the same reason:
+            // a document with ten thousand matches must cost what is on screen, not what is in it.
+            let found: Vec<ByteSpan> = if self.find_open {
+                find::within(self.find.matches(), chunk.span).to_vec()
+            } else {
+                Vec::new()
+            };
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             // `usize::MAX` for "there was no row above", which no line number can collide with.
@@ -4635,34 +5204,16 @@ impl<T: TextLayout> Editor<T> {
                     self.draw_line_number(quads, source_line + 1, top_of_row, at);
                 }
 
-                // Behind the glyphs, so the text stays readable through it.
-                if !selected.is_empty() {
-                    if let Some((from, to)) =
-                        Self::row_selection(&cached, chunk, &frame.text, row, selected)
-                    {
-                        let (x, y) = content.to_window(from, top_of_row, scroll);
-                        // The first row reached is the first visible row of the selection, and the
-                        // only one the floating bar wants. Kept here because it is the one place
-                        // that knows: the highlight is otherwise pushed and forgotten.
-                        if self.selection_anchor.is_none() {
-                            self.selection_anchor = Some(toolbar::Anchor {
-                                x,
-                                y,
-                                width: to - from,
-                                height: line.height,
-                            });
-                        }
-                        quads.push(Self::solid(
-                            [
-                                x * scale,
-                                y * scale,
-                                (to - from).max(1.0) * scale,
-                                line.height * scale,
-                            ],
-                            self.theme.selection,
-                        ));
-                    }
-                }
+                let here = Row {
+                    cached: &cached,
+                    chunk,
+                    text: &frame.text,
+                    index: row,
+                    top: top_of_row,
+                    height: line.height,
+                };
+                self.draw_matches(quads, &found, here, at);
+                self.draw_row_selection(quads, selected, here, at);
 
                 for glyph in &line.glyphs {
                     let Some(entry) = self.entry_for(glyph.key, scale) else {
@@ -4685,6 +5236,79 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         line_height
+    }
+
+    /// Draws the selection's highlight on one visual row, and records the bar's anchor from it.
+    ///
+    /// Behind the glyphs, so the text stays readable through it.
+    fn draw_row_selection(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        selected: ByteSpan,
+        row: Row<'_>,
+        at: Placement,
+    ) {
+        if selected.is_empty() {
+            return;
+        }
+        let Some((from, to)) =
+            Self::row_selection(row.cached, row.chunk, row.text, row.index, selected)
+        else {
+            return;
+        };
+        let (x, y) = at.content.to_window(from, row.top, at.scroll);
+        // The first row reached is the first visible row of the selection, and the only one the
+        // floating bar wants. Kept here because it is the one place that knows: the highlight is
+        // otherwise pushed and forgotten.
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(toolbar::Anchor {
+                x,
+                y,
+                width: to - from,
+                height: row.height,
+            });
+        }
+        quads.push(Self::solid(
+            [
+                x * at.scale,
+                y * at.scale,
+                (to - from).max(1.0) * at.scale,
+                row.height * at.scale,
+            ],
+            self.theme.selection,
+        ));
+    }
+
+    /// Lights the search matches crossing one visual row.
+    ///
+    /// Drawn **under** the selection as well as under the glyphs, and that is the whole of "the one
+    /// you are on looks different": the current match *is* the selection, because `go_to_match` sets
+    /// it, so the selection colour lands on top of it without a second colour or an index to keep in
+    /// step with anything.
+    fn draw_matches(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        found: &[ByteSpan],
+        row: Row<'_>,
+        at: Placement,
+    ) {
+        for span in found {
+            let Some((from, to)) =
+                Self::row_selection(row.cached, row.chunk, row.text, row.index, *span)
+            else {
+                continue;
+            };
+            let (x, y) = at.content.to_window(from, row.top, at.scroll);
+            quads.push(Self::solid(
+                [
+                    x * at.scale,
+                    y * at.scale,
+                    (to - from).max(1.0) * at.scale,
+                    row.height * at.scale,
+                ],
+                self.theme.find_match,
+            ));
+        }
     }
 
     /// Which source line a visual row belongs to.

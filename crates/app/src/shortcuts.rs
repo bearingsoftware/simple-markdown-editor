@@ -79,6 +79,19 @@ pub const ALL: &[Group] = &[
         ],
     },
     Group {
+        name: "Finding",
+        shortcuts: &[
+            key("Ctrl+F", "Find — anything selected goes into the box"),
+            key("Enter / F3", "Next match, wrapping at the end"),
+            key("Shift+Enter / Shift+F3", "Previous match"),
+            key("Esc", "Close the find bar"),
+            key(
+                "(the bar's Aa button)",
+                "Match case — off to begin with, as a search box should be",
+            ),
+        ],
+    },
+    Group {
         name: "Moving about",
         shortcuts: &[
             key("Home / End", "Start or end of the document"),

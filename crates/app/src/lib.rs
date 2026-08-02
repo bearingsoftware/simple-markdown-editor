@@ -19,6 +19,8 @@ pub mod config;
 pub mod content;
 pub mod detect;
 pub mod editor;
+pub mod field;
+pub mod find;
 pub mod gpu;
 pub mod hit;
 pub mod ime;

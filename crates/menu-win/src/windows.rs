@@ -335,7 +335,30 @@ fn add_items(
     help: &Submenu,
     commands: &mut HashMap<MenuId, Command>,
 ) -> Option<()> {
-    let items = [
+    let items = file_items(file)
+        .into_iter()
+        .chain(edit_items(edit))
+        .chain(view_and_help_items(view, help));
+    for (menu, label, command, chord) in items {
+        let accelerator = chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
+        let item = MenuItem::new(label, true, accelerator);
+        commands.insert(item.id().clone(), command);
+        menu.append(&item).ok()?;
+    }
+    Some(())
+}
+
+/// One row of the table: which submenu, what it says, what it means, and what it claims to answer to.
+type Item<'a> = (
+    &'a Submenu,
+    &'static str,
+    Command,
+    Option<(Modifiers, Code)>,
+);
+
+/// The File menu. Split from the rest only so no one function is longer than a screen.
+fn file_items(file: &Submenu) -> Vec<Item<'_>> {
+    vec![
         (
             file,
             "&New",
@@ -368,6 +391,12 @@ fn add_items(
             Some((Modifiers::CONTROL, Code::KeyW)),
         ),
         (file, "Close A&ll", Command::CloseAll, None),
+    ]
+}
+
+/// The Edit menu.
+fn edit_items(edit: &Submenu) -> Vec<Item<'_>> {
+    vec![
         (
             edit,
             "&Undo",
@@ -405,6 +434,30 @@ fn add_items(
             Some((Modifiers::CONTROL, Code::KeyA)),
         ),
         (
+            edit,
+            "&Find…",
+            Command::Find,
+            Some((Modifiers::CONTROL, Code::KeyF)),
+        ),
+        (
+            edit,
+            "Find &Next",
+            Command::FindNext,
+            Some((Modifiers::empty(), Code::F3)),
+        ),
+        (
+            edit,
+            "Find Pre&vious",
+            Command::FindPrevious,
+            Some((Modifiers::SHIFT, Code::F3)),
+        ),
+    ]
+}
+
+/// The View and Help menus. Together because neither is more than a handful.
+fn view_and_help_items<'a>(view: &'a Submenu, help: &'a Submenu) -> Vec<Item<'a>> {
+    vec![
+        (
             view,
             "Zoom &In",
             Command::ZoomIn,
@@ -424,13 +477,5 @@ fn add_items(
         ),
         (help, "&Keyboard Shortcuts", Command::Shortcuts, None),
         (help, "&About", Command::About, None),
-    ];
-
-    for (menu, label, command, chord) in items {
-        let accelerator = chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
-        let item = MenuItem::new(label, true, accelerator);
-        commands.insert(item.id().clone(), command);
-        menu.append(&item).ok()?;
-    }
-    Some(())
+    ]
 }
