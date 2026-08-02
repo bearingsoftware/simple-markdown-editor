@@ -23,7 +23,7 @@ mod stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 600.0;
-const HEIGHT: f32 = MARGIN + 400.0;
+const HEIGHT: f32 = MARGIN + mdedit_app::toolbar::HEIGHT + 400.0;
 
 fn editor_with(source: &str, line_numbers: bool) -> Editor<Grid> {
     let mut editor = Editor::new(source, Grid::new());
@@ -50,8 +50,21 @@ fn text_left(source: &str, line_numbers: bool) -> f32 {
     editor.content_rect().left_edge()
 }
 
+/// Where the document's first line starts: the margin, plus the chrome above it.
+const TOP: f32 = MARGIN + mdedit_app::toolbar::HEIGHT;
+
 fn line_y(n: f32) -> f32 {
-    MARGIN + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
+    TOP + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
+}
+
+/// Whether a quad belongs to the gutter rather than to chrome.
+///
+/// Left of where the text starts, below the formatting bar and above the status bar. Both bars span
+/// the whole window width, so "left of the text" alone catches them too.
+fn is_gutter(quad: &mdedit_app::gpu::QuadInstance, text_left: f32, bar_top: f32) -> bool {
+    quad.rect[0] < text_left
+        && quad.rect[1] < bar_top
+        && quad.rect[1] >= mdedit_app::toolbar::HEIGHT
 }
 
 /// The rightmost edge any line number reaches, and where the text starts.
@@ -66,7 +79,7 @@ fn number_right_and_text_left(source: &str) -> (f32, f32) {
 
     let right = quads
         .iter()
-        .filter(|quad| quad.rect[0] < left && quad.rect[1] < bar_top)
+        .filter(|quad| is_gutter(quad, left, bar_top))
         .map(|quad| quad.rect[0] + quad.rect[2])
         .fold(0.0_f32, f32::max);
     (right, left)
@@ -241,7 +254,7 @@ fn a_wrapped_line_is_numbered_once() {
     let bar_top = HEIGHT - mdedit_app::status::BAR_HEIGHT;
     let numbered: BTreeSet<i32> = quads
         .iter()
-        .filter(|quad| quad.rect[0] < left && quad.rect[1] < bar_top)
+        .filter(|quad| is_gutter(quad, left, bar_top))
         .map(|quad| {
             #[allow(
                 clippy::cast_possible_truncation,

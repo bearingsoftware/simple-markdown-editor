@@ -84,8 +84,8 @@ fn the_bar_takes_its_height_off_the_document() {
     let content = editor.content_rect();
     assert_eq!(
         content.height(),
-        HEIGHT - MARGIN - BAR_HEIGHT,
-        "the window less the top margin and the bar"
+        HEIGHT - MARGIN - mdedit_app::toolbar::HEIGHT - BAR_HEIGHT,
+        "the window less the top margin, the formatting bar and the status bar"
     );
 }
 

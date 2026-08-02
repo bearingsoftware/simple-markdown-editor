@@ -825,3 +825,48 @@ impl Document {
         true
     }
 }
+
+impl Document {
+    /// Whether the caret is inside a construct of this kind.
+    ///
+    /// A **lookup**, not a scan: it asks the same `enclosing` the toggles ask, against segments the
+    /// parse already produced. That is what makes lighting a toolbar button affordable per frame —
+    /// see `mdedit_app::toolbar`.
+    #[must_use]
+    pub fn is_inside(&self, what: Inline) -> bool {
+        self.enclosing(what, self.selection().head()).is_some()
+    }
+
+    /// Whether the caret's line already carries this block format.
+    ///
+    /// One line, taken apart by the same `split_line` the toggles use, so what lights and what
+    /// would clear are decided by one piece of code rather than two that agree today. Reading a
+    /// single line is not the scan the keystroke budget objects to — see `mdedit_app::toolbar`.
+    ///
+    /// A **setext** heading has no marker on its first line, so it answers `false` here; the block
+    /// list is what knows about those, and the caller asks that instead for headings.
+    #[must_use]
+    pub fn carries(&self, what: Block) -> bool {
+        self.caret_parts().is(what)
+    }
+
+    /// Whether the caret's line is quoted, at any depth.
+    #[must_use]
+    pub fn is_quoted(&self) -> bool {
+        !self.caret_parts().quotes.is_empty()
+    }
+
+    /// The caret's line, taken apart.
+    ///
+    /// Sliced out of the rope rather than out of `to_string`, which would copy the whole document to
+    /// look at one line of it — the difference between a lookup and a scan, and this is asked once
+    /// per button per frame.
+    fn caret_parts(&self) -> Parts {
+        let line = self.source_line(self.selection().head());
+        let text = self
+            .rope()
+            .byte_slice(line.start().get()..line.end().get())
+            .to_string();
+        split_line(&text)
+    }
+}

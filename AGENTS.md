@@ -120,8 +120,20 @@ Known gaps, so nobody assumes they are done:
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
 - **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
-  and the open files shown either as a tab strip or as a left pane.** Every view toggle now has a
-  menu item as well as a chord.
+  a formatting bar, and the open files shown either as a tab strip or as a left pane.** Every view
+  toggle now has a menu item as well as a chord.
+- **The formatting bar is a second door, never a second implementation.** MDEDIT-52: every button
+  calls the editor method its chord calls, through one `Editor::perform` match, so there is no
+  behaviour that exists only when clicked. It is per-run — View → Formatting Bar, no chord, and
+  nothing written back to the config. **Its buttons are text**, drawn by the same engine as
+  everything else and laid out once into `toolbar_labels`, which is therefore a fifth cache
+  `set_zoom` has to clear. **Only Markdown has a set.** JSON's would be Format Document and Validate,
+  which are MDEDIT-48 and MDEDIT-47 and have not landed, so JSON and YAML show no bar and take no
+  height — the ticket's own rule, that a button which does nothing is worse than no button. No
+  tooltips (there is no hover affordance to hang one on) and no accessible names (those wait for the
+  accesskit pass). Lighting is lookups only: `is_inside` asks the segments, `carries` and `is_quoted`
+  read the caret's line out of the rope, and headings ask the block list so a setext one still
+  lights. Rule and Link never light, because neither is a state.
 - **The View menu's toggles are check items, and the ticks follow the *chord* as well as the click.**
   MDEDIT-40. That is the whole reason a toggle belongs in a menu rather than only on a chord: a chord
   can toggle something but cannot tell you which way it is now. The cost is that every path which

@@ -46,6 +46,7 @@ use crate::prompt::{
 use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
+use crate::toolbar;
 use crate::view::Chrome;
 use mdedit_document::format::{self, Inline};
 
@@ -84,6 +85,18 @@ struct Label {
     text: String,
     glyphs: Vec<mdedit_text::PositionedGlyph>,
     width: f32,
+}
+
+/// Where a laid-out label goes, and in what.
+///
+/// One parameter rather than four, because they always travel together and four positional `f32`s
+/// in a row is the shape a caller silently transposes.
+#[derive(Debug, Clone, Copy)]
+struct LabelAt {
+    x: f32,
+    baseline: f32,
+    scale: f32,
+    colour: Rgba,
 }
 use crate::view::{self, Rgba, Theme};
 use mdedit_menu_win::{Command, MenuBar};
@@ -558,6 +571,13 @@ pub struct Editor<T: TextLayout> {
     modifiers: ModifiersState,
     /// Where each tab landed in the strip last frame, for resolving a click.
     tab_rects: Vec<tabs::TabRect>,
+    /// Whether the formatting bar is showing. Per-run: MDEDIT-52 left the setting to the settings
+    /// story, and Ctrl+B-era per-run chrome is the precedent.
+    toolbar: bool,
+    /// The bar's buttons as laid out last frame, for the click chain.
+    toolbar_buttons: Vec<toolbar::ButtonRect>,
+    /// Each button's glyph, laid out once. The fourth cache of this kind — see `crate::toolbar`.
+    toolbar_labels: HashMap<String, Label>,
     /// Where the open files are shown. See [`Chrome`].
     chrome: Chrome,
     /// The pane's visible rows, kept for the next click, as `tab_rects` is for the strip.
@@ -728,6 +748,9 @@ impl<T: TextLayout> Editor<T> {
             gpu_error: None,
             modifiers: ModifiersState::empty(),
             tab_rects: Vec::new(),
+            toolbar: true,
+            toolbar_buttons: Vec::new(),
+            toolbar_labels: HashMap::new(),
             chrome: Chrome::Strip,
             row_rects: Vec::new(),
             pane_scroll: 0.0,
@@ -1415,6 +1438,10 @@ impl<T: TextLayout> Editor<T> {
             }
             Command::LineNumbers => {
                 self.toggle_line_numbers();
+                true
+            }
+            Command::Toolbar => {
+                self.toggle_toolbar();
                 true
             }
             Command::ZoomIn => self.zoom_by(1),
@@ -2428,6 +2455,7 @@ impl<T: TextLayout> Editor<T> {
         //
         // Anything added here goes after the document too, or it will be drawn on.
         quads.append(&mut self.build_tab_strip(width, scale));
+        self.draw_toolbar(&mut quads, width, scale);
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
         self.draw_scrollbar(&mut quads, width, scale);
@@ -2436,6 +2464,107 @@ impl<T: TextLayout> Editor<T> {
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the formatting bar below the tab strip, and remembers where its buttons went.
+    ///
+    /// Each glyph is laid out **once** and kept. The gutter, the status bar and the file pane each
+    /// paid for laying text out every frame before it was noticed; a fourth would be indefensible,
+    /// and `a_still_frame_lays_out_no_toolbar_labels` is the guard.
+    fn draw_toolbar(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
+        self.toolbar_buttons.clear();
+        let actions = self.toolbar_actions();
+        if actions.is_empty() {
+            return;
+        }
+
+        let style = TextStyle::body(self.theme.body_size * 0.62);
+        for action in actions {
+            let glyph = action.glyph();
+            if !self.toolbar_labels.contains_key(&glyph) {
+                if let Some(label) = self.lay_out_label(&glyph, style) {
+                    self.toolbar_labels.insert(glyph, label);
+                }
+            }
+        }
+
+        let widths: Vec<f32> = actions
+            .iter()
+            .map(|action| {
+                self.toolbar_labels
+                    .get(&action.glyph())
+                    .map_or(0.0, |label| label.width)
+            })
+            .collect();
+        let logical_width = width / scale;
+        self.toolbar_buttons = toolbar::layout(actions, &widths, logical_width);
+
+        let top = self.strip_height();
+        quads.push(Self::solid(
+            [0.0, top * scale, width, toolbar::HEIGHT * scale],
+            self.theme.strip,
+        ));
+
+        let lit: Vec<bool> = self
+            .toolbar_buttons
+            .iter()
+            .map(|button| self.is_lit(button.action))
+            .collect();
+        for (button, active) in self.toolbar_buttons.clone().into_iter().zip(lit) {
+            if active {
+                quads.push(Self::solid(
+                    [
+                        button.x * scale,
+                        (top + 3.0) * scale,
+                        button.width * scale,
+                        (toolbar::HEIGHT - 6.0) * scale,
+                    ],
+                    self.theme.tab_active,
+                ));
+            }
+            let Some(label) = self.toolbar_labels.get(&button.action.glyph()) else {
+                continue;
+            };
+            let where_ = LabelAt {
+                x: button.x + (button.width - label.width) / 2.0,
+                baseline: top + toolbar::HEIGHT / 2.0 + self.theme.body_size * 0.3,
+                scale,
+                colour: self.theme.text,
+            };
+            let glyphs = label.glyphs.clone();
+            self.draw_label_glyphs(quads, &glyphs, where_);
+        }
+    }
+
+    /// Whether the caret is already inside what `action` would make, so the button lights.
+    ///
+    /// Lookups against the segments and blocks the parse already produced, not scans — that is the
+    /// line the keystroke budget cares about, and why lighting a toolbar is affordable at all.
+    pub fn is_lit(&self, action: toolbar::Action) -> bool {
+        use mdedit_document::format::{Block, Inline};
+
+        let doc = self.document();
+        match action {
+            toolbar::Action::Bold => doc.is_inside(Inline::Bold),
+            toolbar::Action::Italic => doc.is_inside(Inline::Italic),
+            toolbar::Action::Strikethrough => doc.is_inside(Inline::Strikethrough),
+            toolbar::Action::Code => doc.is_inside(Inline::Code),
+            // Asked of the block list rather than of the line, because a setext heading's first line
+            // carries no marker and would otherwise never light.
+            toolbar::Action::Heading(level) => doc
+                .block_at(doc.selection().head())
+                .is_some_and(|block| block.kind() == BlockKind::Heading(level)),
+            toolbar::Action::Bullet => doc.carries(Block::Bullet),
+            toolbar::Action::Ordered => doc.carries(Block::Ordered),
+            toolbar::Action::Task => doc.carries(Block::Task),
+            toolbar::Action::Quote => doc.is_quoted(),
+            toolbar::Action::Fence => doc
+                .block_at(doc.selection().head())
+                .is_some_and(|block| block.kind() == BlockKind::CodeBlock),
+            // Neither is a state. A rule is inserted and a link is made; there is no "inside a
+            // horizontal rule" for a button to reflect.
+            toolbar::Action::Rule | toolbar::Action::Link => false,
+        }
     }
 
     /// Draws the scrollbar down the right edge, and remembers where it went.
@@ -2645,6 +2774,59 @@ impl<T: TextLayout> Editor<T> {
         self.status_labels[slot] = Some(label);
     }
 
+    /// Lays out one short string of chrome, ready to be cached.
+    ///
+    /// The gutter, the status bar and the file pane each grew their own copy of this before there
+    /// were four of them. Shared from here on; the other three are left alone because moving them
+    /// would be a refactor of three working caches inside a feature ticket.
+    fn lay_out_label(&mut self, text: &str, style: TextStyle) -> Option<Label> {
+        let run = StyledRun {
+            text,
+            style,
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        };
+        let layout = self.text.layout(&[run], f32::MAX).ok()?;
+        let glyphs: Vec<_> = layout.glyphs().copied().collect();
+        let width = glyphs
+            .iter()
+            .map(|glyph| glyph.pos.x + glyph.advance)
+            .fold(0.0_f32, f32::max);
+        Some(Label {
+            text: text.to_owned(),
+            glyphs,
+            width,
+        })
+    }
+
+    /// Draws glyphs a cache has already laid out.
+    fn draw_label_glyphs(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        glyphs: &[mdedit_text::PositionedGlyph],
+        where_: LabelAt,
+    ) {
+        for glyph in glyphs {
+            let Some(entry) = self.entry_for(glyph.key, where_.scale) else {
+                continue;
+            };
+            quads.push(QuadInstance {
+                rect: [
+                    (where_.x + glyph.pos.x) * where_.scale + px_i(entry.left),
+                    where_.baseline * where_.scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [
+                    where_.colour.r,
+                    where_.colour.g,
+                    where_.colour.b,
+                    where_.colour.a,
+                ],
+            });
+        }
+    }
+
     /// Recounts the words. Called on the idle timer, never on the keystroke path.
     fn recount_words(&mut self) {
         self.words = Some(status::count_words(&self.document().rope().to_string()));
@@ -2764,12 +2946,45 @@ impl<T: TextLayout> Editor<T> {
         // `inner_size` reports — accounting for it here would take it off twice and leave a strip of
         // the document permanently below the fold.
         Insets {
-            top: self.strip_height(),
+            // The bar sits below the strip and above the document, so the two add.
+            top: self.strip_height() + self.toolbar_height(),
             // The pane and the gutter both take from the left, and they add rather than compete —
             // which is exactly the arithmetic `ContentRect` exists to keep in one place.
             left: self.pane_width() + self.gutter_width(),
             bottom: status::BAR_HEIGHT,
             ..Insets::default()
+        }
+    }
+
+    /// Height the formatting bar occupies, which is nothing when it is off or has nothing to show.
+    ///
+    /// **An empty bar is worse than none**, so a language with no button set takes no room rather
+    /// than drawing a blank strip. That is also what happens with no tabs open at all.
+    fn toolbar_height(&self) -> f32 {
+        if self.toolbar_actions().is_empty() {
+            0.0
+        } else {
+            toolbar::HEIGHT
+        }
+    }
+
+    /// The buttons the visible document's language gets, or nothing.
+    ///
+    /// Keyed off the language **here**, in the app, rather than through `mdedit_language::Language`.
+    /// Actions are UI vocabulary and the trait is parsing vocabulary; a parser has no business
+    /// knowing what a toolbar is.
+    fn toolbar_actions(&self) -> &'static [toolbar::Action] {
+        if !self.toolbar {
+            return &[];
+        }
+        match self.workspace.active_open() {
+            // Markdown is the only language with actions so far. JSON's Format and Validate arrive
+            // with MDEDIT-47 and MDEDIT-48; until then it gets no bar, because a button that does
+            // nothing is worse than no button.
+            Some(open) if open.document.language().name() == "Markdown" => toolbar::MARKDOWN,
+            // The scratch document, before anything is open, is Markdown too.
+            None => toolbar::MARKDOWN,
+            Some(_) => &[],
         }
     }
 
@@ -3010,9 +3225,11 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let logical_height = height / scale;
-        // The pane runs the full height, under nothing: there is no strip when it is showing, and
-        // the status bar is drawn after it.
-        let visible = (logical_height - status::BAR_HEIGHT).max(0.0);
+        // The pane runs from under the formatting bar to above the status bar. There is no tab strip
+        // when it is showing, and the status bar is drawn after it — but the bar spans the whole
+        // window width, as the strip does, so the pane starts below it rather than under it.
+        let top = self.toolbar_height();
+        let visible = (logical_height - status::BAR_HEIGHT - top).max(0.0);
         let count = self.workspace.tabs().len();
 
         self.pane_scroll = self
@@ -3021,7 +3238,7 @@ impl<T: TextLayout> Editor<T> {
         self.row_rects = pane::layout(count, visible, self.pane_scroll);
 
         quads.push(Self::solid(
-            [0.0, 0.0, pane::PANE_WIDTH * scale, visible * scale],
+            [0.0, top * scale, pane::PANE_WIDTH * scale, visible * scale],
             self.theme.strip,
         ));
 
@@ -3039,7 +3256,7 @@ impl<T: TextLayout> Editor<T> {
                 quads.push(Self::solid(
                     [
                         0.0,
-                        rect.y * scale,
+                        (top + rect.y) * scale,
                         pane::PANE_WIDTH * scale,
                         pane::ROW_HEIGHT * scale,
                     ],
@@ -3053,7 +3270,7 @@ impl<T: TextLayout> Editor<T> {
                 .get(rect.index)
                 .is_some_and(mdedit_session::Tab::is_modified);
             let (close_x, close_width) = rect.close_region();
-            let baseline = rect.y + pane::ROW_HEIGHT * 0.7;
+            let baseline = top + rect.y + pane::ROW_HEIGHT * 0.7;
 
             self.draw_row_label(
                 quads,
@@ -3107,7 +3324,7 @@ impl<T: TextLayout> Editor<T> {
         // Over the pane, the wheel scrolls the file list rather than the document — which is what
         // every editor with a sidebar does, and the reason the pane owns an offset of its own.
         let (x, y) = self.cursor;
-        if pane::hit_test(&self.row_rects, x, y).is_some() {
+        if self.pane_hit(x, y).is_some() {
             self.scroll_pane(delta);
         } else {
             self.scroll_by(delta);
@@ -3253,6 +3470,7 @@ impl<T: TextLayout> Editor<T> {
             plain_markup: self.mode == view::Mode::Plain,
             file_pane: self.chrome == Chrome::Pane,
             line_numbers: self.config.line_numbers,
+            toolbar: self.toolbar,
         });
     }
 
@@ -3269,7 +3487,7 @@ impl<T: TextLayout> Editor<T> {
             self.clicks.reset();
             return self.click_scrollbar(hit, y);
         }
-        if self.click_strip(x, y) || self.click_pane(x, y) {
+        if self.click_toolbar(x, y) || self.click_strip(x, y) || self.click_pane(x, y) {
             // The pointer was on chrome, not on text. Ending the run stops a click on a tab
             // followed by one in the document from counting as a double-click on the document.
             self.clicks.reset();
@@ -3515,6 +3733,7 @@ impl<T: TextLayout> Editor<T> {
         self.digits = None;
         self.status_labels = [None, None];
         self.row_labels.clear();
+        self.toolbar_labels.clear();
 
         let ratio = zoom / previous;
         if let Some(anchor) = self.anchor.as_mut() {
@@ -3542,7 +3761,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Resolves a click in the file pane.
     fn click_pane(&mut self, x: f32, y: f32) -> bool {
-        let Some(hit) = pane::hit_test(&self.row_rects, x, y) else {
+        let Some(hit) = self.pane_hit(x, y) else {
             return false;
         };
         match hit {
@@ -3555,6 +3774,98 @@ impl<T: TextLayout> Editor<T> {
             }
             pane::Hit::Close(index) => self.close_tab_at(index),
         }
+    }
+
+    /// What a window position means to the file pane, if anything.
+    ///
+    /// The rects are in the pane's own coordinates and the pane starts below the formatting bar, so
+    /// the window's y has to come back to the pane's first. Three callers need that — a click, a
+    /// wheel notch and a middle-click — and doing it in three places is how two of them end up
+    /// disagreeing.
+    fn pane_hit(&self, x: f32, y: f32) -> Option<pane::Hit> {
+        pane::hit_test(&self.row_rects, x, y - self.toolbar_height())
+    }
+
+    /// Resolves a click in the formatting bar.
+    ///
+    /// **Returns true for any click inside the bar's height**, including the gaps between buttons.
+    /// A click on chrome must never reach the document, and "it fell between two buttons" is not a
+    /// reason to start a selection in the text underneath.
+    fn click_toolbar(&mut self, x: f32, y: f32) -> bool {
+        if self.toolbar_buttons.is_empty() {
+            return false;
+        }
+        let top = self.strip_height();
+        if !(top..top + toolbar::HEIGHT).contains(&y) {
+            return false;
+        }
+
+        if let Some(action) = toolbar::hit_test(&self.toolbar_buttons, x, y - top) {
+            self.perform(action);
+        }
+        true
+    }
+
+    /// Does what a toolbar button says, which is always what its chord already does.
+    ///
+    /// A second door, never a second implementation — every arm here is a method a keystroke also
+    /// reaches, so there is no behaviour that exists only when clicked.
+    pub fn perform(&mut self, action: toolbar::Action) -> bool {
+        use mdedit_document::format::{Block, Inline};
+
+        match action {
+            toolbar::Action::Bold => self.document_mut().toggle_inline(Inline::Bold),
+            toolbar::Action::Italic => self.document_mut().toggle_inline(Inline::Italic),
+            toolbar::Action::Strikethrough => {
+                self.document_mut().toggle_inline(Inline::Strikethrough)
+            }
+            toolbar::Action::Code => self.document_mut().toggle_inline(Inline::Code),
+            toolbar::Action::Heading(level) => self.document_mut().set_block(Block::Heading(level)),
+            toolbar::Action::Bullet => self.document_mut().set_block(Block::Bullet),
+            toolbar::Action::Ordered => self.document_mut().set_block(Block::Ordered),
+            toolbar::Action::Task => self.document_mut().set_block(Block::Task),
+            toolbar::Action::Quote => self.document_mut().toggle_quote(),
+            toolbar::Action::Fence => self.document_mut().toggle_fence(),
+            toolbar::Action::Rule => self.document_mut().insert_rule(),
+            toolbar::Action::Link => self.link(),
+        }
+    }
+
+    /// Shows or hides the formatting bar.
+    ///
+    /// Per-run. MDEDIT-52 left persistence to the settings story, and the bar changes the content
+    /// rect's height — which invalidates every cached layout width, exactly as the pane toggle does.
+    /// Expected rather than chased.
+    pub fn toggle_toolbar(&mut self) {
+        self.toolbar = !self.toolbar;
+        self.layouts.clear();
+        self.heights.clear();
+        self.refresh_view_menu();
+    }
+
+    /// Whether the formatting bar is showing.
+    #[must_use]
+    pub fn toolbar_shown(&self) -> bool {
+        self.toolbar
+    }
+
+    /// Shows the tab at `index`, as a click on the strip would.
+    ///
+    /// The strip and the pane both reach `Workspace::activate` through their own hit-testing, and a
+    /// test that wants a different tab should not have to synthesise a click in whichever chrome is
+    /// currently showing to get one.
+    pub fn show_tab(&mut self, index: usize) -> bool {
+        if let Err(error) = self.workspace.activate(index) {
+            crate::log_error!("could not open tab: {error}");
+            return false;
+        }
+        true
+    }
+
+    /// Where the bar's buttons are, for a test.
+    #[must_use]
+    pub fn toolbar_buttons(&self) -> &[toolbar::ButtonRect] {
+        &self.toolbar_buttons
     }
 
     /// Resolves a click in the tab strip.
@@ -4566,10 +4877,7 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                     MouseButton::Right => self.popup_context_menu(x, y),
                     // Middle-click closes, as every editor with tabs does.
                     MouseButton::Middle => {
-                        match (
-                            tabs::hit_test(&self.tab_rects, x, y),
-                            pane::hit_test(&self.row_rects, x, y),
-                        ) {
+                        match (tabs::hit_test(&self.tab_rects, x, y), self.pane_hit(x, y)) {
                             (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
                             | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
                                 self.close_tab_at(index)

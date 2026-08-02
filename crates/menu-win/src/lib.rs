@@ -78,6 +78,8 @@ pub enum Command {
     FilePane,
     /// View → Line Numbers.
     LineNumbers,
+    /// View → Formatting Bar.
+    Toolbar,
     /// View → Zoom In.
     ZoomIn,
     /// View → Zoom Out.
@@ -202,13 +204,19 @@ pub fn double_click_interval() -> std::time::Duration {
 
 /// Which of the View menu's toggles are currently on.
 ///
-/// The menu shows these as ticks, which is the whole reason those three are in a menu rather than
-/// merely being chords: a chord can toggle something but cannot tell you which way it is now.
+/// The menu shows these as ticks, which is the whole reason they are in a menu rather than merely
+/// being chords: a chord can toggle something but cannot tell you which way it is now.
 ///
 /// It follows that the ticks have to be updated when the *chord* is used, not only when the item is
 /// clicked — a menu that only knew about its own clicks would be wrong the moment anybody pressed
 /// Ctrl+/.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "one field per check item, and a check item is a bool by definition. The state \
+              machine the lint suggests would be a product of four independent toggles, which is \
+              this struct with a worse name."
+)]
 pub struct ViewState {
     /// Whether the Markdown is shown as plain text rather than concealed.
     pub plain_markup: bool,
@@ -216,6 +224,8 @@ pub struct ViewState {
     pub file_pane: bool,
     /// Whether source-line numbers are shown.
     pub line_numbers: bool,
+    /// Whether the formatting bar is showing.
+    pub toolbar: bool,
 }
 
 /// Which context-menu entries are available.

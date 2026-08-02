@@ -34,9 +34,16 @@ const LINE_STEP: i32 = 20;
 /// never a per-frame one. Named here so a test's budget says which part of it is chrome.
 const CHROME_LABELS: usize = 2;
 
-/// A window 200 device-independent pixels tall below the margin, at scale 1.
+/// Where the document's first line starts: the margin, plus whatever chrome sits above it.
+///
+/// Named rather than spelled `MARGIN`, because chrome above the document moves its top edge and
+/// these tests are about the document's arithmetic rather than about how tall the chrome is. The
+/// formatting bar was the first thing to move it (MDEDIT-52) and will not be the last.
+const TOP: f32 = MARGIN + mdedit_app::toolbar::HEIGHT;
+
+/// A window 200 device-independent pixels tall below that, at scale 1.
 const WIDTH: f32 = 400.0;
-const HEIGHT: f32 = MARGIN + 200.0;
+const HEIGHT: f32 = TOP + 200.0;
 
 fn document_of(lines: usize) -> String {
     let mut text = String::new();
@@ -57,10 +64,15 @@ fn editor(lines: usize) -> Editor<Grid> {
 /// The vertical position of every quad the *document* drew, rounded so float noise does not defeat
 /// comparison.
 ///
-/// The status bar draws its own glyphs across the foot of every window, and they are not what any of
-/// these tests are about — so anything at or below where it starts is left out. `bar_top` is
-/// [`status_bar_top`] for whatever height the frame was built at.
+/// Chrome draws its own quads at both ends of every window and none of it is what these tests are
+/// about, so both bands are left out: the status bar across the foot, and the formatting bar across
+/// the head. `bar_top` is [`status_bar_top`] for whatever height the frame was built at.
 fn rows_above(quads: &[QuadInstance], bar_top: i32) -> Vec<i32> {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "quad positions are small pixel coordinates"
+    )]
+    let chrome_top = mdedit_app::toolbar::HEIGHT.round() as i32;
     #[allow(
         clippy::cast_possible_truncation,
         reason = "quad positions are small pixel coordinates"
@@ -68,7 +80,7 @@ fn rows_above(quads: &[QuadInstance], bar_top: i32) -> Vec<i32> {
     let mut rows: Vec<i32> = quads
         .iter()
         .map(|quad| quad.rect[1].round() as i32)
-        .filter(|y| *y < bar_top)
+        .filter(|y| *y < bar_top && *y >= chrome_top)
         .collect();
     rows.sort_unstable();
     rows.dedup();
@@ -97,7 +109,7 @@ fn glyph_row(line: f32) -> i32 {
         clippy::cast_possible_truncation,
         reason = "quad positions are small pixel coordinates"
     )]
-    let row = (line.mul_add(LINE_HEIGHT, ASCENT) + MARGIN - 1.0).round() as i32;
+    let row = (line.mul_add(LINE_HEIGHT, ASCENT) + TOP - 1.0).round() as i32;
     row
 }
 
@@ -402,7 +414,12 @@ fn stacked_chunks_land_where_one_layout_would_have_put_them() {
     // Lines: "# Title", blank, "para", blank, "last". The first row is the caret, which sits at the
     // top of line 0 rather than on its baseline.
     let drawn = rows_above(&quads, status_bar_top(2000.0));
-    assert_eq!(drawn[0], 24, "the caret, at the top of line 0");
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "quad positions are small pixel coordinates"
+    )]
+    let top = TOP.round() as i32;
+    assert_eq!(drawn[0], top, "the caret, at the top of line 0");
     assert_eq!(
         &drawn[1..],
         [glyph_row(0.0), glyph_row(2.0), glyph_row(4.0)],
@@ -421,7 +438,7 @@ fn column(n: f32) -> f32 {
 
 /// The y of visual line `n`, in window coordinates — the middle of it, as a click would land.
 fn line_y(n: f32) -> f32 {
-    MARGIN + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
+    TOP + n.mul_add(LINE_HEIGHT, LINE_HEIGHT / 2.0)
 }
 
 #[test]

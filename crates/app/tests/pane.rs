@@ -237,7 +237,7 @@ fn clicking_a_row_activates_that_file() {
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     assert_eq!(editor.workspace().active(), Some(0));
-    editor.click(20.0, ROW_HEIGHT * 2.0 + 2.0);
+    editor.click(20.0, mdedit_app::toolbar::HEIGHT + ROW_HEIGHT * 2.0 + 2.0);
     assert_eq!(
         editor.workspace().active(),
         Some(2),
@@ -261,7 +261,9 @@ fn the_pane_scrolls_independently_of_the_document() {
     );
 
     let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
-    editor.click(20.0, 2.0);
+    // Two pixels into the pane's *first row*, which starts below the formatting bar rather than at
+    // the top of the window.
+    editor.click(20.0, mdedit_app::toolbar::HEIGHT + 2.0);
     assert!(
         editor.workspace().active() != Some(0),
         "the top row is no longer the first file"
