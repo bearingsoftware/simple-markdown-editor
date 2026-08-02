@@ -134,6 +134,24 @@ Known gaps, so nobody assumes they are done:
   accesskit pass). Lighting is lookups only: `is_inside` asks the segments, `carries` and `is_quoted`
   read the caret's line out of the rope, and headings ask the block list so a setext one still
   lights. Rule and Link never light, because neither is a state.
+- **A settled selection also gets a bar that floats over it, and "settled" is the whole feature.**
+  MDEDIT-53. It appears on mouse *release*, or on the idle timer for a selection extended with Shift
+  — never during a drag, because a bar that chases the pointer is the classic bad implementation of
+  this pattern. It is dismissed by typing, Esc, scrolling, collapsing the selection, clicking
+  anywhere else, and switching tab. **Hidden on scroll rather than moved**: repositioning against a
+  viewport still in motion is jitter.
+
+  Three things are worth knowing before touching it. It anchors to the selection's **first visible
+  row**, not the bounding box, and that rect is recorded in `draw_chunks` because nothing else keeps
+  it — `row_selection` returns x-extents that go straight into a quad and are then gone, so
+  `selection_anchor` is to the floating bar what `caret_area` is to the IME. It is drawn **genuinely
+  last** and hit-tested **first**, and `Editor::click`'s order is the whole of that z-order in both
+  directions. And the tab it belongs to is held in `floating_for` rather than hooked into the eight
+  paths that activate a tab — a comparison cannot be forgotten by the ninth.
+
+  Its buttons are the inline set plus three heading levels. The list and block actions stay on the
+  fixed bar: they act on lines rather than on a selection. The selection **survives** a press, which
+  is what makes bold-then-italic two clicks instead of two selections.
 - **The View menu's toggles are check items, and the ticks follow the *chord* as well as the click.**
   MDEDIT-40. That is the whole reason a toggle belongs in a menu rather than only on a chord: a chord
   can toggle something but cannot tell you which way it is now. The cost is that every path which

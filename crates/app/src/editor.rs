@@ -118,6 +118,15 @@ const GUTTER_MIN_DIGITS: usize = 2;
 const GUTTER_PADDING: f32 = 8.0;
 /// Caret width, in device-independent pixels.
 const CARET_WIDTH: f32 = 2.0;
+
+/// How much smaller a formatting-bar label is than body text.
+///
+/// Shared by the fixed bar and the floating one so their cached labels are the same strings at the
+/// same size — one cache serves both only while that holds.
+const TOOLBAR_TEXT: f32 = 0.62;
+
+/// How thick the floating bar's outline is.
+const FLOAT_BORDER: f32 = 1.0;
 /// Thickness of the line under text an input method is still composing.
 const UNDERLINE_WIDTH: f32 = 1.0;
 /// How much width a selected line break shows as, so a selection spanning lines reads as one shape
@@ -548,6 +557,12 @@ fn make_bind_group(
 }
 
 /// The editor: a document, a caret, a text engine, and a window to put them in.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the window's state, and its flags are genuinely independent of each other — whether a \
+              drag is in progress says nothing about whether the formatting bar is showing. The \
+              state machine the lint suggests would have to enumerate their product."
+)]
 pub struct Editor<T: TextLayout> {
     /// Every open tab. The active one supplies the buffer being edited.
     workspace: Workspace,
@@ -578,6 +593,32 @@ pub struct Editor<T: TextLayout> {
     toolbar_buttons: Vec<toolbar::ButtonRect>,
     /// Each button's glyph, laid out once. The fourth cache of this kind — see `crate::toolbar`.
     toolbar_labels: HashMap<String, Label>,
+    /// Whether the bar that follows a selection is wanted.
+    ///
+    /// Wanted, not shown: it appears only when there is also a selection to hang it on and that
+    /// selection's first row is on screen. The two are separate because the *rules* are about
+    /// wanting — a drag clears it, a settled selection sets it — and the geometry is about whether
+    /// there is anywhere to put it.
+    floating: bool,
+    /// The floating bar's buttons as placed last frame, in window coordinates. Empty when it is not
+    /// showing, which is also what makes the click chain a no-op then.
+    floating_buttons: Vec<toolbar::ButtonRect>,
+    /// Where the floating bar was drawn last frame and how wide, for the click chain.
+    floating_at: Option<(f32, f32, f32)>,
+    /// Which tab the bar settled on.
+    ///
+    /// Switching tabs has to take it away — the new document has its own selection, and a bar that
+    /// survived the switch would be pointing at the last one. Held rather than hooked into every
+    /// path that activates a tab, of which there are eight: a comparison here cannot be forgotten
+    /// by the ninth.
+    floating_for: Option<usize>,
+    /// The first *visible* row of the selection, in window coordinates, recorded while drawing it.
+    ///
+    /// The selection's rectangles are otherwise transient — `row_selection` returns x-extents that
+    /// go straight into a quad — so the one the floating bar anchors to is kept here as `caret_area`
+    /// is kept for the IME. `None` when nothing is selected or the selection has scrolled off, and
+    /// the bar hides in both cases.
+    selection_anchor: Option<toolbar::Anchor>,
     /// Where the open files are shown. See [`Chrome`].
     chrome: Chrome,
     /// The pane's visible rows, kept for the next click, as `tab_rects` is for the strip.
@@ -751,6 +792,11 @@ impl<T: TextLayout> Editor<T> {
             toolbar: true,
             toolbar_buttons: Vec::new(),
             toolbar_labels: HashMap::new(),
+            floating: false,
+            floating_buttons: Vec::new(),
+            floating_at: None,
+            floating_for: None,
+            selection_anchor: None,
             chrome: Chrome::Strip,
             row_rects: Vec::new(),
             pane_scroll: 0.0,
@@ -1032,11 +1078,15 @@ impl<T: TextLayout> Editor<T> {
         let before = self.words;
         self.recount_words();
         self.snapshot_dirty_buffers();
+        // A selection extended with Shift and then left alone has settled. This timer already means
+        // "the typing stopped", which is exactly the beat the bar is waiting for — a fourth thing on
+        // it rather than a debounce of its own.
+        let settled = self.settle_selection();
         // Debounced onto this timer rather than written on the keystroke that changed it, so a run
         // of rapid toggles costs one write. Not on exit — see `crate::config`.
         self.settings.flush();
 
-        reparsed || before != self.words
+        reparsed || before != self.words || settled
     }
 
     /// Writes a recovery snapshot for every buffer with unsaved work in it.
@@ -2077,9 +2127,20 @@ impl<T: TextLayout> Editor<T> {
         // say so themselves, below.
         self.follow_caret = true;
 
-        // Chords first, so a modified key never inserts its own letter.
+        // Chords first, so a modified key never inserts its own letter. Deliberately **above** the
+        // dismissal: Ctrl+B is one of the bar's own actions arriving by keyboard, and taking the bar
+        // away only to have the idle timer put it back is a flicker for no rule.
         if self.modifiers.control_key() {
             return self.handle_chord(event);
+        }
+
+        // Any other key takes the floating bar away. It is put back by the idle timer when the key
+        // was a shift-motion and the selection has stopped growing — which is the whole of the
+        // "settles" rule for the keyboard, and why this can be blunt.
+        let dismissed = self.dismiss_floating();
+        if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+            // Esc has no other job in this editor yet, so it is the dismissal and nothing else.
+            return dismissed;
         }
 
         let caret = self.document().selection().head();
@@ -2344,6 +2405,9 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// Clamped against the last frame's measurements, so nothing here can scroll past either end.
     pub fn scroll_by(&mut self, delta: f32) {
+        // Hidden, not moved. Repositioning against a viewport that is still moving is jitter, and a
+        // bar that slides about as the wheel turns reads as broken.
+        self.dismiss_floating();
         self.scroll
             .by(delta, self.viewport.content, self.viewport.height);
     }
@@ -2365,6 +2429,10 @@ impl<T: TextLayout> Editor<T> {
     /// assert what gets drawn without a GPU: nothing here touches the renderer.
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = Vec::new();
+        // Recorded again by `draw_chunks` if the selection's first row is drawn this frame. Cleared
+        // rather than kept because a selection scrolled out of view has no anchor, and a stale one
+        // would leave the floating bar hanging over the wrong text.
+        self.selection_anchor = None;
 
         // Everything the chrome has not taken. One place decides it; see `crate::content`.
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
@@ -2459,6 +2527,10 @@ impl<T: TextLayout> Editor<T> {
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
         self.draw_scrollbar(&mut quads, width, scale);
+        // Genuinely last, and that is the whole of its z-order: it floats over the document *and*
+        // over any chrome it happens to overlap, which is what "floating" means with no depth
+        // buffer to say so.
+        self.draw_floating(&mut quads, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
@@ -2478,7 +2550,7 @@ impl<T: TextLayout> Editor<T> {
             return;
         }
 
-        let style = TextStyle::body(self.theme.body_size * 0.62);
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
         for action in actions {
             let glyph = action.glyph();
             if !self.toolbar_labels.contains_key(&glyph) {
@@ -2533,6 +2605,178 @@ impl<T: TextLayout> Editor<T> {
             };
             let glyphs = label.glyphs.clone();
             self.draw_label_glyphs(quads, &glyphs, where_);
+        }
+    }
+
+    /// Draws the bar that follows a selection, if one is wanted and there is somewhere to put it.
+    ///
+    /// Shares the fixed bar's label cache: the two draw the same glyphs, and a second cache of the
+    /// same strings would be the per-frame-layout trap paid for a fifth time with extra steps.
+    fn draw_floating(&mut self, quads: &mut Vec<QuadInstance>, scale: f32) {
+        self.floating_buttons.clear();
+        self.floating_at = None;
+
+        let actions = self.floating_actions();
+        let Some(anchor) = self.selection_anchor else {
+            return;
+        };
+        if actions.is_empty() {
+            return;
+        }
+
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        for action in actions {
+            let glyph = action.glyph();
+            if !self.toolbar_labels.contains_key(&glyph) {
+                if let Some(label) = self.lay_out_label(&glyph, style) {
+                    self.toolbar_labels.insert(glyph, label);
+                }
+            }
+        }
+
+        let widths: Vec<f32> = actions
+            .iter()
+            .map(|action| {
+                self.toolbar_labels
+                    .get(&action.glyph())
+                    .map_or(0.0, |label| label.width)
+            })
+            .collect();
+        // Laid out against the content's width rather than the window's, since that is the room it
+        // is allowed to occupy; `place` then clamps it inside the same edges.
+        let cells = toolbar::layout(actions, &widths, self.content.width());
+        if cells.is_empty() {
+            return;
+        }
+
+        let bar_width = toolbar::width_of(&cells);
+        let left = self.content.left_edge();
+        let (x, y) = toolbar::place(
+            bar_width,
+            anchor,
+            left,
+            left + self.content.width(),
+            self.content.top_edge(),
+        );
+        self.floating_buttons = toolbar::shifted(&cells, x);
+        self.floating_at = Some((x, y, bar_width));
+
+        // An outline, then the fill inside it. The fixed bar needs none — it has the window's edge
+        // and the tab strip either side of it — but this one is a panel over prose, and a fill close
+        // to the background with no border reads as a hole in the text rather than as something in
+        // front of it.
+        quads.push(Self::solid(
+            [
+                (x - FLOAT_BORDER) * scale,
+                (y - FLOAT_BORDER) * scale,
+                (bar_width + FLOAT_BORDER * 2.0) * scale,
+                (toolbar::HEIGHT + FLOAT_BORDER * 2.0) * scale,
+            ],
+            self.theme.marker,
+        ));
+        quads.push(Self::solid(
+            [
+                x * scale,
+                y * scale,
+                bar_width * scale,
+                toolbar::HEIGHT * scale,
+            ],
+            self.theme.tab_active,
+        ));
+
+        let lit: Vec<bool> = self
+            .floating_buttons
+            .iter()
+            .map(|button| self.is_lit(button.action))
+            .collect();
+        for (button, active) in self.floating_buttons.clone().into_iter().zip(lit) {
+            if active {
+                quads.push(Self::solid(
+                    [
+                        button.x * scale,
+                        (y + 3.0) * scale,
+                        button.width * scale,
+                        (toolbar::HEIGHT - 6.0) * scale,
+                    ],
+                    self.theme.selection,
+                ));
+            }
+            let Some(label) = self.toolbar_labels.get(&button.action.glyph()) else {
+                continue;
+            };
+            let where_ = LabelAt {
+                x: button.x + (button.width - label.width) / 2.0,
+                baseline: y + toolbar::HEIGHT / 2.0 + self.theme.body_size * 0.22,
+                scale,
+                colour: self.theme.text,
+            };
+            let glyphs = label.glyphs.clone();
+            self.draw_label_glyphs(quads, &glyphs, where_);
+        }
+    }
+
+    /// The selection has settled, so the bar may appear.
+    ///
+    /// **Settled, not made.** A bar that appeared while the pointer was still down would chase the
+    /// drag across the screen, which is the classic bad implementation of this pattern and the
+    /// reason the rule is written as its own method rather than left to the event arm. Called on
+    /// mouse release, and on the idle timer for a selection extended with the keyboard.
+    pub fn settle_selection(&mut self) -> bool {
+        if self.dragging || self.document().selection().is_collapsed() {
+            return false;
+        }
+        let was = self.floating;
+        self.floating = true;
+        self.floating_for = self.workspace.active();
+        !was
+    }
+
+    /// The bar goes away.
+    ///
+    /// Every path that could invalidate where it is pointing calls this: typing, Esc, scrolling,
+    /// collapsing the selection, changing tab. **Hidden on scroll rather than moved** — following a
+    /// moving viewport is jitter, and a bar that jumps as the wheel turns is worse than one that
+    /// waits to be asked again.
+    pub fn dismiss_floating(&mut self) -> bool {
+        let was = self.floating;
+        self.floating = false;
+        was
+    }
+
+    /// Whether the floating bar is currently wanted.
+    #[must_use]
+    pub fn floating_shown(&self) -> bool {
+        self.floating
+    }
+
+    /// Where the floating bar was placed last frame, and how wide, for a test.
+    #[must_use]
+    pub fn floating_at(&self) -> Option<(f32, f32, f32)> {
+        self.floating_at
+    }
+
+    /// The floating bar's buttons where they were placed, for a test.
+    #[must_use]
+    pub fn floating_buttons(&self) -> &[toolbar::ButtonRect] {
+        &self.floating_buttons
+    }
+
+    /// The buttons the floating bar gets, or nothing if it should not be showing at all.
+    ///
+    /// Markdown only, and only with a selection that has settled. JSON and YAML get nothing for the
+    /// reason they get no fixed bar either: their actions are document-level, and a bar that follows
+    /// a selection offering to reformat the whole file is a different operation in the same clothes.
+    fn floating_actions(&self) -> &'static [toolbar::Action] {
+        if !self.floating
+            || self.floating_for != self.workspace.active()
+            || self.document().selection().is_collapsed()
+        {
+            return &[];
+        }
+        match self.workspace.active_open() {
+            Some(open) if open.document.language().name() == "Markdown" => toolbar::SELECTION,
+            None => toolbar::SELECTION,
+            Some(_) => &[],
         }
     }
 
@@ -3481,7 +3725,17 @@ impl<T: TextLayout> Editor<T> {
     /// handler so that a test clicks the same way the window does — a test that reached past this
     /// into [`click_at`](Self::click_at) would be exercising a dispatch the app does not use.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
-        // The scrollbar first, because it *overlays* the text rather than taking width from it —
+        // The floating bar before anything else, because it is drawn over everything else. Order in
+        // this one function is the whole of the z-order, in both directions: drawn last, asked
+        // first.
+        if self.click_floating(x, y) {
+            return true;
+        }
+        // Anything else is a click that is not on the bar, and takes it away. Done before the rest
+        // of the chain rather than after, so a click that lands on a tab or in the text has already
+        // dismissed it by the time that click is resolved.
+        self.dismiss_floating();
+        // The scrollbar next, because it *overlays* the text rather than taking width from it —
         // a press on the bar must never also land in the document underneath.
         if let Some(hit) = scrollbar::hit_test(self.scrollbar, x, y) {
             self.clicks.reset();
@@ -3774,6 +4028,28 @@ impl<T: TextLayout> Editor<T> {
             }
             pane::Hit::Close(index) => self.close_tab_at(index),
         }
+    }
+
+    /// Resolves a click on the bar that follows the selection.
+    ///
+    /// **The selection survives it.** That is what lets somebody bold a run and then italicise it
+    /// without selecting twice, and it is why the bar stays up afterwards with its lit states
+    /// changed rather than vanishing on first use. A press outside it is somebody else's click and
+    /// dismisses the bar on its way past — handled by the caller, not here.
+    fn click_floating(&mut self, x: f32, y: f32) -> bool {
+        let Some((left, top, width)) = self.floating_at else {
+            return false;
+        };
+        // The bar's whole rectangle, not just its buttons: a press in the padding between two of
+        // them is still a press on the bar, and must not fall through to the text underneath.
+        if !(top..top + toolbar::HEIGHT).contains(&y) || !(left..left + width).contains(&x) {
+            return false;
+        }
+
+        if let Some(action) = toolbar::hit_test(&self.floating_buttons, x, y - top) {
+            self.perform(action);
+        }
+        true
     }
 
     /// What a window position means to the file pane, if anything.
@@ -4365,6 +4641,17 @@ impl<T: TextLayout> Editor<T> {
                         Self::row_selection(&cached, chunk, &frame.text, row, selected)
                     {
                         let (x, y) = content.to_window(from, top_of_row, scroll);
+                        // The first row reached is the first visible row of the selection, and the
+                        // only one the floating bar wants. Kept here because it is the one place
+                        // that knows: the highlight is otherwise pushed and forgotten.
+                        if self.selection_anchor.is_none() {
+                            self.selection_anchor = Some(toolbar::Anchor {
+                                x,
+                                y,
+                                width: to - from,
+                                height: line.height,
+                            });
+                        }
                         quads.push(Self::solid(
                             [
                                 x * scale,
@@ -4865,6 +5152,12 @@ impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
                 // leaves the bar's x almost immediately on any real drag, and letting that end the
                 // drag would make the bar unusable. Releasing anywhere ends it.
                 self.thumb_grab = None;
+                // The selection has stopped moving, which is the moment the floating bar is for.
+                if self.settle_selection() {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
