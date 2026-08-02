@@ -32,10 +32,10 @@ use std::fmt::Write as _;
 pub const HEIGHT: f32 = 30.0;
 
 /// Space either side of a button's glyph.
-const PADDING: f32 = 8.0;
+const PADDING: f32 = 5.0;
 
 /// Narrowest a button may be, so a one-character glyph still has something to click.
-const MIN_WIDTH: f32 = 26.0;
+const MIN_WIDTH: f32 = 24.0;
 
 /// Space between groups of related buttons.
 const GROUP_GAP: f32 = 10.0;
@@ -88,11 +88,14 @@ impl Action {
             }
             Self::Bullet => "•".to_owned(),
             Self::Ordered => "1.".to_owned(),
-            Self::Task => "☑".to_owned(),
+            // `[x]` and `[]()` rather than ☑ and 🔗: both of those resolve to the emoji font and
+            // render as colour glyphs, which look like lit buttons sitting in a monochrome row.
+            // These are also the Markdown the buttons write, which is its own kind of legend.
+            Self::Task => "[x]".to_owned(),
             Self::Quote => "❝".to_owned(),
             Self::Fence => "```".to_owned(),
             Self::Rule => "—".to_owned(),
-            Self::Link => "🔗".to_owned(),
+            Self::Link => "[]()".to_owned(),
         }
     }
 

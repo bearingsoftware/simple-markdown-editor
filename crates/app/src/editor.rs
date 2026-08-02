@@ -2478,7 +2478,7 @@ impl<T: TextLayout> Editor<T> {
             return;
         }
 
-        let style = TextStyle::body(self.theme.body_size * 0.9);
+        let style = TextStyle::body(self.theme.body_size * 0.62);
         for action in actions {
             let glyph = action.glyph();
             if !self.toolbar_labels.contains_key(&glyph) {
