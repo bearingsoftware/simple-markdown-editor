@@ -289,17 +289,17 @@ fn a_mixed_document_draws_its_lines_differently() {
 /// count rather than the mechanism.
 #[test]
 fn trailing_spaces_are_marked_once_each() {
-    let mut without = editor("here\n");
-    assert!(without.set_whitespace(true));
-    let fewer = quads(&mut without);
-
-    let mut with = editor("here   \n");
-    assert!(with.set_whitespace(true));
+    // The *same* document either way, so what is counted is the marks alone. Comparing against a
+    // document without the spaces would also count their glyphs, which the stub draws and
+    // DirectWrite does not — the difference that made this feature's last defect invisible.
+    let mut editor = editor("here   \n");
+    let off = quads(&mut editor);
+    assert!(editor.set_whitespace(true));
 
     assert_eq!(
-        quads(&mut with) - fewer,
-        3,
-        "three trailing spaces, three marks, no more and no fewer"
+        quads(&mut editor) - off,
+        4,
+        "three trailing spaces and one line ending, marked once each"
     );
 }
 
