@@ -498,3 +498,102 @@ pub enum Chrome {
     /// A vertical list down the left.
     Pane,
 }
+
+/// What is drawn in the cell of an invisible character when whitespace is shown (MDEDIT-46).
+///
+/// `None` for anything that is already visible, which is nearly every character. The mark is drawn
+/// *in* the character's existing cell at its existing advance — the layout is not consulted and not
+/// changed — so this never moves a glyph, a wrap point or a hit test.
+///
+/// # Why the Control Pictures block rather than a drawn box
+///
+/// U+2400..U+241F exist for exactly this: one codepoint per C0 control, already shaped like the
+/// boxed abbreviation everyone draws by hand. One glyph through the same engine as everything else
+/// beats a bespoke box-and-hex renderer, and a font without them shows a tofu box, which is close
+/// enough to the convention to be readable rather than wrong.
+///
+/// Space and tab keep the traditional middot and arrow instead, because those are what people
+/// actually recognise and neither is a control picture anybody would read.
+#[must_use]
+pub fn mark_for(character: char) -> Option<char> {
+    match character {
+        ' ' => Some('\u{b7}'),
+        '\t' => Some('\u{2192}'),
+        // Handled per line rather than per character - a line ending is one mark for what may be
+        // two bytes, and it is drawn past the end of the row rather than in a cell.
+        '\n' | '\r' => None,
+        // The rest of C0. These are the ones that are invisible *and* usually a mistake.
+        control if control < ' ' => char::from_u32(0x2400 + control as u32),
+        '\u{7f}' => Some('\u{2421}'),
+        _ => None,
+    }
+}
+
+/// How a line ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ending {
+    /// One `\n`.
+    Lf,
+    /// A `\r\n` pair.
+    CrLf,
+    /// A `\r` on its own - a classic-Mac ending, or far more often a mistake.
+    Cr,
+}
+
+impl Ending {
+    /// The marks drawn for it, in order.
+    #[must_use]
+    pub fn marks(self) -> &'static [char] {
+        match self {
+            Self::Lf => &['\u{240a}'],
+            Self::CrLf => &['\u{240d}', '\u{240a}'],
+            Self::Cr => &['\u{240d}'],
+        }
+    }
+
+    /// Whether this one should be drawn in the warning colour.
+    ///
+    /// **Only a lone `\r`.** LF and CRLF are both ordinary answers and a document full of either
+    /// should read as calm; a bare CR is almost always damage, and MDEDIT-46 asks for it to be
+    /// flagged loudly rather than merely distinguished.
+    #[must_use]
+    pub fn is_suspect(self) -> bool {
+        matches!(self, Self::Cr)
+    }
+}
+
+/// The line ending a row ends with, given the offset just past its last glyph.
+///
+/// # Why this is not just [`ending_at`]
+///
+/// **Whether the terminator has a glyph of its own depends on the text engine.** DirectWrite gives
+/// `\n` a zero-width glyph and the headless test stub does not, so `after` is sometimes the offset
+/// *of* the newline and sometimes the offset *past* it. Backing up over any `\r` and `\n` before
+/// `after` answers both, and can swallow nothing else, because those are the only two bytes it will
+/// step over.
+///
+/// This was found by looking at the window: every paragraph row lost its mark on the real backend
+/// while every test passed on the stub.
+#[must_use]
+pub fn ending_before(text: &str, after: usize) -> Option<Ending> {
+    let mut at = after.min(text.len());
+    while at > 0 && matches!(text.as_bytes()[at - 1], b'\r' | b'\n') {
+        at -= 1;
+    }
+    ending_at(text, at)
+}
+
+/// The line ending starting at `at`, if there is one there.
+#[must_use]
+pub fn ending_at(text: &str, at: usize) -> Option<Ending> {
+    let rest = text.get(at..)?;
+    if rest.starts_with("\r\n") {
+        Some(Ending::CrLf)
+    } else if rest.starts_with('\n') {
+        Some(Ending::Lf)
+    } else if rest.starts_with('\r') {
+        Some(Ending::Cr)
+    } else {
+        None
+    }
+}

@@ -32,7 +32,7 @@ pub struct MenuBar {
     context_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
     /// The View menu's three toggles, kept so their ticks can be made to match the editor. See
     /// [`Self::set_view`].
-    view_toggles: [CheckMenuItem; 4],
+    view_toggles: [CheckMenuItem; 5],
     /// Tools → Format Document, kept for the same reason: its enabled state has to follow whichever
     /// document is showing. See [`Self::set_tools`].
     format_item: MenuItem,
@@ -127,11 +127,12 @@ impl MenuBar {
     /// menu that only watched its own clicks would get wrong. Cheap enough to call every time rather
     /// than working out whether it was needed.
     pub fn set_view(&self, state: crate::ViewState) {
-        let [plain_markup, file_pane, line_numbers, toolbar] = &self.view_toggles;
+        let [plain_markup, file_pane, line_numbers, toolbar, whitespace] = &self.view_toggles;
         plain_markup.set_checked(state.plain_markup);
         file_pane.set_checked(state.file_pane);
         line_numbers.set_checked(state.line_numbers);
         toolbar.set_checked(state.toolbar);
+        whitespace.set_checked(state.whitespace);
     }
 
     /// Replaces the Open Recent submenu with `labels`, most recent first.
@@ -316,7 +317,7 @@ impl MenuBar {
 fn add_view_toggles(
     view: &Submenu,
     commands: &mut HashMap<MenuId, Command>,
-) -> Option<[CheckMenuItem; 4]> {
+) -> Option<[CheckMenuItem; 5]> {
     let plain_markup = CheckMenuItem::new(
         "&Plain Markup",
         true,
@@ -337,12 +338,16 @@ fn add_view_toggles(
     // Nor this one. A bar that is visible is a bar you can find in the menu; a chord for it would be
     // one more thing to remember for something switched on twice a year.
     let toolbar = CheckMenuItem::new("Formatting &Bar", true, false, None);
+    // Nor this one, and for a third reason: it is a way of looking at a document for a moment, so
+    // it is reached for deliberately rather than by muscle memory.
+    let whitespace = CheckMenuItem::new("&Whitespace and Line Endings", true, false, None);
 
     for (index, (item, command)) in [
         (&plain_markup, Command::PlainMarkup),
         (&file_pane, Command::FilePane),
         (&line_numbers, Command::LineNumbers),
         (&toolbar, Command::Toolbar),
+        (&whitespace, Command::Whitespace),
     ]
     .into_iter()
     .enumerate()
@@ -350,10 +355,10 @@ fn add_view_toggles(
         commands.insert(item.id().clone(), command);
         view.insert(item, index).ok()?;
     }
-    view.insert(&muda::PredefinedMenuItem::separator(), 4)
+    view.insert(&muda::PredefinedMenuItem::separator(), 5)
         .ok()?;
 
-    Some([plain_markup, file_pane, line_numbers, toolbar])
+    Some([plain_markup, file_pane, line_numbers, toolbar, whitespace])
 }
 
 /// Puts every ordinary item in its submenu, and says what each means.

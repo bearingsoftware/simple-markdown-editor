@@ -390,6 +390,28 @@ Known gaps, so nobody assumes they are done:
   every route to a save passes it. **No filesystem watcher** — `notify` brings threads and four
   platform backends for a case that happens between focus changes; the gap is a file rewritten while
   the window stays focused, which costs freshness rather than work.
+- **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
+  middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
+  — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage
+  where the other two are ordinary. This is the answer to "Mixed" in the status bar, which until now
+  said a document had mixed endings without saying which lines.
+
+  **Every mark is stamped into the cell the character already has, at the advance the layout already
+  gave it.** Nothing re-shapes, so no glyph moves, no row re-wraps, and no click lands anywhere new.
+  That is why **the toggle clears no layout cache**: MDEDIT-46's plan expected one by analogy with
+  zoom, and the analogy does not hold — zoom changes what the text engine is *asked for*, and this
+  changes nothing it is asked for. The marks themselves are a sixth cache of laid-out text, so they
+  *are* cleared by `set_zoom`.
+
+  Per-run and not remembered, like the drawing mode and for the same reason: it is a way of looking
+  at a document for a moment rather than a preference.
+
+  **Two of its three defects were only visible in the window, and both came from the same place** —
+  the headless stub shapes text more simply than DirectWrite does. DirectWrite gives `\n` a glyph of
+  its own, so the offset past a row's last glyph is sometimes the terminator and sometimes past it
+  (`view::ending_before` answers both); and it does not shape trailing whitespace at all, so the
+  spaces at the end of a line — the thing people switch this on to find — had no glyph to mark and
+  are now walked over from the text. **A test on the stub cannot see either.**
 - **The breadcrumb shows headings, and nothing else.** A caret above the document's first heading
   gets an empty breadcrumb rather than a root. Nothing in the bar is clickable.
 - **The status bar is two containers that truncate, not one row that overflows.** The right-hand
