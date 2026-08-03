@@ -157,6 +157,14 @@ pub const ALL: &[Group] = &[
                 "Whitespace and line endings — spaces, tabs, control characters, and which \
                  lines are LF and which are CRLF",
             ),
+            key(
+                "(View menu)",
+                "Word Wrap — turn it off and long lines run right instead of folding",
+            ),
+            key(
+                "Shift + wheel",
+                "Pan sideways, when word wrap is off. There is no horizontal scrollbar",
+            ),
             key("Ctrl+= / Ctrl+-", "Make the text bigger or smaller"),
             key("Ctrl+0", "Back to the normal size"),
         ],

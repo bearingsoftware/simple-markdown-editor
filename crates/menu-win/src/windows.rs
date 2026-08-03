@@ -32,7 +32,7 @@ pub struct MenuBar {
     context_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
     /// The View menu's three toggles, kept so their ticks can be made to match the editor. See
     /// [`Self::set_view`].
-    view_toggles: [CheckMenuItem; 5],
+    view_toggles: [CheckMenuItem; 6],
     /// Tools → Format Document, kept for the same reason: its enabled state has to follow whichever
     /// document is showing. See [`Self::set_tools`].
     format_item: MenuItem,
@@ -227,12 +227,20 @@ impl MenuBar {
     /// menu that only watched its own clicks would get wrong. Cheap enough to call every time rather
     /// than working out whether it was needed.
     pub fn set_view(&self, state: crate::ViewState) {
-        let [plain_markup, file_pane, line_numbers, toolbar, whitespace] = &self.view_toggles;
+        let [
+            plain_markup,
+            file_pane,
+            line_numbers,
+            toolbar,
+            whitespace,
+            word_wrap,
+        ] = &self.view_toggles;
         plain_markup.set_checked(state.plain_markup);
         file_pane.set_checked(state.file_pane);
         line_numbers.set_checked(state.line_numbers);
         toolbar.set_checked(state.toolbar);
         whitespace.set_checked(state.whitespace);
+        word_wrap.set_checked(state.word_wrap);
     }
 
     /// Replaces the Open Recent submenu with `labels`, most recent first.
@@ -426,7 +434,7 @@ impl MenuBar {
 fn add_view_toggles(
     view: &Submenu,
     commands: &mut HashMap<MenuId, Command>,
-) -> Option<[CheckMenuItem; 5]> {
+) -> Option<[CheckMenuItem; 6]> {
     let plain_markup = CheckMenuItem::new(
         "&Plain Markup",
         true,
@@ -450,6 +458,10 @@ fn add_view_toggles(
     // Nor this one, and for a third reason: it is a way of looking at a document for a moment, so
     // it is reached for deliberately rather than by muscle memory.
     let whitespace = CheckMenuItem::new("&Whitespace and Line Endings", true, false, None);
+    // MDEDIT-49 is what let this item exist at all: until horizontal scrolling shipped, turning wrap
+    // off would have truncated long lines invisibly, and a menu item that has never worked is a
+    // broken promise. No chord — it is a way of looking at a document, reached for deliberately.
+    let word_wrap = CheckMenuItem::new("&Word Wrap", true, true, None);
 
     for (index, (item, command)) in [
         (&plain_markup, Command::PlainMarkup),
@@ -457,6 +469,7 @@ fn add_view_toggles(
         (&line_numbers, Command::LineNumbers),
         (&toolbar, Command::Toolbar),
         (&whitespace, Command::Whitespace),
+        (&word_wrap, Command::WordWrap),
     ]
     .into_iter()
     .enumerate()
@@ -464,10 +477,17 @@ fn add_view_toggles(
         commands.insert(item.id().clone(), command);
         view.insert(item, index).ok()?;
     }
-    view.insert(&muda::PredefinedMenuItem::separator(), 5)
+    view.insert(&muda::PredefinedMenuItem::separator(), 6)
         .ok()?;
 
-    Some([plain_markup, file_pane, line_numbers, toolbar, whitespace])
+    Some([
+        plain_markup,
+        file_pane,
+        line_numbers,
+        toolbar,
+        whitespace,
+        word_wrap,
+    ])
 }
 
 /// Puts every ordinary item in its submenu, and says what each means.

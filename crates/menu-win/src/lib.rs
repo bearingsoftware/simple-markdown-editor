@@ -112,6 +112,8 @@ pub enum Command {
     Toolbar,
     /// View → Whitespace and Line Endings.
     Whitespace,
+    /// View → Word Wrap.
+    WordWrap,
     /// View → Zoom In.
     ZoomIn,
     /// View → Zoom Out.
@@ -272,6 +274,8 @@ pub struct ViewState {
     pub toolbar: bool,
     /// Whether spaces, tabs and line endings are drawn.
     pub whitespace: bool,
+    /// Whether long lines wrap rather than running off to the right.
+    pub word_wrap: bool,
 }
 
 /// Which context-menu entries are available.

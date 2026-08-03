@@ -20,6 +20,7 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_app::toolbar::{self, Action};
 use mdedit_document::Selection;
@@ -229,7 +230,10 @@ fn a_click_below_the_bar_lands_on_the_right_byte() {
     let mut without = editor(source);
     without.toggle_toolbar();
     let _ = without.build_frame(WIDTH, HEIGHT, 1.0);
-    let top = without.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let top = without
+        .content_rect()
+        .to_window(0.0, 0.0, Offset::down(0.0))
+        .1;
     let left = without.content_rect().left_edge();
     without.click_at(
         left + 4.0 * ADVANCE,
@@ -238,7 +242,7 @@ fn a_click_below_the_bar_lands_on_the_right_byte() {
     let expected = without.document().selection().head();
 
     let mut with = editor(source);
-    let top = with.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let top = with.content_rect().to_window(0.0, 0.0, Offset::down(0.0)).1;
     let left = with.content_rect().left_edge();
     with.click_at(
         left + 4.0 * ADVANCE,
