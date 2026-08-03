@@ -114,8 +114,10 @@ impl<'a> Checker<'a> {
         let mut any = false;
 
         while let Some((span, tok)) = self.next_token() {
+            // `break`, never `return`: the sort below is not optional, and a document that hits the
+            // limit is exactly the one whose diagnostics are least likely to be in order already.
             if self.out.len() >= LIMIT {
-                return self.out;
+                break;
             }
             any = true;
             expect = self.step(expect, span, tok, after_comma);

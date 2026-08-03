@@ -101,6 +101,25 @@ fn diagnostics_come_back_in_document_order() {
     assert_eq!(pointed_at("{!").as_slice(), ["{", "!"]);
 }
 
+/// **And a document that hits the limit is sorted too**, which it was not: the early return that
+/// stopped scanning also skipped the sort, and a mismatched closer reports the closer before the
+/// opener it blames. Caught by `every_span_is_usable` on CI, not locally — the shrinker needs a
+/// document with two hundred problems in it to get there.
+#[test]
+fn even_a_document_that_hits_the_limit_comes_back_in_order() {
+    // Alternating mismatched brackets: every pair reports the closer first and the opener second,
+    // so unsorted output is out of order on the very first pair.
+    let source = "{]".repeat(400);
+    let found = validate(&source);
+    assert_eq!(found.len(), mdedit_json::LIMIT);
+    assert!(
+        found
+            .windows(2)
+            .all(|pair| pair[0].span.start() <= pair[1].span.start()),
+        "diagnostics must be in document order even when the limit cut them short"
+    );
+}
+
 /// Outermost first, and each one named, because "3 errors" with one span is not actionable.
 #[test]
 fn every_unclosed_container_is_reported() {

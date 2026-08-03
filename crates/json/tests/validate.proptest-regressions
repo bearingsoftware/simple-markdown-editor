@@ -5,3 +5,6 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2b66a69de04dc6665206b18e45a8febddaaf05749a00ea63aad4c4404c9b118d # shrinks to source = "{!"
+# Found on CI rather than locally: a document with more than LIMIT problems took the early return
+# and skipped the sort. See `even_a_document_that_hits_the_limit_comes_back_in_order`.
+cc bc179360746273fed6519612f0eafa1957aea190e2df4762e6de59871265db28
