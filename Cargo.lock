@@ -987,6 +987,7 @@ dependencies = [
  "mdedit-menu-win",
  "mdedit-offsets",
  "mdedit-session",
+ "mdedit-shell-win",
  "mdedit-text",
  "mdedit-text-dwrite",
  "mdedit-yaml",
@@ -1078,6 +1079,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "mdedit-shell-win"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.19",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

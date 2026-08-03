@@ -8,8 +8,10 @@
 //! `mdedit-text-dwrite` is for text. One `unsafe` block, with its `SAFETY` note, and a safe API over
 //! it.
 //!
-//! It is also where the Windows shell integration `AGENTS.md` anticipates — the `DropTarget` verb, so
-//! opening fifteen files from Explorer reuses one process — will belong.
+//! It is **not** where the shell integration lives, though this file once said it would be: the
+//! `DropTarget` verb went into `mdedit-shell-win` on MDEDIT-61, because COM registration and
+//! `IDropTarget` have nothing to do with menus and the ticket carries the reason for a third
+//! platform crate.
 //!
 //! # What it does not do
 //!

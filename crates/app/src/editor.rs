@@ -53,6 +53,23 @@ use crate::toolbar;
 use crate::view::Chrome;
 use mdedit_document::format::{self, Inline};
 
+/// Something that arrived from outside the event loop and has to be handled inside it.
+///
+/// Two things wake this loop without a key or a mouse behind them, and both arrive on winit's user
+/// channel: a menu item, which muda raises on a channel of its own, and an Explorer activation,
+/// which arrives on a COM call from `mdedit-shell-win` (MDEDIT-61).
+///
+/// **A second variant rather than a second `Command`.** A file list is not a menu item, and putting
+/// one into `mdedit_menu_win::Command` would put paths into the crate that draws menus. The loop
+/// carries the union; each half stays in the crate it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wake {
+    /// The user chose a menu item.
+    Menu(Command),
+    /// Explorer handed over a selection: open every one of these, in this order.
+    Open(Vec<PathBuf>),
+}
+
 /// The width chunks are laid out at when word wrap is off (MDEDIT-49).
 ///
 /// A large finite number rather than infinity. It has to be finite because it goes into `ChunkKey`
@@ -892,7 +909,7 @@ pub struct Editor<T: TextLayout> {
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
-    menu_proxy: Option<EventLoopProxy<Command>>,
+    menu_proxy: Option<EventLoopProxy<Wake>>,
     /// Where text goes when it is copied, and comes from when it is pasted.
     ///
     /// Boxed rather than a second type parameter: `Editor` is already generic over the text
@@ -1794,7 +1811,7 @@ impl<T: TextLayout> Editor<T> {
             menu.forward_to(move |command| {
                 // The loop has gone away, which happens while the editor is shutting down. Nothing
                 // to deliver it to and nothing to do about it.
-                let _ = proxy.send_event(command);
+                let _ = proxy.send_event(Wake::Menu(command));
             });
         }
 
@@ -1838,7 +1855,7 @@ impl<T: TextLayout> Editor<T> {
     /// Carries menu commands into this editor's event loop.
     ///
     /// Held until there is a menu to attach it to, which is when the window appears.
-    pub fn forward_menu(&mut self, proxy: EventLoopProxy<Command>) {
+    pub fn forward_menu(&mut self, proxy: EventLoopProxy<Wake>) {
         self.menu_proxy = Some(proxy);
     }
 
@@ -6805,13 +6822,35 @@ impl<T: TextLayout> Editor<T> {
     }
 }
 
-impl<T: TextLayout> ApplicationHandler<Command> for Editor<T> {
-    /// A menu item was chosen.
+impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
+    /// Something arrived from outside the loop: a menu item, or an Explorer selection.
     ///
     /// The menu delivers on a channel of its own, forwarded into this loop — see
     /// [`mdedit_menu_win::MenuBar::forward_to`]. Every arm is a command that already exists and is
     /// already tested, which is what makes the menu a surface rather than a second implementation.
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, command: Command) {
+    ///
+    /// An Explorer activation is the same shape of thing and gets the same treatment: it lands on
+    /// [`Editor::open_paths`], which is what the command line, the Open dialog and the recent list
+    /// all use. **Twenty files are one event**, not twenty — the whole point of MDEDIT-61 is that
+    /// the selection arrives whole.
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, wake: Wake) {
+        let command = match wake {
+            Wake::Menu(command) => command,
+            Wake::Open(paths) => {
+                if self.open_paths(&paths) {
+                    // The window is very likely behind Explorer, because Explorer is what the user
+                    // just clicked in. Nothing else raises it: winit's `focus_window` is the only
+                    // way, and an editor that opened files invisibly behind the window in front
+                    // would look like it had done nothing at all.
+                    if let Some(window) = self.window.as_ref() {
+                        window.focus_window();
+                        window.request_redraw();
+                    }
+                }
+                return;
+            }
+        };
+
         if self.apply_command(command) {
             self.follow_caret = true;
             if let Some(window) = self.window.as_ref() {
