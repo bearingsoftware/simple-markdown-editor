@@ -325,6 +325,62 @@ impl Workspace {
         Ok(())
     }
 
+    /// Re-reads a tab as `encoding`, whatever it was read as before (MDEDIT-42).
+    ///
+    /// [`reload_tab`](Self::reload_tab) deliberately re-reads with the encoding a file already had,
+    /// which is what a caller wants after saving. This is the other case: the user has looked at
+    /// mojibake and said what the file actually is.
+    ///
+    /// The edit goes through [`Document::replace`] for the same reason a reload does, so Ctrl+Z
+    /// gives back whatever it displaced.
+    ///
+    /// # Errors
+    ///
+    /// As [`reload_tab`](Self::reload_tab). A file that is not valid in `encoding` fails as
+    /// [`SessionError::File`] and **the buffer is left exactly as it was** — reading happens before
+    /// anything is replaced, so a wrong guess costs nothing.
+    pub fn reopen_tab_as(
+        &mut self,
+        index: usize,
+        choice: mdedit_file::Choice,
+    ) -> Result<(), SessionError> {
+        let tab = self
+            .tabs
+            .get_mut(index)
+            .ok_or(SessionError::NoSuchTab(index))?;
+        let Origin::File(path) = &tab.origin else {
+            return Err(SessionError::NoSuchTab(index));
+        };
+        let path = path.clone();
+        // Read first, so a wrong guess costs nothing: the buffer is only touched once there is
+        // something to put in it.
+        let file = mdedit_file::load_with(&path, choice)?;
+
+        if let Some(open) = tab.open.as_mut() {
+            let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(open.document.len_bytes()));
+            // The only way this fails is a span outside the document, and the span is the document.
+            if open.document.replace(whole, file.text()).is_ok() {
+                open.file = Some(file);
+            }
+            return Ok(());
+        }
+
+        // **The tab never opened**, which is the case this whole feature exists for: a windows-1252
+        // file is not valid UTF-8, so `activate` failed and left a handle with nothing behind it.
+        // Reopening it as what it actually is has to *materialise* it rather than replace text that
+        // was never read — and if it did not, the one file a user most needs this for would be the
+        // one it could not help with.
+        let document = match self.language_for {
+            Some(resolve) => Document::with_text(file.text(), resolve(&path)),
+            None => Document::from(file.text()),
+        };
+        self.tabs[index].open = Some(OpenTab {
+            document,
+            file: Some(file),
+        });
+        Ok(())
+    }
+
     /// How many tabs have actually been read from disk.
     ///
     /// Exists to be asserted on. "Restoring two hundred tabs opens at most the visible one" is only
@@ -449,6 +505,12 @@ impl Workspace {
                 self.active = Some(index);
                 return tab.open.as_mut().ok_or(SessionError::NoSuchTab(index));
             };
+            // Marked active *before* the read, not after. A file that cannot be decoded — a
+            // windows-1252 one, say — leaves a tab with nothing behind it, and that tab is still
+            // the one the user is looking at. Setting this only on success meant there was no
+            // active tab at all, so MDEDIT-42's Reopen with Encoding had nothing to reopen: the
+            // menu was inert on exactly the file it exists to rescue.
+            self.active = Some(index);
             let file = mdedit_file::load(path)?;
             let mut document = match resolver {
                 Some(resolve) => Document::with_text(file.text(), resolve(path)),

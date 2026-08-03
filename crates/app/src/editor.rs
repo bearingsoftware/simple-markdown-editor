@@ -849,6 +849,8 @@ pub struct Editor<T: TextLayout> {
     tools_state: Option<mdedit_menu_win::ToolsState>,
     /// What the Line Endings submenu was last told, for the same reason.
     endings_state: Option<mdedit_menu_win::EndingsState>,
+    /// What the encoding submenus were last told, for the same reason.
+    encoding_state: Option<mdedit_menu_win::EncodingState>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -975,6 +977,7 @@ impl<T: TextLayout> Editor<T> {
             diagnosed_for: None,
             tools_state: None,
             endings_state: None,
+            encoding_state: None,
             menu: None,
             menu_proxy: None,
         }
@@ -1621,6 +1624,12 @@ impl<T: TextLayout> Editor<T> {
         };
         if let Err(error) = written {
             crate::log_error!("could not save {}: {error}", path.display());
+            // **Said, not only logged.** A save that fails silently is the worst outcome in this
+            // editor: the user believes their work is on disk. MDEDIT-42 makes it reachable in the
+            // ordinary course of things — choose an encoding that cannot hold the text and the save
+            // is refused — so the seam MDEDIT-48 added for Format Document's refusal earns its keep
+            // for every failure, not just that one.
+            (self.say)(&format!("Could not save {}.\n\n{error}", path.display()));
             return false;
         }
 
@@ -1694,6 +1703,8 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
             Command::Whitespace => self.toggle_whitespace(),
+            Command::ReopenWith(index) => self.reopen_with(index),
+            Command::SaveWith(index) => self.save_with(index),
             Command::ConvertToLf => self.set_newline(mdedit_file::Newline::Lf),
             Command::ConvertToCrLf => self.set_newline(mdedit_file::Newline::CrLf),
             Command::Validate => self.go_to_first_diagnostic(),
@@ -1753,10 +1764,33 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         self.menu = Some(menu);
-        // Both were decided before the window existed — the recent list from its file, the view
-        // toggles from the settings — so this is the first chance either has had to reach the menu.
+        // The encoding submenus are empty until told what to list, and the list is `mdedit-file`'s
+        // rather than the menu crate's — see `MenuBar::set_encodings`. Once, here, because it never
+        // changes.
+        let labels: Vec<&str> = mdedit_file::choices()
+            .iter()
+            .map(|choice| choice.label)
+            .collect();
+        if let Some(menu) = self.menu.as_mut() {
+            menu.set_encodings(&labels);
+        }
+        // These were all decided before the window existed — the recent list from its file, the view
+        // toggles from the settings — so this is the first chance any of them has had to reach the
+        // menu.
+        //
+        // The three compared refreshes are forced by clearing what they think the menu was told.
+        // They record their answer whether or not there is a menu to push it to, so if a frame were
+        // ever drawn before the menu existed they would go on believing it had been told. Today the
+        // menu is attached first and it does not arise; this makes that ordering not matter rather
+        // than something to remember.
         self.refresh_recent_menu();
         self.refresh_view_menu();
+        self.encoding_state = None;
+        self.endings_state = None;
+        self.tools_state = None;
+        self.refresh_encodings_menu();
+        self.refresh_endings_menu();
+        self.refresh_tools_menu();
     }
 
     /// Carries menu commands into this editor's event loop.
@@ -2845,6 +2879,7 @@ impl<T: TextLayout> Editor<T> {
         // facts about that document. Compared before they push, so a still frame costs three bools.
         self.refresh_tools_menu();
         self.refresh_endings_menu();
+        self.refresh_encodings_menu();
 
         self.hold_anchor(&frame, visible);
         if self.follow_caret {
@@ -3529,6 +3564,15 @@ impl<T: TextLayout> Editor<T> {
                 ],
             });
         }
+    }
+
+    /// The word count the status bar is showing, or `None` before the first one has finished.
+    ///
+    /// Deliberately the *shown* number rather than a fresh count: what a test wants to know is what
+    /// the user is being told, including when that is a moment behind.
+    #[must_use]
+    pub fn words(&self) -> Option<usize> {
+        self.words
     }
 
     /// Recounts the words. Called on the idle timer, never on the keystroke path.
@@ -5923,6 +5967,141 @@ impl<T: TextLayout> Editor<T> {
         });
         self.marks.insert(character, found);
         found
+    }
+
+    /// Whether the encoding submenus apply here.
+    ///
+    /// False for an untitled buffer: there is nothing on disk to reopen, and Save As is where its
+    /// encoding gets decided. Greyed rather than left to fail, like Format Document.
+    ///
+    /// **A path is the whole test, deliberately.** It does *not* require the tab to have opened —
+    /// a windows-1252 file is not valid UTF-8, so it fails to open, and that is precisely the tab a
+    /// user needs this menu for. Requiring an open document would grey the submenu on the one file
+    /// it exists to rescue.
+    #[must_use]
+    pub fn can_choose_encoding(&self) -> bool {
+        self.workspace.active_path().is_some()
+    }
+
+    /// Which of [`mdedit_file::choices`] the active document already uses, if any.
+    ///
+    /// `None` for an untitled buffer, and for a file in an encoding that is not on the list — which
+    /// cannot happen through the menu but can through the command line, and ticking nothing is the
+    /// honest answer either way.
+    #[must_use]
+    pub fn encoding_choice(&self) -> Option<usize> {
+        let format = self
+            .workspace
+            .active_open()?
+            .file
+            .as_ref()
+            .map(mdedit_file::LoadedFile::format)?;
+        mdedit_file::choices()
+            .iter()
+            .position(|choice| choice.matches(format))
+    }
+
+    /// Re-reads the active document as a different encoding (MDEDIT-42).
+    ///
+    /// **Asks before discarding unsaved edits**, through the same prompt Close uses rather than a
+    /// second one of its own — reopening is a discard, and the user should be asked in the words
+    /// they already know.
+    ///
+    /// A file that is not valid in the chosen encoding leaves the buffer exactly as it was and says
+    /// why: the read happens before anything is replaced, so a wrong guess costs nothing. Trying
+    /// several is how somebody finds out what a file actually is.
+    pub fn reopen_with(&mut self, index: usize) -> bool {
+        let Some(choice) = mdedit_file::choices().get(index).copied() else {
+            return false;
+        };
+        let Some(tab) = self.workspace.active() else {
+            return false;
+        };
+        if !self.can_choose_encoding() {
+            return false;
+        }
+
+        // Reopening throws away whatever is in the buffer, which is exactly what Close asks about —
+        // so it asks with the same prompt, in words the user already knows, rather than growing a
+        // second dialog that means the same thing.
+        //
+        // Only `Discard` goes ahead. `Save` would write the buffer out in the *old* encoding and
+        // then immediately re-read it in the new one, which is a strange thing to have asked for;
+        // Cancel plainly means stop.
+        let modified = self
+            .workspace
+            .tabs()
+            .get(tab)
+            .is_some_and(mdedit_session::Tab::is_modified);
+        if modified {
+            let name = self
+                .workspace
+                .tabs()
+                .get(tab)
+                .map_or_else(String::new, mdedit_session::Tab::display_name);
+            if self.prompt.ask(&name, crate::prompt::Closing::File) != Unsaved::Discard {
+                return false;
+            }
+        }
+
+        if let Err(error) = self.workspace.reopen_tab_as(tab, choice) {
+            (self.say)(&format!(
+                "Cannot read this file as {}: {error}",
+                choice.label
+            ));
+            return false;
+        }
+
+        // Every cached layout is keyed on bytes that are no longer in the buffer.
+        self.layouts.clear();
+        self.heights.clear();
+        // And so is the word count. It is normally left to age because a stale count is nearly
+        // right; after a reopen it is not stale but *wrong*, and the commonest reopen is of a tab
+        // that never opened at all — so the bar would read "0 words" over a document full of them
+        // until the next keystroke. Clearing it makes the drawing path's catch-up recount.
+        self.words = None;
+        self.counted_for = None;
+        self.follow_caret = true;
+        true
+    }
+
+    /// Changes the encoding the active document will be saved in (MDEDIT-42).
+    ///
+    /// **The one deliberate exception to reproducing a file's bytes**, and the same shape as the
+    /// other two: the invariant forbids the editor rewriting bytes the user did not ask it to, and
+    /// this is the user asking. Nothing is written here — the choice takes effect at the next save,
+    /// which is where content the encoding cannot hold is refused.
+    pub fn save_with(&mut self, index: usize) -> bool {
+        let Some(choice) = mdedit_file::choices().get(index).copied() else {
+            return false;
+        };
+        let changed = self
+            .workspace
+            .active_open_mut()
+            .and_then(|open| open.file.as_mut())
+            .is_some_and(|file| file.set_encoding(choice));
+        if changed {
+            self.refresh_encodings_menu();
+        }
+        changed
+    }
+
+    /// Ticks whichever encoding the active document uses, and greys the submenus for a buffer that
+    /// has none.
+    ///
+    /// Compared before it pushes, like the other two menu refreshes and for the same reason.
+    fn refresh_encodings_menu(&mut self) {
+        let wanted = mdedit_menu_win::EncodingState {
+            enabled: self.can_choose_encoding(),
+            current: self.encoding_choice(),
+        };
+        if self.encoding_state == Some(wanted) {
+            return;
+        }
+        self.encoding_state = Some(wanted);
+        if let Some(menu) = self.menu.as_ref() {
+            menu.set_encoding_state(wanted);
+        }
     }
 
     /// What the active document's line endings are.
