@@ -304,6 +304,33 @@ Known gaps, so nobody assumes they are done:
   CVE class this project must not reintroduce. It also stops at 200 diagnostics: nobody is fixing the
   201st. Absence of errors is **silence, not "0 errors"**, and an empty document is silent too — a
   new file is empty, and diagnosing that is diagnosing the user's existence.
+- **A JSON document can be reformatted, and that is the only whole-document rewrite there is.**
+  MDEDIT-48 — the decision itself is in the byte-preservation rules above, because that is the rule
+  it is an exception to. `Language::format` returns `Option<Result<String, Diagnostic>>`, and the two
+  layers answer different questions: `None` is **"this language does not reformat"** (Markdown has no
+  canonical form; YAML cannot round-trip its comments and anchors), which greys the menu item, and
+  `Err` is "it does, but not this document", which shows a message naming the line. Nothing compares
+  `Language::name()` against `"JSON"`.
+
+  **It emits the original bytes of every token**, which is the whole of how `1.50` stays `1.50`,
+  `1e3` stays `1e3` and `-0` stays `-0`. Re-serializing through a number type loses all three, and
+  through a map loses key order. Nothing here parses a value — it walks MDEDIT-47's token stream and
+  decides where the line breaks go, which is also why it needed no second tokenizer. Property-tested
+  both ways: the result is still valid JSON, and every non-whitespace byte is unchanged.
+
+  **MDEDIT-47's validator is the gate**, so a half-typed document is refused rather than mangled — a
+  format that "fixed" malformed input would be inventing structure the user has not finished typing.
+  An already-formatted document is left completely alone, so there is no undo press that appears to
+  do nothing.
+
+  **The menu item's enabled state is compared per frame, not hooked.** Which document is active
+  changes on a great many paths, and a list of call sites is a list somebody forgets to add to — the
+  same lesson as `counted_for` and `floating_for`, in push form, with `tools_state` holding what the
+  menu was last told so the native call happens only when the answer changes.
+- **There is one seam for telling the user why something they chose cannot be done**, and it is
+  `Editor::with_messages`. Inert by default and wired in `give_it_dialogs`, like every other
+  collaborator that reaches the machine. Only for a refusal that answers something the user *just
+  did*; anything the editor merely noticed goes to the log.
 - **Unsaved work is stored, and comes back — after a crash *or* an ordinary quit.**
   `mdedit-session::snapshot` keeps a copy of each dirty buffer in a `recovery` directory beside the
   session file, addressed by an id rather than a path because the buffer with most to lose is the one
@@ -614,6 +641,14 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
   bytes.
 - Only the block under the cursor may be re-serialized, and only on exit, spliced back at its span.
 - A diff that introduces a whole-document serializer needs an explicit design decision on the ticket.
+- **That decision has been made once, on MDEDIT-48, and its scope is exactly Tools → Format Document
+  for JSON.** The invariant forbids the editor rewriting bytes *the user did not ask it to rewrite*;
+  it does not forbid an explicit, undoable command whose entire purpose is to rewrite them. The line
+  is between "the editor reformatted my file" — forbidden, permanently — and "I asked it to".
+  Everything on the far side of that line still holds: it is one `replace` inside a transaction so
+  **one Ctrl+Z restores every byte**, it is reachable only from the menu, and **it is never reached
+  from a save or from anything on a timer**. Citing MDEDIT-48 to justify a second serializer is not
+  what that decision says.
 
 **Marker locator (`crate::markdown::markers`):**
 

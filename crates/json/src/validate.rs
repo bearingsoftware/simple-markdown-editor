@@ -62,9 +62,24 @@ enum Expect {
     After,
 }
 
+/// Every token in `source`, in order, with the diagnostics thrown away.
+///
+/// For [`crate::format`], which runs only after [`validate`] has returned nothing and therefore has
+/// no use for them. It exists so the formatter emits the *original bytes* of each token — which is
+/// the whole of how `1.50` stays `1.50` and `1e3` stays `1e3` — without a second tokenizer to drift
+/// from this one.
+pub(crate) fn tokens(source: &str) -> Vec<(ByteSpan, Tok)> {
+    let mut checker = Checker::new(source);
+    let mut out = Vec::new();
+    while let Some(entry) = checker.next_token() {
+        out.push(entry);
+    }
+    out
+}
+
 /// What a token is, as far as structure is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tok {
+pub(crate) enum Tok {
     Open(Bracket),
     Close(Bracket),
     Colon,
@@ -80,7 +95,7 @@ enum Tok {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bracket {
+pub(crate) enum Bracket {
     Curly,
     Square,
 }

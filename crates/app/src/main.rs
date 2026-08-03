@@ -230,6 +230,15 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
             ))
             .show();
     }));
+    // Somewhere to say why something the user chose cannot be done — Format Document on a document
+    // that is not valid JSON is the only caller so far.
+    editor.with_messages(Box::new(|message| {
+        rfd::MessageDialog::new()
+            .set_title("Simple Markdown Editor")
+            .set_description(message)
+            .set_level(rfd::MessageLevel::Warning)
+            .show();
+    }));
     // Read from beside the session file. Done here rather than in `Editor::new` so a test gets an
     // editor that touches nothing of the user's.
     editor.with_recent(mdedit_session::recent::Recent::beside_session());

@@ -84,6 +84,8 @@ pub enum Command {
     GoToLine,
     /// Tools → Validate Document.
     Validate,
+    /// Tools → Format Document.
+    Format,
     /// View → Plain Markup.
     PlainMarkup,
     /// View → File Pane.
@@ -137,6 +139,9 @@ impl MenuBar {
 
     /// Ticks nothing, there being no menu to tick.
     pub fn set_view(&self, _state: ViewState) {}
+
+    /// Greys nothing, there being no item to grey.
+    pub fn set_tools(&self, _state: ToolsState) {}
 
     /// Lists nothing, there being no submenu to list it in.
     pub fn set_recent(&mut self, _labels: &[String]) {}
@@ -250,4 +255,15 @@ pub struct ContextState {
     pub has_selection: bool,
     /// Whether the clipboard holds text worth pasting.
     pub can_paste: bool,
+}
+
+/// Which Tools entries apply to the document being shown.
+///
+/// Asked of the editor for the same reason [`ContextState`] is: whether a language reformats is a
+/// fact about the document, and this crate deliberately knows nothing about documents.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolsState {
+    /// Whether Format Document would do anything — false for Markdown and YAML, which do not
+    /// reformat, and greyed rather than left to fail when pressed.
+    pub can_format: bool,
 }

@@ -49,8 +49,10 @@ use mdedit_language::{
 };
 use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
 
+mod format;
 mod validate;
 
+pub use format::format;
 pub use validate::{LIMIT, validate};
 
 /// JSON, as this editor renders it.
@@ -75,6 +77,10 @@ impl Language for Json {
 
     fn validate(&self, source: &str) -> Vec<Diagnostic> {
         validate(source)
+    }
+
+    fn format(&self, source: &str) -> Option<Result<String, Diagnostic>> {
+        Some(format(source))
     }
 
     fn conceals(&self) -> bool {
