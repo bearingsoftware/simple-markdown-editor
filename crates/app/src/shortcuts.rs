@@ -44,6 +44,11 @@ pub const ALL: &[Group] = &[
             key("Ctrl+O", "Open a file"),
             key("Ctrl+S", "Save"),
             key("Ctrl+Shift+S", "Save as a new file"),
+            key(
+                "(File menu)",
+                "Line Endings — convert every terminator to LF or CRLF, in one undo step. \
+                 Saving never converts anything on its own",
+            ),
             key("Ctrl+W", "Close the current tab"),
             key("Ctrl+Tab", "Next tab"),
             key("Ctrl+Shift+Tab", "Previous tab"),

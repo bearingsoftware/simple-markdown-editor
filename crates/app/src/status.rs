@@ -102,6 +102,9 @@ pub fn details(encoding: &str, newline: Newline, words: Option<usize>) -> String
     let newline = match newline {
         Newline::Lf => "LF",
         Newline::CrLf => "CRLF",
+        // A document made entirely of lone carriage returns. It used to be reported as LF, which was
+        // a lie about a file containing none — see `Newline::detect`.
+        Newline::Cr => "CR",
         Newline::Mixed => "Mixed",
     };
     let mut text = format!("{encoding}{FIELD}{newline}");

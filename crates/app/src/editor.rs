@@ -847,6 +847,8 @@ pub struct Editor<T: TextLayout> {
     /// `floating_for` are the same shape for the same reason. This one has to push rather than pull,
     /// because the menu is a native object, so the comparison is what keeps the pushing rare.
     tools_state: Option<mdedit_menu_win::ToolsState>,
+    /// What the Line Endings submenu was last told, for the same reason.
+    endings_state: Option<mdedit_menu_win::EndingsState>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -972,6 +974,7 @@ impl<T: TextLayout> Editor<T> {
             diagnostics: Vec::new(),
             diagnosed_for: None,
             tools_state: None,
+            endings_state: None,
             menu: None,
             menu_proxy: None,
         }
@@ -1232,6 +1235,8 @@ impl<T: TextLayout> Editor<T> {
 
         let before = self.words;
         self.recount_words();
+        let endings = self.newline();
+        self.recheck_newline();
         let diagnosed = self.diagnostic_count();
         self.revalidate();
         self.snapshot_dirty_buffers();
@@ -1243,7 +1248,36 @@ impl<T: TextLayout> Editor<T> {
         // of rapid toggles costs one write. Not on exit — see `crate::config`.
         self.settings.flush();
 
-        reparsed || before != self.words || settled || diagnosed != self.diagnostic_count()
+        reparsed
+            || before != self.words
+            || settled
+            || diagnosed != self.diagnostic_count()
+            || endings != self.newline()
+    }
+
+    /// Re-detects the active document's line endings. On the idle timer, never on the keystroke path.
+    ///
+    /// # Why this has to be recomputed rather than remembered
+    ///
+    /// The endings were detected once, when the file was read, and then believed for ever. Two things
+    /// make that a lie. **Undo**: MDEDIT-59's conversion sets the format, and undoing it puts the
+    /// bytes back without putting the format back, so the bar went on claiming LF over a document
+    /// that was Mixed again. And **pasting**, which is the older of the two — the editor deliberately
+    /// preserves pasted CRLF in an LF file, and the bar has been saying "LF" about the result since
+    /// MDEDIT-38.
+    ///
+    /// Deriving it from the buffer makes both self-correcting, at the cost of a walk of the buffer —
+    /// which is why it is here, beside the word count, and not on any path a keystroke reaches.
+    fn recheck_newline(&mut self) {
+        let detected = mdedit_file::Newline::detect(&self.document().rope().to_string());
+        if let Some(file) = self
+            .workspace
+            .active_open_mut()
+            .and_then(|open| open.file.as_mut())
+        {
+            file.set_newline(detected);
+        }
+        self.refresh_endings_menu();
     }
 
     /// Writes a recovery snapshot for every buffer with unsaved work in it.
@@ -1660,6 +1694,8 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
             Command::Whitespace => self.toggle_whitespace(),
+            Command::ConvertToLf => self.set_newline(mdedit_file::Newline::Lf),
+            Command::ConvertToCrLf => self.set_newline(mdedit_file::Newline::CrLf),
             Command::Validate => self.go_to_first_diagnostic(),
             Command::Format => self.format_document(),
             Command::Shortcuts => self.show_shortcuts(),
@@ -2480,7 +2516,13 @@ impl<T: TextLayout> Editor<T> {
                 self.page(1.0);
                 true
             }
-            Key::Named(NamedKey::Enter) => self.insert("\n"),
+            // What the file already uses, rather than always `\n` — MDEDIT-59. Enter used to add an
+            // LF to a CRLF document, which is how a file becomes Mixed without anybody pasting
+            // anything.
+            Key::Named(NamedKey::Enter) => {
+                let ending = self.newline().as_str();
+                self.insert(ending)
+            }
             Key::Named(NamedKey::Space) => self.insert(" "),
             Key::Character(text) => self.insert(text),
             _ => false,
@@ -2799,10 +2841,10 @@ impl<T: TextLayout> Editor<T> {
             self.find.refresh(&frame.text, document, revision);
         }
 
-        // Which document is showing may have changed since the last frame, and Format Document
-        // applies to some languages and not others. Compared before it pushes, so a still frame
-        // costs one bool.
+        // Which document is showing may have changed since the last frame, and both of these are
+        // facts about that document. Compared before they push, so a still frame costs three bools.
         self.refresh_tools_menu();
+        self.refresh_endings_menu();
 
         self.hold_anchor(&frame, visible);
         if self.follow_caret {
@@ -5881,6 +5923,86 @@ impl<T: TextLayout> Editor<T> {
         });
         self.marks.insert(character, found);
         found
+    }
+
+    /// What the active document's line endings are.
+    ///
+    /// An untitled buffer has no file to have detected anything from, so it answers with the
+    /// default until it is saved somewhere — the same fallback the status bar uses, and it has to be
+    /// the same one or Enter and the bar would disagree.
+    #[must_use]
+    pub fn newline(&self) -> mdedit_file::Newline {
+        self.workspace
+            .active_open()
+            .and_then(|open| open.file.as_ref())
+            .map_or_else(mdedit_file::Newline::default, |file| {
+                file.format().newline()
+            })
+    }
+
+    /// Rewrites every line terminator in the active document to `to` (MDEDIT-59).
+    ///
+    /// # Why this is allowed to change bytes
+    ///
+    /// The same reason Format Document is, and the reasoning is MDEDIT-48's: the byte-preservation
+    /// invariant forbids the editor rewriting bytes *the user did not ask it to*. This is the user
+    /// asking. One `replace` inside a transaction, so one Ctrl+Z puts every byte back, and **save
+    /// never does this on its own** — the whole point of the invariant is that a file's endings
+    /// change only when somebody says so.
+    ///
+    /// Converts **every** terminator, including a lone `\r`, which is the one a user is most likely
+    /// to be trying to get rid of and the one nothing else here produces.
+    ///
+    /// A document that already uses `to` throughout is left completely alone: no edit, so no undo
+    /// press that appears to do nothing and no modified dot on a tab nobody changed.
+    pub fn set_newline(&mut self, to: mdedit_file::Newline) -> bool {
+        let source = self.document().rope().to_string();
+        let Some(converted) = mdedit_file::normalise_newlines(&source, to) else {
+            return false;
+        };
+
+        let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len()));
+        let replaced = self.document_mut().transact(|document| {
+            if let Err(error) = document.replace(whole, &converted) {
+                crate::log_error!("could not convert the line endings: {error}");
+                return false;
+            }
+            true
+        });
+        if !replaced {
+            return false;
+        }
+
+        // The other half. Without it the bytes are one thing, the status bar says another, and the
+        // next press of Enter puts back what was just taken out.
+        if let Some(file) = self
+            .workspace
+            .active_open_mut()
+            .and_then(|open| open.file.as_mut())
+        {
+            file.set_newline(to);
+        }
+        self.follow_caret = true;
+        self.refresh_endings_menu();
+        true
+    }
+
+    /// Ticks whichever line ending the active document uses.
+    ///
+    /// Compared before it pushes, like the Tools menu's enablement and for the same reason: which
+    /// document is showing changes on more paths than anybody will remember to update.
+    fn refresh_endings_menu(&mut self) {
+        let wanted = mdedit_menu_win::EndingsState {
+            lf: self.newline() == mdedit_file::Newline::Lf,
+            crlf: self.newline() == mdedit_file::Newline::CrLf,
+        };
+        if self.endings_state == Some(wanted) {
+            return;
+        }
+        self.endings_state = Some(wanted);
+        if let Some(menu) = self.menu.as_ref() {
+            menu.set_endings(wanted);
+        }
     }
 
     /// Whether whitespace and line endings are being drawn.

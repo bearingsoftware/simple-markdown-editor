@@ -55,6 +55,14 @@ pub enum Command {
     SaveAs,
     /// File → Save All.
     SaveAll,
+    /// File → Line Endings → LF.
+    ///
+    /// Two variants rather than one carrying a line-ending type, because that type belongs to
+    /// `mdedit-file` and this crate deliberately depends on nothing that knows what a document is.
+    /// The editor maps them, as it maps every other command.
+    ConvertToLf,
+    /// File → Line Endings → CRLF.
+    ConvertToCrLf,
     /// File → Close.
     Close,
     /// File → Close All.
@@ -144,6 +152,9 @@ impl MenuBar {
 
     /// Greys nothing, there being no item to grey.
     pub fn set_tools(&self, _state: ToolsState) {}
+
+    /// Ticks nothing, there being no submenu to tick.
+    pub fn set_endings(&self, _state: EndingsState) {}
 
     /// Lists nothing, there being no submenu to list it in.
     pub fn set_recent(&mut self, _labels: &[String]) {}
@@ -259,6 +270,19 @@ pub struct ContextState {
     pub has_selection: bool,
     /// Whether the clipboard holds text worth pasting.
     pub can_paste: bool,
+}
+
+/// Which line ending the document being shown uses.
+///
+/// Two bools rather than a `Newline`, because the menu's question is "which item is ticked" and the
+/// answer for a Mixed document — or one made entirely of lone carriage returns — is **neither**.
+/// A single value would have to invent a tick for a state that has no item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndingsState {
+    /// Whether the document is entirely `\n`.
+    pub lf: bool,
+    /// Whether the document is entirely `\r\n`.
+    pub crlf: bool,
 }
 
 /// Which Tools entries apply to the document being shown.
