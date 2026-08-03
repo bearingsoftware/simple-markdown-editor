@@ -94,6 +94,8 @@ pub enum Command {
     LineNumbers,
     /// View → Formatting Bar.
     Toolbar,
+    /// View → Whitespace and Line Endings.
+    Whitespace,
     /// View → Zoom In.
     ZoomIn,
     /// View → Zoom Out.
@@ -243,6 +245,8 @@ pub struct ViewState {
     pub line_numbers: bool,
     /// Whether the formatting bar is showing.
     pub toolbar: bool,
+    /// Whether spaces, tabs and line endings are drawn.
+    pub whitespace: bool,
 }
 
 /// Which context-menu entries are available.

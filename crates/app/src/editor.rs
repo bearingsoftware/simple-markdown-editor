@@ -108,6 +108,29 @@ struct Row<'a> {
     height: f32,
 }
 
+/// One whitespace mark, laid out once so it can be stamped wherever it is needed.
+///
+/// The advance is kept so the mark can be *centred* in the cell of the character it stands for,
+/// which is what makes a middot look like it belongs to the space rather than to the letter beside
+/// it. It is never used to advance a pen: the layout decides where everything goes.
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    key: mdedit_text::GlyphKey,
+    advance: f32,
+}
+
+/// Where a mark goes, and in what.
+///
+/// One parameter rather than four, for the reason [`LabelAt`] gives: they always travel together,
+/// and a row of positional `f32`s is the shape a caller silently transposes.
+#[derive(Debug, Clone, Copy)]
+struct MarkAt {
+    /// In the document's coordinates, before the content rect has its say.
+    pos: (f32, f32),
+    colour: Rgba,
+    at: Placement,
+}
+
 /// A short string of chrome, laid out and kept until it changes.
 #[derive(Debug, Clone)]
 struct Label {
@@ -767,6 +790,18 @@ pub struct Editor<T: TextLayout> {
     say: Box<dyn FnMut(&str)>,
     /// The files opened lately, for the Open Recent submenu.
     recent: Recent,
+    /// Whether spaces, tabs, control characters and line endings are drawn (MDEDIT-46).
+    ///
+    /// **Per-run, and deliberately not remembered**, for the same reason the drawing mode is not:
+    /// it is a way of looking at a document for a moment — where did that trailing space come from,
+    /// why is this line CRLF — rather than a preference. An editor that opened showing middots
+    /// because you checked something last week would be wrong.
+    whitespace: bool,
+    /// The marks, laid out once each.
+    ///
+    /// A fifth thing holding laid-out text, so it is a sixth thing `set_zoom` has to clear. The
+    /// *layout* caches need nothing, which is the point of drawing in place: see `draw_marks`.
+    marks: HashMap<char, Option<Mark>>,
     /// Concealed, or shown as it is. See [`crate::view::Mode`].
     mode: view::Mode,
     /// What the user chose. Read once at startup; see [`crate::config`].
@@ -925,6 +960,8 @@ impl<T: TextLayout> Editor<T> {
             show_about: Box::new(|| {}),
             say: Box::new(|_| {}),
             recent: Recent::default(),
+            whitespace: false,
+            marks: HashMap::new(),
             mode: view::Mode::default(),
             config: Config::default(),
             settings: crate::config::Settings::nowhere(),
@@ -1622,6 +1659,7 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomIn => self.zoom_by(1),
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
+            Command::Whitespace => self.toggle_whitespace(),
             Command::Validate => self.go_to_first_diagnostic(),
             Command::Format => self.format_document(),
             Command::Shortcuts => self.show_shortcuts(),
@@ -4155,6 +4193,7 @@ impl<T: TextLayout> Editor<T> {
             file_pane: self.chrome == Chrome::Pane,
             line_numbers: self.config.line_numbers,
             toolbar: self.toolbar,
+            whitespace: self.whitespace,
         });
     }
 
@@ -4452,6 +4491,9 @@ impl<T: TextLayout> Editor<T> {
         self.status_labels = [None, None, None];
         self.row_labels.clear();
         self.toolbar_labels.clear();
+        // The sixth thing holding laid-out text. The layout caches above are cleared because the
+        // text size is not in their key; this one is cleared for the same reason.
+        self.marks.clear();
 
         let ratio = zoom / previous;
         if let Some(anchor) = self.anchor.as_mut() {
@@ -5633,6 +5675,9 @@ impl<T: TextLayout> Editor<T> {
                 };
                 self.draw_matches(quads, &found, here, at);
                 self.draw_row_selection(quads, selected, here, at);
+                if self.whitespace {
+                    self.draw_marks(quads, here, baseline, at);
+                }
 
                 for glyph in &line.glyphs {
                     let Some(entry) = self.entry_for(glyph.key, scale) else {
@@ -5655,6 +5700,210 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         line_height
+    }
+
+    /// Draws the whitespace marks for one visual row (MDEDIT-46).
+    ///
+    /// # Nothing here changes the layout, and that is the whole design
+    ///
+    /// Each mark is stamped into the cell the invisible character already occupies, at the advance
+    /// the layout already gave it, so no glyph moves, no line re-wraps and no hit test shifts by a
+    /// pixel. That is why the toggle clears **no layout cache** — MDEDIT-46's plan expected it to,
+    /// by analogy with zoom, and the analogy does not hold: zoom changes what the text engine is
+    /// asked for, and this changes nothing it is asked for at all.
+    ///
+    /// The line-ending mark is drawn *past* the last glyph rather than in a cell, because the
+    /// terminator has no cell — it is not in the layout. It therefore adds no column the caret can
+    /// enter and nothing the hit test can land on: those come from the layout, which has not been
+    /// consulted.
+    fn draw_marks(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        row: Row<'_>,
+        baseline: f32,
+        at: Placement,
+    ) {
+        let chunk_top = baseline - row.cached.layout.lines[row.index].baseline;
+        let line = &row.cached.layout.lines[row.index];
+
+        // In-cell marks: one per invisible character the layout gave a position to.
+        for glyph in &line.glyphs {
+            let source = row.cached.rebase(glyph, row.chunk.span);
+            let Some(character) = row.text[source.get()..].chars().next() else {
+                continue;
+            };
+            let Some(mark) = view::mark_for(character) else {
+                continue;
+            };
+            // Centred in the cell the character already has. `glyph.advance` is the layout's answer
+            // and is never recomputed from the mark.
+            let Some(drawn) = self.mark(mark) else {
+                continue;
+            };
+            let offset = (glyph.advance - drawn.advance) / 2.0;
+            self.stamp(
+                quads,
+                drawn,
+                MarkAt {
+                    pos: (glyph.pos.x + offset, glyph.pos.y + chunk_top),
+                    colour: self.theme.marker,
+                    at,
+                },
+            );
+        }
+
+        // The line ending, past the end of the row. An empty line has no glyphs, so its terminator
+        // is found from where the row starts rather than from where it ends.
+        // Two shapes, and they need different questions asked. A row with glyphs is asked what comes
+        // *before* the offset past its last one, because the engine may or may not have given the
+        // terminator a glyph. A row with none is an empty line, whose terminator is exactly *at* its
+        // start — asking `before` there would walk back into the previous line and mark it twice.
+        let (ending, mut pen) = match line.glyphs.last() {
+            Some(last) => {
+                // Where the row's last character *ends*, taken from the document rather than from
+                // the glyph's own span length. A backend is free to report a glyph's source however
+                // suits it — a ligature covers several characters, a mark covers none — and asking
+                // the text how long the character at that offset is cannot be wrong whatever it
+                // reports.
+                let start = row.cached.rebase(last, row.chunk.span).get();
+                let mut after = start + row.text[start..].chars().next().map_or(0, char::len_utf8);
+                let mut pen = last.pos.x + last.advance;
+
+                // **Trailing whitespace, which is the thing people switch this on to find.**
+                // DirectWrite does not shape whitespace at the end of a line, so there is no glyph
+                // to stamp a mark into and these characters would be the only invisible ones the
+                // feature could not show. Walked over from past the last glyph, so nothing that did
+                // get a glyph can be marked twice.
+                while let Some(character) = row.text[after..].chars().next() {
+                    if character != ' ' && character != '\t' {
+                        break;
+                    }
+                    if let Some(drawn) = view::mark_for(character).and_then(|mark| self.mark(mark))
+                    {
+                        self.stamp(
+                            quads,
+                            drawn,
+                            MarkAt {
+                                pos: (pen, line.baseline + chunk_top),
+                                colour: self.theme.marker,
+                                at,
+                            },
+                        );
+                        pen += drawn.advance;
+                    }
+                    after += character.len_utf8();
+                }
+
+                (view::ending_before(row.text, after), pen)
+            }
+            None => (
+                view::ending_at(row.text, Self::row_start(row.chunk, row.text, row.index)),
+                0.0,
+            ),
+        };
+        let Some(ending) = ending else {
+            return;
+        };
+        let colour = if ending.is_suspect() {
+            self.theme.status_error
+        } else {
+            self.theme.marker
+        };
+        for mark in ending.marks() {
+            let Some(drawn) = self.mark(*mark) else {
+                continue;
+            };
+            self.stamp(
+                quads,
+                drawn,
+                MarkAt {
+                    pos: (pen, line.baseline + chunk_top),
+                    colour,
+                    at,
+                },
+            );
+            pen += drawn.advance;
+        }
+    }
+
+    /// Where a row's text starts in the buffer, for a row with no glyphs to ask.
+    ///
+    /// The same arithmetic `row_selection` does, and wrong in the same way for a wrapped row — but a
+    /// wrapped row is never empty, and this is only reached for one that is.
+    fn row_start(chunk: blocks::Chunk, text: &str, row: usize) -> usize {
+        let body = chunk.span.slice(text);
+        chunk.span.start().get()
+            + body
+                .split_inclusive('\n')
+                .take(row)
+                .map(str::len)
+                .sum::<usize>()
+    }
+
+    /// Puts one mark on screen at a document position.
+    fn stamp(&mut self, quads: &mut Vec<QuadInstance>, mark: Mark, spot: MarkAt) {
+        let MarkAt { pos, colour, at } = spot;
+        let Some(entry) = self.entry_for(mark.key, at.scale) else {
+            return;
+        };
+        let (x, y) = at.content.to_window(pos.0, pos.1, at.scroll);
+        quads.push(QuadInstance {
+            rect: [
+                x * at.scale + px_i(entry.left),
+                y * at.scale + px_i(entry.top),
+                px(entry.width),
+                px(entry.height),
+            ],
+            uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+            colour: [colour.r, colour.g, colour.b, colour.a],
+        });
+    }
+
+    /// One mark, laid out on first use and kept until the zoom changes.
+    ///
+    /// `None` is cached too: a font with no Control Pictures should be asked once, not once per
+    /// control character per frame.
+    fn mark(&mut self, character: char) -> Option<Mark> {
+        if let Some(known) = self.marks.get(&character) {
+            return *known;
+        }
+        let mut text = [0_u8; 4];
+        let run = StyledRun {
+            text: character.encode_utf8(&mut text),
+            style: TextStyle::body(self.theme.body_size),
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        };
+        let found = self.text.layout(&[run], f32::MAX).ok().and_then(|layout| {
+            layout.glyphs().next().map(|glyph| Mark {
+                key: glyph.key,
+                advance: glyph.advance,
+            })
+        });
+        self.marks.insert(character, found);
+        found
+    }
+
+    /// Whether whitespace and line endings are being drawn.
+    #[must_use]
+    pub fn whitespace(&self) -> bool {
+        self.whitespace
+    }
+
+    /// Shows or hides them, and says whether anything changed.
+    ///
+    /// Clears no cache: nothing about the layout depends on it. See [`Self::draw_marks`].
+    pub fn set_whitespace(&mut self, showing: bool) -> bool {
+        if self.whitespace == showing {
+            return false;
+        }
+        self.whitespace = showing;
+        self.refresh_view_menu();
+        true
+    }
+
+    /// Toggles them.
+    pub fn toggle_whitespace(&mut self) -> bool {
+        self.set_whitespace(!self.whitespace)
     }
 
     /// Draws the selection's highlight on one visual row, and records the bar's anchor from it.

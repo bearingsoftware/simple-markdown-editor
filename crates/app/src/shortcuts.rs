@@ -138,6 +138,11 @@ pub const ALL: &[Group] = &[
                 "(View menu)",
                 "Formatting bar — every button here is one of the chords above",
             ),
+            key(
+                "(View menu)",
+                "Whitespace and line endings — spaces, tabs, control characters, and which \
+                 lines are LF and which are CRLF",
+            ),
             key("Ctrl+= / Ctrl+-", "Make the text bigger or smaller"),
             key("Ctrl+0", "Back to the normal size"),
         ],
