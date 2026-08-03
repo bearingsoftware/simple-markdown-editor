@@ -12,7 +12,7 @@
     clippy::float_cmp
 )]
 
-use mdedit_app::content::{ContentRect, Insets};
+use mdedit_app::content::{ContentRect, Insets, Offset};
 
 const MARGIN: f32 = 24.0;
 
@@ -29,7 +29,10 @@ fn a_bare_window_leaves_the_margin_on_every_side() {
         700.0 - MARGIN,
         "the top margin only; the bottom one is part of the document's own height"
     );
-    assert_eq!(rect.to_window(0.0, 0.0, 0.0), (MARGIN, MARGIN));
+    assert_eq!(
+        rect.to_window(0.0, 0.0, Offset::down(0.0)),
+        (MARGIN, MARGIN)
+    );
 }
 
 #[test]
@@ -47,7 +50,7 @@ fn chrome_takes_its_share_before_the_margin_does() {
     );
 
     assert_eq!(
-        rect.to_window(0.0, 0.0, 0.0),
+        rect.to_window(0.0, 0.0, Offset::down(0.0)),
         (200.0 + MARGIN, 30.0 + MARGIN),
         "the text is inset from what the chrome left, not from the window"
     );
@@ -78,12 +81,16 @@ fn the_two_directions_are_exact_inverses() {
     for rect in rects {
         for scroll in [0.0, 1.0, 137.5, 10_000.0] {
             for (x, y) in [(0.0, 0.0), (13.0, 47.0), (-5.0, -9.0), (899.0, 699.0)] {
-                let (wx, wy) = rect.to_window(x, y, scroll);
-                let (dx, dy) = rect.to_document(wx, wy, scroll);
+                let (wx, wy) = rect.to_window(x, y, Offset::down(scroll));
+                let (dx, dy) = rect.to_document(wx, wy, Offset::down(scroll));
                 assert_eq!((dx, dy), (x, y), "round trip at scroll {scroll}");
 
-                let (bx, by) = rect.to_document(x, y, scroll);
-                assert_eq!(rect.to_window(bx, by, scroll), (x, y), "and the other way");
+                let (bx, by) = rect.to_document(x, y, Offset::down(scroll));
+                assert_eq!(
+                    rect.to_window(bx, by, Offset::down(scroll)),
+                    (x, y),
+                    "and the other way"
+                );
             }
         }
     }
@@ -92,7 +99,7 @@ fn the_two_directions_are_exact_inverses() {
 #[test]
 fn scrolling_moves_the_document_up_past_the_window() {
     let rect = plain();
-    let (_, y) = rect.to_window(0.0, 100.0, 40.0);
+    let (_, y) = rect.to_window(0.0, 100.0, Offset::down(40.0));
     assert_eq!(y, MARGIN + 60.0, "sixty pixels of it are left above");
 }
 
@@ -137,6 +144,9 @@ fn a_point_over_the_chrome_is_not_in_the_document() {
 #[test]
 fn the_visible_band_is_the_viewport_in_the_documents_own_coordinates() {
     let rect = plain();
-    assert_eq!(rect.visible(0.0), (0.0, rect.height()));
-    assert_eq!(rect.visible(500.0), (500.0, 500.0 + rect.height()));
+    assert_eq!(rect.visible(Offset::down(0.0)), (0.0, rect.height()));
+    assert_eq!(
+        rect.visible(Offset::down(500.0)),
+        (500.0, 500.0 + rect.height())
+    );
 }

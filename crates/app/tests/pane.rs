@@ -16,6 +16,7 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_app::pane::{self, Hit, PANE_WIDTH, ROW_HEIGHT};
 use mdedit_app::view::Chrome;
@@ -205,7 +206,10 @@ fn a_click_in_the_text_lands_on_the_right_byte_with_the_pane_open() {
     let mut with_strip = editor_with_files(&dir, 1, source);
     let _ = with_strip.build_frame(WIDTH, HEIGHT, 1.0);
     let strip_left = with_strip.content_rect().left_edge();
-    let strip_top = with_strip.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let strip_top = with_strip
+        .content_rect()
+        .to_window(0.0, 0.0, Offset::down(0.0))
+        .1;
     with_strip.click_at(
         strip_left + 4.0 * ADVANCE,
         strip_top + LINE_HEIGHT * 2.0 + LINE_HEIGHT / 2.0,
@@ -216,7 +220,10 @@ fn a_click_in_the_text_lands_on_the_right_byte_with_the_pane_open() {
     with_pane.toggle_chrome();
     let _ = with_pane.build_frame(WIDTH, HEIGHT, 1.0);
     let pane_left = with_pane.content_rect().left_edge();
-    let pane_top = with_pane.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let pane_top = with_pane
+        .content_rect()
+        .to_window(0.0, 0.0, Offset::down(0.0))
+        .1;
     with_pane.click_at(
         pane_left + 4.0 * ADVANCE,
         pane_top + LINE_HEIGHT * 2.0 + LINE_HEIGHT / 2.0,

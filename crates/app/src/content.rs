@@ -35,6 +35,31 @@ pub struct Insets {
     pub right: f32,
 }
 
+/// How far the viewport has moved over the document, on both axes.
+///
+/// One type rather than two `f32` parameters, and that is the whole of MDEDIT-49's safety argument:
+/// the conversions used to take a bare vertical scroll, so **every caller that had not thought about
+/// horizontal scrolling silently kept working and drew in the wrong place**. Making it a pair means
+/// the compiler asks each of them the question once.
+///
+/// `x` is zero whenever the text wraps, which is most of the time — there is nothing off to the side
+/// to reach.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Offset {
+    /// How far right the viewport has panned.
+    pub x: f32,
+    /// How far down the document the viewport has moved.
+    pub y: f32,
+}
+
+impl Offset {
+    /// A vertical-only offset, which is every offset while the text wraps.
+    #[must_use]
+    pub fn down(y: f32) -> Self {
+        Self { x: 0.0, y }
+    }
+}
+
 /// The document's drawable area, and the only thing that knows where it is.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ContentRect {
@@ -79,14 +104,14 @@ impl ContentRect {
 
     /// Where a point in the document lands in the window, at a given scroll offset.
     #[must_use]
-    pub fn to_window(self, x: f32, y: f32, scroll: f32) -> (f32, f32) {
-        (x + self.left, y + self.top - scroll)
+    pub fn to_window(self, x: f32, y: f32, at: Offset) -> (f32, f32) {
+        (x + self.left - at.x, y + self.top - at.y)
     }
 
     /// Where a point in the window lands in the document. The inverse of [`Self::to_window`].
     #[must_use]
-    pub fn to_document(self, x: f32, y: f32, scroll: f32) -> (f32, f32) {
-        (x - self.left, y - self.top + scroll)
+    pub fn to_document(self, x: f32, y: f32, at: Offset) -> (f32, f32) {
+        (x - self.left + at.x, y - self.top + at.y)
     }
 
     /// Where the text starts, measured from the window's left edge.
@@ -117,8 +142,12 @@ impl ContentRect {
     ///
     /// What culling compares against, so that the check happens in the same space the layout is in
     /// rather than being converted to the window and back.
+    ///
+    /// Vertical only, deliberately. Rows are culled because a document is far taller than a window
+    /// and drawing all of it is the large-file freeze; a row is never wider than a screen by enough
+    /// for per-glyph culling to pay for the test, and MDEDIT-49 did not change that.
     #[must_use]
-    pub fn visible(self, scroll: f32) -> (f32, f32) {
-        (scroll, scroll + self.height)
+    pub fn visible(self, at: Offset) -> (f32, f32) {
+        (at.y, at.y + self.height)
     }
 }

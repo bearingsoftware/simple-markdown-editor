@@ -34,7 +34,7 @@ use winit::window::{Window, WindowId};
 use crate::blocks;
 use crate::clipboard::{Clipboard, HoldNothing};
 use crate::config::Config;
-use crate::content::{ContentRect, Insets};
+use crate::content::{ContentRect, Insets, Offset};
 use crate::field;
 use crate::find;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
@@ -52,6 +52,27 @@ use crate::tabs;
 use crate::toolbar;
 use crate::view::Chrome;
 use mdedit_document::format::{self, Inline};
+
+/// The width chunks are laid out at when word wrap is off (MDEDIT-49).
+///
+/// A large finite number rather than infinity. It has to be finite because it goes into `ChunkKey`
+/// and is compared and hashed there, and because a text engine handed an infinite maximum is
+/// entitled to do arithmetic with it; it has to be large enough that nothing real reaches it. A
+/// hundred thousand pixels is about twelve thousand characters on one line, which is past the point
+/// where a line is a data file rather than prose.
+const UNWRAPPED: f32 = 100_000.0;
+
+/// How far one Shift+wheel notch pans sideways.
+///
+/// In pixels rather than characters, because a proportional font has no column to count. Roughly
+/// three characters of body text, which matches the three lines a vertical notch moves.
+const PAN_PER_NOTCH: f32 = 48.0;
+
+/// How much room the horizontal reveal leaves either side of the caret.
+///
+/// A caret revealed hard against the right edge has nothing after it to read, which is exactly the
+/// position somebody typing at the end of a long line is in.
+const PAN_MARGIN: f32 = 40.0;
 
 /// The status bar's right-hand fields.
 const RIGHT: usize = 0;
@@ -802,6 +823,23 @@ pub struct Editor<T: TextLayout> {
     /// A fifth thing holding laid-out text, so it is a sixth thing `set_zoom` has to clear. The
     /// *layout* caches need nothing, which is the point of drawing in place: see `draw_marks`.
     marks: HashMap<char, Option<Mark>>,
+    /// Whether long lines wrap, or run off to the right (MDEDIT-49).
+    ///
+    /// **Per-run, like the drawing mode**, and for the same reason: it is a way of looking at a
+    /// document rather than a preference about it.
+    wrap: bool,
+    /// How far right the viewport has panned. Always zero while [`Self::wrap`] is on.
+    ///
+    /// A second [`Scroll`], not a second kind of arithmetic: every one of its methods takes the
+    /// content and viewport extents as parameters, so the type never knew which axis it was on.
+    pan: Scroll,
+    /// The widest row laid out so far, for the horizontal clamp.
+    ///
+    /// **Measured, not estimated, and therefore incomplete.** Only chunks that have been laid out
+    /// have a width to contribute, so a document nobody has scrolled to the bottom of may have a
+    /// longer line further down — exactly the position the vertical axis is in with its estimated
+    /// heights. It grows as chunks are measured, and is cleared with the layout caches.
+    widest: f32,
     /// Concealed, or shown as it is. See [`crate::view::Mode`].
     mode: view::Mode,
     /// What the user chose. Read once at startup; see [`crate::config`].
@@ -964,6 +1002,9 @@ impl<T: TextLayout> Editor<T> {
             show_about: Box::new(|| {}),
             say: Box::new(|_| {}),
             recent: Recent::default(),
+            wrap: true,
+            pan: Scroll::new(),
+            widest: 0.0,
             whitespace: false,
             marks: HashMap::new(),
             mode: view::Mode::default(),
@@ -1703,6 +1744,7 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
             Command::Whitespace => self.toggle_whitespace(),
+            Command::WordWrap => self.toggle_wrap(),
             Command::ReopenWith(index) => self.reopen_with(index),
             Command::SaveWith(index) => self.save_with(index),
             Command::ConvertToLf => self.set_newline(mdedit_file::Newline::Lf),
@@ -2755,7 +2797,14 @@ impl<T: TextLayout> Editor<T> {
     }
 
     /// Inserts text at the caret, replacing the selection if there is one.
+    ///
+    /// **Asks for the caret to be revealed**, because this is the tests' stand-in for typing and
+    /// typing does — `handle_key` sets the same flag before it dispatches anything. Without it the
+    /// seam was subtly unfaithful, and MDEDIT-49 is where that mattered: a test typing at the end of
+    /// a long line saw no horizontal reveal and reported the feature broken when it was the test
+    /// that had not asked for one.
     pub fn insert_text(&mut self, text: &str) -> bool {
+        self.follow_caret = true;
         self.insert(text)
     }
 
@@ -2864,7 +2913,7 @@ impl<T: TextLayout> Editor<T> {
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
         let content = self.content;
         let visible = content.height();
-        let mut frame = self.measure(content.width());
+        let mut frame = self.measure(self.wrap_width());
 
         // The one place the document's contiguous text already exists, so searching it costs no
         // second `to_string`. Rescans only when the needle, the case flag or the revision has moved
@@ -2882,7 +2931,8 @@ impl<T: TextLayout> Editor<T> {
         self.refresh_encodings_menu();
 
         self.hold_anchor(&frame, visible);
-        if self.follow_caret {
+        let following = self.follow_caret;
+        if following {
             if let Some((index, caret)) = self.caret_position(&frame) {
                 let caret_top = frame.tops[index] + caret.top;
                 self.scroll
@@ -2904,10 +2954,34 @@ impl<T: TextLayout> Editor<T> {
         self.scroll.set(offset, frame.content, visible);
         let offset = self.scroll.offset();
 
+        // **The horizontal reveal happens here rather than beside the vertical one**, and the reason
+        // is `widest`. It is measured, so it only knows about chunks that have been laid out — and
+        // before `warm` the chunk the caret is in may be one of the ones that have not, which is
+        // always the case for the chunk that was just edited. Revealing there clamped against a
+        // width of zero and did nothing at all: typing at the end of a long line left the caret off
+        // the right edge. A little margin either side, so the caret does not sit hard against the
+        // edge with nothing after it to read.
+        if following && !self.wrap {
+            if let Some((_, caret)) = self.caret_position(&frame) {
+                self.pan.reveal(
+                    (caret.x - PAN_MARGIN).max(0.0),
+                    caret.x + PAN_MARGIN,
+                    self.widest,
+                    content.width(),
+                );
+            }
+        }
+        // Re-clamped against what is now known to be the widest measured row, which may have grown
+        // this frame as more chunks were laid out. Same shape as the vertical clamp above, and the
+        // same reason: an offset that was legal last frame can be past the end of this one.
+        self.pan
+            .set(self.pan.offset(), self.widest, content.width());
+        let viewport = self.viewport_offset();
+
         let range = blocks::visible(&frame.tops, &frame.heights, offset, visible);
         let at = Placement {
             content,
-            scroll: offset,
+            offset: viewport,
             scale,
         };
         let line = self.draw_chunks(&mut quads, &frame, range.clone(), at);
@@ -2927,7 +3001,7 @@ impl<T: TextLayout> Editor<T> {
                 ..caret
             });
 
-        let placed = caret.map(|caret| content.to_window(caret.x, caret.top, offset));
+        let placed = caret.map(|caret| content.to_window(caret.x, caret.top, viewport));
         self.caret_area = placed
             .zip(caret)
             .map(|((x, y), caret)| (x, y, caret.height));
@@ -4114,6 +4188,27 @@ impl<T: TextLayout> Editor<T> {
 
     /// Turns a wheel notch into a scroll of whatever is under the pointer.
     fn wheel(&mut self, delta: MouseScrollDelta) {
+        // A wheel scroll stops the view following the caret, exactly as dragging the thumb does: the
+        // user has said where they want to look. `pan_by` does the same for the sideways branch
+        // below — see there for what it cost to find out.
+        self.follow_caret = false;
+
+        // **Shift turns the wheel sideways**, which is the convention everywhere and the only way to
+        // pan without a horizontal scrollbar. Taken before the vertical arithmetic rather than after,
+        // because a Shift+wheel must not also scroll down.
+        if self.modifiers.shift_key() && !self.wrap {
+            let sideways = match delta {
+                MouseScrollDelta::LineDelta(_, lines) => -lines * PAN_PER_NOTCH,
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "scroll deltas are small pixel counts"
+                )]
+                MouseScrollDelta::PixelDelta(position) => -(position.y as f32),
+            };
+            self.pan_by(sideways);
+            return;
+        }
+
         // Wheel-up is positive and moves the view towards the top, which is a smaller offset —
         // hence the negation on both arms.
         let delta = match delta {
@@ -4280,6 +4375,7 @@ impl<T: TextLayout> Editor<T> {
             line_numbers: self.config.line_numbers,
             toolbar: self.toolbar,
             whitespace: self.whitespace,
+            word_wrap: self.wrap,
         });
     }
 
@@ -4580,6 +4676,8 @@ impl<T: TextLayout> Editor<T> {
         // The sixth thing holding laid-out text. The layout caches above are cleared because the
         // text size is not in their key; this one is cleared for the same reason.
         self.marks.clear();
+        // Every row is a different width at a different text size, so the widest is no longer known.
+        self.widest = 0.0;
 
         let ratio = zoom / previous;
         if let Some(anchor) = self.anchor.as_mut() {
@@ -5282,7 +5380,7 @@ impl<T: TextLayout> Editor<T> {
     fn offset_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
         // The same rectangle the glyphs were placed with, run backwards. Neither side computes an
         // offset of its own, so the two cannot drift apart.
-        let (x, y) = self.content.to_document(x, y, self.scroll.offset());
+        let (x, y) = self.content.to_document(x, y, self.viewport_offset());
         self.offset_in_document(x, y)
     }
 
@@ -5683,10 +5781,10 @@ impl<T: TextLayout> Editor<T> {
     ) -> f32 {
         let Placement {
             content,
-            scroll,
+            offset,
             scale,
         } = at;
-        let (band_top, band_bottom) = content.visible(scroll);
+        let (band_top, band_bottom) = content.visible(offset);
         let mut line_height = self.theme.body_size;
 
         for index in range {
@@ -5771,7 +5869,7 @@ impl<T: TextLayout> Editor<T> {
                     };
                     let colour =
                         view::colour_at(&runs, cached.rebase(glyph, chunk.span), self.theme.text);
-                    let (x, y) = content.to_window(glyph.pos.x, glyph.pos.y + chunk_top, scroll);
+                    let (x, y) = content.to_window(glyph.pos.x, glyph.pos.y + chunk_top, offset);
                     quads.push(QuadInstance {
                         rect: [
                             x * scale + px_i(entry.left),
@@ -5932,7 +6030,7 @@ impl<T: TextLayout> Editor<T> {
         let Some(entry) = self.entry_for(mark.key, at.scale) else {
             return;
         };
-        let (x, y) = at.content.to_window(pos.0, pos.1, at.scroll);
+        let (x, y) = at.content.to_window(pos.0, pos.1, at.offset);
         quads.push(QuadInstance {
             rect: [
                 x * at.scale + px_i(entry.left),
@@ -6184,6 +6282,95 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Where the viewport sits over the document, on both axes.
+    ///
+    /// The one place the two scrolls are put together, so no caller can pass one and forget the
+    /// other.
+    fn viewport_offset(&self) -> Offset {
+        Offset {
+            x: self.pan.offset(),
+            y: self.scroll.offset(),
+        }
+    }
+
+    /// The width chunks are laid out at: the content width, or [`UNWRAPPED`] when wrap is off.
+    ///
+    /// One function so the layout, the cache key and the clamp cannot disagree about it — they are
+    /// three readings of the same number, and a mismatch between the first two would draw a
+    /// document laid out for a width it is not being shown at.
+    fn wrap_width(&self) -> f32 {
+        if self.wrap {
+            self.content.width()
+        } else {
+            UNWRAPPED
+        }
+    }
+
+    /// Whether long lines wrap.
+    #[must_use]
+    pub fn wrap(&self) -> bool {
+        self.wrap
+    }
+
+    /// How far right the viewport has panned. Always zero while wrapping.
+    #[must_use]
+    pub fn pan(&self) -> f32 {
+        self.pan.offset()
+    }
+
+    /// Turns word wrap on or off, and says whether anything changed (MDEDIT-49).
+    ///
+    /// **Every chunk is laid out at a different width afterwards**, so this clears the layout caches
+    /// exactly as a zoom does — and for the same reason, since the width *is* in `ChunkKey` but the
+    /// measured heights and the anchor are not. Turning wrap back on also returns the pan to zero:
+    /// there is nothing off to the side any more, and leaving the offset would show a document
+    /// scrolled past its own right edge.
+    pub fn set_wrap(&mut self, wrap: bool) -> bool {
+        if self.wrap == wrap {
+            return false;
+        }
+        self.wrap = wrap;
+        self.layouts.clear();
+        self.heights.clear();
+        self.widest = 0.0;
+        if wrap {
+            self.pan.to_top();
+        }
+        // The caret is the thing the reader is looking at, and every row it could be on has just
+        // changed shape. Keeping it on screen is what makes the toggle feel like a view change
+        // rather than a jump.
+        self.follow_caret = true;
+        self.refresh_view_menu();
+        true
+    }
+
+    /// Toggles word wrap.
+    pub fn toggle_wrap(&mut self) -> bool {
+        self.set_wrap(!self.wrap)
+    }
+
+    /// Pans sideways by `delta` pixels, clamped. Does nothing while wrapping.
+    ///
+    /// # A pan stops the view following the caret
+    ///
+    /// Without that line this did nothing at all in the window, while every test of it passed.
+    /// Shift+wheel is the only way to pan, and **Shift is a key press**, so holding it re-armed
+    /// `follow_caret`; the pan landed, and the frame it requested then revealed the caret — which on
+    /// a document nobody has clicked into is at the left edge — and put the offset straight back to
+    /// zero. The vertical axis has the same hazard and hides it, because a plain wheel is not
+    /// preceded by a keystroke and so nothing had re-armed the flag.
+    pub fn pan_by(&mut self, delta: f32) -> bool {
+        if self.wrap {
+            return false;
+        }
+        self.follow_caret = false;
+        let before = self.pan.offset();
+        self.pan.by(delta, self.widest, self.content.width());
+        // Compared with a tolerance rather than for equality: these are accumulated `f32` offsets,
+        // and "did the view move" is a question about pixels rather than about bit patterns.
+        (before - self.pan.offset()).abs() > f32::EPSILON
+    }
+
     /// Whether whitespace and line endings are being drawn.
     #[must_use]
     pub fn whitespace(&self) -> bool {
@@ -6225,7 +6412,7 @@ impl<T: TextLayout> Editor<T> {
         else {
             return;
         };
-        let (x, y) = at.content.to_window(from, row.top, at.scroll);
+        let (x, y) = at.content.to_window(from, row.top, at.offset);
         // The first row reached is the first visible row of the selection, and the only one the
         // floating bar wants. Kept here because it is the one place that knows: the highlight is
         // otherwise pushed and forgotten.
@@ -6267,7 +6454,7 @@ impl<T: TextLayout> Editor<T> {
             else {
                 continue;
             };
-            let (x, y) = at.content.to_window(from, row.top, at.scroll);
+            let (x, y) = at.content.to_window(from, row.top, at.offset);
             quads.push(Self::solid(
                 [
                     x * at.scale,
@@ -6370,7 +6557,7 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let advance = digits[0].1;
-        let (_, y) = at.content.to_window(0.0, top, at.scroll);
+        let (_, y) = at.content.to_window(0.0, top, at.offset);
         // Right-aligned against the *gutter's* right edge, less its padding — not against where the
         // text starts, which is what MDEDIT-34 was. `left_edge` is the gutter plus the document's
         // margin, so aligning to it drew the number past the gutter entirely and hard up against the
@@ -6447,6 +6634,11 @@ impl<T: TextLayout> Editor<T> {
         let layout = self.text.layout(&styled, frame.width).ok()?;
 
         let cached = Rc::new(Cached::new(layout, &chunk, body, key.last));
+        // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
+        // chunk stops being an estimate and becomes a measurement — the same moment its height
+        // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
+        // along with the caches whose answers it was derived from.
+        self.widest = self.widest.max(cached.width);
         if !revealed {
             // Layouts are the memory-hungry half — a glyph apiece — so they are capped and the
             // whole lot dropped when the cap is hit. Heights are a float each and worth keeping:
@@ -6828,12 +7020,15 @@ struct Placement {
     /// Where the document may draw, and the only thing that converts between its coordinates and
     /// the window's.
     content: ContentRect,
-    /// How far down the document the viewport has moved.
+    /// How far the viewport has moved over the document, on both axes.
     ///
-    /// With the rectangle, this gives the band of the document that is on screen — which is what
+    /// With the rectangle, its `y` gives the band of the document that is on screen — which is what
     /// lines are culled against. A chunk can be far taller than the window, since a document with
     /// no blank line in it is a single chunk, so per-line culling is needed as well as per-chunk.
-    scroll: f32,
+    ///
+    /// Its `x` is zero unless word wrap is off, which is the only way anything can be off to the
+    /// side to reach.
+    offset: Offset,
     scale: f32,
 }
 
@@ -6911,6 +7106,12 @@ struct Cached {
     /// Whether the last line belongs to the next chunk rather than to this one.
     drops_last: bool,
     height: f32,
+    /// The widest row in it, for MDEDIT-49's horizontal clamp.
+    ///
+    /// Measured from the glyphs rather than taken from the layout's own width, because a layout
+    /// asked for an unbounded width may report the width it was *asked* for rather than the width it
+    /// used — which would clamp the pan against a hundred thousand pixels of nothing.
+    width: f32,
 }
 
 impl Cached {
@@ -6922,11 +7123,20 @@ impl Cached {
             } else {
                 0.0
             };
+        // The right-hand edge of the furthest glyph, over every row. A row's own extent is where its
+        // last glyph ends, and the widest row is what the pan may reach.
+        let width = layout
+            .lines
+            .iter()
+            .filter_map(|line| line.glyphs.last())
+            .map(|glyph| glyph.pos.x + glyph.advance)
+            .fold(0.0_f32, f32::max);
         Self {
             layout,
             base: chunk.span.start().get(),
             drops_last,
             height,
+            width,
         }
     }
 

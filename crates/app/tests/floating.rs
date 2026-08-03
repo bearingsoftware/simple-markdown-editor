@@ -16,6 +16,7 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_app::toolbar::{self, Action, Anchor};
 use mdedit_document::Selection;
@@ -66,7 +67,11 @@ fn it_never_appears_during_a_drag() {
     let mut editor = editor("hello world\n");
     editor.click_at(
         editor.content_rect().left_edge() + 1.0,
-        editor.content_rect().to_window(0.0, 0.0, 0.0).1 + LINE_HEIGHT / 2.0,
+        editor
+            .content_rect()
+            .to_window(0.0, 0.0, Offset::down(0.0))
+            .1
+            + LINE_HEIGHT / 2.0,
     );
     assert!(editor.dragging(), "the click should have armed a drag");
 
@@ -140,7 +145,10 @@ fn a_click_in_the_text_dismisses_it_and_lands_correctly() {
     // the selection up at the top. A click that landed *on* the bar is a different test.
     let source = "hello world\n\nsecond line\n\nthird\n\nfourth\n\nfifth line\n";
     let mut without = editor(source);
-    let top = without.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let top = without
+        .content_rect()
+        .to_window(0.0, 0.0, Offset::down(0.0))
+        .1;
     let left = without.content_rect().left_edge();
     let far_down = top + LINE_HEIGHT * 8.5;
     without.click_at(left + 4.0 * stub::ADVANCE, far_down);
@@ -335,7 +343,10 @@ fn a_multi_line_selection_anchors_to_its_first_row() {
     let mut editor = settled(source, start, source.len() - 1);
 
     let (_, y, _) = editor.floating_at().unwrap();
-    let content_top = editor.content_rect().to_window(0.0, 0.0, 0.0).1;
+    let content_top = editor
+        .content_rect()
+        .to_window(0.0, 0.0, Offset::down(0.0))
+        .1;
     // Four visual rows down: "one", blank, "two", blank — the selection's first row is the fifth.
     let first_row_top = content_top + LINE_HEIGHT * 4.0;
 

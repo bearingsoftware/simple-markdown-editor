@@ -11,6 +11,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_app::clipboard::Clipboard;
+use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
@@ -49,7 +50,11 @@ fn at(editor: &Editor<Grid>, column: usize) -> (f32, f32) {
     #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
     (
         ADVANCE.mul_add(column as f32, editor.content_rect().left_edge()) + ADVANCE / 2.0,
-        editor.content_rect().to_window(0.0, 0.0, 0.0).1 + LINE_HEIGHT / 2.0,
+        editor
+            .content_rect()
+            .to_window(0.0, 0.0, Offset::down(0.0))
+            .1
+            + LINE_HEIGHT / 2.0,
     )
 }
 
