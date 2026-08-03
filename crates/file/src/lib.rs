@@ -119,33 +119,87 @@ pub enum Newline {
     Lf,
     /// `\r\n`.
     CrLf,
+    /// A lone `\r` — a classic-Mac file, or a document somebody has damaged.
+    ///
+    /// Never a *target* for conversion, only ever something a document is found to be. MDEDIT-59
+    /// converts to LF or CRLF; nothing offers to make a file this.
+    Cr,
     /// Both are present. Enter inserts the more common one; neither is rewritten.
     Mixed,
 }
 
 impl Newline {
     /// What to insert for a new line.
+    ///
+    /// `Mixed` inserts `\n`, because a document that is already both has no answer to give and the
+    /// one that does not add a byte is the better guess.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lf | Self::Mixed => "\n",
             Self::CrLf => "\r\n",
+            Self::Cr => "\r",
         }
     }
 
     /// The dominant style in `text`.
+    ///
+    /// **A lone `\r` counts.** It used to be invisible here — a classic-Mac file has no `\n` at all,
+    /// so it was reported as `Lf`, and the status bar said so about a document containing not one
+    /// of them. MDEDIT-46 draws those endings in the warning colour, which made the bar's answer
+    /// visibly wrong beside them.
     #[must_use]
     pub fn detect(text: &str) -> Self {
         let crlf = text.matches("\r\n").count();
-        // Every `\r\n` also contains a `\n`, so lone newlines are the difference.
+        // Every `\r\n` contains one of each, so the lone ones are the difference.
         let lone_lf = text.matches('\n').count() - crlf;
+        let lone_cr = text.matches('\r').count() - crlf;
 
-        match (crlf, lone_lf) {
-            (0, _) => Self::Lf,
-            (_, 0) => Self::CrLf,
+        match (crlf, lone_lf, lone_cr) {
+            (_, 0, 0) if crlf > 0 => Self::CrLf,
+            // Also the answer for a document with no line endings at all, which is what `default`
+            // says and what such a document gets written with.
+            (0, _, 0) => Self::Lf,
+            (0, 0, _) => Self::Cr,
             _ => Self::Mixed,
         }
     }
+}
+
+/// Rewrites every line terminator in `text` to `to`, and says whether anything changed.
+///
+/// **Every terminator**, which includes the lone `\r` that nothing else in this codebase produces:
+/// a classic-Mac file, or a stray carriage return left behind by a bad paste. Leaving those alone
+/// would make "convert to LF" a conversion that demonstrably did not convert the document, and they
+/// are the ones a user is most likely to be trying to get rid of.
+///
+/// Returns `None` when the text already uses `to` throughout — the caller then makes no edit at all,
+/// so there is no undo step that appears to do nothing.
+///
+/// `Mixed` is not a target: it is a description of a document rather than a style to impose.
+#[must_use]
+pub fn normalise_newlines(text: &str, to: Newline) -> Option<String> {
+    let ending = to.as_str();
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut rest = text;
+    let mut changed = false;
+
+    while let Some(at) = rest.find(['\r', '\n']) {
+        out.push_str(&rest[..at]);
+        let found = if rest[at..].starts_with("\r\n") {
+            "\r\n"
+        } else if rest[at..].starts_with('\r') {
+            "\r"
+        } else {
+            "\n"
+        };
+        changed |= found != ending;
+        out.push_str(ending);
+        rest = &rest[at + found.len()..];
+    }
+    out.push_str(rest);
+
+    changed.then_some(out)
 }
 
 /// How a file is encoded on disk.
@@ -336,6 +390,15 @@ impl LoadedFile {
     #[must_use]
     pub fn format(&self) -> FileFormat {
         self.format
+    }
+
+    /// Records that this file's line endings are now `newline` (MDEDIT-59).
+    ///
+    /// The buffer is converted by the editor, which owns the undoable edit; this is the other half,
+    /// so what the status bar says and what Enter inserts agree with the bytes. Called only after a
+    /// conversion that actually happened.
+    pub fn set_newline(&mut self, newline: Newline) {
+        self.format.newline = newline;
     }
 
     /// The bytes as they were read.

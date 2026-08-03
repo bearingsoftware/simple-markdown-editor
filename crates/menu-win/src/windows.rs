@@ -36,6 +36,8 @@ pub struct MenuBar {
     /// Tools → Format Document, kept for the same reason: its enabled state has to follow whichever
     /// document is showing. See [`Self::set_tools`].
     format_item: MenuItem,
+    /// File → Line Endings, kept so its ticks can follow the document. See [`Self::set_endings`].
+    ending_items: [CheckMenuItem; 2],
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -85,6 +87,19 @@ impl MenuBar {
         commands.insert(format_item.id().clone(), Command::Format);
         tools.insert(&format_item, 0).ok()?;
 
+        // File → Line Endings. A submenu beside the encoding ones eventually, because which endings
+        // a file has is a property of the file in the same way its encoding is. Check items rather
+        // than plain ones: the point is as much to say what the document *is* as to change it, and a
+        // Mixed document ticks neither.
+        let endings = Submenu::new("Line &Endings", true);
+        let lf = CheckMenuItem::new("&LF", true, false, None);
+        let crlf = CheckMenuItem::new("&CRLF", true, false, None);
+        commands.insert(lf.id().clone(), Command::ConvertToLf);
+        commands.insert(crlf.id().clone(), Command::ConvertToCrLf);
+        endings.append(&lf).ok()?;
+        endings.append(&crlf).ok()?;
+        let ending_items = [lf, crlf];
+
         // Empty and disabled until the app fills it in — see `set_recent`. Placed after Open, where
         // every editor puts it.
         let recent = Submenu::new("Open &Recent", false);
@@ -94,6 +109,13 @@ impl MenuBar {
         // Index 6 rather than 4: Open and Open Recent went in above it.
         file.insert(&muda::PredefinedMenuItem::separator(), 6)
             .ok()?;
+
+        // **After the separator exists**, so this lands between Save All and it. Inserting earlier
+        // panics: the File menu is only seven items long until Open Recent and the separator are in,
+        // and muda's insert is an index into a `Vec`. That is a startup crash, and no test can see
+        // it — a menu bar cannot be built without a window, which is why `AGENTS.md` says menus are
+        // checked by eye.
+        file.insert(&endings, 6).ok()?;
 
         menu.append(&file).ok()?;
         menu.append(&edit).ok()?;
@@ -108,7 +130,19 @@ impl MenuBar {
             context_ids: Arc::new(Mutex::new(HashMap::new())),
             view_toggles,
             format_item,
+            ending_items,
         })
+    }
+
+    /// Ticks whichever line ending the document being shown uses.
+    ///
+    /// **Neither, for a document that is Mixed** — or one made entirely of lone carriage returns.
+    /// Ticking one anyway would be the menu claiming a file is something it is not, which is exactly
+    /// what the status bar's "Mixed" exists to avoid.
+    pub fn set_endings(&self, state: crate::EndingsState) {
+        let [lf, crlf] = &self.ending_items;
+        lf.set_checked(state.lf);
+        crlf.set_checked(state.crlf);
     }
 
     /// Greys the Tools items that do not apply to the document being shown.

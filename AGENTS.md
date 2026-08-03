@@ -271,7 +271,7 @@ Known gaps, so nobody assumes they are done:
   is the one from before you started. A document nobody has typed in yet is counted once, on its
   first frame.
 
-  **Four things share that timer, and it is now scheduled after any edit.** It used to be set only
+  **Five things share that timer, and it is now scheduled after any edit.** It used to be set only
   when the parse had been scoped — i.e. only above 16 KB — so on an ordinary note it never fired at
   all, which froze the word count and, when MDEDIT-54 arrived, would have meant no crash-recovery
   snapshot for exactly the small unsaved buffers the feature exists to protect. `Editor::on_idle` is
@@ -390,6 +390,32 @@ Known gaps, so nobody assumes they are done:
   every route to a save passes it. **No filesystem watcher** — `notify` brings threads and four
   platform backends for a case that happens between focus changes; the gap is a file rewritten while
   the window stays focused, which costs freshness rather than work.
+- **Line endings can be converted, and saving still never converts anything.** MDEDIT-59, the fix for
+  what MDEDIT-46 made visible. File → Line Endings → LF or CRLF rewrites **every** terminator —
+  including the lone `\r` that nothing else here produces, which is the one a user is most likely to
+  be trying to get rid of. One `replace` inside a transaction, so one Ctrl+Z restores the original
+  bytes; a conversion that would change nothing makes no edit at all. The same exception the
+  byte-preservation rules grant Format Document, for the same reason: the user asked.
+
+  **Three things have to agree — the buffer, the `FileFormat` and the status bar** — and the third is
+  how you find out the first two do not. So the conversion sets the format too, and **Enter inserts
+  the file's own ending** rather than always `\n`. It used to always insert `\n`, which is how a CRLF
+  file becomes Mixed without anybody pasting anything into it.
+
+  **`Newline` grew a `Cr` variant**, because a classic-Mac file was being reported as LF — a document
+  containing not one of them. MDEDIT-46 draws those endings in the warning colour, which put the
+  bar's wrong answer directly beside the evidence. It is never a conversion *target*: nothing offers
+  to make a file that.
+
+  The submenu's ticks say what the document **is**, so a Mixed document ticks neither. Refreshed by
+  comparison per frame, like the Tools menu's enablement.
+
+  **The endings are re-detected on the idle timer**, which is the fifth thing on it. They used to be
+  detected once at load and believed for ever, and two things made that a lie: undoing a conversion
+  put the bytes back without putting the format back, and *pasting* CRLF into an LF file — which this
+  editor deliberately preserves — had never updated the bar at all. Deriving it from the buffer makes
+  both self-correcting; it costs a walk of the buffer, which is why it is beside the word count and
+  not anywhere a keystroke reaches. **The undo half was found in the window, not by a test.**
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage
