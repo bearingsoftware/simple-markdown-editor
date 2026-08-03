@@ -400,6 +400,40 @@ pub trait Language: std::fmt::Debug + Send + Sync {
         Vec::new()
     }
 
+    /// Reformats `source`, if this language has a defensible way to.
+    ///
+    /// `None` means **this language does not reformat**, and for the two that answer it that is a
+    /// decision rather than a gap:
+    ///
+    /// - **Markdown** has no canonical form. Wrap column, emphasis token and list marker are style
+    ///   arguments, and the decorate-the-source architecture exists precisely so the editor holds no
+    ///   opinion about the user's Markdown bytes.
+    /// - **YAML** cannot be round-tripped without losing comments and anchors. A comment-preserving
+    ///   reformatter is a project, not a method.
+    ///
+    /// `Some(Err(_))` means it *does* reformat but will not touch this document, because it is not
+    /// valid — formatting a half-written file would mean inventing the structure the user has not
+    /// finished typing. The two cases are kept apart because a caller greys a menu item for the
+    /// first and shows a message for the second.
+    ///
+    /// # Why this is on the language rather than in the editor
+    ///
+    /// So no caller has to compare [`name`](Self::name) against `"JSON"` to know what it may offer.
+    ///
+    /// # This is the one sanctioned whole-document rewrite
+    ///
+    /// `AGENTS.md` makes the byte-preservation invariant outrank everything and requires an explicit
+    /// design decision on the ticket before any whole-document serializer exists. MDEDIT-48 is that
+    /// decision and this is its only door: an explicit, undoable user command, never a save.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the language considers the first thing wrong with `source`.
+    fn format(&self, source: &str) -> Option<Result<String, Diagnostic>> {
+        let _ = source;
+        None
+    }
+
     /// Whether this language's syntax is ever hidden.
     ///
     /// The whole rendering model in one answer. `true` conceals markers unless the caret is near

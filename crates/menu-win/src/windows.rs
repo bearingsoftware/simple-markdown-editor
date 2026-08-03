@@ -33,6 +33,9 @@ pub struct MenuBar {
     /// The View menu's three toggles, kept so their ticks can be made to match the editor. See
     /// [`Self::set_view`].
     view_toggles: [CheckMenuItem; 4],
+    /// Tools → Format Document, kept for the same reason: its enabled state has to follow whichever
+    /// document is showing. See [`Self::set_tools`].
+    format_item: MenuItem,
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -74,6 +77,14 @@ impl MenuBar {
 
         let view_toggles = add_view_toggles(&view, &mut commands)?;
 
+        // Built here rather than in the table because it is the one item whose enabled state
+        // changes, so something has to keep hold of it. Disabled to begin with: the first frame
+        // turns it on if the document showing is one that formats, and an item that starts enabled
+        // would be wrong for exactly as long as it takes to draw that frame.
+        let format_item = MenuItem::new("&Format Document", false, None);
+        commands.insert(format_item.id().clone(), Command::Format);
+        tools.insert(&format_item, 0).ok()?;
+
         // Empty and disabled until the app fills it in — see `set_recent`. Placed after Open, where
         // every editor puts it.
         let recent = Submenu::new("Open &Recent", false);
@@ -96,7 +107,18 @@ impl MenuBar {
             recent_ids: Arc::new(Mutex::new(HashMap::new())),
             context_ids: Arc::new(Mutex::new(HashMap::new())),
             view_toggles,
+            format_item,
         })
+    }
+
+    /// Greys the Tools items that do not apply to the document being shown.
+    ///
+    /// Called once per frame rather than from each of the many paths that change which document is
+    /// active. The `counted_for` lesson, in push form: a list of call sites is a list somebody
+    /// eventually forgets to add to, and the caller compares before it calls so this costs a Win32
+    /// call only when the answer actually changes.
+    pub fn set_tools(&self, state: crate::ToolsState) {
+        self.format_item.set_enabled(state.can_format);
     }
 
     /// Makes the View menu's ticks match the editor.

@@ -759,6 +759,12 @@ pub struct Editor<T: TextLayout> {
     pick_open_paths: OpenPathPicker,
     /// Shows the About dialog. Does nothing by default — the dialog lives in the binary.
     show_about: Box<dyn Fn()>,
+    /// Tells the user something they asked for cannot be done, and why. Says nothing by default.
+    ///
+    /// Only for a refusal that is a direct answer to something the user just chose from a menu —
+    /// Format Document on a document that is not valid JSON is the whole of it so far. Anything the
+    /// editor merely *noticed* belongs in the log, which is where every other soft error goes.
+    say: Box<dyn FnMut(&str)>,
     /// The files opened lately, for the Open Recent submenu.
     recent: Recent,
     /// Concealed, or shown as it is. See [`crate::view::Mode`].
@@ -799,6 +805,13 @@ pub struct Editor<T: TextLayout> {
     /// zero. A stale set is not merely out of date — the menu item moves the caret to one of these
     /// spans, so a span from before an edit points somewhere that has moved.
     diagnosed_for: Option<(usize, u64)>,
+    /// What the Tools menu was last told, so it is only told again when the answer changes.
+    ///
+    /// **Compared rather than hooked.** Which document is active changes on a great many paths, and
+    /// a list of call sites to update is a list somebody forgets to add to — `counted_for` and
+    /// `floating_for` are the same shape for the same reason. This one has to push rather than pull,
+    /// because the menu is a native object, so the comparison is what keeps the pushing rare.
+    tools_state: Option<mdedit_menu_win::ToolsState>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -910,6 +923,7 @@ impl<T: TextLayout> Editor<T> {
             pick_save_path: Box::new(|_| None),
             pick_open_paths: Box::new(|| None),
             show_about: Box::new(|| {}),
+            say: Box::new(|_| {}),
             recent: Recent::default(),
             mode: view::Mode::default(),
             config: Config::default(),
@@ -920,6 +934,7 @@ impl<T: TextLayout> Editor<T> {
             counted_for: None,
             diagnostics: Vec::new(),
             diagnosed_for: None,
+            tools_state: None,
             menu: None,
             menu_proxy: None,
         }
@@ -1608,6 +1623,7 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
             Command::Validate => self.go_to_first_diagnostic(),
+            Command::Format => self.format_document(),
             Command::Shortcuts => self.show_shortcuts(),
             Command::About => {
                 (self.show_about)();
@@ -1776,6 +1792,86 @@ impl<T: TextLayout> Editor<T> {
     /// Supplies the About dialog. Does nothing by default, as every other dialog seam does.
     pub fn with_about(&mut self, show: Box<dyn Fn()>) {
         self.show_about = show;
+    }
+
+    /// Supplies somewhere to tell the user why something they chose cannot be done.
+    ///
+    /// Inert by default, like every other collaborator that reaches the machine — see MDEDIT-67 and
+    /// MDEDIT-68 for what the two exceptions to that rule cost.
+    pub fn with_messages(&mut self, say: Box<dyn FnMut(&str)>) {
+        self.say = say;
+    }
+
+    /// Reformats the active document, or says why it will not.
+    ///
+    /// # The rule this is the single exception to
+    ///
+    /// The byte-preservation invariant forbids the editor rewriting bytes the user did not ask it to
+    /// rewrite. This is the user asking. It is one `replace` of the whole buffer inside MDEDIT-63's
+    /// transaction, so **one press of Ctrl+Z puts every byte back**, and it is reachable only from
+    /// the menu — never from a save, and never from anything on a timer.
+    ///
+    /// Refuses, with a message, when the document is not valid: formatting a half-written file would
+    /// mean inventing the structure the user has not finished typing. Refuses silently when the
+    /// language does not format at all, which is Markdown and YAML, and is why the menu item is
+    /// greyed there rather than left to fail.
+    ///
+    /// A document that is already formatted is left alone entirely — no edit, so no undo step that
+    /// appears to do nothing when pressed.
+    pub fn format_document(&mut self) -> bool {
+        let source = self.document().rope().to_string();
+        let Some(result) = self.document().language().format(&source) else {
+            return false;
+        };
+
+        let formatted = match result {
+            Ok(formatted) => formatted,
+            Err(diagnostic) => {
+                // Named by line and column rather than by byte offset, because the message is for a
+                // person looking at a document rather than at a hex dump. Tools → Validate Document
+                // is one item away and puts the caret on it.
+                let (line, column) = self.document().line_and_column(diagnostic.span.start());
+                let message = format!(
+                    "Cannot format: {} at line {}, column {}.",
+                    diagnostic.message,
+                    line.get() + 1,
+                    column.get() + 1
+                );
+                (self.say)(&message);
+                return false;
+            }
+        };
+
+        if formatted == source {
+            return false;
+        }
+
+        let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len()));
+        let replaced = self.document_mut().transact(|document| {
+            if let Err(error) = document.replace(whole, &formatted) {
+                crate::log_error!("could not format the document: {error}");
+                return false;
+            }
+            true
+        });
+        if replaced {
+            self.follow_caret = true;
+        }
+        replaced
+    }
+
+    /// Whether Format Document would do anything here, for the menu item's enabled state.
+    ///
+    /// Asks the *language* rather than comparing its name, and asks only whether it formats at all —
+    /// not whether this particular document is valid. A document part way through being typed is
+    /// invalid most of the time, and an item that greyed itself out on every other keystroke would
+    /// be worse than one that explains itself when pressed.
+    ///
+    /// The empty string is a probe, not a document: whether a language formats is a property of the
+    /// language, so any input answers it, and that one costs nothing to reach a decision on.
+    #[must_use]
+    pub fn can_format(&self) -> bool {
+        self.document().language().format("").is_some()
     }
 
     /// Shows the keyboard-shortcuts reference in a tab.
@@ -2664,6 +2760,11 @@ impl<T: TextLayout> Editor<T> {
         if self.find_open {
             self.find.refresh(&frame.text, document, revision);
         }
+
+        // Which document is showing may have changed since the last frame, and Format Document
+        // applies to some languages and not others. Compared before it pushes, so a still frame
+        // costs one bool.
+        self.refresh_tools_menu();
 
         self.hold_anchor(&frame, visible);
         if self.follow_caret {
@@ -4055,6 +4156,23 @@ impl<T: TextLayout> Editor<T> {
             line_numbers: self.config.line_numbers,
             toolbar: self.toolbar,
         });
+    }
+
+    /// Greys the Tools items that do not apply to the document being shown.
+    ///
+    /// Called every frame, and cheap because it compares first: the native call only happens when
+    /// the answer has actually changed, which is on a language change and nowhere else.
+    fn refresh_tools_menu(&mut self) {
+        let wanted = mdedit_menu_win::ToolsState {
+            can_format: self.can_format(),
+        };
+        if self.tools_state == Some(wanted) {
+            return;
+        }
+        self.tools_state = Some(wanted);
+        if let Some(menu) = self.menu.as_ref() {
+            menu.set_tools(wanted);
+        }
     }
 
     /// A left-click anywhere in the window.

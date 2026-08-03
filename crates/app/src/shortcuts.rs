@@ -100,11 +100,18 @@ pub const ALL: &[Group] = &[
     },
     Group {
         name: "Tools",
-        shortcuts: &[key(
-            "(Tools menu)",
-            "Validate Document — JSON only; goes to the first problem. The count in the status \
-             bar keeps itself up to date without this",
-        )],
+        shortcuts: &[
+            key(
+                "(Tools menu)",
+                "Validate Document — JSON only; goes to the first problem. The count in the status \
+                 bar keeps itself up to date without this",
+            ),
+            key(
+                "(Tools menu)",
+                "Format Document — JSON only, and greyed elsewhere. One undo step puts every byte \
+                 back. Never happens on save",
+            ),
+        ],
     },
     Group {
         name: "Moving about",
