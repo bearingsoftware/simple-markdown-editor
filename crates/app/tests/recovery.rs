@@ -700,3 +700,51 @@ fn a_copy_with_no_stamp_is_restored() {
     assert_eq!(conflict.asked(), 0);
     assert!(editor.document().to_string().contains("AN OLD EDIT"));
 }
+
+// ---------------------------------------------------------------------------
+// The default, which is nowhere (MDEDIT-68).
+// ---------------------------------------------------------------------------
+
+/// **The bug this whole file could not see.** Every test above installs a store, so none of them
+/// noticed that an editor *given* no store used to reach for the real one — and then filled the
+/// developer's own recovery directory with test fixtures, which MDEDIT-66 dutifully restored into
+/// their editor on the next launch. It was found by launching the editor and reading a tab.
+///
+/// Asserted on the default rather than by inspecting the user's directory, because a test that reads
+/// `%LOCALAPPDATA%` passes on a machine which has never run the editor, and is then no test at all.
+#[test]
+fn an_editor_nobody_gave_a_store_writes_nowhere() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "# Notes\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+    // Deliberately no `with_snapshot_store`. This is the shape of every test in every other file.
+
+    editor.insert_text("unsaved work nobody asked to keep");
+    editor.on_idle();
+
+    assert!(
+        !editor.stores_unsaved_work(),
+        "an editor built without a store must not have gone and found one"
+    );
+}
+
+/// And the seam still works, which is what makes the above a fix rather than a removal.
+#[test]
+fn an_editor_given_a_store_uses_it() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, "# Notes\n");
+
+    assert!(editor.stores_unsaved_work());
+    editor.insert_text("x");
+    editor.on_idle();
+
+    assert!(
+        dir.path().join("recovery").join("manifest.json").exists(),
+        "the store it was given should have been written to"
+    );
+}
