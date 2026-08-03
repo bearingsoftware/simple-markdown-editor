@@ -43,10 +43,11 @@ keeping: everything that can be tested without a window is.
 crates/offsets/         # mdedit-offsets: ByteOffset, ByteSpan, CharOffset, LineIndex, LayoutPos,
                         #   BlockId
 crates/language/        # mdedit-language: what the editor needs from a language — spans with a
-                        #   role, block extents, and whether syntax is ever concealed. Depends on
-                        #   `mdedit-offsets` and nothing else, deliberately
+                        #   role, block extents, whether syntax is ever concealed, and what is wrong
+                        #   with it. Depends on `mdedit-offsets` and nothing else, deliberately
 crates/json/            # mdedit-json: an error-tolerant, span-producing JSON lexer. No serde —
-                        #   a value has no spans and a strict parser is useless mid-edit
+                        #   a value has no spans and a strict parser is useless mid-edit. Plus the
+                        #   strict check that is a separate pass for exactly that reason
 crates/yaml/            # mdedit-yaml: the same for YAML, hand-written for evidenced reasons —
                         #   read its crate docs before proposing a parser crate
 crates/markers/         # mdedit-markers: Markdown's implementation of that trait. Partitions
@@ -270,11 +271,39 @@ Known gaps, so nobody assumes they are done:
   is the one from before you started. A document nobody has typed in yet is counted once, on its
   first frame.
 
-  **Three things share that timer, and it is now scheduled after any edit.** It used to be set only
+  **Four things share that timer, and it is now scheduled after any edit.** It used to be set only
   when the parse had been scoped — i.e. only above 16 KB — so on an ordinary note it never fired at
   all, which froze the word count and, when MDEDIT-54 arrived, would have meant no crash-recovery
   snapshot for exactly the small unsaved buffers the feature exists to protect. `Editor::on_idle` is
   public so a test can run that work without an event loop.
+- **A document can be told it is wrong, and that is a second strict pass rather than a stricter
+  lexer.** MDEDIT-47. `Language::validate` returns `Diagnostic`s — a `ByteSpan` and a `&'static str`
+  — and defaults to none, so **Markdown opts out by existing**: there is no such thing as invalid
+  Markdown. Only JSON implements it. The lexers stay error-tolerant, which is not a detail: `{"a":`
+  is what every JSON file looks like halfway through being typed, and a parse that stopped there
+  would unhighlight the rest of the document at the moment the user is looking at it. That is why
+  `serde_json` and `saphyr` were rejected, and adding failure to `analyze` would give it back.
+
+  **It is the fourth thing on the idle timer, and a keystroke pays 3 ns for it.** Measured at 412 KB
+  of JSON: the check alone is 1.3 ms, and what a frame pays is one comparison of `(tab, revision)`
+  against the pair the last check was computed for. The keystroke A/B was inconclusive at ±50% run
+  to run on a loaded machine, which is why the per-frame number is the one that answers it — see
+  `crates/app/tests/validate_cost.rs`, and `json_typing_cost.rs`, which uses only long-standing API
+  so it can be run against an older commit.
+
+  **An edit clears the count rather than ageing it.** The word count shows a stale number because a
+  stale number is nearly right and costs nothing; a stale *diagnostic* points at bytes that have
+  moved, and Tools → Validate Document puts the caret on one. Same `(tab, revision)` key as the find
+  bar's match list, and for the same reason — two documents nobody has typed in are both at revision
+  zero. The menu item **recomputes before it jumps**, because the count on the bar may be an idle
+  interval old and "take me to it" may not be.
+
+  **The checker has an explicit stack, and that is a security decision.** JSON nests without limit,
+  so recursive descent overflows on `[[[[[…` — a file, from the internet, opened in an editor. Safe
+  Rust does not save you from a stack overflow, and `AGENTS.md` names hand-rolled file parsing as the
+  CVE class this project must not reintroduce. It also stops at 200 diagnostics: nobody is fixing the
+  201st. Absence of errors is **silence, not "0 errors"**, and an empty document is silent too — a
+  new file is empty, and diagnosing that is diagnosing the user's existence.
 - **Unsaved work is stored, and comes back — after a crash *or* an ordinary quit.**
   `mdedit-session::snapshot` keeps a copy of each dirty buffer in a `recovery` directory beside the
   session file, addressed by an id rather than a path because the buffer with most to lose is the one

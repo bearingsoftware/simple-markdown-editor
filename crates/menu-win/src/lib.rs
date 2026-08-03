@@ -82,6 +82,8 @@ pub enum Command {
     Replace,
     /// Edit → Go to Line.
     GoToLine,
+    /// Tools → Validate Document.
+    Validate,
     /// View → Plain Markup.
     PlainMarkup,
     /// View → File Pane.

@@ -44,8 +44,14 @@
 //! something that is not JSON and cannot be edited back into JSON, so [`Json::conceals`] is `false`
 //! and every byte is on screen always. Colour is the only decoration.
 
-use mdedit_language::{Analysis, Block, BlockKind, Language, Segment, SegmentKind, Token};
+use mdedit_language::{
+    Analysis, Block, BlockKind, Diagnostic, Language, Segment, SegmentKind, Token,
+};
 use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
+
+mod validate;
+
+pub use validate::{LIMIT, validate};
 
 /// JSON, as this editor renders it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -65,6 +71,10 @@ impl Language for Json {
 
     fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
         Some(analyze_region(source, region))
+    }
+
+    fn validate(&self, source: &str) -> Vec<Diagnostic> {
+        validate(source)
     }
 
     fn conceals(&self) -> bool {

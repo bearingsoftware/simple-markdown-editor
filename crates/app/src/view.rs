@@ -69,6 +69,11 @@ pub struct Theme {
     /// Behind a search match that is not the current one. Drawn under the selection as well as under
     /// the glyphs, so the match the caret is on is simply the one wearing the selection colour.
     pub find_match: Rgba,
+    /// The diagnostic count in the status bar (MDEDIT-47).
+    ///
+    /// The only warning colour in the editor, and it has one job: to be the thing your eye lands on
+    /// in a bar that is otherwise deliberately quiet.
+    pub status_error: Rgba,
     /// Background of the tab strip behind the tabs.
     pub strip: Rgba,
     /// Background of the tab being shown.
@@ -107,6 +112,10 @@ impl Default for Theme {
             // brightness — the one distinction that survives being looked at out of the corner of
             // an eye, and the one a colour-blind reader keeps.
             find_match: Rgba::rgb(0x6b, 0x53, 0x1e),
+            // Amber rather than red. Red in a status bar reads as "something has gone wrong with the
+            // editor"; these are facts about the file the user is deliberately part way through
+            // writing, and half of them are transient.
+            status_error: Rgba::rgb(0xe0, 0x9b, 0x3c),
             strip: Rgba::rgb(0x14, 0x14, 0x14),
             tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
             tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),
