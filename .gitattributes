@@ -1,3 +1,9 @@
 # rustfmt pins newline_style = "Unix", and Windows checkouts default to core.autocrlf=true.
 # Without this, `cargo fmt --check` fails on every file on Windows — locally and on CI.
 * text=auto eol=lf
+
+# Said outright rather than left to `text=auto`'s heuristic. An icon that git decided was text
+# would have its 0x0d bytes rewritten on checkout, and the corruption would show up as an
+# executable with no icon rather than as anything that fails to build.
+*.png binary
+*.ico binary
