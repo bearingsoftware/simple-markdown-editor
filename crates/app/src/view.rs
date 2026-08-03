@@ -49,9 +49,54 @@ impl Rgba {
             a: 1.0,
         }
     }
+
+    /// A translucent colour, for a tint that has to work over whatever is beneath it.
+    ///
+    /// Kept as real alpha rather than pre-blended against a known background, which is what a
+    /// two-palette theme would otherwise force: the same tint over two different grounds is two
+    /// different opaque colours, and one of them would be wrong the moment a mode changed.
+    #[must_use]
+    pub const fn translucent(r: u8, g: u8, b: u8, a: f32) -> Self {
+        Self {
+            r: r as f32 / 255.0,
+            g: g as f32 / 255.0,
+            b: b as f32 / 255.0,
+            a,
+        }
+    }
 }
 
-/// Sizes and colours. One dark theme; there is no settings surface yet to choose another.
+/// Which palette the editor is drawing with.
+///
+/// Only [`Appearance::Dark`] is reachable today — MDEDIT-78 adds the OS read, the config key and the
+/// menu items that choose. This exists now so the palette is a value with two of them rather than a
+/// `Default` impl with one, which is the whole of MDEDIT-71.
+///
+/// Deliberately **not** called `Mode`: that is already taken by how the *document* is drawn
+/// (preview against plain markup), and the two are independent — plain markup is still dark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Appearance {
+    /// The palette the editor has always had.
+    #[default]
+    Dark,
+    /// Nocturne's light palette. Complete, contrast-checked, and not yet reachable.
+    Light,
+}
+
+/// Sizes and colours.
+///
+/// # Two palettes, one of them unreachable
+///
+/// MDEDIT-71. [`Theme::dark`] is what the editor has always drawn with, byte for byte;
+/// [`Theme::light`] is Nocturne's light palette, complete and contrast-checked and read by nothing
+/// until MDEDIT-78 adds the OS read and the config key. `Default` is dark, so no caller changed.
+///
+/// # Roles nothing reads yet
+///
+/// Seven fields arrived with the design pack ahead of the stories that consume them, and each says
+/// which one below. They are here rather than added one at a time because every story after this
+/// would otherwise re-open this struct, and because the light values have to be chosen against each
+/// other to be checked against each other.
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
     /// Body text size in device-independent pixels.
@@ -71,9 +116,39 @@ pub struct Theme {
     pub find_match: Rgba,
     /// The diagnostic count in the status bar (MDEDIT-47).
     ///
-    /// The only warning colour in the editor, and it has one job: to be the thing your eye lands on
-    /// in a bar that is otherwise deliberately quiet.
+    /// Amber, and **deliberately not the same colour as [`Theme::span_error`]**. Red in a status bar
+    /// reads as "something has gone wrong with the editor"; these are facts about a file the user is
+    /// deliberately part way through writing, and half of them are transient. The design pack asked
+    /// for one rose `error` role covering both; MDEDIT-69 kept two, because the two arguments are
+    /// each correct about a different thing.
     pub status_error: Rgba,
+    /// A diagnostic's span in the document — the squiggle, once MDEDIT-76 draws one.
+    ///
+    /// Rose, from the pack, where [`Theme::status_error`] is amber. This one *is* pointing at the
+    /// bytes that are wrong, which is the case a warning colour is for. Read by nothing yet.
+    pub span_error: Rgba,
+    /// A soft advisory: tabs in YAML indentation, an over-long line. Read by nothing yet.
+    pub warn: Rgba,
+    /// A link destination. MDEDIT-75 colours one; MDEDIT-73 gives it the underline that stops it
+    /// being colour alone. Read by nothing yet.
+    pub link: Rgba,
+    /// Secondary text — blockquotes, and chrome that should recede. MDEDIT-75. Read by nothing yet.
+    pub muted: Rgba,
+    /// Line numbers in the gutter.
+    ///
+    /// The gutter draws in [`Theme::marker`] today — "the same dimmed colour as revealed syntax:
+    /// scaffolding, not content", which was a good call while there was one dim colour and is not
+    /// once there are several. MDEDIT-77 switches it and lights the caret's line. Read by nothing yet.
+    pub gutter: Rgba,
+    /// Behind the line the caret is on. MDEDIT-77. Read by nothing yet.
+    ///
+    /// Translucent on purpose — see [`Rgba::translucent`].
+    pub caret_line: Rgba,
+    /// A hairline separator. Translucent, for the same reason. Read by nothing yet.
+    pub line: Rgba,
+    /// A raised surface — the file pane, once MDEDIT-72 stops it borrowing the tab strip's colour.
+    /// Read by nothing yet.
+    pub panel: Rgba,
     /// Background of the tab strip behind the tabs.
     pub strip: Rgba,
     /// Background of the tab being shown.
@@ -100,7 +175,21 @@ pub struct Theme {
 }
 
 impl Default for Theme {
+    /// Dark, because that is the only palette the editor can currently reach.
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Theme {
+    /// The palette the editor has always drawn with.
+    ///
+    /// **Unchanged by MDEDIT-71, deliberately and to the byte.** That story's whole acceptance
+    /// criterion was that nothing looks different; MDEDIT-72 is where these values become Nocturne's.
+    /// The only new entries are the roles nothing reads yet, and they are chosen to sit with what is
+    /// already here rather than to anticipate the replacement.
+    #[must_use]
+    pub fn dark() -> Self {
         Self {
             body_size: 16.0,
             background: Rgba::rgb(0x1e, 0x1e, 0x1e),
@@ -116,6 +205,14 @@ impl Default for Theme {
             // editor"; these are facts about the file the user is deliberately part way through
             // writing, and half of them are transient.
             status_error: Rgba::rgb(0xe0, 0x9b, 0x3c),
+            span_error: Rgba::rgb(0xe0, 0x91, 0x9b),
+            warn: Rgba::rgb(0xd8, 0xa6, 0x57),
+            link: Rgba::rgb(0x6b, 0xa7, 0xe0),
+            muted: Rgba::rgb(0x9a, 0x9a, 0x9a),
+            gutter: Rgba::rgb(0x96, 0x96, 0x96),
+            caret_line: Rgba::translucent(0xff, 0xff, 0xff, 0.045),
+            line: Rgba::translucent(0xe6, 0xe6, 0xe6, 0.10),
+            panel: Rgba::rgb(0x25, 0x25, 0x25),
             strip: Rgba::rgb(0x14, 0x14, 0x14),
             tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
             tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),
@@ -132,6 +229,57 @@ impl Default for Theme {
             // overlays. Deliberately no track colour: the track is the background, so a bar over a
             // short line looks like nothing rather than like a gutter.
             scrollbar_thumb: Rgba::rgb(0x50, 0x50, 0x50),
+        }
+    }
+
+    /// Nocturne's light palette, from the MDEDIT-69 design pack.
+    ///
+    /// Nothing reads this until MDEDIT-78. It is filled in now because the values have to be chosen
+    /// against one another to be *checked* against one another, and `contrast.rs` checks them.
+    ///
+    /// Six roles have no counterpart in the pack — it has no search highlight at all, and offers two
+    /// chrome colours where the tab strip needs four. Those are derived here from the pack's ramp
+    /// rather than invented: the selection is its lavender tint, so the find highlight is taken from
+    /// sand to stay warm against it, which is the property the dark one was chosen for.
+    #[must_use]
+    pub fn light() -> Self {
+        Self {
+            body_size: 16.0,
+            background: Rgba::rgb(0xf7, 0xf8, 0xfd),
+            text: Rgba::rgb(0x29, 0x2b, 0x31),
+            marker: Rgba::rgb(0x59, 0x5d, 0x6c),
+            caret: Rgba::rgb(0x5d, 0x52, 0x94),
+            selection: Rgba::translucent(0x5d, 0x52, 0x94, 0.22),
+            find_match: Rgba::translucent(0xc9, 0x8a, 0x2e, 0.30),
+            status_error: Rgba::rgb(0x7a, 0x5a, 0x1e),
+            span_error: Rgba::rgb(0x8f, 0x2f, 0x3c),
+            warn: Rgba::rgb(0x7a, 0x5a, 0x1e),
+            link: Rgba::rgb(0x3d, 0x55, 0x90),
+            muted: Rgba::rgb(0x59, 0x5d, 0x6c),
+            gutter: Rgba::rgb(0x63, 0x68, 0x7a),
+            caret_line: Rgba::translucent(0x5d, 0x52, 0x94, 0.06),
+            line: Rgba::translucent(0x29, 0x2b, 0x31, 0.12),
+            panel: Rgba::rgb(0xff, 0xff, 0xff),
+            strip: Rgba::rgb(0xec, 0xee, 0xf8),
+            tab_active: Rgba::rgb(0xff, 0xff, 0xff),
+            tab_inactive: Rgba::rgb(0xe2, 0xe5, 0xf2),
+            tab_modified: Rgba::rgb(0x5d, 0x52, 0x94),
+            token_key: Rgba::rgb(0x5d, 0x52, 0x94),
+            token_string: Rgba::rgb(0x3f, 0x6b, 0x52),
+            token_number: Rgba::rgb(0x7a, 0x54, 0x26),
+            token_literal: Rgba::rgb(0x3a, 0x5f, 0x80),
+            token_punctuation: Rgba::rgb(0x59, 0x5d, 0x6c),
+            token_comment: Rgba::rgb(0x59, 0x6b, 0x52),
+            scrollbar_thumb: Rgba::rgb(0xb4, 0xb8, 0xc8),
+        }
+    }
+
+    /// The palette for an appearance.
+    #[must_use]
+    pub fn for_appearance(appearance: Appearance) -> Self {
+        match appearance {
+            Appearance::Dark => Self::dark(),
+            Appearance::Light => Self::light(),
         }
     }
 }

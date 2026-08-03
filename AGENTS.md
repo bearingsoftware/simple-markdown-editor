@@ -513,6 +513,36 @@ Known gaps, so nobody assumes they are done:
 - **Line and column count characters.** Not bytes, and not display columns — a tab is one column
   here. `ByteOffset` and `CharOffset` exist as separate types so this cannot be fudged; see
   `Document::line_and_column`.
+- **There are two palettes, and one of them is unreachable.** MDEDIT-71. `Theme::dark` is what the
+  editor has always drawn with — **unchanged to the byte**, which was that story's whole acceptance
+  criterion — and `Theme::light` is the MDEDIT-69 design pack's Nocturne, complete and
+  contrast-checked and read by nothing until MDEDIT-78 adds the OS read and the config key. `Default`
+  is dark, so no caller changed and no test was touched.
+
+  **`Appearance`, not `Mode`.** `Mode` already means how the *document* is drawn — preview against
+  plain markup — and the two are independent: plain markup is still dark.
+
+  **Seven roles exist that nothing reads**: `span_error`, `warn`, `link`, `muted`, `gutter`,
+  `caret_line`, `line`, `panel`. Each names the story that will consume it. They are here rather than
+  added one at a time because every story after this would otherwise re-open the struct, and because
+  the light values have to be chosen against one another to be checked against one another.
+
+  **`span_error` is rose and `status_error` stays amber**, deliberately two roles where the pack had
+  one. Red in a status bar reads as "the editor broke"; a squiggle under the offending bytes is
+  exactly the case a warning colour is for. Both arguments are right about different things.
+
+  **The contrast test names its pairs, and that is the point of it.** `crates/app/tests/contrast.rs`
+  computes WCAG ratios from the palette rather than checking in a table of numbers, and it asserts
+  only the foreground-on-background combinations the renderer actually produces — traced from the
+  draw sites. Asserting everything against everything measures fictions: `token_comment` on
+  `tab_active` is 4.13:1 and irrelevant, because a JSON comment is never drawn on a tab. The pack
+  itself measures against the page alone and so misses every pair that is on chrome.
+
+  It carries **one known shortfall, which may only ever shrink**: the close `×` on the *active* tab is
+  `marker` on `tab_active` at 4.31:1. Real, and not fixable here because this story changes no dark
+  value — MDEDIT-72 owns them. The list is asserted to be exactly that one entry, so a new shortfall
+  fails the build rather than joining it quietly. **The scrollbar thumb is 2.07:1 against the page**
+  and always has been; it is not text, so it is outside this test's remit and recorded on MDEDIT-72.
 - **The drawing mode is global and deliberately not remembered.** Toggling to plain markup switches
   every tab, and the editor opens previewed every time. Unlike the chrome choice, the zoom and the
   line numbers — all three of which persist since MDEDIT-60 — this one is left per-run on purpose:
