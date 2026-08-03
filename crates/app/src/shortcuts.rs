@@ -99,6 +99,14 @@ pub const ALL: &[Group] = &[
         ],
     },
     Group {
+        name: "Tools",
+        shortcuts: &[key(
+            "(Tools menu)",
+            "Validate Document — JSON only; goes to the first problem. The count in the status \
+             bar keeps itself up to date without this",
+        )],
+    },
+    Group {
         name: "Moving about",
         shortcuts: &[
             key("Home / End", "Start or end of the document"),

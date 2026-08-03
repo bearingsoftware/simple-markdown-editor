@@ -16,6 +16,7 @@ use std::time::Instant;
 use crate::clicks::{Clicks, Granularity};
 use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
+use mdedit_language::Diagnostic;
 use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
@@ -56,6 +57,8 @@ use mdedit_document::format::{self, Inline};
 const RIGHT: usize = 0;
 /// The status bar's breadcrumb.
 const TRAIL: usize = 1;
+/// The status bar's diagnostic count, which is its own slot because it is its own colour.
+const COUNT: usize = 2;
 
 /// One thing the recovery snapshotter decided to do, gathered before any of it is done.
 ///
@@ -777,13 +780,25 @@ pub struct Editor<T: TextLayout> {
     /// each side is laid out only when what it says changes. The breadcrumb changes when the caret
     /// crosses a heading; the right-hand fields change when it moves at all — which is once per
     /// keystroke rather than once per frame, and that is the difference worth having.
-    status_labels: [Option<Label>; 2],
+    status_labels: [Option<Label>; 3],
     /// Which tab [`Self::words`] was counted from.
     ///
     /// Tracked rather than cleared at each of the nine places that activate a tab, because a count
     /// that belongs to the tab you just left is not stale, it is wrong — and one forgotten call site
     /// is a bug nobody would see until they switched files.
     counted_for: Option<usize>,
+    /// What is wrong with the active document, as of the last idle timer (MDEDIT-47).
+    ///
+    /// Empty for every language but JSON, and empty for valid JSON.
+    diagnostics: Vec<Diagnostic>,
+    /// Which document, at which revision, [`Self::diagnostics`] describes.
+    ///
+    /// **This pair is how the diagnostics are cleared on an edit**, and it is deliberately not a
+    /// hook on the edit paths. Same shape and same reason as `find`'s match list and `counted_for`:
+    /// a revision alone would not do, because two tabs nobody has typed in are both at revision
+    /// zero. A stale set is not merely out of date — the menu item moves the caret to one of these
+    /// spans, so a span from before an edit points somewhere that has moved.
+    diagnosed_for: Option<(usize, u64)>,
     /// The native menu bar, once there is a window to hang it on.
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
@@ -899,8 +914,10 @@ impl<T: TextLayout> Editor<T> {
             settings: crate::config::Settings::nowhere(),
             digits: None,
             words: None,
-            status_labels: [None, None],
+            status_labels: [None, None, None],
             counted_for: None,
+            diagnostics: Vec::new(),
+            diagnosed_for: None,
             menu: None,
             menu_proxy: None,
         }
@@ -1128,8 +1145,9 @@ impl<T: TextLayout> Editor<T> {
 
     /// The work that waits for typing to stop, and whether any of it changed what is drawn.
     ///
-    /// Three deferred jobs share one timer rather than having three: the whole-document re-parse a
-    /// scoped edit owes (MDEDIT-18), the word count, and the recovery snapshot (MDEDIT-54). Public
+    /// Four deferred jobs share one timer rather than having four: the whole-document re-parse a
+    /// scoped edit owes (MDEDIT-18), the word count, the recovery snapshot (MDEDIT-54) and the
+    /// strict language check (MDEDIT-47). Public
     /// because a test cannot deliver a [`StartCause::ResumeTimeReached`] — the event loop does that
     /// — and every one of these is a claim worth testing.
     pub fn on_idle(&mut self) -> bool {
@@ -1143,6 +1161,8 @@ impl<T: TextLayout> Editor<T> {
 
         let before = self.words;
         self.recount_words();
+        let diagnosed = self.diagnostic_count();
+        self.revalidate();
         self.snapshot_dirty_buffers();
         // A selection extended with Shift and then left alone has settled. This timer already means
         // "the typing stopped", which is exactly the beat the bar is waiting for — a fourth thing on
@@ -1152,7 +1172,7 @@ impl<T: TextLayout> Editor<T> {
         // of rapid toggles costs one write. Not on exit — see `crate::config`.
         self.settings.flush();
 
-        reparsed || before != self.words || settled
+        reparsed || before != self.words || settled || diagnosed != self.diagnostic_count()
     }
 
     /// Writes a recovery snapshot for every buffer with unsaved work in it.
@@ -1568,6 +1588,7 @@ impl<T: TextLayout> Editor<T> {
             Command::ZoomIn => self.zoom_by(1),
             Command::ZoomOut => self.zoom_by(-1),
             Command::ResetZoom => self.reset_zoom(),
+            Command::Validate => self.go_to_first_diagnostic(),
             Command::Shortcuts => self.show_shortcuts(),
             Command::About => {
                 (self.show_about)();
@@ -3077,6 +3098,21 @@ impl<T: TextLayout> Editor<T> {
             self.recount_words();
         }
 
+        // And the same for the diagnostics, for the same reason and with one difference that
+        // matters. The idle timer is set by a *key event*, so a document that was merely opened
+        // never reaches it — a file with three errors in it showed none until you typed, which is
+        // the state it is most useful in. This is the once-per-document catch-up.
+        //
+        // **Keyed on the tab, not on the stamp.** A stamp comparison here would re-run the whole
+        // check on every frame while somebody is typing, which is exactly the 1.3 ms the idle timer
+        // exists to keep off this path. Once per document, then the timer owns it.
+        if self
+            .diagnosed_for
+            .is_none_or(|(tab, _)| Some(tab) != self.workspace.active())
+        {
+            self.revalidate();
+        }
+
         let head = self.document().selection().head();
         let (line, column) = self.document().line_and_column(head);
         let position = status::position(line.get(), column.get());
@@ -3101,8 +3137,24 @@ impl<T: TextLayout> Editor<T> {
         // the fields get the room they ask for up to a share of the bar and the breadcrumb takes
         // what is left. Both clip to their own container rather than running into the other.
         let right_text = format!("{position}   {details}");
+        let share = status::right_share(logical_width);
+
+        // The count asks for its room first among the right-hand fields, which inverts the priority
+        // order of the fields beside it. Deliberate: it is short and bounded, and a diagnostic that
+        // vanishes when the window narrows is a diagnostic you do not know about.
+        let count = status::errors(self.diagnostic_count());
+        let count_room = match &count {
+            Some(text) => self.status_label(COUNT, text, style).min(share),
+            None => 0.0,
+        };
+        let gap = if count.is_some() {
+            status::COUNT_GAP
+        } else {
+            0.0
+        };
+
         let wanted = self.status_label(RIGHT, &right_text, style);
-        let right_room = wanted.min(status::right_share(logical_width));
+        let right_room = wanted.min((share - count_room - gap).max(0.0));
         let right_x = (logical_width - status::PADDING - right_room).max(status::PADDING);
         self.draw_status_label(
             quads,
@@ -3114,6 +3166,19 @@ impl<T: TextLayout> Editor<T> {
             right_room,
         );
 
+        let count_x = (right_x - gap - count_room).max(status::PADDING);
+        if count.is_some() {
+            self.draw_status_label(
+                quads,
+                COUNT,
+                count_x,
+                baseline,
+                self.theme.status_error,
+                scale,
+                count_room,
+            );
+        }
+
         let steps: Vec<String> = self
             .document()
             .heading_trail(head)
@@ -3124,8 +3189,9 @@ impl<T: TextLayout> Editor<T> {
         self.status_label(TRAIL, &trail, style);
         if !trail.is_empty() {
             // Up to the right container's edge, less a gap so the two never touch even when both
-            // are full.
-            let trail_room = (right_x - status::GAP - status::PADDING).max(0.0);
+            // are full. Measured against the count when there is one, because the count is now the
+            // leftmost thing in that container.
+            let trail_room = (count_x - status::GAP - status::PADDING).max(0.0);
             self.draw_status_label(
                 quads,
                 TRAIL,
@@ -3269,6 +3335,66 @@ impl<T: TextLayout> Editor<T> {
     fn recount_words(&mut self) {
         self.words = Some(status::count_words(&self.document().rope().to_string()));
         self.counted_for = self.workspace.active();
+    }
+
+    /// Which document, at which revision, the diagnostics would describe if recomputed now.
+    fn diagnosis_stamp(&self) -> Option<(usize, u64)> {
+        Some((self.workspace.active()?, self.document().revision()))
+    }
+
+    /// Re-runs the language's strict check. Called on the idle timer, never on the keystroke path.
+    ///
+    /// It walks the whole buffer, which is the entire reason it lives here beside the whole-document
+    /// re-parse and the word count rather than anywhere a keystroke can reach.
+    fn revalidate(&mut self) {
+        let stamp = self.diagnosis_stamp();
+        let source = self.document().rope().to_string();
+        self.diagnostics = self.document().language().validate(&source);
+        self.diagnosed_for = stamp;
+    }
+
+    /// What is wrong with the active document, or nothing while an edit is newer than the check.
+    ///
+    /// **Nothing, rather than the previous answer**, once the buffer has moved on. The word count
+    /// shows a stale number because a stale number is nearly right and costs nothing; a stale
+    /// diagnostic points at bytes that have moved, and the menu item puts the caret on it.
+    #[must_use]
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        if self.diagnosed_for == self.diagnosis_stamp() {
+            &self.diagnostics
+        } else {
+            &[]
+        }
+    }
+
+    /// How many problems to show. Zero while an edit is newer than the check.
+    #[must_use]
+    pub fn diagnostic_count(&self) -> usize {
+        self.diagnostics().len()
+    }
+
+    /// Recomputes now and goes to the first problem, selecting it.
+    ///
+    /// Recomputing first is the point of the menu item: the count on the bar is at most one idle
+    /// interval old, but "take me to it" has to act on the document as it is this instant, or it
+    /// moves the caret using offsets from before the last keystroke.
+    ///
+    /// Returns whether there was anything to go to.
+    pub fn go_to_first_diagnostic(&mut self) -> bool {
+        self.revalidate();
+        let Some(first) = self.diagnostics.first() else {
+            return false;
+        };
+        let span = first.span;
+        self.document_mut()
+            .set_selection(Selection::new(span.start(), span.end()));
+        // The same reveal every other jump uses, so a diagnostic below the fold materialises the
+        // chunk it is in without anything new being written for it.
+        self.follow_caret = true;
+        // A search's selection suppresses the floating bar and this is the same kind of selection —
+        // the editor put it there, the user did not sweep it out.
+        self.found_selection = true;
+        true
     }
 
     /// Draws what the input method is composing, at the caret.
@@ -4186,7 +4312,7 @@ impl<T: TextLayout> Editor<T> {
         self.layouts.clear();
         self.heights.clear();
         self.digits = None;
-        self.status_labels = [None, None];
+        self.status_labels = [None, None, None];
         self.row_labels.clear();
         self.toolbar_labels.clear();
 

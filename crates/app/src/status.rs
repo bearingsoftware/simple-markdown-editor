@@ -54,6 +54,24 @@ const STEP: &str = " › ";
 /// Between the fields on the right.
 const FIELD: &str = "   ";
 
+/// Between the diagnostic count and the fields beside it.
+///
+/// A measured gap rather than the [`FIELD`] spaces, because the count is a separate label — it has
+/// its own colour, and a colour is the whole reason it is not simply more text in [`details`].
+pub const COUNT_GAP: f32 = 12.0;
+
+/// How many problems the document has, or nothing at all.
+///
+/// **Absence of errors is silence, not "0 errors".** A permanent zero in the corner is a thing the
+/// eye learns to stop reading, which costs exactly the attention the count exists to buy.
+#[must_use]
+pub fn errors(count: usize) -> Option<String> {
+    (count > 0).then(|| {
+        let plural = if count == 1 { "" } else { "s" };
+        format!("{count} error{plural}")
+    })
+}
+
 /// The heading trail to the caret, as one line.
 ///
 /// Empty when nothing encloses the caret — a position above the document's first heading has no

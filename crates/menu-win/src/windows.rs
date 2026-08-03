@@ -58,9 +58,19 @@ impl MenuBar {
         let file = Submenu::new("&File", true);
         let edit = Submenu::new("&Edit", true);
         let view = Submenu::new("&View", true);
+        let tools = Submenu::new("&Tools", true);
         let help = Submenu::new("&Help", true);
 
-        add_items(&file, &edit, &view, &help, &mut commands)?;
+        add_items(
+            &Menus {
+                file: &file,
+                edit: &edit,
+                view: &view,
+                tools: &tools,
+                help: &help,
+            },
+            &mut commands,
+        )?;
 
         let view_toggles = add_view_toggles(&view, &mut commands)?;
 
@@ -77,6 +87,7 @@ impl MenuBar {
         menu.append(&file).ok()?;
         menu.append(&edit).ok()?;
         menu.append(&view).ok()?;
+        menu.append(&tools).ok()?;
         menu.append(&help).ok()?;
         Some(Self {
             menu,
@@ -328,17 +339,19 @@ fn add_view_toggles(
 /// One table rather than four builders: the shape is identical everywhere and a list reads better
 /// than a sequence of calls. The accelerators are **labels only** — see the crate docs for why that
 /// is deliberate and must stay that way.
-fn add_items(
-    file: &Submenu,
-    edit: &Submenu,
-    view: &Submenu,
-    help: &Submenu,
-    commands: &mut HashMap<MenuId, Command>,
-) -> Option<()> {
-    let items = file_items(file)
+struct Menus<'a> {
+    file: &'a Submenu,
+    edit: &'a Submenu,
+    view: &'a Submenu,
+    tools: &'a Submenu,
+    help: &'a Submenu,
+}
+
+fn add_items(menus: &Menus<'_>, commands: &mut HashMap<MenuId, Command>) -> Option<()> {
+    let items = file_items(menus.file)
         .into_iter()
-        .chain(edit_items(edit))
-        .chain(view_and_help_items(view, help));
+        .chain(edit_items(menus.edit))
+        .chain(view_and_help_items(menus.view, menus.tools, menus.help));
     for (menu, label, command, chord) in items {
         let accelerator = chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
         let item = MenuItem::new(label, true, accelerator);
@@ -467,7 +480,11 @@ fn edit_items(edit: &Submenu) -> Vec<Item<'_>> {
 }
 
 /// The View and Help menus. Together because neither is more than a handful.
-fn view_and_help_items<'a>(view: &'a Submenu, help: &'a Submenu) -> Vec<Item<'a>> {
+fn view_and_help_items<'a>(
+    view: &'a Submenu,
+    tools: &'a Submenu,
+    help: &'a Submenu,
+) -> Vec<Item<'a>> {
     vec![
         (
             view,
@@ -487,6 +504,9 @@ fn view_and_help_items<'a>(view: &'a Submenu, help: &'a Submenu) -> Vec<Item<'a>
             Command::ResetZoom,
             Some((Modifiers::CONTROL, Code::Digit0)),
         ),
+        // No accelerator, and none is wanted: the check runs on its own on the idle timer, so this
+        // item is "take me to the first problem" rather than "check now".
+        (tools, "&Validate Document", Command::Validate, None),
         (help, "&Keyboard Shortcuts", Command::Shortcuts, None),
         (help, "&About", Command::About, None),
     ]

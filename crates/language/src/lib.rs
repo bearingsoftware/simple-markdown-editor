@@ -307,6 +307,30 @@ pub struct Analysis {
     pub blocks: Vec<Block>,
 }
 
+/// Something wrong with the source, and where.
+///
+/// # Why the message is `&'static str`
+///
+/// The span points at the offending bytes, so a message never needs to quote them — "trailing comma"
+/// beside a span the editor can reveal says more than "trailing comma before `}` at line 41" ever
+/// would, and it says it without formatting. A document that is mostly garbage produces one of these
+/// per problem, and none of them allocates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// The bytes at fault. Always on character boundaries, so it is safe to slice and to select.
+    pub span: ByteSpan,
+    /// What is wrong, in the words a person would use.
+    pub message: &'static str,
+}
+
+impl Diagnostic {
+    /// Builds one.
+    #[must_use]
+    pub fn new(span: ByteSpan, message: &'static str) -> Self {
+        Self { span, message }
+    }
+}
+
 /// A language the editor can render.
 ///
 /// One implementation per language, and the renderer holds a `&'static dyn Language` rather than a
@@ -350,6 +374,31 @@ pub trait Language: std::fmt::Debug + Send + Sync {
     /// caller using this on the keystroke path therefore owes the document a whole-document parse
     /// when the typing stops, which is what `mdedit_document`'s `Document::reconcile` is for.
     fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis>;
+
+    /// Everything wrong with `source`, or nothing if the language has no notion of wrong.
+    ///
+    /// # Why this is separate from [`analyze`](Self::analyze) rather than part of it
+    ///
+    /// The analysis is **error-tolerant by design and must stay that way**: `{"a":` is what every
+    /// JSON document looks like halfway through being typed, and a parse that stopped there would
+    /// leave the rest unhighlighted at exactly the moment the user is looking at it. So `analyze` has
+    /// no error type, and this is a second, strict pass over the same bytes that answers a different
+    /// question.
+    ///
+    /// # Never on the keystroke path
+    ///
+    /// It walks the whole source. The caller runs it on the idle timer, beside the whole-document
+    /// re-parse and the word count, and shows the last computed set while typing — the same honesty
+    /// contract the word count already has.
+    ///
+    /// # Opting out by existing
+    ///
+    /// The default is no diagnostics, which is the right answer for Markdown: there is no such thing
+    /// as invalid Markdown, so a Markdown document has nothing to report and needs no code to say so.
+    fn validate(&self, source: &str) -> Vec<Diagnostic> {
+        let _ = source;
+        Vec::new()
+    }
 
     /// Whether this language's syntax is ever hidden.
     ///
