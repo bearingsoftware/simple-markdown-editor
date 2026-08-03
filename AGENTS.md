@@ -390,6 +390,33 @@ Known gaps, so nobody assumes they are done:
   every route to a save passes it. **No filesystem watcher** — `notify` brings threads and four
   platform backends for a case that happens between focus changes; the gap is a file rewritten while
   the window stays focused, which costs freshness rather than work.
+- **There is an encoding picker now, and choosing one is the third sanctioned rewrite.** MDEDIT-42.
+  File → Reopen with Encoding and Save with Encoding, over a short practical list —
+  `mdedit_file::choices`, whose **order is the contract** because a menu click reports a position.
+  `mdedit-menu-win` is told the labels and knows nothing else about encodings, the same rule that
+  keeps `Newline` out of it.
+
+  **Reopen works on a tab that never opened**, which is the whole point: a windows-1252 file is not
+  valid UTF-8, so it fails to open, and that is the tab the menu exists to rescue. `Workspace::activate`
+  therefore marks a tab active **before** the read rather than after — a file that cannot be decoded
+  still leaves the tab the one being looked at, and without that there was no active tab for the menu
+  to act on. Reopening asks through the Close prompt when there are edits to discard, and a wrong
+  guess costs nothing because the read happens before anything is replaced.
+
+  **Saving with a different encoding disarms the byte-identical fast path.** `save` writes the
+  original bytes verbatim when the text is unedited; after a deliberate encoding change that is
+  exactly wrong, so `LoadedFile::set_encoding` sets `re_encode`. Without it an untouched buffer came
+  back in its old encoding with nothing to say the choice had been ignored.
+
+  **`encoding_rs` cannot encode to UTF-16 and does not fail when asked.** The Encoding Standard makes
+  the UTF-16s decode-only and maps their output encoding to UTF-8, so `UTF_16LE.encode` returns UTF-8
+  bytes with no error — which behind a UTF-16 BOM is a file no reader can parse, reported as a
+  successful save. `FileFormat::encode` does UTF-16 by hand, which is safe in a way the legacy
+  encodings are not: every `char` fits, and a `&str` holds no unpaired surrogate.
+
+  **Content the target cannot hold refuses the save and writes nothing**, and now *says so* — a
+  failed save goes through `with_messages` rather than only to the log, because a save that fails
+  silently is the worst outcome there is.
 - **Line endings can be converted, and saving still never converts anything.** MDEDIT-59, the fix for
   what MDEDIT-46 made visible. File → Line Endings → LF or CRLF rewrites **every** terminator —
   including the lone `\r` that nothing else here produces, which is the one a user is most likely to
@@ -553,9 +580,10 @@ Known gaps, so nobody assumes they are done:
 - **A line number counts source lines, not rows.** A wrapped paragraph is numbered once, at its first
   row, which is what every editor does. The gutter is sized for the largest number the document can
   show, with a two-digit floor, so it does not visibly resize as you pass line 9.
-- **No encoding picker.** `mdedit-file` can read any encoding it is told to, but the app only ever
-  calls `load`, which honours a BOM and otherwise assumes UTF-8. A windows-1252 file opens as an
-  error rather than as text until there is UI to choose.
+- **Nothing sniffs a file to decide its encoding.** `load` honours a BOM and otherwise assumes UTF-8,
+  and a windows-1252 file therefore fails to open — deliberately, because charset guessing is
+  heuristic by nature and guessing wrong rewrites somebody's document. MDEDIT-42 answers it by
+  *asking* instead: see the encoding picker below.
 - **`.json` files open highlighted and never concealed**, by extension only — a JSON file named
   `data.txt` opens as Markdown, deliberately. Content sniffing is the trust boundary the 2023
   Notepad++ CVEs were all in, so nothing reads a byte of a file to decide what it is. The fix when

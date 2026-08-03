@@ -38,6 +38,17 @@ pub struct MenuBar {
     format_item: MenuItem,
     /// File → Line Endings, kept so its ticks can follow the document. See [`Self::set_endings`].
     ending_items: [CheckMenuItem; 2],
+    /// The two encoding submenus, and the items in them. Filled by [`Self::set_encodings`], which
+    /// the app calls once with the list it owns — this crate deliberately does not know what an
+    /// encoding is, only that there are some and they have names.
+    reopen_with: Submenu,
+    save_with: Submenu,
+    encoding_items: Vec<[CheckMenuItem; 2]>,
+    /// The encoding items' ids, **shared rather than cloned**, for the reason `recent_ids` gives:
+    /// these are minted by `set_encodings` after `forward_to` has taken its snapshot of `commands`,
+    /// so an id put in that map would never be seen. Found by clicking one and watching nothing
+    /// happen — no test can press a native menu item.
+    encoding_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -117,6 +128,14 @@ impl MenuBar {
         // checked by eye.
         file.insert(&endings, 6).ok()?;
 
+        // Empty and disabled until the app fills them in — see `set_encodings`, and `set_recent`,
+        // which does the same dance for the same reason. Above Line Endings, because which encoding
+        // a file is in is the larger fact about it.
+        let reopen_with = Submenu::new("&Reopen with Encoding", false);
+        let save_with = Submenu::new("Sa&ve with Encoding", false);
+        file.insert(&reopen_with, 6).ok()?;
+        file.insert(&save_with, 7).ok()?;
+
         menu.append(&file).ok()?;
         menu.append(&edit).ok()?;
         menu.append(&view).ok()?;
@@ -131,7 +150,54 @@ impl MenuBar {
             view_toggles,
             format_item,
             ending_items,
+            reopen_with,
+            save_with,
+            encoding_items: Vec::new(),
+            encoding_ids: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Fills both encoding submenus with `labels`, in order.
+    ///
+    /// Called once, by the app, with the list it owns. This crate does not know what an encoding is
+    /// — only that there are some, that they have names, and that a click should report **which one
+    /// by position**, which is the same contract [`Self::set_recent`] uses and the reason neither
+    /// submenu needs a type from `mdedit-file`.
+    ///
+    /// Check items in both, because the tick is as much about saying what the file *is* as about
+    /// choosing.
+    pub fn set_encodings(&mut self, labels: &[&str]) {
+        self.encoding_items.clear();
+        // Poisoning would mean a panic while the menu was being built, which has nothing to hold
+        // half-written: the map is filled from empty either way.
+        let mut ids = match self.encoding_ids.lock() {
+            Ok(ids) => ids,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        ids.clear();
+
+        for (index, label) in labels.iter().enumerate() {
+            let reopen = CheckMenuItem::new(*label, true, false, None);
+            let save = CheckMenuItem::new(*label, true, false, None);
+            ids.insert(reopen.id().clone(), Command::ReopenWith(index));
+            ids.insert(save.id().clone(), Command::SaveWith(index));
+            if self.reopen_with.append(&reopen).is_err() || self.save_with.append(&save).is_err() {
+                break;
+            }
+            self.encoding_items.push([reopen, save]);
+        }
+    }
+
+    /// Ticks the encoding the document is in, and greys the submenus when there is no document to
+    /// ask about.
+    pub fn set_encoding_state(&self, state: crate::EncodingState) {
+        self.reopen_with.set_enabled(state.enabled);
+        self.save_with.set_enabled(state.enabled);
+        for (index, [reopen, save]) in self.encoding_items.iter().enumerate() {
+            let ticked = state.enabled && state.current == Some(index);
+            reopen.set_checked(ticked);
+            save.set_checked(ticked);
+        }
     }
 
     /// Ticks whichever line ending the document being shown uses.
@@ -315,6 +381,7 @@ impl MenuBar {
         // snapshot taken here would keep answering for the menu as it was at startup.
         let recent_ids = Arc::clone(&self.recent_ids);
         let context_ids = Arc::clone(&self.context_ids);
+        let encoding_ids = Arc::clone(&self.encoding_ids);
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if let Some(command) = commands.get(&event.id).copied() {
                 deliver(command);
@@ -325,6 +392,14 @@ impl MenuBar {
                 Err(poisoned) => poisoned.into_inner().get(&event.id).copied(),
             };
             if let Some(command) = from_context {
+                deliver(command);
+                return;
+            }
+            let from_encodings = match encoding_ids.lock() {
+                Ok(ids) => ids.get(&event.id).copied(),
+                Err(poisoned) => poisoned.into_inner().get(&event.id).copied(),
+            };
+            if let Some(command) = from_encodings {
                 deliver(command);
                 return;
             }

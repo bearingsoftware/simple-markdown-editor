@@ -46,6 +46,15 @@ pub const ALL: &[Group] = &[
             key("Ctrl+Shift+S", "Save as a new file"),
             key(
                 "(File menu)",
+                "Reopen with Encoding — for a file that opened as mojibake, or did not open at all",
+            ),
+            key(
+                "(File menu)",
+                "Save with Encoding — takes effect at the next save, and refuses rather than \
+                 writing characters the encoding cannot hold",
+            ),
+            key(
+                "(File menu)",
                 "Line Endings — convert every terminator to LF or CRLF, in one undo step. \
                  Saving never converts anything on its own",
             ),

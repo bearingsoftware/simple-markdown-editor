@@ -55,6 +55,14 @@ pub enum Command {
     SaveAs,
     /// File → Save All.
     SaveAll,
+    /// File → Reopen with Encoding → one of them, by its position in the list the app supplied.
+    ///
+    /// The index rather than the encoding, for the reason [`Command::OpenRecent`] gives and one
+    /// more: this crate depends on nothing that knows what a document is, and an encoding is
+    /// `mdedit-file`'s vocabulary.
+    ReopenWith(usize),
+    /// File → Save with Encoding → one of them, by the same index.
+    SaveWith(usize),
     /// File → Line Endings → LF.
     ///
     /// Two variants rather than one carrying a line-ending type, because that type belongs to
@@ -155,6 +163,12 @@ impl MenuBar {
 
     /// Ticks nothing, there being no submenu to tick.
     pub fn set_endings(&self, _state: EndingsState) {}
+
+    /// Lists nothing, there being no submenu to list it in.
+    pub fn set_encodings(&mut self, _labels: &[&str]) {}
+
+    /// Ticks nothing, there being no submenu to tick.
+    pub fn set_encoding_state(&self, _state: EncodingState) {}
 
     /// Lists nothing, there being no submenu to list it in.
     pub fn set_recent(&mut self, _labels: &[String]) {}
@@ -270,6 +284,17 @@ pub struct ContextState {
     pub has_selection: bool,
     /// Whether the clipboard holds text worth pasting.
     pub can_paste: bool,
+}
+
+/// Which encoding the document being shown uses, and whether the question applies at all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EncodingState {
+    /// Whether the submenus apply — false for an untitled buffer, which has nothing on disk to
+    /// reopen and settles its encoding at Save As.
+    pub enabled: bool,
+    /// Which entry to tick, by position in the list the app supplied. `None` ticks nothing, which is
+    /// the honest answer for a file in an encoding the menu does not offer.
+    pub current: Option<usize>,
 }
 
 /// Which line ending the document being shown uses.

@@ -245,6 +245,29 @@ impl FileFormat {
 
     /// Encodes `text` for this format, BOM included.
     fn encode(&self, text: &str, path: &Path) -> Result<Vec<u8>, FileError> {
+        // **`encoding_rs` cannot encode to UTF-16, and does not say so by failing.** The Encoding
+        // Standard defines the two UTF-16 encodings as decode-only and maps their *output* encoding
+        // to UTF-8, so `UTF_16LE.encode(text)` returns UTF-8 bytes with `had_errors` false. Writing
+        // that behind a UTF-16 byte-order mark produces a file no reader can make sense of, reported
+        // as a successful save — the same class of quiet corruption this ticket exists to refuse,
+        // wearing a different hat. Found by a test asserting the bytes rather than the absence of an
+        // error.
+        //
+        // Doing it by hand is safe in a way the legacy encodings are not: UTF-16 can represent every
+        // `char`, and a `&str` cannot contain an unpaired surrogate, so there is nothing to map badly
+        // and no `had_errors` case to consider.
+        if let Some(units) = utf16_order(self.encoding) {
+            let mut out = Vec::with_capacity(self.bom_bytes().len() + text.len() * 2);
+            out.extend_from_slice(self.bom_bytes());
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&match units {
+                    Utf16Order::Little => unit.to_le_bytes(),
+                    Utf16Order::Big => unit.to_be_bytes(),
+                });
+            }
+            return Ok(out);
+        }
+
         let (encoded, _, had_errors) = self.encoding.encode(text);
         if had_errors {
             // `encode` substitutes HTML numeric character references for anything unmappable, so
@@ -260,6 +283,95 @@ impl FileFormat {
         out.extend_from_slice(&encoded);
         Ok(out)
     }
+}
+
+/// Which way round a UTF-16 encoding puts its bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Utf16Order {
+    Little,
+    Big,
+}
+
+/// Whether `encoding` is one of the two UTF-16s, and which way round.
+///
+/// By name rather than by pointer comparison, because that is how the rest of this module already
+/// asks the question — see `bom_bytes`.
+fn utf16_order(encoding: &'static Encoding) -> Option<Utf16Order> {
+    match encoding.name() {
+        "UTF-16LE" => Some(Utf16Order::Little),
+        "UTF-16BE" => Some(Utf16Order::Big),
+        _ => None,
+    }
+}
+
+/// One encoding a user may pick, and what to call it.
+///
+/// A `FileFormat` in miniature: an encoding and whether it carries a byte-order mark, which are two
+/// separate facts that together make "UTF-8" and "UTF-8 with BOM" different answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Choice {
+    /// What the menu calls it.
+    pub label: &'static str,
+    encoding: &'static Encoding,
+    bom: bool,
+}
+
+impl Choice {
+    /// Whether this is the encoding `format` already uses.
+    #[must_use]
+    pub fn matches(&self, format: FileFormat) -> bool {
+        std::ptr::eq(self.encoding, format.encoding) && self.bom == format.bom
+    }
+}
+
+/// The encodings the editor offers, in the order the menu shows them.
+///
+/// **A short practical list rather than everything `encoding_rs` knows.** The Encoding Standard has
+/// around forty labels, most of which nobody has seen a file in this century; a menu of forty is a
+/// menu nobody reads. These are UTF-8 with and without a BOM, both UTF-16 byte orders, and the three
+/// legacy encodings a Windows user is most likely to meet a file in.
+///
+/// **The order is the contract.** A caller identifies a choice by its position — that is what a menu
+/// click reports — so reordering this is an API change, and `crates/file/tests/encodings.rs` says so.
+#[must_use]
+pub fn choices() -> [Choice; 7] {
+    [
+        Choice {
+            label: "UTF-8",
+            encoding: UTF_8,
+            bom: false,
+        },
+        Choice {
+            label: "UTF-8 with BOM",
+            encoding: UTF_8,
+            bom: true,
+        },
+        Choice {
+            label: "UTF-16 LE",
+            encoding: encoding_rs::UTF_16LE,
+            bom: true,
+        },
+        Choice {
+            label: "UTF-16 BE",
+            encoding: encoding_rs::UTF_16BE,
+            bom: true,
+        },
+        Choice {
+            label: "windows-1252",
+            encoding: encoding_rs::WINDOWS_1252,
+            bom: false,
+        },
+        Choice {
+            label: "GBK",
+            encoding: encoding_rs::GBK,
+            bom: false,
+        },
+        Choice {
+            label: "Shift_JIS",
+            encoding: encoding_rs::SHIFT_JIS,
+            bom: false,
+        },
+    ]
 }
 
 /// What a file looked like from the outside when it was read.
@@ -374,6 +486,9 @@ pub struct LoadedFile {
     format: FileFormat,
     original: Vec<u8>,
     round_trips: bool,
+    /// Whether the encoding has been changed deliberately, so the original bytes are no longer what
+    /// this file should be written as. See [`LoadedFile::set_encoding`].
+    re_encode: bool,
     /// What the file looked like from outside when these bytes were read. `None` when the metadata
     /// could not be taken, which makes every later comparison say "unchanged".
     stamp: Option<Stamp>,
@@ -390,6 +505,32 @@ impl LoadedFile {
     #[must_use]
     pub fn format(&self) -> FileFormat {
         self.format
+    }
+
+    /// Changes the encoding the next save will write, and says whether anything changed (MDEDIT-42).
+    ///
+    /// # Why this has to disarm the byte-identical fast path
+    ///
+    /// [`save`] writes [`original_bytes`](Self::original_bytes) verbatim when the text is unedited,
+    /// which is what makes an ordinary save byte-identical by construction. After a deliberate
+    /// encoding change that shortcut is exactly wrong: the user has asked for *different* bytes and
+    /// would get the old ones back with no indication that nothing happened. So this arms
+    /// `re_encode`, and the fast path checks it.
+    ///
+    /// `round_trips` is set true for the same reason. It records whether this encoding can reproduce
+    /// its own unedited bytes, which is a guard against rewriting parts nobody touched — and
+    /// rewriting them is now the whole point. What protects the user instead is
+    /// [`FileError::Unrepresentable`], which refuses the save if the new encoding cannot hold the
+    /// text at all.
+    pub fn set_encoding(&mut self, choice: Choice) -> bool {
+        if choice.matches(self.format) {
+            return false;
+        }
+        self.format.encoding = choice.encoding;
+        self.format.bom = choice.bom;
+        self.re_encode = true;
+        self.round_trips = true;
+        true
     }
 
     /// Records that this file's line endings are now `newline` (MDEDIT-59).
@@ -447,6 +588,7 @@ pub fn in_memory(text: &str) -> LoadedFile {
         original: text.as_bytes().to_vec(),
         text: text.to_owned(),
         round_trips: true,
+        re_encode: false,
         stamp: None,
     }
 }
@@ -481,6 +623,18 @@ pub fn load_as(path: &Path, encoding: &'static Encoding) -> Result<LoadedFile, F
     let stamp = Stamp::of(path);
     let bytes = fs::read(path).map_err(|e| FileError::io("reading", path, e))?;
     decode(path, bytes, encoding, stamp)
+}
+
+/// Reads a file as `choice` says, for a caller that has one rather than an [`Encoding`].
+///
+/// The whole point of [`Choice`] is that a caller can offer a menu of encodings without depending on
+/// `encoding_rs` — so it would be self-defeating to make them unwrap one to read a file.
+///
+/// # Errors
+///
+/// As [`load_as`].
+pub fn load_with(path: &Path, choice: Choice) -> Result<LoadedFile, FileError> {
+    load_as(path, choice.encoding)
 }
 
 /// Re-reads a file with the encoding it was originally read as.
@@ -530,6 +684,7 @@ fn decode(
         format,
         original: bytes,
         round_trips,
+        re_encode: false,
         stamp,
     })
 }
@@ -547,7 +702,10 @@ fn decode(
 ///   hold.
 /// - [`FileError::Io`] if writing fails.
 pub fn save(path: &Path, text: &str, file: &LoadedFile) -> Result<(), FileError> {
-    let bytes = if text == file.text {
+    // `re_encode` disarms the fast path: after a deliberate encoding change the original bytes are
+    // the one thing that must *not* be written, and without this an unedited buffer would come back
+    // in its old encoding with nothing to say the choice had been ignored.
+    let bytes = if text == file.text && !file.re_encode {
         // The guarantee, and the reason the original is kept at all.
         file.original.clone()
     } else {
