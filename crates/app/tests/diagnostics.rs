@@ -10,7 +10,6 @@
 
 use mdedit_app::editor::Editor;
 use mdedit_session::Workspace;
-use mdedit_session::snapshot::Store;
 use tempfile::TempDir;
 
 mod stub;
@@ -21,11 +20,9 @@ const HEIGHT: f32 = 400.0;
 
 /// Opens `name` holding `contents`, through the workspace the app uses, and draws one frame.
 ///
-/// **The snapshot store is pointed at the temporary directory**, and that is not a nicety: these
-/// tests call `on_idle`, which writes a recovery snapshot for every dirty buffer, and `Editor::new`
-/// defaults that store to the real one beside the user's session file. Without this line the suite
-/// leaves unsaved work in the user's recovery directory and it comes back in their editor on the
-/// next launch — which is how it was found. See MDEDIT-68.
+/// No snapshot store, and none is wanted: since MDEDIT-68 an editor is built with nowhere to keep
+/// unsaved work, so a test that calls `on_idle` writes nothing anywhere. It did not used to be, and
+/// these tests were how that was found.
 fn open(dir: &TempDir, name: &str, contents: &str) -> Editor<Grid> {
     let path = dir.path().join(name);
     std::fs::write(&path, contents).unwrap();
@@ -33,7 +30,6 @@ fn open(dir: &TempDir, name: &str, contents: &str) -> Editor<Grid> {
     workspace.add(path);
     let mut editor = Editor::with_workspace(workspace, Grid::new());
     editor.activate_saved_tab();
-    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     editor
 }
@@ -164,7 +160,6 @@ fn switching_tab_does_not_show_the_other_documents_problems() {
     workspace.add(fine);
     let mut editor = Editor::with_workspace(workspace, Grid::new());
     editor.activate_saved_tab();
-    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
     editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     editor.show_tab(0);

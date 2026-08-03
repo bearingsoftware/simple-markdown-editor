@@ -315,6 +315,22 @@ Known gaps, so nobody assumes they are done:
   for unsaved work generally**: it survives a quit, restore runs on every launch, and a copy is
   removed only when its buffer is saved or its tab closes. Adding a way to close a tab means adding
   a `forget` with it, or that document comes back for ever.
+
+  **The store is wired in by `main`, not reached for by `Editor::new`** — MDEDIT-68, and the second
+  instance of the mistake MDEDIT-67 was merged to remove hours earlier. The old default sent every
+  test that edited a buffer and ran the idle timer into the *user's own* recovery directory, and
+  MDEDIT-66 then restored those fixtures into their editor on the next launch. It was found by
+  opening the editor and reading a tab; no test could see it, because every test in `recovery.rs`
+  installs a store and so none of them exercised the default. `Editor::stores_unsaved_work` exists so
+  one now does.
+
+  **`give_it_dialogs` runs before `restore_unsaved_work`, and that order is load-bearing both ways.**
+  The restore reads the store this installs, so a restore above it would silently find nowhere. It
+  also repairs a safeguard that had never once fired: `restore_one` asks before putting a stored edit
+  back over a file that changed on disk, and it asks through the conflict prompt `give_it_dialogs`
+  installs — which, when the call sat *below* the restore, was always still the inert `ChangeNothing`.
+  No work was ever lost by it (that inert answer is Cancel, which keeps the buffer), but the question
+  MDEDIT-66 documents was not being asked.
 - **A crash is told from a quit by a marker in the session file**, not by whether anything was left
   behind — that stopped working the moment the store outlived a quit. `clean_exit` is written by the
   exit path and **cleared at startup**, so it describes the run in progress. The clearing is not

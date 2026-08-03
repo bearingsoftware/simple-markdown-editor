@@ -237,6 +237,13 @@ fn give_it_dialogs<T: mdedit_text::TextLayout>(editor: &mut Editor<T>) {
     // every test binary read it — from as many threads as the harness runs tests on, which corrupts
     // the heap. See `mdedit_app::clipboard::System`.
     editor.with_clipboard(Box::new(mdedit_app::clipboard::System::default()));
+    // And the same again, which is MDEDIT-68: while the real recovery store was the default, every
+    // test that edited a buffer and ran the idle timer wrote unsaved work into the user's own store,
+    // and it came back in their editor on the next launch. `None` when there is nowhere to put it —
+    // crash recovery is a courtesy and never stops a start.
+    if let Some(store) = mdedit_session::snapshot::Store::beside_session() {
+        editor.with_snapshot_store(store);
+    }
 }
 
 /// Writes the session back, marked as a clean exit.
@@ -363,6 +370,19 @@ fn main() {
             editor.activate_saved_tab();
             editor
         };
+        // **Before the restore, and that ordering is load-bearing in two directions.** The restore
+        // reads the snapshot store, which this installs — MDEDIT-68 made the store something the app
+        // wires in rather than something `Editor::new` reaches for, so a restore above this line
+        // would find nowhere to restore from and silently do nothing.
+        //
+        // It also repairs a safeguard that had never fired: `restore_one` asks before putting a
+        // stored edit back over a file that has changed on disk since, and it asks through the
+        // conflict prompt *this* installs. With the call below the restore, that question was always
+        // being answered by the inert `ChangeNothing`, which says Cancel, which means restore anyway.
+        // No work was ever lost by it — Cancel keeps the buffer — but the question MDEDIT-66 says is
+        // asked was not being asked.
+        give_it_dialogs(&mut editor);
+
         // Unsaved work the last run stored, whether it ended on purpose or not. Restored before the
         // window exists, so the first frame already shows it rather than flashing the on-disk
         // version first.
@@ -390,7 +410,6 @@ fn main() {
             }
         }
 
-        give_it_dialogs(&mut editor);
         // Opening from Explorer or a terminal is how most people start this editor, and it does not
         // go through `Editor::open_paths` — so without this the recent list would only ever know
         // about files opened from its own dialog. Reversed, so the last one named ends up first.

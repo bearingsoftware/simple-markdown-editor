@@ -882,7 +882,9 @@ impl<T: TextLayout> Editor<T> {
             row_rects: Vec::new(),
             pane_scroll: 0.0,
             row_labels: HashMap::new(),
-            snapshots: mdedit_session::snapshot::Store::beside_session(),
+            // Nowhere, until somebody says where. See `with_snapshot_store`, and MDEDIT-68 for what
+            // defaulting this to the real directory cost.
+            snapshots: None,
             snapshotted: HashMap::new(),
             cursor: (0.0, 0.0),
             scroll: Scroll::new(),
@@ -1138,9 +1140,26 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Puts the recovery snapshots somewhere other than the real directory. For tests.
+    /// Says where unsaved work is kept.
+    ///
+    /// **An editor is built with nowhere to keep it, and `main` installs the real store** — the same
+    /// wiring as the clipboard, the prompts, the file pickers and the recent-files list, and for the
+    /// same reason. MDEDIT-68 is what the other default cost: every test that edited a buffer and ran
+    /// the idle timer wrote a snapshot into the user's own recovery directory, and MDEDIT-66 restored
+    /// it into their editor on the next launch.
     pub fn with_snapshot_store(&mut self, store: mdedit_session::snapshot::Store) {
         self.snapshots = Some(store);
+    }
+
+    /// Whether this editor has anywhere to keep unsaved work.
+    ///
+    /// False until somebody says where, which is the whole of MDEDIT-68. Exists so a test can assert
+    /// the *default* rather than go looking in the user's own directory for evidence of absence — a
+    /// test that reads `%LOCALAPPDATA%` passes on a machine that has never run the editor, which
+    /// makes it no test at all.
+    #[must_use]
+    pub fn stores_unsaved_work(&self) -> bool {
+        self.snapshots.is_some()
     }
 
     /// The work that waits for typing to stop, and whether any of it changed what is drawn.
