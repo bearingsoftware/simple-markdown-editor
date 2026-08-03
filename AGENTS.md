@@ -61,8 +61,10 @@ crates/document/        # mdedit-document: rope buffer keeping that partition cu
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the three
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
-crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsafe call that
-                        #   attaches it. Windows-only.
+crates/menu-win/        # mdedit-menu-win: the native menu bar and the one unsafe call that attaches
+                        #   it — plus the small Win32 reads that are not worth a crate of their own:
+                        #   the double-click interval, the parent console, and the window icon.
+                        #   Windows-only.
 crates/shell-win/       # mdedit-shell-win: the DropTarget verb and its COM local server, so a whole
                         #   Explorer selection reaches one process. The registry footprint is a
                         #   value, which is what makes unregister exact. Windows-only
@@ -77,6 +79,9 @@ crates/app/             # mdedit-app: the window. winit + wgpu + glyph atlas, th
                         #   shortcuts reference, the single-line text field and the find, replace
                         #   and go-to-line bar built on it, and the keystroke latency harness.
                         #   Binary: `mdedit`.
+assets/icons/           # MDEDIT-70: the app icon, 24 PNGs and the `mdedit.ico` built from eight of
+                        #   them. `build-ico.ps1` rebuilds it without ImageMagick. Read its README
+                        #   before adding a size — there is no vector master, deliberately
 spikes/font-fallback/   # MDEDIT-5 probe; outside the workspace, Windows-only, throwaway
 spikes/gpu-baseline/    # MDEDIT-19 probe: what an empty wgpu window costs in memory. Re-runnable
 spikes/startup-attribution/
@@ -100,6 +105,35 @@ and evidenced. Don't relitigate them without new evidence.
 
 Known gaps, so nobody assumes they are done:
 
+- **The executable has an icon, and embedding the resource was only half of it.** MDEDIT-70. Eight
+  hand-drawn PNGs become `assets/icons/mdedit.ico`, `crates/app/mdedit.rc` declares it as resource
+  `1`, and `build.rs` compiles that with `embed-resource`. That is what Explorer, the taskbar's
+  pinned entry and `mdedit-shell-win`'s `DefaultIcon = "<exe>",0` draw — index 0 there means "the
+  first icon group", so **registration has been pointing at a resource that did not exist** since
+  MDEDIT-61.
+
+  **It does not give the window one.** A window takes its icon from its class or from `WM_SETICON`,
+  and winit sets neither, so the title bar and Alt-Tab drew a system fallback while a perfectly good
+  icon sat inside the binary. `mdedit_menu_win::set_window_icon` is the fix: `LoadImageW` against the
+  already-embedded resource, so there is no second copy of the pixels and no PNG decoder at runtime.
+  It is called **before** `attach_menu` and not inside it, because that function gives up when muda
+  cannot build a bar and a window with no menu should still have an icon. **Assumed, then disproved
+  by looking** — `WM_GETICON` returned null for all three sizes and `GCLP_HICON` was zero. No test
+  could have caught it; CI does not open a window.
+
+  **Two resource crates, and neither does the other's job.** `embed-manifest` is pure Rust and keeps
+  the Per-Monitor DPI v2 declaration free of any toolchain requirement; `embed-resource` needs
+  `rc.exe`, which is not an extra requirement because it ships in the same Windows SDK as the
+  `link.exe` any MSVC build already needs. They do not collide: on MSVC `embed-manifest` passes
+  linker options rather than contributing a resource. Moving the manifest into the `.rc` would work
+  and is the wrong trade.
+
+  **ImageMagick is not a dependency and is not on the runners**, so `assets/icons/build-ico.ps1`
+  builds the `.ico` from the PNGs with nothing but Windows, and the result is committed. Sizes below
+  256 are BMP DIBs and 256 is a PNG. `System.Drawing.Icon` **cannot read the 256 entry** — it
+  predates PNG-in-ICO — so a verification script that asks it for 256 gets 128 back and is reporting
+  its own limitation. `.gitattributes` marks `*.png` and `*.ico` binary outright rather than trusting
+  `text=auto`, because an icon whose `0x0d` bytes were rewritten on checkout would still build.
 - **No portable text implementation.** `mdedit-text-dwrite` is the only backend, so the trait has
   one implementation and therefore no correctness oracle yet. parley fills that in when
   [parley#689](https://github.com/linebender/parley/pull/689) ships released, and until then the
@@ -767,11 +801,17 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
   thread. Adding a runtime to the core needs a design decision on the ticket.
 - **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
   the baseline's `deny` + scoped-allow. **Three** crates qualify: `mdedit-text-dwrite` for
-  DirectWrite, `mdedit-menu-win` for the one call that attaches a menu bar to a window, and
+  DirectWrite, `mdedit-menu-win` for the call that attaches a menu bar to a window, and
   `mdedit-shell-win` for COM class registration and `IDropTarget`. The third was MDEDIT-61, and its
   reason is on the ticket rather than in a `SAFETY` comment, which is the rule: shell integration is
   unsafe Win32 by nature and is neither menus nor text. A **fourth** needs the same — a reason on a
   ticket, not a `SAFETY` comment in `mdedit-app`.
+
+  **`mdedit-menu-win` is where a stray Win32 call goes**, despite its name, and that is deliberate:
+  *one Win32 call is not a reason to mint a crate.* `GetDoubleClickTime`, `AttachConsole` and
+  MDEDIT-70's `LoadImageW`/`WM_SETICON` all live there for that reason. The line is size, not
+  subject — a *body* of platform work with its own decisions (COM, DirectWrite) earns a crate; a
+  single documented call does not.
 - **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
   codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
   positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the

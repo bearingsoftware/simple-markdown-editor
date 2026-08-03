@@ -219,6 +219,79 @@ pub fn attach_parent_console() {
 #[cfg(not(windows))]
 pub fn attach_parent_console() {}
 
+/// Puts the executable's own icon on a window.
+///
+/// # Why this is needed at all
+///
+/// Embedding an icon resource gives Explorer, the taskbar's pinned entry and Alt-Tab something to
+/// draw for the *file*. It does **not** give a window one: a window takes its icon from its class or
+/// from `WM_SETICON`, and winit registers its class with neither. MDEDIT-70 assumed the resource
+/// would be enough and the window disagreed — `WM_GETICON` returned null for all three sizes and
+/// `GCLP_HICON` was zero, so the title bar drew a system fallback while the executable itself had a
+/// perfectly good icon inside it.
+///
+/// # Why here
+///
+/// Same reason as [`double_click_interval`]: `AGENTS.md` makes `unsafe` outside a platform crate a
+/// review block, and one Win32 call is not a reason to mint a fourth. This is the same `hwnd`, at the
+/// same moment, as [`MenuBar::attach`].
+///
+/// Nothing is loaded from disk and there is no second copy of the pixels — `LoadImageW` reads the
+/// resource `build.rs` already embedded, at the size Windows asks for.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "the platform layer; see this function's docs for why it is here"
+)]
+pub fn set_window_icon(hwnd: isize) {
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, ICON_BIG, ICON_SMALL, IMAGE_ICON, LR_SHARED, LoadImageW, SM_CXICON,
+        SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
+    };
+
+    // The id `mdedit.rc` gives the icon group. `MAKEINTRESOURCEW` is not a call — an ordinal is
+    // passed where a name pointer goes, and the low word being the id is the whole convention.
+    //
+    // `without_provenance` rather than a cast, which clippy reads as a dangling pointer and is
+    // right to: this is an integer wearing a pointer's type, and Windows never dereferences it.
+    let name: *const u16 = std::ptr::without_provenance(1);
+
+    // SAFETY: a null module handle means this executable, which is always loaded while it is
+    // running, so the handle is valid and the call cannot fail in a way that matters.
+    let module = unsafe { GetModuleHandleW(std::ptr::null()) };
+
+    for (which, cx, cy) in [
+        (ICON_BIG, SM_CXICON, SM_CYICON),
+        (ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
+    ] {
+        // SAFETY: `GetSystemMetrics` takes an index and returns a number; it reads no memory of
+        // ours. `LoadImageW` is asked for an icon from this module by ordinal, at exactly the
+        // system metric size — which is the documented precondition for `LR_SHARED`, and what makes
+        // the returned handle one Windows owns and destroys rather than one we must free. A missing
+        // resource returns null, which is checked.
+        let icon = unsafe {
+            let (width, height) = (GetSystemMetrics(cx), GetSystemMetrics(cy));
+            LoadImageW(module, name, IMAGE_ICON, width, height, LR_SHARED)
+        };
+        if icon.is_null() {
+            continue;
+        }
+
+        // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
+        // still holds. `WM_SETICON` takes the size in the wparam and the icon in the lparam, and
+        // returns the previous icon — which is null here and deliberately dropped, because a window
+        // that had no icon has nothing to restore.
+        unsafe {
+            SendMessageW(hwnd as _, WM_SETICON, which as usize, icon as isize);
+        }
+    }
+}
+
+/// Off Windows there is no window class to put an icon on.
+#[cfg(not(windows))]
+pub fn set_window_icon(_hwnd: isize) {}
+
 /// How long Windows says a double-click may take.
 ///
 /// # Why this is asked rather than assumed

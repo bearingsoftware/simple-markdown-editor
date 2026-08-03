@@ -1799,6 +1799,22 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Puts the executable's embedded icon on the window (MDEDIT-70).
+    ///
+    /// Embedding the resource is not enough on its own: a window takes its icon from its class or
+    /// from `WM_SETICON`, and winit sets neither, so without this the title bar and Alt-Tab draw a
+    /// system fallback while the icon sits unused inside the binary. See
+    /// [`mdedit_menu_win::set_window_icon`], which is where the Win32 call belongs.
+    fn set_window_icon(window: &Window) {
+        // Getting the handle is safe; only using it is not, and that lives in the platform crate.
+        // Nested rather than a let-chain: those stabilised in 1.88 and this crate's floor is 1.87.
+        if let Ok(handle) = window.window_handle() {
+            if let RawWindowHandle::Win32(win32) = handle.as_raw() {
+                mdedit_menu_win::set_window_icon(win32.hwnd.get());
+            }
+        }
+    }
+
     /// Builds the menu bar and puts it on the window.
     ///
     /// Quiet about failure: an editor with no menu bar still edits, and every command it offers has
@@ -6898,6 +6914,9 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
         // Without this winit never delivers `WindowEvent::Ime` at all, and a Japanese, Chinese or
         // Korean keyboard types nothing into the editor.
         window.set_ime_allowed(true);
+        // Before the menu, and not inside it: `attach_menu` gives up when muda cannot build a bar,
+        // and a window with no menu should still have an icon.
+        Self::set_window_icon(&window);
         self.attach_menu(&window);
         let window = Arc::new(window);
         match Renderer::new(&window) {

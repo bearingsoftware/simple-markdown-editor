@@ -1,0 +1,10 @@
+// The application icon, and nothing else.
+//
+// Windows uses the lowest-numbered RT_GROUP_ICON as an executable's icon, so this is 1 — which is
+// also what `mdedit-shell-win` registers as `DefaultIcon = "<exe>",0`, index 0 meaning "the first
+// icon group" rather than "resource id 0".
+//
+// The manifest is deliberately not here. `embed-manifest` owns it, writes it without a resource
+// compiler, and is what guarantees Per-Monitor DPI v2 — see `build.rs`.
+
+1 ICON "../../assets/icons/mdedit.ico"

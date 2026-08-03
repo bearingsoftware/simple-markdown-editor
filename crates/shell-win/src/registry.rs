@@ -134,6 +134,8 @@ pub fn plan(exe: &Path) -> Vec<Step> {
         value: None,
         data: TYPE_NAME.to_owned(),
     });
+    // Index 0 is "the first icon group in the file", not "resource id 0". MDEDIT-70 embedded one, so
+    // this now resolves; before it, a registered `.md` file drew the generic document icon.
     steps.push(Step::Owned {
         root: PROGID.to_owned(),
         key: format!("{PROGID}\\DefaultIcon"),
