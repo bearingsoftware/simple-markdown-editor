@@ -59,10 +59,13 @@ crates/document/        # mdedit-document: rope buffer keeping that partition cu
                         #   many-site replace built on it, and the inline formatting toggles that
                         #   use the marker spans rather than guessing
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
-crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the two
+crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the three
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
 crates/menu-win/        # mdedit-menu-win: the native menu bar, and the one unsafe call that
-                        #   attaches it. Windows-only. Where shell integration will go.
+                        #   attaches it. Windows-only.
+crates/shell-win/       # mdedit-shell-win: the DropTarget verb and its COM local server, so a whole
+                        #   Explorer selection reaches one process. The registry footprint is a
+                        #   value, which is what makes unregister exact. Windows-only
 crates/file/            # mdedit-file: reads and writes files without changing an unedited byte,
                         #   and the mtime+length stamp that says when something else has
 crates/session/         # mdedit-session: tabs as handles, the session file that restores them, the
@@ -598,6 +601,47 @@ Known gaps, so nobody assumes they are done:
 
   Measured at 333 KB of prose: **wrap on p50 0.98–1.36 ms, wrap off 1.23–1.48 ms** across three runs,
   both well inside the 3 ms budget and overlapping run to run. `crates/app/tests/wrap_cost.rs`.
+- **A whole Explorer selection reaches one process, and a `DropTarget` verb is the only way that is
+  true.** MDEDIT-61. The obvious registration — `shell\open\command` holding `"mdedit.exe" "%1"` —
+  defaults to `MultiSelectModel=Document`, which runs the command **once per file** and past fifteen
+  stops invoking the verb at all, silently. Notepad++ ships that. A `DropTarget` verb points at a
+  CLSID with a `LocalServer32`, Explorer activates it through COM, and because the running instance
+  published its class object the activation **binds to the process already running** and arrives as
+  one `IDropTarget::Drop` carrying the lot. Measured: twenty files, one process, twenty tabs, in
+  selection order.
+
+  **`REGCLS_MULTIPLEUSE` is the reuse**, not a mutex. There is deliberately no single-instance lock:
+  launching `mdedit` twice by hand still opens two windows, exactly as before. Anything that made a
+  second hand-launch impossible would be a different feature and a worse one.
+
+  **Registration is manual, per-user and reversible** — `--register` / `--unregister`, the first
+  flags this binary has. MDEDIT-33's "no flags" stance was about *file* arguments; these are checked
+  before anything treats an argument as a path, and the cost is that a document called `--register`
+  cannot be opened by name. Everything is written under `HKEY_CURRENT_USER`, which needs no elevation
+  by construction — and `never elevate` is a rule here rather than a preference, because elevating
+  breaks drag-and-drop from a non-elevated Explorer. No installer grows out of this: the gap register
+  parks the installer and updater deliberately, and keeping this manual is what stops half of one
+  appearing by accident.
+
+  **The footprint is a value, and that is what makes unregister exact.** `registry::plan` returns
+  every key and value; registering folds over it forwards and unregistering folds over it backwards,
+  so a key one direction knows about and the other forgets cannot exist. Keys are `Owned` (the ProgID
+  tree, the CLSID — deleted with their subtrees) or `Shared` (a value inside `.md`, which exists
+  whether or not this editor does; removing the key would take somebody else's association with it).
+  The tests assert the property that matters — **nothing in the footprint leaves `HKEY_CURRENT_USER`**.
+
+  **It does not become the default handler, and cannot.** Windows 8 onwards protects the user's
+  choice with a hash in `UserChoice` that no program can produce, so writing the `.md` default either
+  does nothing or fights the user. What registration does is publish the ProgID and add it to
+  `OpenWithProgids`; making it the default is a click in Open With → Always. `.json`, `.yaml` and
+  `.yml` are deliberately **not** claimed — highlighting a format is not a reason to seize it.
+
+  **`-Embedding` is filtered before paths are parsed.** COM adds it when *it* started the process
+  rather than a person, and treating it as a path opens a tab named after it on every Explorer launch.
+
+  **This is the least CI-able thing in the repo.** The registry footprint, the flag parsing and the
+  twenty-file open are unit-tested; COM activation is not testable at all without a shell, and was
+  driven by hand through `CoCreateInstance` + a hand-built `CF_HDROP` — which is what Explorer does.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
@@ -722,9 +766,12 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 - **No `async` in the editor core.** The UI thread is a synchronous frame loop; I/O goes to a worker
   thread. Adding a runtime to the core needs a design decision on the ticket.
 - **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
-  the baseline's `deny` + scoped-allow. Two crates qualify: `mdedit-text-dwrite` for DirectWrite, and
-  `mdedit-menu-win` for the one call that attaches a menu bar to a window. A third needs a reason on
-  the ticket, not a `SAFETY` comment in `mdedit-app`.
+  the baseline's `deny` + scoped-allow. **Three** crates qualify: `mdedit-text-dwrite` for
+  DirectWrite, `mdedit-menu-win` for the one call that attaches a menu bar to a window, and
+  `mdedit-shell-win` for COM class registration and `IDropTarget`. The third was MDEDIT-61, and its
+  reason is on the ticket rather than in a `SAFETY` comment, which is the rule: shell integration is
+  unsafe Win32 by nature and is neither menus nor text. A **fourth** needs the same — a reason on a
+  ticket, not a `SAFETY` comment in `mdedit-app`.
 - **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
   codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
   positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the
@@ -816,7 +863,8 @@ Line endings are pinned to LF by `.gitattributes`, because `rustfmt.toml` sets
 - **Opening N files from Explorer must reuse one process.** Register a **DropTarget verb**
   (CLSID + `LocalServer32`), not a command-line verb — command-line verbs default to
   `MultiSelectModel=Document`, which spawns one process per file and silently drops the verb past
-  15 items. Notepad++'s shell extension gets this wrong and has since 2023.
+  15 items. Notepad++'s shell extension gets this wrong and has since 2023. **Done on MDEDIT-61**;
+  see `mdedit-shell-win` and the entry in the repo state above.
 - **Declare Per-Monitor DPI v2 in the manifest**, via `embed-manifest` — winit deliberately won't.
   Re-run glyph rasterisation and hit-testing on `WM_DPICHANGED`, and use the suggested rectangle.
 - Read the dark-mode setting from the **registry**, not `ShouldAppsUseDarkMode()` (unreliable from

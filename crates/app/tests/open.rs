@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use mdedit_app::editor::Editor;
@@ -66,6 +66,38 @@ fn several_files_each_get_a_tab() {
         Some(third.as_path()),
         "the last one opened is the one to show"
     );
+}
+
+/// **Twenty files, in one call, in selection order** — the editor half of MDEDIT-61's acceptance
+/// case, and the reason the number is twenty rather than three. A command-line verb defaults to
+/// `MultiSelectModel=Document`, which stops invoking the verb at all past fifteen items; the
+/// `DropTarget` verb hands the whole selection over as one call, and this is what that call does
+/// when it lands. The COM half cannot be tested here — see `mdedit-shell-win` — so what is pinned is
+/// that nothing in the editor caps, reorders or drops a selection of that size.
+#[test]
+fn a_whole_explorer_selection_opens_in_order() {
+    let dir = TempDir::new().unwrap();
+    let paths: Vec<PathBuf> = (0..20)
+        .map(|index| {
+            a_file(
+                &dir,
+                &format!("note-{index:02}.md"),
+                &format!("# {index}\n"),
+            )
+        })
+        .collect();
+    let mut editor = editor(&dir);
+
+    assert!(editor.open_paths(&paths));
+    assert_eq!(editor.workspace().tabs().len(), 20);
+
+    let opened: Vec<PathBuf> = editor
+        .workspace()
+        .tabs()
+        .iter()
+        .filter_map(|tab| tab.path().map(Path::to_path_buf))
+        .collect();
+    assert_eq!(opened, paths, "the tabs are not in the order selected");
 }
 
 #[test]

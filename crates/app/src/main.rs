@@ -285,12 +285,146 @@ fn start_reporting() {
     mdedit_app::log::install_panic_hook(report_panic);
 }
 
+/// Handles `--register` and `--unregister`, and reports whether that was the whole job.
+///
+/// **The first flags this binary has, and the exception is documented rather than assumed.**
+/// MDEDIT-33 settled that arguments are files and there is no flag parsing; that was about *file*
+/// arguments, and these two are not files. They are checked here, before anything treats an argument
+/// as a path, so a document called `--register` is the one thing this cannot open — which is the
+/// trade every command-line program makes.
+///
+/// Nothing about shell integration happens implicitly: there is no installer, and registration
+/// stays something a person runs on purpose and can undo the same way.
+#[cfg(windows)]
+fn handle_registration() -> bool {
+    let flag = std::env::args().nth(1);
+    let Some(flag) = flag.as_deref() else {
+        return false;
+    };
+
+    let outcome = match flag {
+        "--register" => match std::env::current_exe() {
+            // The path of *this* build, so Explorer activates the one that was registered rather
+            // than whichever copy ran last.
+            Ok(exe) => mdedit_shell_win::register(&exe).map(|()| {
+                println!(
+                    "Registered. Markdown files now offer Simple Markdown Editor in Open With."
+                );
+                println!(
+                    "Windows protects the default handler with a hash, so making it the default is \
+                     a click in Open With -> Always."
+                );
+            }),
+            Err(err) => Err(mdedit_shell_win::Error::Executable(err)),
+        },
+        "--unregister" => mdedit_shell_win::unregister().map(|()| {
+            println!("Unregistered. Nothing of this editor is left in the registry.");
+        }),
+        _ => return false,
+    };
+
+    if let Err(err) = outcome {
+        mdedit_app::log_error!("{flag} failed: {err}");
+        eprintln!("{flag} failed: {err}");
+        std::process::exit(1);
+    }
+    true
+}
+
+/// The editor to start with: the files named, or the session, or the sample.
+///
+/// Returns the paths that were actually resolved alongside it, because they go into the recent list
+/// — and that cannot happen here, since the list is installed later in `give_it_dialogs`.
+#[cfg(windows)]
+fn start_from(
+    text: mdedit_text_dwrite::DirectWriteText,
+    session_path: Option<&std::path::Path>,
+    arguments: Vec<std::path::PathBuf>,
+) -> (
+    Editor<mdedit_text_dwrite::DirectWriteText>,
+    Vec<std::path::PathBuf>,
+) {
+    if arguments.is_empty() {
+        // Nothing named, so restore what was open. Only the active tab is read; the rest stay
+        // handles until something displays them.
+        let editor = match session_path.map(mdedit_session::Workspace::restore_session) {
+            Some(Ok((workspace, skipped))) if !workspace.tabs().is_empty() => {
+                for tab in &skipped {
+                    // Reported rather than silently dropped: a tab vanishing without explanation
+                    // looks like data loss.
+                    mdedit_app::log_error!("skipped a session entry: {}", tab.reason);
+                }
+                let mut editor = Editor::with_workspace(workspace, text);
+                editor.activate_saved_tab();
+                editor
+            }
+            // No session, an unreadable one, or one with nothing in it: show the sample.
+            _ => Editor::new(SAMPLE, text),
+        };
+        return (editor, Vec::new());
+    }
+
+    let mut workspace = mdedit_session::Workspace::new();
+    let mut opened = Vec::new();
+    for path in arguments {
+        // `from_command_line`, not `validate`: the latter guards the session file, which is a file
+        // this process wrote and something else may have edited. This is the user typing, or
+        // Explorer handing over what they selected. See `mdedit_session::path` for why they are
+        // separate functions.
+        match mdedit_session::path::from_command_line(&path) {
+            Ok(resolved) => {
+                workspace.add(resolved.clone());
+                opened.push(resolved);
+            }
+            Err(reason) => {
+                mdedit_app::log_error!("could not open: {reason}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let mut editor = Editor::with_workspace(workspace, text);
+    editor.activate_saved_tab();
+    (editor, opened)
+}
+
+/// Publishes the COM class object, which is what makes this process the one Explorer reuses.
+///
+/// The returned server must be **held for as long as activations should land here**: dropping it
+/// revokes the class, and the next selection would start a second process instead.
+///
+/// Quiet about failure, like the menu bar: an editor that cannot publish a class object still edits
+/// every file it is given. What is lost is the reuse, and the fallback — the command-line verb, one
+/// process per file — is what every other editor does anyway.
+#[cfg(windows)]
+fn publish_shell(
+    proxy: winit::event_loop::EventLoopProxy<mdedit_app::editor::Wake>,
+) -> Option<mdedit_shell_win::Server> {
+    match mdedit_shell_win::serve(Box::new(move |paths| {
+        // The loop has gone away, which happens while the editor is shutting down. Nothing to
+        // deliver to and nothing to do about it — the same answer the menu's own forwarder gives.
+        let _ = proxy.send_event(mdedit_app::editor::Wake::Open(paths));
+    })) {
+        Ok(server) => Some(server),
+        Err(err) => {
+            mdedit_app::log_error!("no Explorer integration this run: {err}");
+            None
+        }
+    }
+}
+
 fn main() {
     // Reattach to the terminal that launched us, if there was one. The binary is windows-subsystem
     // so Explorer gets no console flash; the cost is no standard handles at all, which would take
     // the latency harness's output with it. See `attach_parent_console`.
     mdedit_menu_win::attach_parent_console();
     start_reporting();
+
+    // Before the text backend, the event loop and anything that opens a window: registering is a
+    // registry write and a message, and a person who asked for it is waiting at a prompt.
+    #[cfg(windows)]
+    if handle_registration() {
+        return;
+    }
 
     #[cfg(not(windows))]
     {
@@ -317,9 +451,10 @@ fn main() {
             }
         };
 
-        // Carries menu commands: muda raises them on a channel of its own, and this is how they
-        // reach the loop that owns the document.
-        let event_loop = match EventLoop::<mdedit_menu_win::Command>::with_user_event().build() {
+        // Carries menu commands and Explorer activations: muda raises the first on a channel of its
+        // own and COM delivers the second on a call, and this is how both reach the loop that owns
+        // the document. See `mdedit_app::editor::Wake`.
+        let event_loop = match EventLoop::<mdedit_app::editor::Wake>::with_user_event().build() {
             Ok(event_loop) => event_loop,
             Err(err) => {
                 mdedit_app::log_error!("could not create an event loop: {err}");
@@ -330,55 +465,25 @@ fn main() {
         // burn a core and distort the very latency numbers this slice exists to measure.
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        // Arguments are files to open. No flag parsing, because there are no flags.
-        let arguments: Vec<std::path::PathBuf> =
-            std::env::args_os().skip(1).map(Into::into).collect();
+        // Everything left after the two registration flags and COM's own switch. `-Embedding` is
+        // what COM adds when *it* started this process rather than a person; treating it as a path
+        // would open a tab named after it on every Explorer launch.
+        let arguments: Vec<std::path::PathBuf> = std::env::args_os()
+            .skip(1)
+            .filter(|argument| {
+                !argument
+                    .to_str()
+                    .is_some_and(mdedit_shell_win::is_embedding)
+            })
+            .map(Into::into)
+            .collect();
         let session_path = mdedit_session::default_session_path();
         // Resolved paths from the command line or Explorer, to go into the recent list once there
         // is one. It is read in `give_it_dialogs`, below, which is after this.
         let mut opened: Vec<std::path::PathBuf> = Vec::new();
 
-        let mut editor = if arguments.is_empty() {
-            // Nothing named, so restore what was open. Only the active tab is read; the rest stay
-            // handles until something displays them.
-            match session_path
-                .as_deref()
-                .map(mdedit_session::Workspace::restore_session)
-            {
-                Some(Ok((workspace, skipped))) if !workspace.tabs().is_empty() => {
-                    for tab in &skipped {
-                        // Reported rather than silently dropped: a tab vanishing without explanation
-                        // looks like data loss.
-                        mdedit_app::log_error!("skipped a session entry: {}", tab.reason);
-                    }
-                    let mut editor = Editor::with_workspace(workspace, text);
-                    editor.activate_saved_tab();
-                    editor
-                }
-                // No session, an unreadable one, or one with nothing in it: show the sample.
-                _ => Editor::new(SAMPLE, text),
-            }
-        } else {
-            let mut workspace = mdedit_session::Workspace::new();
-            for path in arguments {
-                // `from_command_line`, not `validate`: the latter guards the session file, which is
-                // a file this process wrote and something else may have edited. This is the user
-                // typing. See `mdedit_session::path` for why they are separate functions.
-                match mdedit_session::path::from_command_line(&path) {
-                    Ok(resolved) => {
-                        workspace.add(resolved.clone());
-                        opened.push(resolved);
-                    }
-                    Err(reason) => {
-                        mdedit_app::log_error!("could not open: {reason}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            let mut editor = Editor::with_workspace(workspace, text);
-            editor.activate_saved_tab();
-            editor
-        };
+        let (mut editor, named) = start_from(text, session_path.as_deref(), arguments);
+        opened.extend(named);
         // **Before the restore, and that ordering is load-bearing in two directions.** The restore
         // reads the snapshot store, which this installs — MDEDIT-68 made the store something the app
         // wires in rather than something `Editor::new` reaches for, so a restore above this line
@@ -427,6 +532,9 @@ fn main() {
         }
         // Menu commands arrive on muda's own channel; this is what carries them into the loop.
         editor.forward_menu(event_loop.create_proxy());
+
+        // Held until the loop stops. See `publish_shell`.
+        let _shell = publish_shell(event_loop.create_proxy());
 
         if let Err(err) = event_loop.run_app(&mut editor) {
             mdedit_app::log_error!("event loop stopped: {err}");
