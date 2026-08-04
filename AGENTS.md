@@ -588,6 +588,33 @@ Known gaps, so nobody assumes they are done:
   **`Token::Literal` is the first token to reach `TextStyle` rather than only a colour.** A quoted
   `"true"` is `Token::String` and stays upright: the classification already knows the difference, and
   italicising on the text would be ignoring it. There is a test that says so.
+- **The gutter has its own colour, and the caret's line is lit.** MDEDIT-77. Line numbers draw in
+  `gutter` rather than borrowing `marker` — which was a good call while there was one dim colour and
+  stopped being one when there were several — and the caret's own number steps up to `text`, which is
+  the pack's rule for the role. The row itself takes the `caret_line` tint, a 7% lavender.
+
+  **Two cues for one question.** The tint is deliberately near invisible, which is exactly why the
+  brighter number exists: a reader who cannot see a 7% wash still sees which number is bright. The
+  gutter is off by default, so on a default install the tint is the only cue — that is a real gap and
+  it is written down rather than fixed by turning a setting on for people.
+
+  **Three decisions the ticket asked to be made explicitly**, all in `draw_caret_line`'s docs: every
+  row of a **wrapped** line is lit, because a line is a source line and that is what every editor
+  does; it stays lit while the **find field** has focus, because the document's caret has not moved
+  and Esc puts you back there; and it stays lit **under a selection**, so two tints stack.
+
+  **`contrast.rs` asserts the stack**, which the pack does not model: it measures every role against
+  `bg` alone and claims "selection tints preserve 4.5:1" — a claim about one tint, not two. Text on
+  the caret line, and text on a selection over the caret line, are both asserted, as is the caret's
+  number reading brighter than an ordinary one.
+
+  **In the gutter, rose outranks bright outranks dim**: a line that is both flagged and current stays
+  rose, because something wrong outranks where you are.
+
+  The tint is drawn **first** on its row, so the selection, the search highlights and the glyphs all
+  land on top. It spans the document's width and its margins but **not** the gutter, which has its own
+  answer. It is placed in window coordinates rather than panned with the text: a highlight that slid
+  sideways with a horizontal pan would leave the rest of its row untinted.
 - **A diagnostic is drawn on the document now, not only counted.** MDEDIT-76. A rose squiggle under
   the offending span, and the line's gutter number in rose and bold with a `!` in front of it — the
   design pack's `error` role is "paired with a gutter marker", and adopting the colour without
