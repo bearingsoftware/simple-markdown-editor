@@ -20,7 +20,7 @@ use mdedit_app::editor::Editor;
 use mdedit_offsets::ByteOffset;
 
 mod stub;
-use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
+use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 600.0;
 const HEIGHT: f32 = MARGIN + mdedit_app::toolbar::HEIGHT + 400.0;
@@ -289,4 +289,50 @@ fn a_wrapped_line_is_numbered_once() {
         rows.len() > numbered.len(),
         "the document should occupy more rows than it has source lines: {rows:?}"
     );
+}
+
+/// A number sits on its line's baseline, not above it (MDEDIT-76).
+/// A number sits on its line's baseline, not above it (MDEDIT-76).
+///
+/// It used to be placed from the row's *top* and then offset by the glyph's own distance from the
+/// baseline — which is negative — so every number was drawn about an ascent higher than the line it
+/// belonged to. On a real font that is most of a row, and the number read as the line above's.
+///
+/// Nothing here caught it before: these tests assert where numbers sit *horizontally*, which was
+/// MDEDIT-34, and the stub gives every glyph a one-pixel offset, so the error was one pixel in a
+/// test and a whole row in the window. It was found by putting a `!` in the gutter and looking.
+#[test]
+fn a_number_sits_on_the_same_baseline_as_its_line() {
+    let mut editor = editor_with(&lines(4), true);
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let text_left = editor.content_rect().left_edge();
+    let bar_top = HEIGHT - mdedit_app::status::BAR_HEIGHT;
+
+    // Every glyph drawn in the gutter, by its top edge.
+    let mut in_gutter: Vec<f32> = quads
+        .iter()
+        .filter(|quad| is_gutter(quad, text_left, bar_top))
+        .map(|quad| quad.rect[1])
+        .collect();
+    in_gutter.sort_by(f32::total_cmp);
+    in_gutter.dedup();
+    assert!(!in_gutter.is_empty());
+
+    // The stub puts a row's baseline an ascent below its top and every glyph one pixel above the
+    // baseline, so this is where a number belongs — and, before MDEDIT-76, an ascent higher.
+    let baselines: Vec<f32> = (0..6)
+        .map(|row| {
+            #[allow(clippy::cast_precision_loss, reason = "six rows")]
+            let row = row as f32;
+            TOP + row * LINE_HEIGHT + ASCENT - 1.0
+        })
+        .collect();
+    for top in &in_gutter {
+        assert!(
+            baselines
+                .iter()
+                .any(|expected| (expected - top).abs() < 0.5),
+            "a gutter glyph at y {top} is on no row's baseline: {baselines:?}"
+        );
+    }
 }

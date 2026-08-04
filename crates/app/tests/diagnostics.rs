@@ -6,7 +6,14 @@
 //! edit, and "go to the first problem" has to recompute before it moves the caret rather than acting
 //! on offsets from before the last keystroke.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    // Quad colours come from the same palette constants the renderer read, so they are bit-identical
+    // rather than merely close.
+    clippy::float_cmp
+)]
 
 use mdedit_app::editor::Editor;
 use mdedit_session::Workspace;
@@ -229,4 +236,148 @@ fn the_jump_does_not_raise_the_floating_bar() {
 
     assert!(editor.apply_command(mdedit_menu_win::Command::Validate));
     assert!(!editor.settle_selection());
+}
+
+// ---- what it looks like (MDEDIT-76) ----
+
+/// How many quads this frame draws in the diagnostic colour.
+///
+/// The squiggle is a row of them and the flagged gutter number is a few more, so the count is not a
+/// number worth asserting on its own — what it answers is "is anything rose on screen", which is
+/// exactly the question every test below asks.
+fn rose(editor: &mut Editor<Grid>) -> usize {
+    let rose = mdedit_app::view::Theme::default().span_error;
+    let wanted = [rose.r, rose.g, rose.b, rose.a];
+    editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == wanted)
+        .count()
+}
+
+#[test]
+fn a_broken_document_is_drawn_on_not_just_counted() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\"a\": 1,}\n");
+
+    editor.on_idle();
+    assert_eq!(editor.diagnostic_count(), 1);
+    assert!(
+        rose(&mut editor) > 0,
+        "a counted diagnostic that draws nothing is the gap this story closed"
+    );
+}
+
+/// The same rule the count follows, for the same reason: a squiggle under bytes that have moved is
+/// worse than no squiggle, so an edit takes it away until the timer has looked again.
+#[test]
+fn an_edit_takes_the_squiggle_away_and_the_idle_timer_brings_it_back() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\"a\": 1,}\n");
+    editor.on_idle();
+    assert!(rose(&mut editor) > 0);
+
+    editor.insert_text("  ");
+    assert_eq!(
+        rose(&mut editor),
+        0,
+        "the spans are stale the instant the bytes move"
+    );
+
+    editor.on_idle();
+    assert!(rose(&mut editor) > 0, "and come back when they are not");
+}
+
+#[test]
+fn a_valid_document_is_drawn_on_not_at_all() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\"a\": 1}\n");
+    editor.on_idle();
+    assert_eq!(rose(&mut editor), 0, "silence, not a clean bill of health");
+}
+
+#[test]
+fn an_empty_document_draws_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "");
+    editor.on_idle();
+    assert_eq!(rose(&mut editor), 0);
+}
+
+/// Markdown opts out of the whole feature by not implementing it, so there is nothing to draw.
+#[test]
+fn markdown_is_never_marked_up() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = open(&dir, "notes.md", "# A heading\n\nSome {\"unclosed prose.\n");
+    editor.on_idle();
+    assert_eq!(rose(&mut editor), 0);
+}
+
+/// The gutter mark is the cue that does not depend on colour vision, so it has to be *more* than a
+/// recolouring of the number: a `!` and a bold set of digits, which is more quads than the plain
+/// number drew.
+#[test]
+fn the_flagged_line_number_is_marked_as_well_as_recoloured() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\n  \"a\": 1,\n}\n");
+    editor.on_idle();
+
+    let without_numbers = rose(&mut editor);
+    editor.toggle_line_numbers();
+    let with_numbers = rose(&mut editor);
+
+    assert!(
+        with_numbers > without_numbers,
+        "turning the gutter on drew no extra rose quads, so the line is not marked: \
+         {without_numbers} then {with_numbers}"
+    );
+
+    // And a clean document's numbers are not rose, so the mark means something.
+    let mut clean = json(&dir, "{\n  \"a\": 1\n}\n");
+    clean.toggle_line_numbers();
+    clean.on_idle();
+    assert_eq!(rose(&mut clean), 0);
+}
+
+/// Which rows carry a rose quad inside the gutter, as row indices from the top of the document.
+fn flagged_rows(editor: &mut Editor<Grid>) -> Vec<usize> {
+    let rose = mdedit_app::view::Theme::default().span_error;
+    let wanted = [rose.r, rose.g, rose.b, rose.a];
+    let gutter = editor.content_rect().left_edge();
+    let top = editor
+        .content_rect()
+        .to_window(0.0, 0.0, mdedit_app::content::Offset::down(0.0))
+        .1;
+    let mut rows: Vec<usize> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == wanted && quad.rect[0] < gutter)
+        .map(|quad| {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            // Digits sit on the row's baseline, one pixel up from it in the stub's metrics.
+            let row = ((quad.rect[1] + 1.0 - stub::ASCENT - top) / stub::LINE_HEIGHT)
+                .round()
+                .max(0.0) as usize;
+            row
+        })
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+/// The mark has to be on the line the error is on. An off-by-one here points the reader at innocent
+/// bytes, which is worse than not marking at all.
+#[test]
+fn the_mark_lands_on_the_line_the_error_is_on() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\n  \"a\": 1,\n}\n");
+    editor.toggle_line_numbers();
+    editor.on_idle();
+
+    assert_eq!(
+        flagged_rows(&mut editor),
+        vec![1],
+        "the trailing comma is on the second line, which is row 1"
+    );
 }
