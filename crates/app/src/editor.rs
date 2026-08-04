@@ -4154,9 +4154,12 @@ impl<T: TextLayout> Editor<T> {
             .clamp(0.0, pane::max_scroll(count, visible));
         self.row_rects = pane::layout(count, visible, self.pane_scroll);
 
+        // `panel`, not `strip`: MDEDIT-72's palette has a raised surface, and the pane is one. The
+        // strip is the ground *behind* tabs, which is a different thing that happened to be the
+        // only dark chrome colour there was.
         quads.push(Self::solid(
             [0.0, top * scale, pane::PANE_WIDTH * scale, visible * scale],
-            self.theme.strip,
+            self.theme.panel,
         ));
 
         let names: Vec<String> = self

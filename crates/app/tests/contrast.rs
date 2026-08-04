@@ -11,10 +11,10 @@
 //! # Why the pairs are named
 //!
 //! Contrast is a property of a *pair*, and asserting every foreground against every background
-//! measures combinations that never appear on screen. `marker` against `tab_active` is 4.31:1 in the
-//! dark palette, which sounds like a defect and is one — but `token_comment` against `tab_active` is
-//! 4.13:1 and is not, because a JSON comment is never drawn on a tab. The pack itself measures
-//! everything against `bg` alone and so misses the pairs that are on chrome.
+//! measures combinations that never appear on screen: a JSON comment is never drawn on a tab, so
+//! whatever it measures there says nothing. The pack itself measures everything against `bg` alone
+//! and so misses every pair that is on chrome — which is how its gutter came to be 4.22:1 on a
+//! panel, the one value MDEDIT-72 does not take from it.
 //!
 //! So [`PAIRS`] is the list of foreground-on-background combinations the renderer actually produces,
 //! taken from the draw sites in `editor.rs`. Adding one there means adding one here.
@@ -22,9 +22,10 @@
 //! # Text only
 //!
 //! WCAG's 4.5:1 is a rule about text. The caret, the selection tint, the find highlight, the
-//! caret-line tint and the scrollbar thumb are not text and are not held to it here — the scrollbar
-//! thumb is 2.07:1 against the page and has always been, which is a real finding recorded on
-//! MDEDIT-72 rather than something this story may fix, because MDEDIT-71 changes no dark value.
+//! caret-line tint and the scrollbar thumb are not text and are not held to it here — Nocturne's
+//! thumb is 2.01:1 against the page, where the palette it replaced was 2.07:1. What the tints *are*
+//! held to is that text stays legible on them, and that the find highlight and the selection differ
+//! by hue rather than by weight, both of which are asserted below.
 
 use mdedit_app::view::{Appearance, Rgba, Theme};
 
@@ -50,6 +51,20 @@ fn ratio(one: Rgba, two: Rgba) -> f64 {
     let (a, b) = (luminance(one), luminance(two));
     let (lighter, darker) = if a > b { (a, b) } else { (b, a) };
     (lighter + 0.05) / (darker + 0.05)
+}
+
+/// `src` over `dst` with straight alpha, which is what the pipeline's `ALPHA_BLENDING` does.
+///
+/// Needed because Nocturne's selection and find highlight are real tints rather than opaque colours:
+/// what the eye compares is each of them *blended against the page*, not the colour in the palette.
+fn over(src: Rgba, dst: Rgba) -> Rgba {
+    let mix = |s: f32, d: f32| s * src.a + d * (1.0 - src.a);
+    Rgba {
+        r: mix(src.r, dst.r),
+        g: mix(src.g, dst.g),
+        b: mix(src.b, dst.b),
+        a: 1.0,
+    }
 }
 
 /// A foreground the renderer draws, and what it draws it on.
@@ -157,7 +172,7 @@ const PAIRS: &[Pair] = &[
     Pair {
         what: "a pane row's name",
         foreground: |t| t.marker,
-        ground: |t| t.strip,
+        ground: |t| t.panel,
     },
     Pair {
         what: "the modified dot, active",
@@ -200,16 +215,6 @@ const PAIRS: &[Pair] = &[
 /// WCAG AA for body text, and the floor the design pack commits to.
 const FLOOR: f64 = 4.5;
 
-/// Pairs that do not clear [`FLOOR`] in the dark palette today.
-///
-/// **This list may only ever shrink.** It exists because MDEDIT-71 restructures the palette without
-/// changing a single dark value — that was its acceptance criterion — so a shortfall already in the
-/// editor cannot be fixed here. MDEDIT-72 replaces these values with Nocturne's and is where it goes.
-///
-/// It is asserted to be exactly this, not merely a superset, so a *new* shortfall fails the build
-/// rather than joining the list quietly.
-const KNOWN_DARK_SHORTFALLS: &[&str] = &["the close cross, active"];
-
 #[test]
 fn every_text_pair_is_legible_in_the_light_palette() {
     let theme = Theme::light();
@@ -223,13 +228,13 @@ fn every_text_pair_is_legible_in_the_light_palette() {
     }
 }
 
+/// No exceptions any more. MDEDIT-71 carried one — the close cross on the active tab, at 4.31:1 —
+/// because that story changed no dark value; Nocturne clears it at 5.25:1, so the list is gone
+/// rather than shorter.
 #[test]
 fn every_text_pair_is_legible_in_the_dark_palette() {
     let theme = Theme::dark();
     for pair in PAIRS {
-        if KNOWN_DARK_SHORTFALLS.contains(&pair.what) {
-            continue;
-        }
         let measured = ratio((pair.foreground)(&theme), (pair.ground)(&theme));
         assert!(
             measured >= FLOOR,
@@ -239,23 +244,87 @@ fn every_text_pair_is_legible_in_the_dark_palette() {
     }
 }
 
-/// The close cross on the *active* tab really is too dim, and saying so is the point of the list.
+/// The pack's eleven numbers again, against the dark palette they were measured for.
 ///
-/// If MDEDIT-72 fixes it this test fails, which is the reminder to delete the entry.
+/// Two roles are deliberately not the pack's and are absent here rather than asserted at a value
+/// nobody chose: `gutter` is a step lighter so it also clears on `panel` (the pack measures against
+/// the page alone and misses it), and the amber `status_error` is not the pack's rose `error`, which
+/// is `span_error` and is checked.
 #[test]
-fn the_known_dark_shortfalls_are_still_exactly_that() {
+fn the_dark_palette_matches_the_numbers_the_design_pack_published() {
     let theme = Theme::dark();
-    let close_cross = ratio(theme.marker, theme.tab_active);
-    assert!(
-        close_cross < FLOOR,
-        "the close cross on an active tab now clears {FLOOR}:1 at {close_cross:.2} — remove it from \
-         KNOWN_DARK_SHORTFALLS"
-    );
-    assert_eq!(
-        KNOWN_DARK_SHORTFALLS.len(),
-        1,
-        "a shortfall was added to the list rather than fixed"
-    );
+    let published: &[(&str, Rgba, f64)] = &[
+        ("marker", theme.marker, 6.08),
+        ("key", theme.token_key, 7.29),
+        ("string", theme.token_string, 9.81),
+        ("number", theme.token_number, 9.04),
+        ("constant", theme.token_literal, 8.27),
+        ("link", theme.link, 8.72),
+        ("error", theme.span_error, 7.29),
+        ("warn", theme.warn, 9.58),
+        ("text", theme.text, 14.54),
+        ("muted", theme.muted, 6.08),
+    ];
+    for (role, colour, expected) in published {
+        let measured = ratio(*colour, theme.background);
+        assert!(
+            (measured - expected).abs() < 0.01,
+            "{role} measures {measured:.2}:1 against the page; the pack published {expected:.2}"
+        );
+    }
+}
+
+/// The gutter is the one role deliberately lifted off the pack's value, and this is why.
+#[test]
+fn the_gutter_clears_the_floor_on_a_panel_as_well_as_on_the_page() {
+    for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let on_panel = ratio(theme.gutter, theme.panel);
+        assert!(
+            on_panel >= FLOOR,
+            "the {mode} gutter is {on_panel:.2}:1 on a panel, under {FLOOR} — the pack's own \
+             #82869a is 4.22 there, which is why this one is a step lighter"
+        );
+    }
+}
+
+/// The status bar's count is amber and an in-document span is rose, and MDEDIT-72 must not quietly
+/// merge them into the pack's single `error` role.
+#[test]
+fn the_status_count_and_a_diagnostic_span_are_still_two_colours() {
+    for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        assert_ne!(
+            theme.status_error, theme.span_error,
+            "the {mode} palette collapsed the amber count into the rose span"
+        );
+    }
+}
+
+/// The find highlight is told from the selection by hue, not by brightness.
+///
+/// Both are tints over the page, so they are compared blended. A ratio near 1.0 is the *intent*:
+/// two grounds of the same weight, one warm and one cool. Told apart by lightness instead, they
+/// would be a pair that peripheral vision reads as "the same thing, slightly different".
+#[test]
+fn the_find_highlight_and_the_selection_are_a_hue_apart_not_a_brightness_apart() {
+    for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let found = over(theme.find_match, theme.background);
+        let selected = over(theme.selection, theme.background);
+        let apart = ratio(found, selected);
+        assert!(
+            apart < 1.6,
+            "the {mode} find highlight is {apart:.2}:1 against the selection — that is a brightness \
+             distinction, and the point of the warm/cool pair is that it is not one"
+        );
+        assert!(
+            ratio(theme.text, found) >= FLOOR,
+            "{mode} text is illegible on a find highlight"
+        );
+        assert!(
+            ratio(theme.text, over(theme.selection, found)) >= FLOOR,
+            "{mode} text is illegible on the current match, where the selection sits over the \
+             highlight"
+        );
+    }
 }
 
 /// The pack's own eleven numbers, against the light palette they were measured for.
