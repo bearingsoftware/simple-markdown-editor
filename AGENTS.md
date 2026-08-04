@@ -1024,6 +1024,11 @@ that way. `cargo deny` and the MSRV check
 pinned to `rust-version` (1.87, raised from 1.85 by wgpu 30) run on Linux only — neither is platform-sensitive. The bench is not a CI
 job; it is run by hand when touching segmentation.
 
+After CI passes on `main`, `.github/workflows/project-status.yml` measures unit coverage with
+`cargo llvm-cov` and pushes it to the status board. `scripts/build-status.sh <sha>` builds both
+`status.json` and the lcov bundle from one measurement, and can be run locally to see the numbers.
+The figure is the Linux one — the Windows-gated code has no regions to measure there.
+
 `cargo test --release -- --ignored` is reserved for the perf assertions described under
 **Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised
 and on AC power, which is the condition the research says is least informative. They belong in a

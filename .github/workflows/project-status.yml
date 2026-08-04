@@ -1,0 +1,81 @@
+name: Project Status
+
+# After CI passes on main, measure unit coverage and push it to the status
+# board at status.finchdean.internal (MDEDIT-83).
+#
+# CI itself runs on GitHub-hosted runners, which cannot reach the board on the
+# LAN, so this job runs on a self-hosted runner and re-runs the tests under
+# instrumentation. That also means the coverage number is the Linux one: the
+# Windows-only crates compile to nothing here and are reported as absent rather
+# than as zero.
+#
+# workflow_dispatch re-measures the current main without waiting for a commit.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-status-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  status:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Measure the commit CI passed on, not whatever main has drifted to.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure unit coverage
+        run: cargo llvm-cov --workspace --all-features --no-report
+
+      - name: Build status.json + coverage bundle
+        run: scripts/build-status.sh "${{ github.event.workflow_run.head_sha || github.sha }}"
+
+      # Both pushes are best-effort: the board being down, or the token not yet
+      # set, must never fail this workflow.
+      - name: Push coverage report to status-board
+        env:
+          INGEST_TOKEN: ${{ secrets.STATUS_BOARD_INGEST_TOKEN }}
+        run: |
+          if [ -z "$INGEST_TOKEN" ]; then echo "no ingest token; skipping"; exit 0; fi
+          tar -czf - -C coverage-lcov . \
+            | curl -fsS -m 60 -X POST http://192.168.1.23:8080/ingest/coverage/simple-markdown-editor \
+                -H "Authorization: Bearer $INGEST_TOKEN" \
+                -H "Content-Type: application/gzip" \
+                --data-binary @- \
+            && echo "coverage pushed" || echo "coverage push failed (non-fatal)"
+
+      - name: Push status to status-board
+        env:
+          INGEST_TOKEN: ${{ secrets.STATUS_BOARD_INGEST_TOKEN }}
+        run: |
+          if [ -z "$INGEST_TOKEN" ]; then echo "no ingest token; skipping"; exit 0; fi
+          curl -fsS -m 20 -X POST http://192.168.1.23:8080/ingest/status \
+            -H "Authorization: Bearer $INGEST_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @status.json \
+            && echo "status pushed" || echo "status push failed (non-fatal)"
+
+      - name: Upload status.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: project-status
+          path: status.json
+          if-no-files-found: error
+          retention-days: 7

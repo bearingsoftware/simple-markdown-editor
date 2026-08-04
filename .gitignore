@@ -6,6 +6,11 @@ target/
 # cargo-deny / criterion output
 /criterion/
 
+# status-board build outputs (scripts/build-status.sh)
+/status.json
+/coverage.json
+/coverage-lcov/
+
 # Editors
 .history/
 .vscode/
