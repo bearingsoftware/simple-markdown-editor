@@ -157,7 +157,8 @@ mod appearance;
 pub use appearance::apps_use_light_theme;
 
 /// Whether Windows is drawing apps light, off Windows: it does not say, because there is no Windows
-/// to ask. See the `windows` build's [`appearance`] module for what this answers there.
+/// to ask. The Windows build reads the registry — see this crate's `appearance` module there, which
+/// is deliberately not linked, since it does not exist in this build to link to.
 #[cfg(not(windows))]
 #[must_use]
 pub fn apps_use_light_theme() -> Option<bool> {

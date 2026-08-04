@@ -999,6 +999,11 @@ impl<T: TextLayout> std::fmt::Debug for Editor<T> {
 
 impl<T: TextLayout> Editor<T> {
     /// An editor over `source`, drawn with `text`.
+    ///
+    /// **Dark until a config says otherwise.** Nothing here asks Windows what its theme is: that
+    /// happens in [`Self::with_config`], which `main` reaches through the settings. So an editor
+    /// built without one draws the same palette on every machine, which is what makes a test that
+    /// names colours mean the same thing on a CI runner as it does here.
     pub fn new(source: &str, text: T) -> Self {
         let mut workspace = Workspace::new();
         // Set here as well as in `with_workspace`, because a file opened later through the menu goes
