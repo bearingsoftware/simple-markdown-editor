@@ -571,6 +571,23 @@ Known gaps, so nobody assumes they are done:
   Verified by eye on Windows against Markdown, JSON and YAML — the four families read distinctly, the
   current match is lavender against the other matches' sand, and the count is still amber. The
   scrollbar thumb is 2.01:1 against the page where the old palette was 2.07:1; it is not text.
+- **Quoted prose and `true`/`false`/`null` are italic, which is half the contract's second cues.**
+  MDEDIT-74. The pack's rule is "never colour alone": a role's colour always has a second signal, so
+  a reader who cannot separate two greys or two blues still sees the distinction.
+
+  **A quote is asked of the block list, not tracked in `DecorState`.** That state resets at every
+  newline — inline delimiters pair within a line — and a quote is the opposite shape, spanning lines
+  by definition, so a toggle would be cleared by the first one. `Document::in_block_quote` answers
+  "is anything enclosing this byte a quote", which `block_at` cannot: it returns the *innermost*
+  block, and a quoted paragraph is a paragraph. Same binary search and same bounded walk, because the
+  renderer asks it once per line and a scan of the block list is MDEDIT-37 again.
+
+  Markers stay upright — a slanted `>` reads as prose rather than syntax — and so does code inside a
+  quote, because italic monospace is where alignment goes to die.
+
+  **`Token::Literal` is the first token to reach `TextStyle` rather than only a colour.** A quoted
+  `"true"` is `Token::String` and stays upright: the classification already knows the difference, and
+  italicising on the text would be ignoring it. There is a test that says so.
 - **A run can be underlined, and where the rule sits is the font's answer rather than ours.**
   MDEDIT-73. `TextStyle::underline` reaches DirectWrite as `SetUnderline`, and what comes back is a
   `mdedit_text::Underline` **per row** — x, width, top and thickness, the last two from the font's own
