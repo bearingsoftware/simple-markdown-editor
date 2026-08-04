@@ -59,10 +59,13 @@ fn line_y(n: f32) -> f32 {
 
 /// Whether a quad belongs to the gutter rather than to chrome.
 ///
-/// Left of where the text starts, below the formatting bar and above the status bar. Both bars span
-/// the whole window width, so "left of the text" alone catches them too.
+/// Wholly left of where the text starts, below the formatting bar and above the status bar. Both
+/// bars span the whole window width, so the vertical bounds are what excludes them.
+///
+/// **Wholly**, since MDEDIT-77: the caret-line tint begins in the document's left margin and runs
+/// past the text, so "starts left of the text" would catch a band that is not a number at all.
 fn is_gutter(quad: &mdedit_app::gpu::QuadInstance, text_left: f32, bar_top: f32) -> bool {
-    quad.rect[0] < text_left
+    quad.rect[0] + quad.rect[2] <= text_left
         && quad.rect[1] < bar_top
         && quad.rect[1] >= mdedit_app::toolbar::HEIGHT
 }

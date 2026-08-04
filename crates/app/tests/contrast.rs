@@ -299,6 +299,34 @@ fn the_status_count_and_a_diagnostic_span_are_still_two_colours() {
     }
 }
 
+/// MDEDIT-77 stacks two tints, and the pack models neither pairing.
+///
+/// The caret's line is tinted, a selection on that line is tinted over it, and the text is drawn
+/// through both. The pack measures every role against `bg` alone and states that "selection tints
+/// preserve at least 4.5:1" — which is a claim about one tint, not two.
+#[test]
+fn text_stays_legible_through_the_caret_line_and_a_selection_on_top_of_it() {
+    for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let lit = over(theme.caret_line, theme.background);
+        let both = over(theme.selection, lit);
+        for (what, ground) in [("the caret's line", lit), ("a selection on it", both)] {
+            let measured = ratio(theme.text, ground);
+            assert!(
+                measured >= FLOOR,
+                "{mode} text on {what} is {measured:.2}:1, under {FLOOR}"
+            );
+        }
+        // And the gutter's own cue: the caret's number steps up to `text` over the same tint.
+        let stepped = ratio(theme.text, lit);
+        let ordinary = ratio(theme.gutter, theme.background);
+        assert!(
+            stepped > ordinary,
+            "{mode}: the caret's line number ({stepped:.2}:1) must read as brighter than an \
+             ordinary one ({ordinary:.2}:1), or the gutter's second cue says nothing"
+        );
+    }
+}
+
 /// The find highlight is told from the selection by hue, not by brightness.
 ///
 /// Both are tints over the page, so they are compared blended. A ratio near 1.0 is the *intent*:

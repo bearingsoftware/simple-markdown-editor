@@ -153,6 +153,8 @@ struct LineNumber {
     /// invisible. MDEDIT-76 found it by putting a `!` in the gutter and looking at the window.
     baseline: f32,
     flagged: bool,
+    /// Whether the caret is on this line, which brightens it to `text` (MDEDIT-77).
+    current: bool,
 }
 
 /// One visual row being drawn, gathered so a helper can be given it rather than seven arguments.
@@ -5863,6 +5865,13 @@ impl<T: TextLayout> Editor<T> {
         } = at;
         let (band_top, band_bottom) = content.visible(offset);
         let mut line_height = self.theme.body_size;
+        // The source line the caret is on, for MDEDIT-77's highlight and for the brighter number
+        // beside it. Taken once per frame rather than per row: it is a walk of the rope's line index.
+        let caret_line = self
+            .document()
+            .line_and_column(frame.selection.head())
+            .0
+            .get();
 
         for index in range {
             let Some(cached) = self.lay_out(index, frame) else {
@@ -5935,6 +5944,8 @@ impl<T: TextLayout> Editor<T> {
                     continue;
                 }
 
+                let current = source_line == caret_line;
+
                 if self.config.line_numbers && starts_a_line {
                     // Only the row a source line *starts* on is numbered, so that is the row the
                     // gutter mark belongs on too — a wrapped continuation of a bad line is not a
@@ -5948,6 +5959,7 @@ impl<T: TextLayout> Editor<T> {
                             number: source_line + 1,
                             baseline,
                             flagged,
+                            current,
                         },
                         at,
                     );
@@ -5962,6 +5974,11 @@ impl<T: TextLayout> Editor<T> {
                     height: line.height,
                     chunk_top,
                 };
+                // First of everything on the row, so the selection and the search highlights sit on
+                // top of it and the text sits on top of them.
+                if current {
+                    self.draw_caret_line(quads, here, at);
+                }
                 self.draw_matches(quads, &found, here, at);
                 self.draw_row_selection(quads, selected, here, at);
                 if self.whitespace {
@@ -5978,6 +5995,41 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         line_height
+    }
+
+    /// Tints the row the caret is on (MDEDIT-77).
+    ///
+    /// # Three decisions, all deliberate
+    ///
+    /// **Every row of a wrapped line is lit, not only the row the caret sits on.** The highlight
+    /// answers "which line am I editing", and a line is a source line — the gutter numbers it once
+    /// and the status bar counts it once. Lighting one row of three would be answering a different
+    /// question, and it is not what any editor does.
+    ///
+    /// **It stays lit while the find field has focus.** The document's caret has not moved; it is
+    /// where Esc will put you back. Blinking the highlight off for the duration of a search would be
+    /// motion with no information in it.
+    ///
+    /// **It stays lit under a selection**, so the two tints stack — `contrast.rs` asserts the text
+    /// still clears the floor through both, which is the pairing the design pack does not model.
+    ///
+    /// It spans the document's width including its margins, but not the gutter: the gutter has its
+    /// own answer to the same question, which is the brighter number.
+    fn draw_caret_line(&mut self, quads: &mut Vec<QuadInstance>, row: Row<'_>, at: Placement) {
+        let (_, y) = at.content.to_window(0.0, row.top, at.offset);
+        // In window coordinates and not panned with the text: a highlight that slid sideways with a
+        // horizontal pan would leave the rest of the row untinted.
+        let left = at.content.left_edge() - MARGIN;
+        let width = at.content.width() + MARGIN * 2.0;
+        quads.push(Self::solid(
+            [
+                left * at.scale,
+                y * at.scale,
+                width * at.scale,
+                row.height * at.scale,
+            ],
+            self.theme.caret_line,
+        ));
     }
 
     /// Draws one visual row's glyphs, each in its run's colour.
@@ -6804,13 +6856,20 @@ impl<T: TextLayout> Editor<T> {
             number,
             baseline,
             flagged,
+            current,
         } = line;
         let marked = flagged.then(|| self.flagged_digits()).flatten();
+        // Three states, and the order between them is the point: something wrong outranks where you
+        // are, and where you are outranks scaffolding.
         let colour = if marked.is_some() {
             self.theme.span_error
+        } else if current {
+            // MDEDIT-77, and the pack's rule for the role: "the current line steps up to `text`".
+            // It is the gutter's second cue — the caret-line tint is the first, and a reader who
+            // cannot see a 7% tint still sees which number is brighter.
+            self.theme.text
         } else {
-            // The same dimmed colour as revealed syntax: scaffolding, not content.
-            self.theme.marker
+            self.theme.gutter
         };
         let Some(digits) = marked.map_or_else(|| self.digits(), |flagged| Some(flagged.digits))
         else {
