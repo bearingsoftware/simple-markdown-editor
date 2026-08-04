@@ -507,6 +507,16 @@ enum Role {
     Token(Token),
 }
 
+/// Whether a role is `true`, `false` or `null`, which the theme draws in italic.
+///
+/// MDEDIT-74. The pack's `constant` role is "italic — never colour alone", and this is the one place
+/// a [`Token`] reaches [`TextStyle`] rather than only a colour. A quoted `"true"` is
+/// [`Token::String`] and is deliberately unaffected: the classification already knows the difference,
+/// and italicising on the text would be ignoring it.
+fn is_constant(role: Role) -> bool {
+    role == Role::Token(Token::Literal)
+}
+
 /// Accumulates runs while walking the document's segments.
 struct Builder<'a, 't> {
     runs: Vec<ViewRun<'t>>,
@@ -561,13 +571,31 @@ impl<'t> Builder<'_, 't> {
         if self.state.bold || (heading.is_some() && role == Role::Content) {
             style = style.bold();
         }
-        if self.state.italic {
+        if self.state.italic || self.is_quoted(offset, role, in_code_block) || is_constant(role) {
             style = style.italic();
         }
         if self.state.code_span || in_code_block || role == Role::Marker {
             style = style.mono();
         }
         style
+    }
+
+    /// Whether the content at `offset` is quoted prose, which the theme draws in italic.
+    ///
+    /// MDEDIT-74, and the theme's "never colour alone" contract: `muted` is the blockquote's colour
+    /// and italic is its second cue, so a reader who cannot tell the two greys apart still sees which
+    /// text is quoted.
+    ///
+    /// **Asked of the block list rather than tracked in [`DecorState`].** That state resets at every
+    /// newline, because inline delimiters pair within a line — and a quote is the opposite shape: it
+    /// spans lines by definition, so a toggle would be cleared by the first one. The block list knows
+    /// the extent, which is what makes a quote ending mid-paragraph end the italics with it.
+    ///
+    /// Markers are not included: a revealed `>` is syntax, and slanting it would say it is prose.
+    /// Nor is code inside a quote — a fenced block is quoted text nobody wants slanted, and italic
+    /// monospace is where alignment goes to die.
+    fn is_quoted(&self, offset: ByteOffset, role: Role, in_code_block: bool) -> bool {
+        role == Role::Content && !in_code_block && self.doc.in_block_quote(offset)
     }
 
     /// Pushes `piece`, splitting at newlines so line-scoped styling state can be reset.

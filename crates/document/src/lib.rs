@@ -252,6 +252,33 @@ impl Document {
         innermost
     }
 
+    /// Whether `offset` is inside a block quote, at any depth.
+    ///
+    /// [`Document::block_at`] cannot answer this: it returns the *innermost* block, and the bytes of
+    /// a quoted paragraph are a paragraph. What a caller wants to know here is whether anything
+    /// enclosing them is a quote, which is a question about the whole nest.
+    ///
+    /// Same cost as `block_at`, and for the same reason — the same binary search onto the candidate
+    /// prefix, and the same stop at the first top-level block that ends before `offset`. The
+    /// renderer asks this once per line, so a scan of the block list would be MDEDIT-37 again.
+    #[must_use]
+    pub fn in_block_quote(&self, offset: ByteOffset) -> bool {
+        let candidates = self
+            .blocks
+            .partition_point(|block| block.span().start() <= offset);
+
+        for block in self.blocks[..candidates].iter().rev() {
+            if offset < block.span().end() {
+                if block.kind() == BlockKind::BlockQuote {
+                    return true;
+                }
+            } else if block.depth() == 0 {
+                break;
+            }
+        }
+        false
+    }
+
     /// The heading trail enclosing `offset`, outermost first. See [`outline::heading_trail`].
     #[must_use]
     pub fn heading_trail(&self, offset: ByteOffset) -> Vec<Heading> {
