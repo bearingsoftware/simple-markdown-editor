@@ -538,11 +538,39 @@ Known gaps, so nobody assumes they are done:
   `tab_active` is 4.13:1 and irrelevant, because a JSON comment is never drawn on a tab. The pack
   itself measures against the page alone and so misses every pair that is on chrome.
 
-  It carries **one known shortfall, which may only ever shrink**: the close `×` on the *active* tab is
-  `marker` on `tab_active` at 4.31:1. Real, and not fixable here because this story changes no dark
-  value — MDEDIT-72 owns them. The list is asserted to be exactly that one entry, so a new shortfall
-  fails the build rather than joining it quietly. **The scrollbar thumb is 2.07:1 against the page**
-  and always has been; it is not text, so it is outside this test's remit and recorded on MDEDIT-72.
+  It carried **one known shortfall** — the close `×` on the *active* tab, `marker` on `tab_active` at
+  4.31:1 — which MDEDIT-72 cleared at 5.25:1, so the list is gone rather than shorter.
+- **The dark palette is Nocturne, and that is the visible one.** MDEDIT-72. Four hue families over
+  one neutral ramp: lavender for structure, sage for literals, sand for numerics, steel for
+  constants, rose for errors alone. The editor stops looking like VS Code's default.
+
+  **Six roles are not in the pack and are derived from its ramp**, each for a stated reason.
+  `find_match` is sand and translucent, so that blended over the page it is within 1.2× of the
+  selection's *brightness* — the two are told apart by hue, which survives peripheral vision and
+  colour blindness, and not by weight, which is the failure mode. `strip`, `tab_active` and
+  `tab_inactive` are three surfaces from the pack's two: the strip is `chrome`, the active tab is
+  `panel` because it is the raised one, and the inactive tab is a ramp step between the page and the
+  panel. `tab_modified` is the accent. `token_comment` is a dimmed sage, because the pack sends
+  comments to `muted` and the editor already makes that distinction.
+
+  **`gutter` is the one value deliberately not the pack's.** The pack measures every role against the
+  page alone; against `panel` its `#82869a` is 4.22:1, under its own floor, on exactly the surface a
+  file pane is. `#8b8fa4` clears it at 4.75:1 there and 5.50:1 on the page, and
+  `the_gutter_clears_the_floor_on_a_panel_as_well_as_on_the_page` is what keeps that true.
+
+  **The file pane draws on `panel` now**, not on the tab strip's colour — which it only ever borrowed
+  because the strip's was the one dark chrome value there was.
+
+  **The tints are real alpha and the pipeline is `ALPHA_BLENDING`,** so `contrast.rs` blends before it
+  measures: what a reader compares is the tint over the page, not the entry in the palette. Text on
+  the find highlight, and on the current match where the selection sits over it, are both asserted.
+
+  **The status bar's count stays amber and a diagnostic span stays rose**, asserted rather than
+  trusted, because collapsing them into the pack's single `error` role is the easy mistake here.
+
+  Verified by eye on Windows against Markdown, JSON and YAML — the four families read distinctly, the
+  current match is lavender against the other matches' sand, and the count is still amber. The
+  scrollbar thumb is 2.01:1 against the page where the old palette was 2.07:1; it is not text.
 - **A run can be underlined, and where the rule sits is the font's answer rather than ours.**
   MDEDIT-73. `TextStyle::underline` reaches DirectWrite as `SetUnderline`, and what comes back is a
   `mdedit_text::Underline` **per row** — x, width, top and thickness, the last two from the font's own

@@ -146,8 +146,8 @@ pub struct Theme {
     pub caret_line: Rgba,
     /// A hairline separator. Translucent, for the same reason. Read by nothing yet.
     pub line: Rgba,
-    /// A raised surface — the file pane, once MDEDIT-72 stops it borrowing the tab strip's colour.
-    /// Read by nothing yet.
+    /// A raised surface. The file pane is one, and draws in it since MDEDIT-72; before that it
+    /// borrowed the tab strip's colour, because the strip's was the only dark chrome there was.
     pub panel: Rgba,
     /// Background of the tab strip behind the tabs.
     pub strip: Rgba,
@@ -182,53 +182,76 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// The palette the editor has always drawn with.
+    /// Nocturne's dark palette, from the MDEDIT-69 design pack.
     ///
-    /// **Unchanged by MDEDIT-71, deliberately and to the byte.** That story's whole acceptance
-    /// criterion was that nothing looks different; MDEDIT-72 is where these values become Nocturne's.
-    /// The only new entries are the roles nothing reads yet, and they are chosen to sit with what is
-    /// already here rather than to anticipate the replacement.
+    /// MDEDIT-72. Four hue families over one neutral ramp: lavender for structure, sage for
+    /// literals, sand for numerics, steel for constants, and rose kept for errors alone.
+    ///
+    /// # The values the pack does not supply
+    ///
+    /// Six roles have no counterpart in it, and each is derived from its ramp rather than invented:
+    ///
+    /// - `find_match` — the pack has no search highlight at all. Sand, and **translucent**, so it is
+    ///   warm where the selection is cool: at 0.30 over the page it is within 1.2× of the selection's
+    ///   *brightness*, which is the point. Two tints told apart by hue survive peripheral vision and
+    ///   colour blindness; two told apart by lightness do not.
+    /// - `strip`, `tab_active`, `tab_inactive` — three surfaces from the pack's two. The strip is
+    ///   `chrome`, the active tab is `panel` (it is the raised one), and the inactive tab is a step
+    ///   of the ramp between the page and the panel, so the active/inactive distinction survives.
+    /// - `tab_modified` — the accent, which is the caret's lavender, matching [`Theme::light`].
+    /// - `token_comment` — the pack sends comments to `muted`, losing a distinction the editor
+    ///   already makes. A dimmed sage keeps comments in the literals family and out of the way.
+    ///
+    /// # Two deliberate deviations
+    ///
+    /// `gutter` is `#8b8fa4`, one step lighter than the pack's `#82869a`. The pack measures every
+    /// role against the page alone, and against `panel` its gutter is **4.22:1** — under its own
+    /// floor, on the surface a file pane is. This clears it at 4.75:1 there and 5.50:1 on the page.
+    ///
+    /// `status_error` stays amber and is **not** the pack's rose, which is [`Theme::span_error`].
+    /// The reason is on that field.
     #[must_use]
     pub fn dark() -> Self {
         Self {
             body_size: 16.0,
-            background: Rgba::rgb(0x1e, 0x1e, 0x1e),
-            text: Rgba::rgb(0xe6, 0xe6, 0xe6),
-            marker: Rgba::rgb(0x6a, 0x9c, 0x6a),
-            caret: Rgba::rgb(0xff, 0xd7, 0x4a),
-            selection: Rgba::rgb(0x2d, 0x4f, 0x6b),
+            background: Rgba::rgb(0x16, 0x18, 0x26),
+            text: Rgba::rgb(0xe9, 0xe9, 0xed),
+            marker: Rgba::rgb(0x93, 0x97, 0xab),
+            caret: Rgba::rgb(0x91, 0x84, 0xd9),
+            selection: Rgba::translucent(0x91, 0x84, 0xd9, 0.32),
             // Warm where the selection is cool, so the two are told apart by hue rather than by
             // brightness — the one distinction that survives being looked at out of the corner of
             // an eye, and the one a colour-blind reader keeps.
-            find_match: Rgba::rgb(0x6b, 0x53, 0x1e),
-            // Amber rather than red. Red in a status bar reads as "something has gone wrong with the
-            // editor"; these are facts about the file the user is deliberately part way through
-            // writing, and half of them are transient.
+            find_match: Rgba::translucent(0xd6, 0xb4, 0x8f, 0.30),
+            // Amber rather than the pack's rose. Red in a status bar reads as "something has gone
+            // wrong with the editor"; these are facts about the file the user is deliberately part
+            // way through writing, and half of them are transient. It is already in the sand family's
+            // hue, carried over more saturated because it is a signal rather than a literal.
             status_error: Rgba::rgb(0xe0, 0x9b, 0x3c),
             span_error: Rgba::rgb(0xe0, 0x91, 0x9b),
-            warn: Rgba::rgb(0xd8, 0xa6, 0x57),
-            link: Rgba::rgb(0x6b, 0xa7, 0xe0),
-            muted: Rgba::rgb(0x9a, 0x9a, 0x9a),
-            gutter: Rgba::rgb(0x96, 0x96, 0x96),
-            caret_line: Rgba::translucent(0xff, 0xff, 0xff, 0.045),
-            line: Rgba::translucent(0xe6, 0xe6, 0xe6, 0.10),
-            panel: Rgba::rgb(0x25, 0x25, 0x25),
-            strip: Rgba::rgb(0x14, 0x14, 0x14),
-            tab_active: Rgba::rgb(0x2d, 0x2d, 0x2d),
-            tab_inactive: Rgba::rgb(0x1a, 0x1a, 0x1a),
-            tab_modified: Rgba::rgb(0xff, 0xd7, 0x4a),
-            // Conventional enough to be unsurprising in any editor, and picked to sit on the same
-            // dark background the prose does.
-            token_key: Rgba::rgb(0x9c, 0xdc, 0xfe),
-            token_string: Rgba::rgb(0xce, 0x91, 0x78),
-            token_number: Rgba::rgb(0xb5, 0xce, 0xa8),
-            token_literal: Rgba::rgb(0x56, 0x9c, 0xd6),
-            token_punctuation: Rgba::rgb(0x9a, 0x9a, 0x9a),
-            token_comment: Rgba::rgb(0x6a, 0x99, 0x55),
+            warn: Rgba::rgb(0xd9, 0xbb, 0x8a),
+            link: Rgba::rgb(0x9f, 0xb8, 0xe0),
+            muted: Rgba::rgb(0x93, 0x97, 0xab),
+            gutter: Rgba::rgb(0x8b, 0x8f, 0xa4),
+            caret_line: Rgba::translucent(0x91, 0x84, 0xd9, 0.07),
+            line: Rgba::translucent(0xe9, 0xe9, 0xed, 0.10),
+            panel: Rgba::rgb(0x23, 0x25, 0x32),
+            strip: Rgba::rgb(0x12, 0x13, 0x1f),
+            tab_active: Rgba::rgb(0x23, 0x25, 0x32),
+            tab_inactive: Rgba::rgb(0x1a, 0x1c, 0x2a),
+            tab_modified: Rgba::rgb(0x91, 0x84, 0xd9),
+            token_key: Rgba::rgb(0xa9, 0x9c, 0xf0),
+            token_string: Rgba::rgb(0xa8, 0xc9, 0xb6),
+            token_number: Rgba::rgb(0xd6, 0xb4, 0x8f),
+            token_literal: Rgba::rgb(0x8f, 0xb6, 0xd9),
+            // A step below `marker` on the same ramp: braces and commas are structure the eye
+            // should skip over, and the pack's own map collapses them into `marker` entirely.
+            token_punctuation: Rgba::rgb(0x82, 0x86, 0x9a),
+            token_comment: Rgba::rgb(0x8a, 0xa8, 0x96),
             // Light enough to find against the page, dark enough not to compete with the text it
             // overlays. Deliberately no track colour: the track is the background, so a bar over a
             // short line looks like nothing rather than like a gutter.
-            scrollbar_thumb: Rgba::rgb(0x50, 0x50, 0x50),
+            scrollbar_thumb: Rgba::rgb(0x45, 0x49, 0x65),
         }
     }
 
