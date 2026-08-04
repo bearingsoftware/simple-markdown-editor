@@ -132,6 +132,29 @@ struct TermAt {
     baseline: f32,
 }
 
+/// The glyphs a flagged line number is drawn from (MDEDIT-76): bold digits, and the `!` before them.
+#[derive(Debug, Clone, Copy)]
+struct Flagged {
+    digits: [(GlyphKey, f32); 10],
+    bang: (GlyphKey, f32),
+}
+
+/// One line number to draw, and whether anything is wrong on its line.
+#[derive(Debug, Clone, Copy)]
+struct LineNumber {
+    number: usize,
+    /// The row's **baseline**, in document coordinates — not its top edge.
+    ///
+    /// It used to be the top, and the digits were then placed the way a glyph is: `top` plus the
+    /// bitmap's own offset from the baseline, which is negative. So every number was drawn about an
+    /// ascent *above* the line it belonged to, and on a real font that is most of a row. Nothing
+    /// caught it: `gutter.rs` asserts where numbers sit horizontally — that was MDEDIT-34 — and the
+    /// headless stub gives every glyph a one-pixel offset, so the error is one pixel there and
+    /// invisible. MDEDIT-76 found it by putting a `!` in the gutter and looking at the window.
+    baseline: f32,
+    flagged: bool,
+}
+
 /// One visual row being drawn, gathered so a helper can be given it rather than seven arguments.
 #[derive(Clone, Copy)]
 struct Row<'a> {
@@ -210,6 +233,15 @@ const GUTTER_MIN_DIGITS: usize = 2;
 const GUTTER_PADDING: f32 = 8.0;
 /// Caret width, in device-independent pixels.
 const CARET_WIDTH: f32 = 2.0;
+
+/// One dash of a diagnostic's squiggle, in device-independent pixels.
+const SQUIGGLE_DASH: f32 = 2.0;
+/// How far the alternate dash sits below the first, which is what makes it a wave.
+const SQUIGGLE_RISE: f32 = 2.0;
+/// How thick each dash is.
+const SQUIGGLE_THICKNESS: f32 = 1.0;
+/// How far the wave's top sits above the bottom of the row it marks.
+const SQUIGGLE_DROP: f32 = 4.0;
 
 /// How much smaller a formatting-bar label is than body text.
 ///
@@ -867,6 +899,11 @@ pub struct Editor<T: TextLayout> {
     settings: crate::config::Settings,
     /// The ten digits and their advance, laid out once. See [`Self::digits`].
     digits: Option<[(GlyphKey, f32); 10]>,
+    /// The same in bold, plus the `!`, for a line with a diagnostic on it (MDEDIT-76).
+    ///
+    /// Laid out the first time an error is on screen rather than at startup: most documents never
+    /// have one, and a document that is not checked at all — every Markdown file — never pays for it.
+    flagged_digits: Option<Flagged>,
     /// The last word count, and `None` until one has finished.
     ///
     /// Counted on the idle timer rather than per frame — see [`crate::status`] — so this is what the
@@ -1030,6 +1067,7 @@ impl<T: TextLayout> Editor<T> {
             config: Config::default(),
             settings: crate::config::Settings::nowhere(),
             digits: None,
+            flagged_digits: None,
             words: None,
             status_labels: [None, None, None],
             counted_for: None,
@@ -4394,6 +4432,7 @@ impl<T: TextLayout> Editor<T> {
         self.layouts.clear();
         self.heights.clear();
         self.digits = None;
+        self.flagged_digits = None;
         self.refresh_view_menu();
     }
 
@@ -4708,6 +4747,8 @@ impl<T: TextLayout> Editor<T> {
         self.layouts.clear();
         self.heights.clear();
         self.digits = None;
+        // The seventh, and MDEDIT-76's: the bold digits and the `!` a flagged line is drawn with.
+        self.flagged_digits = None;
         self.status_labels = [None, None, None];
         self.row_labels.clear();
         self.toolbar_labels.clear();
@@ -5818,9 +5859,7 @@ impl<T: TextLayout> Editor<T> {
         at: Placement,
     ) -> f32 {
         let Placement {
-            content,
-            offset,
-            scale,
+            content, offset, ..
         } = at;
         let (band_top, band_bottom) = content.visible(offset);
         let mut line_height = self.theme.body_size;
@@ -5861,6 +5900,19 @@ impl<T: TextLayout> Editor<T> {
             } else {
                 Vec::new()
             };
+            // And what is wrong with this chunk (MDEDIT-76). Filtered rather than binary-searched
+            // because MDEDIT-47 caps the list at 200: nobody is fixing the 201st, so the whole list
+            // is shorter than one screen of matches and a scan of it costs nothing.
+            //
+            // From `diagnostics()`, which is empty while an edit is newer than the check — so an
+            // edit takes the squiggles away and the idle timer brings them back, with no hook on any
+            // edit path. Nothing here re-runs the check.
+            let wrong: Vec<ByteSpan> = self
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| touches(diagnostic.span, chunk.span))
+                .map(|diagnostic| diagnostic.span)
+                .collect();
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             // `usize::MAX` for "there was no row above", which no line number can collide with.
@@ -5884,7 +5936,21 @@ impl<T: TextLayout> Editor<T> {
                 }
 
                 if self.config.line_numbers && starts_a_line {
-                    self.draw_line_number(quads, source_line + 1, top_of_row, at);
+                    // Only the row a source line *starts* on is numbered, so that is the row the
+                    // gutter mark belongs on too — a wrapped continuation of a bad line is not a
+                    // second error.
+                    let flagged = wrong.iter().any(|span| {
+                        self.document().line_and_column(span.start()).0.get() == source_line
+                    });
+                    self.draw_line_number(
+                        quads,
+                        LineNumber {
+                            number: source_line + 1,
+                            baseline,
+                            flagged,
+                        },
+                        at,
+                    );
                 }
 
                 let here = Row {
@@ -5903,28 +5969,105 @@ impl<T: TextLayout> Editor<T> {
                 }
 
                 self.draw_underlines(quads, &runs, here, at);
+                self.draw_glyphs(quads, &runs, here, at);
 
-                for glyph in &line.glyphs {
-                    let Some(entry) = self.entry_for(glyph.key, scale) else {
-                        continue;
-                    };
-                    let colour =
-                        view::colour_at(&runs, cached.rebase(glyph, chunk.span), self.theme.text);
-                    let (x, y) = content.to_window(glyph.pos.x, glyph.pos.y + chunk_top, offset);
-                    quads.push(QuadInstance {
-                        rect: [
-                            x * scale + px_i(entry.left),
-                            y * scale + px_i(entry.top),
-                            px(entry.width),
-                            px(entry.height),
-                        ],
-                        uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
-                        colour: [colour.r, colour.g, colour.b, colour.a],
-                    });
-                }
+                // **After the glyphs, deliberately.** Everything else drawn under a row is a ground
+                // the text sits on; a squiggle is a mark *about* the text, and a descender crossing
+                // it must not be able to hide it.
+                self.draw_squiggles(quads, &wrong, here, at);
             }
         }
         line_height
+    }
+
+    /// Draws one visual row's glyphs, each in its run's colour.
+    fn draw_glyphs(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        runs: &[view::ViewRun<'_>],
+        row: Row<'_>,
+        at: Placement,
+    ) {
+        for glyph in &row.cached.layout.lines[row.index].glyphs {
+            let Some(entry) = self.entry_for(glyph.key, at.scale) else {
+                continue;
+            };
+            let colour = view::colour_at(
+                runs,
+                row.cached.rebase(glyph, row.chunk.span),
+                self.theme.text,
+            );
+            let (x, y) = at
+                .content
+                .to_window(glyph.pos.x, glyph.pos.y + row.chunk_top, at.offset);
+            quads.push(QuadInstance {
+                rect: [
+                    x * at.scale + px_i(entry.left),
+                    y * at.scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
+                ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [colour.r, colour.g, colour.b, colour.a],
+            });
+        }
+    }
+
+    /// Draws the wavy rule under whatever is wrong on one visual row (MDEDIT-76).
+    ///
+    /// # Why a row of quads rather than a shape
+    ///
+    /// There is one pipeline here and it draws rectangles, so the wave is made of them: a step of
+    /// short dashes alternating between two heights. At a body size that reads as a squiggle and not
+    /// as a dashed line, and it needs no shader, no second pipeline and no glyph.
+    ///
+    /// The geometry comes from [`Self::row_selection`] — the same helper the selection and the find
+    /// highlights use — so a diagnostic spanning several rows is clipped to each of them by the code
+    /// that already knows how, and one that is off-screen is never asked about.
+    ///
+    /// An empty span draws nothing: some checks point *at* a position rather than at bytes, and a
+    /// zero-width squiggle would be a smudge with no relationship to anything. The gutter mark is
+    /// the cue in that case.
+    fn draw_squiggles(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        wrong: &[ByteSpan],
+        row: Row<'_>,
+        at: Placement,
+    ) {
+        for span in wrong {
+            let Some((from, to)) =
+                Self::row_selection(row.cached, row.chunk, row.text, row.index, *span)
+            else {
+                continue;
+            };
+            if to <= from {
+                continue;
+            }
+
+            let (x, y) = at.content.to_window(from, row.top, at.offset);
+            // Along the bottom of the row, inside it: a rule below the row would land on the line
+            // beneath at a tight line height, and read as that line's error.
+            let bottom = y + row.height - SQUIGGLE_DROP;
+            let mut cursor = 0.0f32;
+            let width = to - from;
+            let mut up = true;
+            while cursor < width {
+                let dash = SQUIGGLE_DASH.min(width - cursor);
+                let top = if up { bottom } else { bottom + SQUIGGLE_RISE };
+                quads.push(Self::solid(
+                    [
+                        (x + cursor) * at.scale,
+                        top * at.scale,
+                        dash * at.scale,
+                        (SQUIGGLE_THICKNESS * at.scale).max(1.0),
+                    ],
+                    self.theme.span_error,
+                ));
+                cursor += dash;
+                up = !up;
+            }
+        }
     }
 
     /// Draws the rules under one visual row's underlined runs (MDEDIT-73).
@@ -6604,17 +6747,73 @@ impl<T: TextLayout> Editor<T> {
         Some(digits)
     }
 
+    /// The ten digits and a `!`, in bold, for a line something is wrong on (MDEDIT-76).
+    ///
+    /// A second set rather than a reuse of [`digits`](Self::digits), because the theme's rule for a
+    /// flagged line is the `error` colour **and** bold **and** a `!` — three cues, of which colour is
+    /// the one a reader may not have. It costs one layout, the first time an error is on screen, and
+    /// is cleared by [`Self::set_zoom`] with every other cache of laid-out text.
+    fn flagged_digits(&mut self) -> Option<Flagged> {
+        if let Some(flagged) = self.flagged_digits {
+            return Some(flagged);
+        }
+        let style = TextStyle::body(self.theme.body_size).bold();
+        let run = [StyledRun {
+            text: "0123456789!",
+            style,
+            source: ByteSpan::empty_at(ByteOffset::ZERO),
+        }];
+        let layout = self.text.layout(&run, f32::MAX).ok()?;
+
+        let measured: Vec<(GlyphKey, f32)> = layout
+            .glyphs()
+            .map(|glyph| (glyph.key, glyph.advance))
+            .collect();
+        // Eleven glyphs for eleven characters, unless a backend did something surprising — in which
+        // case fall back to the plain digits rather than mis-render.
+        let [
+            zero,
+            one,
+            two,
+            three,
+            four,
+            five,
+            six,
+            seven,
+            eight,
+            nine,
+            bang,
+        ] = <[(GlyphKey, f32); 11]>::try_from(measured).ok()?;
+        let flagged = Flagged {
+            digits: [zero, one, two, three, four, five, six, seven, eight, nine],
+            bang,
+        };
+        self.flagged_digits = Some(flagged);
+        Some(flagged)
+    }
+
     /// Draws one line number, right-aligned in the gutter.
     ///
     /// Composed from the cached digits rather than laid out: see [`digits`](Self::digits).
-    fn draw_line_number(
-        &mut self,
-        quads: &mut Vec<QuadInstance>,
-        number: usize,
-        top: f32,
-        at: Placement,
-    ) {
-        let Some(digits) = self.digits() else {
+    ///
+    /// [`LineNumber::flagged`] is MDEDIT-76's gutter mark: the number goes bold and rose with a `!`
+    /// before it, so a line with a diagnostic on it is findable by shape as well as by colour — which
+    /// is what the design pack's contract asks for and what a squiggle alone does not give.
+    fn draw_line_number(&mut self, quads: &mut Vec<QuadInstance>, line: LineNumber, at: Placement) {
+        let LineNumber {
+            number,
+            baseline,
+            flagged,
+        } = line;
+        let marked = flagged.then(|| self.flagged_digits()).flatten();
+        let colour = if marked.is_some() {
+            self.theme.span_error
+        } else {
+            // The same dimmed colour as revealed syntax: scaffolding, not content.
+            self.theme.marker
+        };
+        let Some(digits) = marked.map_or_else(|| self.digits(), |flagged| Some(flagged.digits))
+        else {
             return;
         };
 
@@ -6633,7 +6832,9 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let advance = digits[0].1;
-        let (_, y) = at.content.to_window(0.0, top, at.offset);
+        // The row's baseline, so the digits sit on the same line the text does — each glyph is then
+        // placed from it by its own bitmap offset, exactly as a document glyph is.
+        let (_, y) = at.content.to_window(0.0, baseline, at.offset);
         // Right-aligned against the *gutter's* right edge, less its padding — not against where the
         // text starts, which is what MDEDIT-34 was. `left_edge` is the gutter plus the document's
         // margin, so aligning to it drew the number past the gutter entirely and hard up against the
@@ -6669,13 +6870,28 @@ impl<T: TextLayout> Editor<T> {
                     px(entry.height),
                 ],
                 uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
-                // The same dimmed colour as revealed syntax: scaffolding, not content.
-                colour: [
-                    self.theme.marker.r,
-                    self.theme.marker.g,
-                    self.theme.marker.b,
-                    self.theme.marker.a,
+                colour: [colour.r, colour.g, colour.b, colour.a],
+            });
+        }
+
+        // The `!`, to the left of the number rather than in place of a digit: the numbers stay in
+        // their column, so a flagged line does not push its neighbours' digits out of line.
+        // Not a let-chain: they stabilised in 1.88 and this crate's floor is 1.87.
+        if let Some(flagged) = marked {
+            let (key, bang_advance) = flagged.bang;
+            let Some(entry) = self.entry_for(key, at.scale) else {
+                return;
+            };
+            let x = right - width - bang_advance;
+            quads.push(QuadInstance {
+                rect: [
+                    x * at.scale + px_i(entry.left),
+                    y * at.scale + px_i(entry.top),
+                    px(entry.width),
+                    px(entry.height),
                 ],
+                uv: [px(entry.u), px(entry.v), px(entry.width), px(entry.height)],
+                colour: [colour.r, colour.g, colour.b, colour.a],
             });
         }
     }

@@ -588,6 +588,38 @@ Known gaps, so nobody assumes they are done:
   **`Token::Literal` is the first token to reach `TextStyle` rather than only a colour.** A quoted
   `"true"` is `Token::String` and stays upright: the classification already knows the difference, and
   italicising on the text would be ignoring it. There is a test that says so.
+- **A diagnostic is drawn on the document now, not only counted.** MDEDIT-76. A rose squiggle under
+  the offending span, and the line's gutter number in rose and bold with a `!` in front of it — the
+  design pack's `error` role is "paired with a gutter marker", and adopting the colour without
+  drawing one would have been claiming a cue that did not exist.
+
+  **The squiggle is a row of quads**, because there is one pipeline and it draws rectangles: short
+  dashes alternating between two heights, which reads as a wave at body size and needs no shader.
+  Its geometry comes from `row_selection`, the same helper the selection and the find highlights use,
+  so a span crossing rows is clipped per row by code that already knows how.
+
+  **It follows `diagnostics()`, so an edit takes it away and the idle timer brings it back**, with no
+  hook on any edit path — the same `(tab, revision)` staleness rule the count has, and for the
+  stronger reason: a squiggle under bytes that have moved points at innocent text. **Nothing on the
+  drawing path re-runs the check.** Measured at 412 KB of JSON: typing p50 **31.7 ms before, 29.6 and
+  32.1 ms after** across two runs — the change is inside the run-to-run spread. `validate_cost.rs`.
+
+  **The check's 200-diagnostic cap is what makes the per-chunk filter free**: the whole list is
+  shorter than one screen of find matches, so it is scanned rather than binary-searched.
+
+  **The squiggle draws *after* the row's glyphs.** Everything else under a row is a ground the text
+  sits on; this is a mark *about* the text, and a descender must not be able to hide it.
+
+  **A gutter number sits on its line's baseline, and did not before.** Found by putting a `!` there
+  and looking: the digits were placed from the row's *top* and then offset by the glyph's own
+  distance from the baseline, which is negative — so every number was drawn about an ascent above the
+  line it belonged to. `gutter.rs` asserts where numbers sit *horizontally* (MDEDIT-34) and the
+  headless stub gives every glyph a one-pixel offset, so the error was one pixel in a test and most
+  of a row in the window. Now asserted vertically too.
+
+  **With line numbers off there is no gutter, so the squiggle is the only cue.** Reserving gutter
+  space when an error appears would reflow the document at the moment something went wrong, which is
+  worse; the honest answer is that the second cue depends on a gutter being shown.
 - **Markdown's syntax is coloured per kind, and `Role` carries the marker to do it.** MDEDIT-75. All
   thirteen `Marker` variants used to collapse to one colour, so a heading's `#`, a bullet, a fence and
   a link's `](` were the same green. Two kinds leave the `marker` colour, and both are landmarks
