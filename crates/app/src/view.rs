@@ -385,10 +385,22 @@ pub struct ViewRun<'a> {
 /// then a fence losing its monospacing when that was fixed. Both are now read from the block
 /// structure (MDEDIT-12), which knows the answer rather than inferring it from what came before.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "four independent inline states, each genuinely on or off. Packing them into flags \
+              would be working around the lint rather than saying anything about the code"
+)]
 struct DecorState {
     bold: bool,
     italic: bool,
     code_span: bool,
+    /// Whether the walk is between a link's `[` and its `](`, so its text can take the `key` colour.
+    ///
+    /// Here rather than derived from the block list, unlike MDEDIT-74's quote: a link is *inline*, so
+    /// it pairs within a line like the emphasis delimiters beside it, and there is no block to ask.
+    /// The cost is that a link whose text is broken across a source line loses the colour on the
+    /// second line, which is the same bargain `bold` and `italic` already make.
+    link_text: bool,
 }
 
 impl DecorState {
@@ -471,8 +483,9 @@ pub fn build_runs_in<'t>(
                 // The state change happens whether or not the marker is drawn: concealing `**`
                 // must still embolden what follows, which is the entire point.
                 builder.apply(marker);
+                builder.note_link(marker, piece);
                 if revealed {
-                    builder.push_split(piece, span, Role::Marker);
+                    builder.push_split(piece, span, Role::Marker(marker));
                 }
             }
             // Never concealed, whatever the caret is doing: the whole point of the colour-only
@@ -501,8 +514,19 @@ fn clip(span: ByteSpan, within: ByteSpan) -> Option<ByteSpan> {
 /// Whether a piece is syntax or content, which decides its colour and whether it is monospaced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
-    Marker,
+    /// Syntax, carrying which construct it belongs to.
+    ///
+    /// It carries the [`Marker`] since MDEDIT-75: all thirteen kinds used to collapse to one colour,
+    /// so a heading's `#`, a bullet and a link's `](` were the same green.
+    Marker(Marker),
     Content,
+    /// A link's destination — the bytes between `](` and `)`.
+    ///
+    /// Not a [`Marker`] variant, because `mdedit_markers` does not emit one: `pulldown-cmark` reports
+    /// a link as one construct and subtracts its *text*, so the destination arrives inside the same
+    /// marker segment as the brackets around it. Splitting that segment is this renderer's business
+    /// rather than the locator's — nothing about the tiling invariant changes.
+    Destination,
     /// Syntax that is coloured rather than concealed — see [`mdedit_language::Token`].
     Token(Token),
 }
@@ -515,6 +539,21 @@ enum Role {
 /// and italicising on the text would be ignoring it.
 fn is_constant(role: Role) -> bool {
     role == Role::Token(Token::Literal)
+}
+
+/// Whether this is a link's or an image's syntax, which is the one segment drawn in two colours.
+fn is_link_syntax(role: Role) -> bool {
+    matches!(role, Role::Marker(Marker::Link | Marker::Image))
+}
+
+/// The characters that bracket a link, as opposed to the destination they bracket.
+///
+/// A classification of bytes rather than a parse, deliberately: the alternative is re-deriving where
+/// the destination starts, which means handling angle brackets, titles, and reference labels — a
+/// second link parser living in the renderer. A reference label takes the destination's colour under
+/// this rule, which is the right answer for the same reason: it is where the link points.
+fn brackets_a_link(character: char) -> bool {
+    matches!(character, '[' | ']' | '(' | ')' | '!' | '<' | '>')
 }
 
 /// Accumulates runs while walking the document's segments.
@@ -540,15 +579,23 @@ impl<'t> Builder<'_, 't> {
         }
     }
 
-    /// The style for text at `offset`, combining block structure with inline state.
-    fn style_at(&self, offset: ByteOffset, role: Role) -> TextStyle {
-        // Plain mode is one size and one weight, all the way down. Anything else — a heading still
-        // large, a fence still monospaced — would be preview wearing its markers, which is not what
-        // was asked for and not what the file looks like.
-        if self.mode == Mode::Plain {
-            return TextStyle::body(self.theme.body_size);
+    /// Notes whether a link's syntax opened or closed, so its text can be told from prose.
+    ///
+    /// Decided from the marker's own bytes rather than from a count: `[` and `![` open one and
+    /// everything else — `](url)`, `][ref]`, a bare `]` — closes it. A count would have to know how
+    /// many segments a link produces, which depends on the form it is written in.
+    fn note_link(&mut self, marker: Marker, piece: &str) {
+        if matches!(marker, Marker::Link | Marker::Image) {
+            self.state.link_text = piece.ends_with('[');
         }
+    }
 
+    /// How text at `offset` is drawn: its style and its colour.
+    ///
+    /// One method rather than two because both need the same answer from [`Document::block_at`] —
+    /// whether this byte is inside a fence decides the monospacing *and*, since MDEDIT-75, the
+    /// colour. Asking twice would double the largest per-run cost MDEDIT-37 found.
+    fn decorate(&self, offset: ByteOffset, role: Role) -> (TextStyle, Rgba) {
         // Innermost is what governs: code content has no child blocks, so a byte inside a fence
         // resolves to the code block, and a heading's bytes resolve to the heading.
         let kind = self.doc.block_at(offset).map(Block::kind);
@@ -557,6 +604,20 @@ impl<'t> Builder<'_, 't> {
             _ => None,
         };
         let in_code_block = kind == Some(BlockKind::CodeBlock);
+        let colour = self.colour(role, self.state.code_span || in_code_block);
+
+        // Plain mode is one size and one weight, all the way down. Anything else — a heading still
+        // large, a fence still monospaced — would be preview wearing its markers, which is not what
+        // was asked for and not what the file looks like. **Colours stay**: tinting syntax does not
+        // misrepresent what is there. So does a destination's underline, for the same reason and
+        // because the pack's contract is that `link` is never colour alone in either mode.
+        if self.mode == Mode::Plain {
+            let plain = TextStyle::body(self.theme.body_size);
+            return match role {
+                Role::Destination => (plain.underline(), colour),
+                _ => (plain, colour),
+            };
+        }
 
         // Markers are drawn monospaced at body size even inside a heading: syntax you are editing
         // reads more clearly when it is not proportionally spaced or enlarged.
@@ -574,10 +635,48 @@ impl<'t> Builder<'_, 't> {
         if self.state.italic || self.is_quoted(offset, role, in_code_block) || is_constant(role) {
             style = style.italic();
         }
-        if self.state.code_span || in_code_block || role == Role::Marker {
+        if self.state.code_span
+            || in_code_block
+            || matches!(role, Role::Marker(_) | Role::Destination)
+        {
             style = style.mono();
         }
-        style
+        // MDEDIT-73's first consumer, and the pack's own rule: `link` is "underlined", so the
+        // destination is never colour alone.
+        if role == Role::Destination {
+            style = style.underline();
+        }
+        (style, colour)
+    }
+
+    /// What colour a piece is drawn in.
+    ///
+    /// The per-kind marker mapping is MDEDIT-75's, from the design pack's markdown scope map. Only
+    /// two kinds leave the `marker` colour, and both are landmarks rather than scaffolding: a list
+    /// bullet, which the pack sends to `key`, and a link's destination, which is `link`.
+    fn colour(&self, role: Role, in_code: bool) -> Rgba {
+        match role {
+            Role::Marker(Marker::ListItem) => self.theme.token_key,
+            Role::Marker(_) => self.theme.marker,
+            Role::Destination => self.theme.link,
+            // A link's *text* is content — `pulldown-cmark` subtracts it from the construct — so it
+            // is told from surrounding prose by where the walk is rather than by what it says.
+            Role::Content if self.state.link_text => self.theme.token_key,
+            // Code content is content too, and the pack draws it as a string. `code_span` is already
+            // tracked for the monospacing; a fence comes from the block list.
+            Role::Content if in_code => self.theme.token_string,
+            Role::Content => self.theme.text,
+            Role::Token(token) => match token {
+                Token::Key => self.theme.token_key,
+                Token::String => self.theme.token_string,
+                Token::Number => self.theme.token_number,
+                Token::Literal => self.theme.token_literal,
+                Token::Punctuation => self.theme.token_punctuation,
+                Token::Comment => self.theme.token_comment,
+                // A class added to the vocabulary since this was written.
+                _ => self.theme.text,
+            },
+        }
     }
 
     /// Whether the content at `offset` is quoted prose, which the theme draws in italic.
@@ -609,32 +708,46 @@ impl<'t> Builder<'_, 't> {
         let mut cursor = 0usize;
 
         while cursor < piece.len() {
-            let style = self.style_at(ByteOffset::new(base + cursor), role);
-            let colour = match role {
-                Role::Marker => self.theme.marker,
-                Role::Content => self.theme.text,
-                Role::Token(token) => match token {
-                    Token::Key => self.theme.token_key,
-                    Token::String => self.theme.token_string,
-                    Token::Number => self.theme.token_number,
-                    Token::Literal => self.theme.token_literal,
-                    Token::Punctuation => self.theme.token_punctuation,
-                    Token::Comment => self.theme.token_comment,
-                    // A class added to the vocabulary since this was written.
-                    _ => self.theme.text,
-                },
-            };
-
             let rest = &piece[cursor..];
             if let Some(index) = rest.find('\n') {
                 let end = cursor + index + 1;
-                self.push_one(&piece[cursor..end], base + cursor, style, colour);
+                self.push_line(&piece[cursor..end], base + cursor, role);
                 self.state.end_line();
                 cursor = end;
             } else {
-                self.push_one(rest, base + cursor, style, colour);
+                self.push_line(rest, base + cursor, role);
                 cursor = piece.len();
             }
+        }
+    }
+
+    /// One line's worth of a segment, at one style — except a link's, which is two.
+    ///
+    /// `[text](url)` reaches here as `[` and `](url)`, because the parser subtracts the text and
+    /// leaves the destination inside the closing marker. Drawing that whole segment in one colour is
+    /// what made a URL indistinguishable from the brackets holding it, so the delimiters are told
+    /// from what they bracket by [`brackets_a_link`] and the two halves are pushed separately.
+    fn push_line(&mut self, line: &'t str, start: usize, role: Role) {
+        if !is_link_syntax(role) {
+            let (style, colour) = self.decorate(ByteOffset::new(start), role);
+            self.push_one(line, start, style, colour);
+            return;
+        }
+
+        let mut at = 0usize;
+        while at < line.len() {
+            let rest = &line[at..];
+            // Non-empty by the loop condition, and `char_indices` is what keeps the split on a
+            // character boundary — a destination is as likely to hold a `é` as a document is.
+            let bracket = rest.chars().next().is_some_and(brackets_a_link);
+            let len = rest
+                .char_indices()
+                .find(|(_, character)| brackets_a_link(*character) != bracket)
+                .map_or(rest.len(), |(index, _)| index);
+            let part_role = if bracket { role } else { Role::Destination };
+            let (style, colour) = self.decorate(ByteOffset::new(start + at), part_role);
+            self.push_one(&rest[..len], start + at, style, colour);
+            at += len;
         }
     }
 

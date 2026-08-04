@@ -588,6 +588,38 @@ Known gaps, so nobody assumes they are done:
   **`Token::Literal` is the first token to reach `TextStyle` rather than only a colour.** A quoted
   `"true"` is `Token::String` and stays upright: the classification already knows the difference, and
   italicising on the text would be ignoring it. There is a test that says so.
+- **Markdown's syntax is coloured per kind, and `Role` carries the marker to do it.** MDEDIT-75. All
+  thirteen `Marker` variants used to collapse to one colour, so a heading's `#`, a bullet, a fence and
+  a link's `](` were the same green. Two kinds leave the `marker` colour, and both are landmarks
+  rather than scaffolding: a **list bullet** takes `key`, and a **link destination** takes `link`,
+  underlined — MDEDIT-73's first consumer.
+
+  **A destination is not a `Marker` variant and does not become one.** `pulldown-cmark` reports a link
+  as one construct and subtracts its *text*, so `[a](url)` arrives as the markers `[` and `](url)`,
+  with the destination inside the closing marker's own segment. `view::push_line` splits that segment
+  by a character class (`brackets_a_link`) rather than re-deriving where the URL starts: the
+  alternative is a second link parser in the renderer, handling angle brackets, titles and reference
+  labels. A reference label and a title take the destination's colour under that rule — the right
+  answer for a label, and a knowingly loose one for a title. **Nothing about the locator or its tiling
+  property test changes**: this is a renderer-side split of bytes the locator already classified.
+
+  **A link's text is `Content`, so it is told from prose by where the walk is.** `DecorState` grew
+  `link_text`, set from the marker's own bytes — `[` and `![` open one, everything else closes it —
+  rather than by counting segments, which depends on the form the link is written in. Unlike
+  MDEDIT-74's quote it *is* per-line state, because a link is inline and pairs within a line like the
+  emphasis beside it.
+
+  **Code content takes `string` in both forms.** A code span's content is `Content` too, and the
+  `code_span` flag already tracked for the monospacing carries the colour with it; a fence's content
+  comes from the block list.
+
+  **`style_at` became `decorate`, returning the style and the colour together**, because both now need
+  the same `block_at` answer and asking twice would double the per-run cost MDEDIT-37 went to find.
+
+  **Concealment did not change**, which is the acceptance criterion that mattered: a marker still
+  vanishes off the caret's line, and a test asserts the drawn text of a document full of syntax. Plain
+  markup still shows every byte — and keeps the destination's underline, because "never colour alone"
+  is not a preview-only contract.
 - **A run can be underlined, and where the rule sits is the font's answer rather than ours.**
   MDEDIT-73. `TextStyle::underline` reaches DirectWrite as `SetUnderline`, and what comes back is a
   `mdedit_text::Underline` **per row** — x, width, top and thickness, the last two from the font's own
