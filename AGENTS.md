@@ -588,6 +588,40 @@ Known gaps, so nobody assumes they are done:
   **`Token::Literal` is the first token to reach `TextStyle` rather than only a colour.** A quoted
   `"true"` is `Token::String` and stays upright: the classification already knows the difference, and
   italicising on the text would be ignoring it. There is a test that says so.
+- **The light palette is reachable, and the editor follows Windows by default.** MDEDIT-78. A `theme`
+  config key — `"system" | "dark" | "light"`, never a path — three View → Appearance items that tick,
+  and `Theme::for_appearance` doing the rest. Half the design pack was unused until this.
+
+  **The setting is read from the registry, and that is not a style preference.** `AGENTS.md` and
+  `docs/research/05-windows-platform.md` both say `ShouldAppsUseDarkMode` is unreliable from 1903, so
+  `mdedit-menu-win::apps_use_light_theme` reads
+  `HKCU\…\Themes\Personalize\AppsUseLightTheme` with one `RegGetValueW`. It lives in the menu crate
+  because that is where the platform `unsafe` for appearance already is — **no fourth unsafe crate**.
+
+  **winit's `ThemeChanged` is not a reliable notification, and this is the measurement.** winit raises
+  it from `WM_SETTINGCHANGE`, but only when *its own* answer changed — and its answer comes from
+  `ShouldAppsUseDarkMode`, the API this project does not trust. Flipping `AppsUseLightTheme` under a
+  running editor on Windows 11 produced **no event at all**: the palette did not move for five
+  seconds, while a direct read of the registry returned the new value immediately. So the event is
+  wired up and welcome, and two event-driven checks stand behind it: **on focus**, beside
+  `check_disk`, because coming back to the window is when somebody who just changed the setting is
+  looking at it; and **on the idle beat**, which is one registry read of a few microseconds against a
+  whole-document re-parse. Neither is a timer — `on_idle` runs when the loop is about to wait after
+  handling input, so an idle editor asks nothing. Verified by eye: flip the setting, press a key, the
+  document is light.
+
+  **Nothing is cleared on a switch, and that is asserted rather than reasoned.** MDEDIT-78's ticket
+  asked for exactly that: `theme_switch.rs` swaps palettes and checks that no quad still carries a
+  colour from the old one, and that the frame after a switch lays out no more text than an ordinary
+  frame. It holds because colour is in neither `TextStyle` nor `ChunkKey` — every cache holds
+  laid-out glyphs, and a glyph is the same shape in both palettes.
+
+  **The zoom is carried across by ratio**, taken from the theme being replaced rather than from the
+  config or the settings: those two disagree for as long as it takes `with_config` to run, and a
+  palette switch that quietly reset the text size would be a strange bug to hunt.
+
+  **The menus are still forced dark until MDEDIT-79**, so a light document under a dark menu bar is
+  the known intermediate state rather than a defect.
 - **The gutter has its own colour, and the caret's line is lit.** MDEDIT-77. Line numbers draw in
   `gutter` rather than borrowing `marker` — which was a good call while there was one dim colour and
   stopped being one when there were several — and the caret's own number steps up to `text`, which is
@@ -865,9 +899,9 @@ Known gaps, so nobody assumes they are done:
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
-- **Three settings, all reachable from the View menu.** `%APPDATA%\SimpleMarkdownEditor\config.json`
-  holds `line_numbers`, `chrome` and `zoom`. Read at startup and written back on the idle timer when
-  one changes — see the settings entry above for the unknown-key rule that makes writing safe.
+- **Four settings, all reachable from the View menu.** `%APPDATA%\SimpleMarkdownEditor\config.json`
+  holds `line_numbers`, `chrome`, `zoom` and — since MDEDIT-78 — `theme`. Read at startup and written
+  back on the idle timer when one changes — see the settings entry above for the unknown-key rule that makes writing safe.
   **No setting may name a path** — see `crates/app/src/config.rs` for why that is a rule rather than
   a caution. JSON because `serde_json` was already here; the lack of comments is the known cost, and
   TOML is the thing to revisit if this grows past a handful of keys — preserving unknown keys removed

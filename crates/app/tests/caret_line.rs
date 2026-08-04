@@ -20,7 +20,7 @@
 use mdedit_app::config::Config;
 use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
-use mdedit_app::view::{Rgba, Theme};
+use mdedit_app::view::{Rgba, Theme, ThemeChoice};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
@@ -34,6 +34,11 @@ fn editor(source: &str) -> Editor<Grid> {
     let mut editor = Editor::new(source, Grid::new());
     editor.with_config(Config {
         line_numbers: true,
+        // **Pinned, not left to `system`.** These assertions name colours from `Theme::dark`, and
+        // since MDEDIT-78 a config with `theme: "system"` resolves against the *machine* — so on a
+        // light-themed Windows, which is what a CI runner is, they would be looking for a palette
+        // the editor is not drawing with.
+        theme: ThemeChoice::Dark,
         ..Config::default()
     });
     // One frame, so the content rect is decided before any test reads it.
@@ -216,6 +221,8 @@ fn a_flagged_line_stays_flagged_when_the_caret_is_on_it() {
     editor.activate_saved_tab();
     editor.with_config(Config {
         line_numbers: true,
+        // Pinned, for the reason the helper above gives.
+        theme: ThemeChoice::Dark,
         ..Config::default()
     });
     editor.build_frame(WIDTH, HEIGHT, 1.0);

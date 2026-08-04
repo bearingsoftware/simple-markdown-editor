@@ -48,7 +48,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::view::Chrome;
+use crate::view::{Chrome, ThemeChoice};
 
 /// Largest config file that will be read, in bytes. Generous for something with one key in it.
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
@@ -74,6 +74,14 @@ pub struct Config {
     /// had chosen.
     pub chrome: Chrome,
 
+    /// Which palette to draw with: follow Windows, or pin one (MDEDIT-78).
+    ///
+    /// `"system"` by default, which reads the user's Windows setting and follows it while the editor
+    /// runs. **A choice of three words, never a path** — the rule at the top of this module is
+    /// absolute, and a user-authored theme file is a separate design decision with its own
+    /// trust-boundary work attached.
+    pub theme: ThemeChoice,
+
     /// How much larger or smaller than normal to draw the text.
     ///
     /// A multiplier rather than a point size, so it scales headings with the body — the sizes are a
@@ -97,6 +105,7 @@ impl Default for Config {
         Self {
             line_numbers: false,
             chrome: Chrome::default(),
+            theme: ThemeChoice::default(),
             zoom: 1.0,
         }
     }
