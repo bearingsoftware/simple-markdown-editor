@@ -1000,10 +1000,11 @@ impl<T: TextLayout> std::fmt::Debug for Editor<T> {
 impl<T: TextLayout> Editor<T> {
     /// An editor over `source`, drawn with `text`.
     ///
-    /// **Dark until a config says otherwise.** Nothing here asks Windows what its theme is: that
-    /// happens in [`Self::with_config`], which `main` reaches through the settings. So an editor
-    /// built without one draws the same palette on every machine, which is what makes a test that
-    /// names colours mean the same thing on a CI runner as it does here.
+    /// **Dark to begin with**, whatever Windows is set to: nothing here asks. The question is put in
+    /// [`Self::with_config`] and again on the idle beat, so an editor left running with the default
+    /// choice does end up following Windows — which means **a test that names colours should pin the
+    /// choice**, or it is asserting against whichever palette the machine it runs on prefers. Two
+    /// test files learned that from a light-themed CI runner.
     pub fn new(source: &str, text: T) -> Self {
         let mut workspace = Workspace::new();
         // Set here as well as in `with_workspace`, because a file opened later through the menu goes

@@ -37,6 +37,14 @@ fn open(dir: &TempDir, name: &str, contents: &str) -> Editor<Grid> {
     workspace.add(path);
     let mut editor = Editor::with_workspace(workspace, Grid::new());
     editor.activate_saved_tab();
+    // **The palette is pinned**, because the tests below name colours from `Theme::dark`. Since
+    // MDEDIT-78 the default choice is to follow Windows, and the idle timer — which these tests call
+    // directly — is one of the places that asks it. On a light-themed machine, which is what a CI
+    // runner is, an unpinned editor would be drawing the other palette by the second assertion.
+    editor.with_config(mdedit_app::config::Config {
+        theme: mdedit_app::view::ThemeChoice::Dark,
+        ..mdedit_app::config::Config::default()
+    });
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     editor
 }
