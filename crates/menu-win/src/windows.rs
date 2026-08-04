@@ -4,6 +4,7 @@
 // crate docs.
 #![allow(unsafe_code)]
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -52,6 +53,11 @@ pub struct MenuBar {
     /// so an id put in that map would never be seen. Found by clicking one and watching nothing
     /// happen — no test can press a native menu item.
     encoding_ids: Arc<Mutex<HashMap<MenuId, Command>>>,
+    /// The window the bar is on, kept so a palette change can re-theme it (MDEDIT-79). `None` until
+    /// `attach` runs, which is the only place a window exists to be remembered.
+    attached: Cell<Option<isize>>,
+    /// Which palette the menus are currently drawn in, so a change can be told from a repeat.
+    dark: Cell<bool>,
 }
 
 impl std::fmt::Debug for MenuBar {
@@ -159,6 +165,9 @@ impl MenuBar {
             save_with,
             encoding_items: Vec::new(),
             encoding_ids: Arc::new(Mutex::new(HashMap::new())),
+            attached: Cell::new(None),
+            // Dark until `attach` says otherwise, which is the palette `Theme::default` is.
+            dark: Cell::new(true),
         })
     }
 
@@ -294,26 +303,57 @@ impl MenuBar {
     /// `hwnd` must be a live window handle, which is why this is the one place in the editor outside
     /// the text backend that needs `unsafe`.
     ///
-    /// Attached **dark**, to match the editor. Deliberately not `MenuTheme::Auto`: Auto follows
-    /// Windows, and the editor does not — its theme is one hardcoded dark palette with no settings
-    /// surface to choose another. On a light-themed Windows, Auto would put a light menu bar over a
-    /// dark document, which is the bug this replaced (MDEDIT-32). When the editor learns to follow
-    /// the system, the menu follows with it and this becomes a variable.
+    /// Attached in the editor's palette, `dark` saying which (MDEDIT-79).
     ///
-    /// `MenuTheme::Dark` covers the bar and nothing else, because that is all muda draws — the
-    /// dropdowns are Windows' own popups, and [`crate::dark`] is what makes those dark (MDEDIT-35).
-    /// It runs first: the theme is a property of the process, and setting it after a menu exists
-    /// means asking Windows to re-theme one rather than to build it right.
-    pub fn attach(&self, hwnd: isize) {
-        crate::dark::use_dark_menus();
+    /// **Deliberately not `MenuTheme::Auto`**, which was true before this crate could be told the
+    /// mode and is still true now that it can: Auto follows *Windows*, and the editor's palette may
+    /// be pinned against Windows by its config. On a light-themed machine with `"theme": "dark"`,
+    /// Auto would put a light menu bar over a dark document — the bug MDEDIT-32 fixed, reintroduced
+    /// in exactly the case the config key exists to serve.
+    ///
+    /// `MenuTheme` covers the bar and nothing else, because that is all muda draws — the dropdowns
+    /// are Windows' own popups, and [`crate::dark`] is what themes those (MDEDIT-35). It runs first:
+    /// the mode is a property of the process, and setting it after a menu exists means asking
+    /// Windows to re-theme one rather than to build it right.
+    pub fn attach(&self, hwnd: isize, dark: bool) {
+        // Remembered so [`Self::set_appearance`] has a window to re-theme later. There is one, and
+        // it lives as long as the editor does.
+        self.attached.set(Some(hwnd));
+        self.dark.set(dark);
+        crate::dark::use_menus(dark);
 
         // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
         // still holds, so it is a valid `HWND` for the duration of the call. It is only read, to set
         // the window's menu.
-        let attached = unsafe { self.menu.init_for_hwnd_with_theme(hwnd, MenuTheme::Dark) };
+        let attached = unsafe { self.menu.init_for_hwnd_with_theme(hwnd, theme_for(dark)) };
         if let Err(error) = attached {
             // Nothing to do about it that the user would thank us for: the chords still work.
             eprintln!("could not attach the menu bar: {error}");
+        }
+    }
+
+    /// Re-themes an attached menu bar and the popups under it (MDEDIT-79).
+    ///
+    /// A restart would have been a bug rather than a limitation, and `FlushMenuThemes` is why it is
+    /// not one: the process-wide mode changes, that call re-themes the popups Windows draws, and
+    /// muda re-themes the bar it draws itself.
+    ///
+    /// Does nothing if the mode has not moved, and nothing before the menu is attached — the mode is
+    /// passed to [`Self::attach`] in that case, which is the one that has a window to give it to.
+    pub fn set_appearance(&self, dark: bool) {
+        if self.dark.get() == dark {
+            return;
+        }
+        self.dark.set(dark);
+        crate::dark::use_menus(dark);
+
+        let Some(hwnd) = self.attached.get() else {
+            return;
+        };
+        // SAFETY: the same `hwnd` `attach` was given, for a window this process created and holds
+        // for its lifetime. It is only read, to re-theme the menu already on it.
+        if let Err(error) = unsafe { self.menu.set_theme_for_hwnd(hwnd, theme_for(dark)) } {
+            eprintln!("could not re-theme the menu bar: {error}");
         }
     }
 
@@ -369,7 +409,7 @@ impl MenuBar {
 
         // The dropdowns are Windows' own popups, so this is what makes them dark — the same call
         // `attach` makes, for the same reason (MDEDIT-35). Cheap, and idempotent.
-        crate::dark::use_dark_menus();
+        crate::dark::use_menus(self.dark.get());
 
         // SAFETY: `hwnd` comes from winit's `RawWindowHandle` for a window this process created and
         // still holds, so it is a valid `HWND` for the duration of the call. `show_context_menu_for_hwnd`
@@ -710,4 +750,13 @@ fn view_and_help_items<'a>(
         (help, "&Keyboard Shortcuts", Command::Shortcuts, None),
         (help, "&About", Command::About, None),
     ]
+}
+
+/// Which muda theme a palette means. One place, so the bar and any later re-theme cannot disagree.
+fn theme_for(dark: bool) -> MenuTheme {
+    if dark {
+        MenuTheme::Dark
+    } else {
+        MenuTheme::Light
+    }
 }
