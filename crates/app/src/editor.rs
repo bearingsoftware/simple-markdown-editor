@@ -1169,6 +1169,13 @@ impl<T: TextLayout> Editor<T> {
         self.appearance = appearance;
         self.theme = Theme::for_appearance(appearance);
         self.theme.body_size *= scale;
+        // The menus are the same variable as the document (MDEDIT-79): a light document under a dark
+        // menu bar was the known intermediate state at the end of MDEDIT-78, and this is what ends
+        // it. Cheap and idempotent — `set_appearance` returns immediately when the mode has not
+        // moved, which is most of the times this runs.
+        if let Some(menu) = self.menu.as_ref() {
+            menu.set_appearance(appearance == view::Appearance::Dark);
+        }
         self.refresh_view_menu();
     }
 
@@ -2009,7 +2016,9 @@ impl<T: TextLayout> Editor<T> {
         // crate where `AGENTS.md` permits it.
         if let Ok(handle) = window.window_handle() {
             if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                menu.attach(win32.hwnd.get());
+                // In the editor's palette, not Windows' — MDEDIT-79. They are the same by default
+                // and deliberately not the same when the config pins one.
+                menu.attach(win32.hwnd.get(), self.appearance == view::Appearance::Dark);
             }
         }
         self.menu = Some(menu);

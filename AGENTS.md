@@ -61,10 +61,11 @@ crates/document/        # mdedit-document: rope buffer keeping that partition cu
 crates/text/            # mdedit-text: the text-layout trait. No platform types cross it.
 crates/text-dwrite/     # mdedit-text-dwrite: DirectWrite backend. Windows-only; one of the three
                         #   places `unsafe` is permitted. Compiles to nothing elsewhere.
-crates/menu-win/        # mdedit-menu-win: the native menu bar and the one unsafe call that attaches
-                        #   it — plus the small Win32 reads that are not worth a crate of their own:
-                        #   the double-click interval, the parent console, and the window icon.
-                        #   Windows-only.
+crates/menu-win/        # mdedit-menu-win: the native menu bar, the one unsafe call that attaches it,
+                        #   and the mode its bar and popups are drawn in — a parameter since
+                        #   MDEDIT-79, not a hardcoded dark. Plus the small Win32 reads that are not
+                        #   worth a crate of their own: the double-click interval, the parent
+                        #   console, the window icon, and `AppsUseLightTheme`. Windows-only.
 crates/shell-win/       # mdedit-shell-win: the DropTarget verb and its COM local server, so a whole
                         #   Explorer selection reaches one process. The registry footprint is a
                         #   value, which is what makes unregister exact. Windows-only
@@ -620,8 +621,26 @@ Known gaps, so nobody assumes they are done:
   config or the settings: those two disagree for as long as it takes `with_config` to run, and a
   palette switch that quietly reset the text size would be a strange bug to hunt.
 
-  **The menus are still forced dark until MDEDIT-79**, so a light document under a dark menu bar is
-  the known intermediate state rather than a defect.
+  **The menus followed on MDEDIT-79**, which closed the epic: the mode `mdedit-menu-win` forces is a
+  parameter now, taken from the editor's resolved palette rather than from Windows'.
+- **The menus are drawn in the editor's palette, not Windows'.** MDEDIT-79, which closes MDEDIT-69.
+  `dark.rs` forced `PreferredAppMode::ForceDark` unconditionally and the bar attached as
+  `MenuTheme::Dark`; both are parameters now, and `MenuBar::set_appearance` re-themes an *attached*
+  bar so a switch needs no restart — `FlushMenuThemes` is the call that makes that true, and a menu
+  bar that only picked the change up on the next launch would have been a bug rather than a limit.
+
+  **Still not `MenuTheme::Auto`, and that is the whole point.** Auto follows Windows; the editor's
+  palette may be pinned against Windows by `theme`. On a light-themed machine with `"theme": "dark"`,
+  Auto would put a light bar over a dark document — MDEDIT-32 reintroduced in exactly the case the
+  config key exists to serve.
+
+  **Verified in light, not in dark.** A pinned-light editor draws a light bar and light dropdowns.
+  The dark dropdown could not be confirmed on the machine this was built on (Windows 11 26200) — the
+  popup photographed light with `attach` provably receiving `Dark`, which points at the uxtheme
+  ordinals rather than at this wiring, since forcing dark popups is the undocumented best-effort
+  trick `dark.rs` has always been. **If dark dropdowns are broken there, they were broken before this
+  story**: nothing here changed how the call is made, only what it is passed. Worth an eye and a
+  ticket rather than a claim in either direction.
 - **The gutter has its own colour, and the caret's line is lit.** MDEDIT-77. Line numbers draw in
   `gutter` rather than borrowing `marker` — which was a good call while there was one dim colour and
   stopped being one when there were several — and the caret's own number steps up to `text`, which is

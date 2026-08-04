@@ -15,7 +15,12 @@
 //!
 //! # What it does not do
 //!
-//! It does not decide anything. The menu reports which item was chosen as a [`Command`], and the
+//! It does not decide anything — including which palette to draw in. It is *told*, by
+//! [`MenuBar::attach`] and [`MenuBar::set_appearance`], because the editor's palette may be pinned
+//! against Windows' by config and only the editor knows that. The one thing this crate reads for
+//! itself is [`apps_use_light_theme`], which answers what Windows is set to and decides nothing.
+//!
+//! The menu reports which item was chosen as a [`Command`], and the
 //! editor decides what that means. That keeps every command testable without a menu, which matters
 //! because a native menu cannot be driven by a test at all.
 //!
@@ -190,8 +195,11 @@ impl MenuBar {
         None
     }
 
-    /// Attaches to nothing.
-    pub fn attach(&self, _hwnd: isize) {}
+    /// Attaches to nothing, in no particular palette.
+    pub fn attach(&self, _hwnd: isize, _dark: bool) {}
+
+    /// Re-themes nothing, there being no menu to re-theme.
+    pub fn set_appearance(&self, _dark: bool) {}
 
     /// Shows nothing, there being no popup to show.
     pub fn show_context_menu(&mut self, _hwnd: isize, _x: f64, _y: f64, _enabled: ContextState) {}

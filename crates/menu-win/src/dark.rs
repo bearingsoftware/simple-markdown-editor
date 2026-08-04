@@ -32,13 +32,17 @@
 //! them, and every step can fail into doing nothing at all. An editor with light menus still edits;
 //! that is the whole reason this is allowed to be best-effort.
 //!
-//! # This forces dark, it does not follow Windows
+//! # This forces a mode, it does not follow Windows
 //!
 //! `AGENTS.md` says to read the user's dark-mode preference from the registry rather than calling
 //! `ShouldAppsUseDarkMode`, which is unreliable from 1903. That caution is about *querying* the
-//! setting, and nothing here queries it. The editor's palette is one hardcoded dark theme, so the
-//! menus are forced to match it — the same reasoning that made the bar `MenuTheme::Dark`. When the
-//! editor grows a light palette, the theme here and there become one variable together.
+//! setting, and nothing here queries it — [`crate::apps_use_light_theme`] does, once, and the editor
+//! decides what to do with the answer.
+//!
+//! This module is told which mode to force. That is MDEDIT-79 keeping the promise the old version of
+//! this comment made: "when the editor grows a light palette, the theme here and there become one
+//! variable together". They are now the same variable, and it is the editor's resolved palette —
+//! **not** Windows', because the editor's may be pinned against it by config.
 
 // This crate is the platform layer for menus, and there is no safe way to reach an export that has
 // no name. Every block below carries its own `SAFETY` note; the module docs carry the reasoning that
@@ -57,6 +61,12 @@ const FLUSH_MENU_THEMES: u16 = 136;
 
 /// `PreferredAppMode::ForceDark`. Dark whatever the user's Windows is set to, because the editor is.
 const FORCE_DARK: i32 = 2;
+/// `PreferredAppMode::ForceLight`, the other half of the same enum (MDEDIT-79).
+///
+/// **Force**, not `AllowDark` and not `Default`: the editor's palette may be pinned by its config
+/// against what Windows says, and a menu that followed Windows in that case would be the light bar
+/// over a dark document that MDEDIT-32 was — only now the config would have asked for it.
+const FORCE_LIGHT: i32 = 3;
 
 /// Windows 10 1903, the build `SetPreferredAppMode` arrived in.
 ///
@@ -68,11 +78,13 @@ const FIRST_BUILD: u32 = 18362;
 type SetPreferredAppMode = unsafe extern "system" fn(i32) -> i32;
 type FlushMenuThemes = unsafe extern "system" fn();
 
-/// Asks Windows to draw this process's menus dark.
+/// Asks Windows to draw this process's menus dark, or light.
 ///
 /// Best-effort by design: does nothing on a Windows without these exports, and nothing if either
-/// fails to resolve. Call once, before the menu is attached.
-pub fn use_dark_menus() {
+/// fails to resolve. Call before the menu is attached, and again whenever the editor's palette
+/// changes — `FlushMenuThemes` is what makes the second case work, and is the whole reason a mode
+/// change does not need a restart (MDEDIT-79).
+pub fn use_menus(dark: bool) {
     if nt_build() < FIRST_BUILD {
         return;
     }
@@ -90,11 +102,12 @@ pub fn use_dark_menus() {
     };
     // SAFETY: on a build at or past 1903, ordinal 135 of uxtheme is `SetPreferredAppMode`, whose
     // signature is `PreferredAppMode __stdcall(PreferredAppMode)` — matched by `SetPreferredAppMode`
-    // above. `FORCE_DARK` is a valid member of that enum. The build check is what makes this claim
-    // about the ordinal true; see the module docs for why it is not merely a version guard.
+    // above. `FORCE_DARK` and `FORCE_LIGHT` are both valid members of that enum. The build check is
+    // what makes this claim about the ordinal true; see the module docs for why it is not merely a
+    // version guard.
     let set_mode: SetPreferredAppMode = unsafe { std::mem::transmute(set_mode) };
     // SAFETY: the function resolved above, called with the argument it documents.
-    unsafe { set_mode(FORCE_DARK) };
+    unsafe { set_mode(if dark { FORCE_DARK } else { FORCE_LIGHT }) };
 
     let Some(flush) = (unsafe { by_ordinal(uxtheme, FLUSH_MENU_THEMES) }) else {
         return;
@@ -153,7 +166,7 @@ fn nt_build() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{FIRST_BUILD, nt_build, use_dark_menus};
+    use super::{FIRST_BUILD, nt_build, use_menus};
 
     /// The gate decides whether any of this runs at all, and the way it fails is silent — a wrong
     /// build number switches the feature off and looks exactly like Windows declining to honour it.
@@ -176,7 +189,11 @@ mod tests {
     /// twice, since attaching a menu to a second window would.
     #[test]
     fn asking_twice_is_harmless() {
-        use_dark_menus();
-        use_dark_menus();
+        use_menus(true);
+        use_menus(true);
+        // And asking for the other mode, which MDEDIT-79 made possible: a switch at runtime is two
+        // of these in a row, and the second must be as harmless as the first.
+        use_menus(false);
+        use_menus(true);
     }
 }
