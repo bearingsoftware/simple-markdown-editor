@@ -4,6 +4,10 @@
 //! frame to have geometry to place, and predictable enough that a wrong position is arithmetic
 //! rather than a rendering judgement call — which is what makes the renderer assertable on a CI
 //! runner with no GPU and no fonts worth relying on.
+//!
+//! It reports no underlines. Where a rule sits and how thick it is come from a font's own metrics,
+//! and there is no font here — so MDEDIT-73's rendering is verified against DirectWrite and by eye,
+//! which is what its ticket says.
 
 // Each integration test binary compiles this separately, so one of them not using a given helper is
 // expected rather than a mistake.
@@ -124,5 +128,6 @@ fn new_line(row: usize) -> LayoutLine {
         baseline: row * LINE_HEIGHT + ASCENT,
         height: LINE_HEIGHT,
         glyphs: Vec::new(),
+        underlines: Vec::new(),
     }
 }

@@ -19,7 +19,7 @@ use std::rc::Rc;
 use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
 use mdedit_text::{
     FontFamily, FontId, FontSize, FontWeight, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine,
-    PositionedGlyph, StyledRun, TextError, TextLayout, TextStyle,
+    PositionedGlyph, StyledRun, TextError, TextLayout, TextStyle, Underline,
 };
 
 use windows::Win32::Foundation::E_INVALIDARG;
@@ -28,10 +28,11 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
     DWRITE_GLYPH_OFFSET, DWRITE_GLYPH_RUN, DWRITE_GLYPH_RUN_DESCRIPTION, DWRITE_LINE_METRICS,
     DWRITE_MATRIX, DWRITE_MEASURING_MODE, DWRITE_MEASURING_MODE_NATURAL,
-    DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC, DWRITE_STRIKETHROUGH, DWRITE_TEXT_RANGE,
-    DWRITE_TEXTURE_CLEARTYPE_3x1, DWRITE_UNDERLINE, DWriteCreateFactory, IDWriteFactory,
-    IDWriteFontFace, IDWriteInlineObject, IDWritePixelSnapping_Impl, IDWriteTextFormat,
-    IDWriteTextLayout, IDWriteTextRenderer, IDWriteTextRenderer_Impl,
+    DWRITE_READING_DIRECTION_RIGHT_TO_LEFT, DWRITE_RENDERING_MODE_NATURAL_SYMMETRIC,
+    DWRITE_STRIKETHROUGH, DWRITE_TEXT_RANGE, DWRITE_TEXTURE_CLEARTYPE_3x1, DWRITE_UNDERLINE,
+    DWriteCreateFactory, IDWriteFactory, IDWriteFontFace, IDWriteInlineObject,
+    IDWritePixelSnapping_Impl, IDWriteTextFormat, IDWriteTextLayout, IDWriteTextRenderer,
+    IDWriteTextRenderer_Impl,
 };
 use windows_core::{BOOL, IUnknown, Ref, implement};
 
@@ -218,6 +219,21 @@ struct CollectedRun {
     right_to_left: bool,
 }
 
+/// One underline handed back by DirectWrite during `Draw`.
+///
+/// Wrapping is already applied: an underlined run crossing a row boundary arrives as one of these
+/// per row, which is what makes the rule follow the text rather than the run.
+struct CollectedUnderline {
+    baseline_x: f32,
+    baseline_y: f32,
+    width: f32,
+    thickness: f32,
+    /// Distance from the baseline down to the top of the rule.
+    offset: f32,
+    /// As with a glyph run, a right-to-left underline's origin is its right edge.
+    right_to_left: bool,
+}
+
 /// Collects glyph runs out of `IDWriteTextLayout::Draw`.
 ///
 /// DirectWrite reports shaped, fallback-resolved glyphs only through this callback — there is no
@@ -228,6 +244,8 @@ struct RunCollector {
     /// Shared with the caller rather than recovered by casting the COM object back afterwards —
     /// one `Rc` is cheaper to read than a downcast, and cannot fail.
     runs: Rc<RefCell<Vec<CollectedRun>>>,
+    /// The rules under whatever was asked for underlined, in the same way.
+    underlines: Rc<RefCell<Vec<CollectedUnderline>>>,
 }
 
 impl IDWritePixelSnapping_Impl for RunCollector_Impl {
@@ -343,12 +361,30 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
     fn DrawUnderline(
         &self,
         _context: *const core::ffi::c_void,
-        _baseline_x: f32,
-        _baseline_y: f32,
-        _underline: *const DWRITE_UNDERLINE,
+        baseline_x: f32,
+        baseline_y: f32,
+        underline: *const DWRITE_UNDERLINE,
         _effect: Ref<'_, IUnknown>,
     ) -> windows_core::Result<()> {
-        // Markdown has no underline, and emphasis is drawn as a font change rather than a rule.
+        if underline.is_null() {
+            return Ok(());
+        }
+
+        // SAFETY: non-null checked, and DirectWrite guarantees the structure is valid for the
+        // duration of the callback. Only the geometry fields are read, and none of them borrows.
+        let rule = unsafe { &*underline };
+
+        self.this.underlines.borrow_mut().push(CollectedUnderline {
+            baseline_x,
+            baseline_y,
+            width: rule.width,
+            // Both come from the font, which is the whole reason this is the backend's answer
+            // rather than a rule the renderer guesses at.
+            thickness: rule.thickness,
+            offset: rule.offset,
+            right_to_left: rule.readingDirection == DWRITE_READING_DIRECTION_RIGHT_TO_LEFT,
+        });
+
         Ok(())
     }
 
@@ -450,14 +486,21 @@ impl TextLayout for DirectWriteText {
                         range,
                     )
                     .map_err(|e| platform_err("SetFontStyle", &e))?;
+                if run.style.underline {
+                    layout
+                        .SetUnderline(true, range)
+                        .map_err(|e| platform_err("SetUnderline", &e))?;
+                }
             }
 
             unit_cursor = unit_cursor.saturating_add(units);
         }
 
         let collected = Rc::new(RefCell::new(Vec::new()));
+        let rules = Rc::new(RefCell::new(Vec::new()));
         let renderer: IDWriteTextRenderer = RunCollector {
             runs: Rc::clone(&collected),
+            underlines: Rc::clone(&rules),
         }
         .into();
 
@@ -470,8 +513,9 @@ impl TextLayout for DirectWriteText {
         let line_metrics = line_metrics(&layout)?;
         drop(renderer);
         let collected = collected.take();
+        let rules = rules.take();
 
-        Ok(assemble(collected, &line_metrics, &source_map, self))
+        Ok(assemble(collected, rules, &line_metrics, &source_map, self))
     }
 
     fn rasterize(
@@ -623,6 +667,7 @@ fn line_metrics(layout: &IDWriteTextLayout) -> Result<Vec<DWRITE_LINE_METRICS>, 
 /// Turns collected runs into lines of positioned glyphs.
 fn assemble(
     runs: Vec<CollectedRun>,
+    underlines: Vec<CollectedUnderline>,
     line_metrics: &[DWRITE_LINE_METRICS],
     source_map: &SourceMap,
     text: &mut DirectWriteText,
@@ -642,6 +687,7 @@ fn assemble(
             baseline: top + metrics.baseline,
             height: metrics.height,
             glyphs: Vec::new(),
+            underlines: Vec::new(),
         });
         top += metrics.height;
     }
@@ -697,7 +743,53 @@ fn assemble(
         });
     }
 
+    // After the sort, because each rule is matched to the text under it by position.
+    for rule in underlines {
+        let x = if rule.right_to_left {
+            rule.baseline_x - rule.width
+        } else {
+            rule.baseline_x
+        };
+        let Some(line) = nearest_line(&mut lines, rule.baseline_y) else {
+            continue;
+        };
+        // The rule is coloured like the text it sits under, and nothing else on this side of the
+        // boundary knows which run that was: `DWRITE_UNDERLINE` carries geometry and no text
+        // position. A rule with nothing under it is whitespace only, and is dropped rather than
+        // drawn in a colour picked at random.
+        let Some(source) = source_under(line, x, rule.width) else {
+            continue;
+        };
+        line.underlines.push(Underline {
+            x,
+            top: rule.baseline_y + rule.offset,
+            width: rule.width,
+            thickness: rule.thickness,
+            source,
+        });
+    }
+
     Layout { lines }
+}
+
+/// The line whose baseline is closest to `baseline_y`.
+///
+/// By position rather than by text offset, because that is all an underline reports.
+fn nearest_line(lines: &mut [LayoutLine], baseline_y: f32) -> Option<&mut LayoutLine> {
+    lines.iter_mut().min_by(|a, b| {
+        (a.baseline - baseline_y)
+            .abs()
+            .partial_cmp(&(b.baseline - baseline_y).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+/// A byte the text under `x..x + width` came from.
+fn source_under(line: &LayoutLine, x: f32, width: f32) -> Option<ByteOffset> {
+    line.glyphs
+        .iter()
+        .find(|glyph| glyph.pos.x + glyph.advance > x && glyph.pos.x < x + width)
+        .map(|glyph| glyph.source.start())
 }
 
 /// The line a UTF-16 unit sits on: the last line starting at or before it.
