@@ -22,7 +22,7 @@
 
 use std::fmt;
 
-use mdedit_offsets::{ByteSpan, LayoutPos};
+use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
 
 /// Why a layout or rasterization request could not be served.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -129,6 +129,11 @@ pub struct TextStyle {
     pub weight: FontWeight,
     /// Whether the run is italic.
     pub italic: bool,
+    /// Whether the run carries a rule under it.
+    ///
+    /// The implementation decides where the rule sits and how thick it is, from the font's own
+    /// metrics — which is why this is a `bool` here and a [`Underline`] on the way back.
+    pub underline: bool,
 }
 
 impl TextStyle {
@@ -140,6 +145,7 @@ impl TextStyle {
             family: FontFamily::Ui,
             weight: FontWeight::Regular,
             italic: false,
+            underline: false,
         }
     }
 
@@ -154,6 +160,13 @@ impl TextStyle {
     #[must_use]
     pub fn italic(mut self) -> Self {
         self.italic = true;
+        self
+    }
+
+    /// This style underlined.
+    #[must_use]
+    pub fn underline(mut self) -> Self {
+        self.underline = true;
         self
     }
 
@@ -269,6 +282,25 @@ pub struct PositionedGlyph {
     pub source: ByteSpan,
 }
 
+/// A rule under a run, placed by the implementation.
+///
+/// A rectangle rather than a flag on the run, because where an underline sits and how thick it is
+/// come from the font's own metrics — which only the implementation has — and because a wrapped run
+/// needs one of these per row rather than one for the run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Underline {
+    /// Left edge, in the same space as [`PositionedGlyph::pos`].
+    pub x: f32,
+    /// Top edge of the rule, measured from the top of the block like a baseline is.
+    pub top: f32,
+    /// How far the rule runs.
+    pub width: f32,
+    /// How thick it is, from the font.
+    pub thickness: f32,
+    /// A byte the underlined text came from, so the caller can colour the rule like the run.
+    pub source: ByteOffset,
+}
+
 /// One laid-out line.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutLine {
@@ -278,6 +310,8 @@ pub struct LayoutLine {
     pub height: f32,
     /// The glyphs on this line, in visual order.
     pub glyphs: Vec<PositionedGlyph>,
+    /// The rules under this line's underlined runs. Empty for almost every line.
+    pub underlines: Vec<Underline>,
 }
 
 /// The result of laying out a sequence of styled runs.

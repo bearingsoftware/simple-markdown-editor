@@ -144,6 +144,8 @@ struct Row<'a> {
     /// Where the row's top edge is, in document coordinates.
     top: f32,
     height: f32,
+    /// Where the chunk's top edge is, which is what layout positions are relative to.
+    chunk_top: f32,
 }
 
 /// One whitespace mark, laid out once so it can be stamped wherever it is needed.
@@ -5889,12 +5891,15 @@ impl<T: TextLayout> Editor<T> {
                     index: row,
                     top: top_of_row,
                     height: line.height,
+                    chunk_top,
                 };
                 self.draw_matches(quads, &found, here, at);
                 self.draw_row_selection(quads, selected, here, at);
                 if self.whitespace {
                     self.draw_marks(quads, here, baseline, at);
                 }
+
+                self.draw_underlines(quads, &runs, here, at);
 
                 for glyph in &line.glyphs {
                     let Some(entry) = self.entry_for(glyph.key, scale) else {
@@ -5917,6 +5922,41 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         line_height
+    }
+
+    /// Draws the rules under one visual row's underlined runs (MDEDIT-73).
+    ///
+    /// Where each rule sits and how thick it is came from the font, through the text layer — the
+    /// renderer turns the rectangle into a quad and decides nothing about it but the colour, which
+    /// is the run's own so a rule cannot disagree with the text above it.
+    fn draw_underlines(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        runs: &[view::ViewRun<'_>],
+        row: Row<'_>,
+        at: Placement,
+    ) {
+        for rule in &row.cached.layout.lines[row.index].underlines {
+            let colour = view::colour_at(
+                runs,
+                row.cached.rebase_offset(rule.source, row.chunk.span),
+                self.theme.text,
+            );
+            let (x, y) = at
+                .content
+                .to_window(rule.x, rule.top + row.chunk_top, at.offset);
+            quads.push(Self::solid(
+                [
+                    x * at.scale,
+                    y * at.scale,
+                    rule.width * at.scale,
+                    // A thin font's rule is under a pixel at 100%, and a rule that rounds to
+                    // nothing is a cue that is not there.
+                    (rule.thickness * at.scale).max(1.0),
+                ],
+                colour,
+            ));
+        }
     }
 
     /// Draws the whitespace marks for one visual row (MDEDIT-46).
@@ -7210,7 +7250,13 @@ impl Cached {
 
     /// A glyph's source offset, moved to where this chunk actually sits in the buffer.
     fn rebase(&self, glyph: &mdedit_text::PositionedGlyph, span: ByteSpan) -> ByteOffset {
-        ByteOffset::new(span.start().get() + glyph.source.start().get().saturating_sub(self.base))
+        self.rebase_offset(glyph.source.start(), span)
+    }
+
+    /// The same arithmetic for an offset that did not come from a glyph — an underline's, which the
+    /// layout resolves from the text under the rule.
+    fn rebase_offset(&self, offset: ByteOffset, span: ByteSpan) -> ByteOffset {
+        ByteOffset::new(span.start().get() + offset.get().saturating_sub(self.base))
     }
 }
 

@@ -298,3 +298,143 @@ fn each_line_carries_its_own_height() {
     assert!(layout.lines[0].baseline < layout.lines[1].baseline);
     assert!(layout.lines[1].baseline < layout.lines[2].baseline);
 }
+
+/// MDEDIT-73. The rule's position and thickness come from the font, which is the whole reason this
+/// is the backend's answer — so this is the only place either can be asserted at all.
+#[test]
+fn an_underlined_run_gets_a_rule_from_the_font() {
+    let mut text = engine();
+    let source = "underlined";
+    let layout = text
+        .layout(&[run(source, TextStyle::body(16.0).underline())], 1000.0)
+        .unwrap();
+
+    let line = &layout.lines[0];
+    assert_eq!(line.underlines.len(), 1, "one run, one row, one rule");
+    let rule = line.underlines[0];
+
+    assert!(rule.thickness > 0.0, "a rule with no thickness is no rule");
+    assert!(
+        rule.top > line.baseline,
+        "an underline sits below the baseline: {} against {}",
+        rule.top,
+        line.baseline
+    );
+    let ends = layout
+        .glyphs()
+        .map(|g| g.pos.x + g.advance)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        rule.width > 0.0 && rule.width <= ends + 1.0,
+        "the rule ({}) should run under the text ({ends}) and no further",
+        rule.width
+    );
+    assert!(
+        rule.source.get() < source.len(),
+        "the rule should name a byte of the text it is under, got {}",
+        rule.source.get()
+    );
+}
+
+#[test]
+fn a_run_that_asked_for_no_underline_gets_none() {
+    let mut text = engine();
+    let layout = text
+        .layout(&[run("plain", TextStyle::body(16.0))], 1000.0)
+        .unwrap();
+
+    assert!(layout.lines.iter().all(|line| line.underlines.is_empty()));
+}
+
+/// The rule follows the text through wrapping rather than being one rectangle per run.
+#[test]
+fn a_wrapped_underlined_run_is_underlined_on_every_row() {
+    let mut text = engine();
+    let layout = text
+        .layout(
+            &[run(
+                "one two three four five six seven eight nine ten",
+                TextStyle::body(16.0).underline(),
+            )],
+            60.0,
+        )
+        .unwrap();
+
+    assert!(layout.lines.len() > 1, "60 px should wrap this");
+    for (row, line) in layout.lines.iter().enumerate() {
+        if line.glyphs.is_empty() {
+            continue;
+        }
+        assert!(
+            !line.underlines.is_empty(),
+            "row {row} has text and no rule under it"
+        );
+    }
+}
+
+#[test]
+fn only_the_underlined_run_carries_a_rule() {
+    let mut text = engine();
+    let plain = "before ";
+    let linked = "underlined";
+    let layout = text
+        .layout(
+            &[
+                run(plain, TextStyle::body(16.0)),
+                StyledRun {
+                    text: linked,
+                    style: TextStyle::body(16.0).underline(),
+                    source: ByteSpan::new(
+                        ByteOffset::new(plain.len()),
+                        ByteOffset::new(plain.len() + linked.len()),
+                    ),
+                },
+            ],
+            1000.0,
+        )
+        .unwrap();
+
+    let rules: Vec<_> = layout
+        .lines
+        .iter()
+        .flat_map(|line| line.underlines.iter())
+        .collect();
+    assert_eq!(rules.len(), 1);
+    assert!(
+        rules[0].source.get() >= plain.len(),
+        "the rule belongs to the second run, so it should name one of its bytes; got {}",
+        rules[0].source.get()
+    );
+    assert!(
+        rules[0].x > 0.0,
+        "the rule starts where the second run does, not at the left margin"
+    );
+}
+
+/// Zoom is a larger style, so this is what says a rule zooms with the text under it.
+#[test]
+fn a_rule_grows_with_the_style() {
+    let mut text = engine();
+    let small = text
+        .layout(&[run("text", TextStyle::body(16.0).underline())], 1000.0)
+        .unwrap();
+    let large = text
+        .layout(&[run("text", TextStyle::body(48.0).underline())], 1000.0)
+        .unwrap();
+
+    let rule = |layout: &mdedit_text::Layout| layout.lines[0].underlines[0];
+    let drop = |layout: &mdedit_text::Layout| rule(layout).top - layout.lines[0].baseline;
+
+    assert!(
+        rule(&large).thickness > rule(&small).thickness,
+        "48 px should draw a thicker rule than 16 px: {} against {}",
+        rule(&large).thickness,
+        rule(&small).thickness
+    );
+    assert!(
+        drop(&large) > drop(&small),
+        "and sit further below the baseline: {} against {}",
+        drop(&large),
+        drop(&small)
+    );
+}
