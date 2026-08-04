@@ -68,9 +68,10 @@ impl Rgba {
 
 /// Which palette the editor is drawing with.
 ///
-/// Only [`Appearance::Dark`] is reachable today — MDEDIT-78 adds the OS read, the config key and the
-/// menu items that choose. This exists now so the palette is a value with two of them rather than a
-/// `Default` impl with one, which is the whole of MDEDIT-71.
+/// Both are reachable since MDEDIT-78: the config key chooses one or says to follow Windows, the
+/// View menu sets it, and `WindowEvent::ThemeChanged` re-reads the registry while the editor runs.
+/// It exists as a value with two variants rather than a `Default` impl with one because of MDEDIT-71,
+/// which is what made the light palette expressible at all.
 ///
 /// Deliberately **not** called `Mode`: that is already taken by how the *document* is drawn
 /// (preview against plain markup), and the two are independent — plain markup is still dark.
@@ -79,17 +80,53 @@ pub enum Appearance {
     /// The palette the editor has always had.
     #[default]
     Dark,
-    /// Nocturne's light palette. Complete, contrast-checked, and not yet reachable.
+    /// Nocturne's light palette.
     Light,
+}
+
+/// Which palette the user asked for, which is not the same as which one is drawn (MDEDIT-78).
+///
+/// [`Appearance`] is the answer; this is the question. `System` resolves against Windows and changes
+/// with it; the other two pin it. Stored in the config as `"system" | "dark" | "light"`, following
+/// the [`Chrome`] precedent — **never a path**, per the rule at the top of [`crate::config`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeChoice {
+    /// Whatever Windows is set to, and change when it changes. The default.
+    #[default]
+    System,
+    /// Dark, whatever Windows is set to.
+    Dark,
+    /// Light, whatever Windows is set to.
+    Light,
+}
+
+impl ThemeChoice {
+    /// Which palette this choice means, given what Windows says.
+    ///
+    /// `light` is `None` when Windows does not say — an old build, or a user who has never opened
+    /// the personalisation page. **Dark is the answer then**, which is a decision about this editor
+    /// rather than about Windows: it is what the editor has always drawn, and every value in the
+    /// dark palette has been looked at on real hardware.
+    #[must_use]
+    pub fn resolve(self, light: Option<bool>) -> Appearance {
+        match self {
+            Self::Light => Appearance::Light,
+            Self::System if light == Some(true) => Appearance::Light,
+            // `Dark` and a `System` that Windows answered dark, or did not answer at all.
+            Self::Dark | Self::System => Appearance::Dark,
+        }
+    }
 }
 
 /// Sizes and colours.
 ///
-/// # Two palettes, one of them unreachable
+/// # Two palettes, both reachable
 ///
-/// MDEDIT-71. [`Theme::dark`] is what the editor has always drawn with, byte for byte;
-/// [`Theme::light`] is Nocturne's light palette, complete and contrast-checked and read by nothing
-/// until MDEDIT-78 adds the OS read and the config key. `Default` is dark, so no caller changed.
+/// MDEDIT-71 made the palette a value with two of them; MDEDIT-72 made the dark one Nocturne, and
+/// MDEDIT-78 made the light one reachable — a `theme` config key, three View menu items, and a
+/// re-read of the registry when Windows says its setting changed. `Default` is dark, which is what
+/// an editor with no config and a Windows that will not say still opens as.
 ///
 /// # Roles nothing reads yet
 ///
@@ -257,7 +294,7 @@ impl Theme {
 
     /// Nocturne's light palette, from the MDEDIT-69 design pack.
     ///
-    /// Nothing reads this until MDEDIT-78. It is filled in now because the values have to be chosen
+    /// Reachable since MDEDIT-78. It was filled in ahead of that because the values have to be chosen
     /// against one another to be *checked* against one another, and `contrast.rs` checks them.
     ///
     /// Six roles have no counterpart in the pack — it has no search highlight at all, and offers two

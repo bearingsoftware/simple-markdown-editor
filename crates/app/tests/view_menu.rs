@@ -180,6 +180,7 @@ fn stored_view_choices_are_applied_on_open() {
         chrome: Chrome::Pane,
         line_numbers: true,
         zoom: 1.5,
+        ..Config::default()
     });
 
     assert_eq!(editor.chrome(), Chrome::Pane);

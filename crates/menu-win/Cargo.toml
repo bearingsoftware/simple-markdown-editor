@@ -29,6 +29,9 @@ windows-sys = { version = ">=0.60, <=0.61", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Console",
+    # For MDEDIT-78's read of `AppsUseLightTheme` — see `appearance.rs` for why the registry rather
+    # than `ShouldAppsUseDarkMode`.
+    "Win32_System_Registry",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }

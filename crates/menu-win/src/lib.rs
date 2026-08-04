@@ -116,6 +116,11 @@ pub enum Command {
     Whitespace,
     /// View → Word Wrap.
     WordWrap,
+    /// View → Appearance → one of the three (MDEDIT-78).
+    ///
+    /// One variant carrying the choice rather than three, because they are one radio group: the
+    /// editor sets a value, it does not toggle three things that happen to be exclusive.
+    SetAppearance(AppearanceChoice),
     /// View → Zoom In.
     ZoomIn,
     /// View → Zoom Out.
@@ -126,6 +131,37 @@ pub enum Command {
     Shortcuts,
     /// Help → About.
     About,
+}
+
+/// Which palette the user has asked for, as a menu sees it (MDEDIT-78).
+///
+/// Three items in one radio group, so a tri-state rather than bools: "follow Windows" is a choice
+/// in its own right and not the absence of the other two. The editor owns what each *means* — this
+/// crate knows only which item is ticked, which is the same boundary that keeps `Newline` and
+/// encodings out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AppearanceChoice {
+    /// Whatever Windows is set to, and change with it.
+    #[default]
+    System,
+    /// Dark, whatever Windows is set to.
+    Dark,
+    /// Light, whatever Windows is set to.
+    Light,
+}
+
+#[cfg(windows)]
+mod appearance;
+
+#[cfg(windows)]
+pub use appearance::apps_use_light_theme;
+
+/// Whether Windows is drawing apps light, off Windows: it does not say, because there is no Windows
+/// to ask. See the `windows` build's [`appearance`] module for what this answers there.
+#[cfg(not(windows))]
+#[must_use]
+pub fn apps_use_light_theme() -> Option<bool> {
+    None
 }
 
 #[cfg(windows)]
@@ -351,6 +387,11 @@ pub struct ViewState {
     pub whitespace: bool,
     /// Whether long lines wrap rather than running off to the right.
     pub word_wrap: bool,
+    /// Which of the three Appearance items is ticked (MDEDIT-78).
+    ///
+    /// Not a bool, and so not covered by the `struct_excessive_bools` note above: it is a radio
+    /// group, and exactly one of its items is ticked at a time.
+    pub appearance: AppearanceChoice,
 }
 
 /// Which context-menu entries are available.

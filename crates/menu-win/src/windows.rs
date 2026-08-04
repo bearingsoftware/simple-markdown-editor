@@ -33,6 +33,9 @@ pub struct MenuBar {
     /// The View menu's three toggles, kept so their ticks can be made to match the editor. See
     /// [`Self::set_view`].
     view_toggles: [CheckMenuItem; 6],
+    /// View → Appearance: System, Dark, Light, in that order (MDEDIT-78). A radio group, so exactly
+    /// one is ticked and [`Self::set_view`] is what decides which.
+    appearance_items: [CheckMenuItem; 3],
     /// Tools → Format Document, kept for the same reason: its enabled state has to follow whichever
     /// document is showing. See [`Self::set_tools`].
     format_item: MenuItem,
@@ -89,6 +92,7 @@ impl MenuBar {
         )?;
 
         let view_toggles = add_view_toggles(&view, &mut commands)?;
+        let appearance_items = add_appearance(&view, &mut commands)?;
 
         // Built here rather than in the table because it is the one item whose enabled state
         // changes, so something has to keep hold of it. Disabled to begin with: the first frame
@@ -148,6 +152,7 @@ impl MenuBar {
             recent_ids: Arc::new(Mutex::new(HashMap::new())),
             context_ids: Arc::new(Mutex::new(HashMap::new())),
             view_toggles,
+            appearance_items,
             format_item,
             ending_items,
             reopen_with,
@@ -241,6 +246,11 @@ impl MenuBar {
         toolbar.set_checked(state.toolbar);
         whitespace.set_checked(state.whitespace);
         word_wrap.set_checked(state.word_wrap);
+
+        let [system, dark, light] = &self.appearance_items;
+        system.set_checked(state.appearance == crate::AppearanceChoice::System);
+        dark.set_checked(state.appearance == crate::AppearanceChoice::Dark);
+        light.set_checked(state.appearance == crate::AppearanceChoice::Light);
     }
 
     /// Replaces the Open Recent submenu with `labels`, most recent first.
@@ -488,6 +498,40 @@ fn add_view_toggles(
         whitespace,
         word_wrap,
     ])
+}
+
+/// Adds View → Appearance, three check items in one radio group (MDEDIT-78).
+///
+/// A submenu rather than three items in the View menu itself: they answer one question between them,
+/// and a flat list of three mutually exclusive ticks reads as three independent toggles.
+///
+/// Check items rather than muda's radio items, because muda has none — a tick beside the chosen one
+/// is what Windows menus do for this anyway, and [`MenuBar::set_view`] keeps exactly one of them on.
+///
+/// No accelerators. There is no chord for the palette, and there should not be: it is a preference
+/// somebody sets once, not something toggled mid-sentence.
+fn add_appearance(
+    view: &Submenu,
+    commands: &mut HashMap<MenuId, Command>,
+) -> Option<[CheckMenuItem; 3]> {
+    let appearance = Submenu::new("&Appearance", true);
+    let system = CheckMenuItem::new("Follow &Windows", true, true, None);
+    let dark = CheckMenuItem::new("&Dark", true, false, None);
+    let light = CheckMenuItem::new("&Light", true, false, None);
+
+    for (item, choice) in [
+        (&system, crate::AppearanceChoice::System),
+        (&dark, crate::AppearanceChoice::Dark),
+        (&light, crate::AppearanceChoice::Light),
+    ] {
+        commands.insert(item.id().clone(), Command::SetAppearance(choice));
+        appearance.append(item).ok()?;
+    }
+
+    // Directly under the toggles and their separator, above the zoom items: what the editor *looks*
+    // like belongs with what the view is, rather than with how big it is drawn.
+    view.insert(&appearance, 7).ok()?;
+    Some([system, dark, light])
 }
 
 /// Puts every ordinary item in its submenu, and says what each means.

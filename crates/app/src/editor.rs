@@ -705,6 +705,12 @@ pub struct Editor<T: TextLayout> {
     /// Used only when no file is open, for the built-in sample.
     scratch: Document,
     theme: Theme,
+    /// Which palette is being drawn (MDEDIT-78).
+    ///
+    /// Kept beside the theme rather than derived from it: the *choice* lives in the config and what
+    /// Windows says can change under it, so the resolved answer is a thing to hold and compare
+    /// against — the same shape as `counted_for` and `floating_for`.
+    appearance: view::Appearance,
     text: T,
     atlas: Atlas,
     window: Option<Arc<Window>>,
@@ -1002,6 +1008,7 @@ impl<T: TextLayout> Editor<T> {
             workspace,
             scratch: Document::from(source),
             theme: Theme::default(),
+            appearance: view::Appearance::default(),
             text,
             atlas: Atlas::new(),
             window: None,
@@ -1124,9 +1131,110 @@ impl<T: TextLayout> Editor<T> {
     pub fn with_config(&mut self, config: Config) {
         self.config = config;
         self.chrome = config.chrome;
-        // Applied here rather than left for the first zoom press, so a document opens at the size it
-        // was last read at.
+        // The palette first, because it replaces the theme wholesale — and then the zoom into it, so
+        // a document opens at the size it was last read at. Both are applied here rather than left
+        // for the first keypress: an editor that opened dark and turned light on its second frame
+        // would be worse than one that took a moment longer to appear.
+        self.apply_appearance(
+            config
+                .theme
+                .resolve(mdedit_menu_win::apps_use_light_theme()),
+        );
         self.theme.body_size = Theme::default().body_size * config.zoom;
+    }
+
+    /// Draws with `appearance` from now on, keeping the zoom.
+    ///
+    /// # The cache question, answered by test rather than by reasoning
+    ///
+    /// Nothing is cleared, and MDEDIT-78's acceptance made that an assertion rather than a claim:
+    /// `theme_switch.rs` swaps palettes and checks that no quad still carries a colour from the old
+    /// one. It holds because colour is deliberately **not** in [`mdedit_text::TextStyle`] and not in
+    /// `ChunkKey` — every cache here holds *laid-out glyphs*, and a glyph is the same shape in both
+    /// palettes. The colour is chosen at draw time, from `self.theme`, which is what this replaces.
+    ///
+    /// The one thing that has to be carried across is the zoom. `body_size` is a *scaled* value and
+    /// a palette's own is the unscaled one, so the scale is taken from the theme being replaced
+    /// rather than from the settings or the config: those two disagree for as long as it takes
+    /// `with_config` to run, and a theme switch that quietly reset the text size would be a strange
+    /// bug to hunt.
+    fn apply_appearance(&mut self, appearance: view::Appearance) {
+        let scale = self.theme.body_size / Theme::default().body_size;
+        self.appearance = appearance;
+        self.theme = Theme::for_appearance(appearance);
+        self.theme.body_size *= scale;
+        self.refresh_view_menu();
+    }
+
+    /// Which palette is being drawn.
+    #[must_use]
+    pub fn appearance(&self) -> view::Appearance {
+        self.appearance
+    }
+
+    /// Chooses a palette, or chooses to follow Windows, and remembers it.
+    ///
+    /// Returns whether anything changed, so a caller can skip a redraw — and so the tests can say
+    /// that choosing what is already chosen is not a change.
+    pub fn set_theme_choice(&mut self, choice: view::ThemeChoice) -> bool {
+        if self.config.theme == choice && self.appearance == Self::resolved(choice) {
+            return false;
+        }
+        self.config.theme = choice;
+        self.settings.update(|config| config.theme = choice);
+        self.apply_appearance(Self::resolved(choice));
+        true
+    }
+
+    /// What a choice means right now, asking Windows if the choice says to.
+    fn resolved(choice: view::ThemeChoice) -> view::Appearance {
+        choice.resolve(mdedit_menu_win::apps_use_light_theme())
+    }
+
+    /// Tells the renderer the window is a different size, and asks for a frame at it.
+    fn on_resized(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if let Some(renderer) = self.renderer.as_mut() {
+            renderer.resize(size.width, size.height);
+        }
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+
+    /// Takes Windows' word that something changed, and asks the registry what it changed to.
+    ///
+    /// **The event is the notification, not the answer** (MDEDIT-78). winit raises
+    /// `WindowEvent::ThemeChanged` off `WM_SETTINGCHANGE`: it does not filter on `ImmersiveColorSet`
+    /// but simply re-evaluates and speaks only when its own answer moved. That answer comes from
+    /// `ShouldAppsUseDarkMode`, which `AGENTS.md` says not to trust — so the theme it carries is
+    /// ignored and [`Self::system_appearance_changed`] reads the registry instead.
+    ///
+    /// It arrives at all only because nothing calls winit's `with_theme`: a window built with a
+    /// preferred theme is never sent this event, which would be a quiet way to lose live switching.
+    fn follow_system_appearance(&mut self) {
+        if self.system_appearance_changed() {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Windows' light/dark setting changed while the editor was running.
+    ///
+    /// Called from `WindowEvent::ThemeChanged`, which winit raises off `WM_SETTINGCHANGE` — see the
+    /// event loop for the division of labour there: **winit is the notification, the registry is the
+    /// answer**, because winit decides its own value with `ShouldAppsUseDarkMode` and `AGENTS.md`
+    /// says not to trust that.
+    ///
+    /// Does nothing when the palette is pinned, which is the whole point of pinning it. Returns
+    /// whether the editor now draws differently.
+    pub fn system_appearance_changed(&mut self) -> bool {
+        let wanted = Self::resolved(self.config.theme);
+        if wanted == self.appearance {
+            return false;
+        }
+        self.apply_appearance(wanted);
+        true
     }
 
     /// Uses these settings, and applies what they say.
@@ -1177,7 +1285,12 @@ impl<T: TextLayout> Editor<T> {
 
     /// Checks every open file for an external change, and redraws if one turned up.
     fn on_focus(&mut self) {
-        if self.check_disk() {
+        // The palette is asked about here as well as on `ThemeChanged`, and for the same reason the
+        // disk is: the user went away, changed something, and came back. MDEDIT-78 found that the
+        // event alone cannot be relied on — see `follow_system_appearance` — and coming back to the
+        // window is exactly when somebody who has just flipped Windows' setting is looking at it.
+        let repaint = self.check_disk() | self.system_appearance_changed();
+        if repaint {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
@@ -1351,9 +1464,17 @@ impl<T: TextLayout> Editor<T> {
         // of rapid toggles costs one write. Not on exit — see `crate::config`.
         self.settings.flush();
 
+        // The sixth thing on this timer, and the cheapest by three orders of magnitude: one registry
+        // read, microseconds, against a whole-document re-parse. It is here because winit's
+        // `ThemeChanged` cannot be relied on — see `follow_system_appearance` — and this is the
+        // event-driven beat the editor already has. **Not a poll**: nothing schedules it, the loop
+        // runs it when it is about to wait after handling input, so an idle editor asks nothing.
+        let repalette = self.system_appearance_changed();
+
         reparsed
             || before != self.words
             || settled
+            || repalette
             || diagnosed != self.diagnostic_count()
             || endings != self.newline()
     }
@@ -1804,6 +1925,11 @@ impl<T: TextLayout> Editor<T> {
             Command::ResetZoom => self.reset_zoom(),
             Command::Whitespace => self.toggle_whitespace(),
             Command::WordWrap => self.toggle_wrap(),
+            Command::SetAppearance(choice) => self.set_theme_choice(match choice {
+                mdedit_menu_win::AppearanceChoice::System => view::ThemeChoice::System,
+                mdedit_menu_win::AppearanceChoice::Dark => view::ThemeChoice::Dark,
+                mdedit_menu_win::AppearanceChoice::Light => view::ThemeChoice::Light,
+            }),
             Command::ReopenWith(index) => self.reopen_with(index),
             Command::SaveWith(index) => self.save_with(index),
             Command::ConvertToLf => self.set_newline(mdedit_file::Newline::Lf),
@@ -4455,6 +4581,11 @@ impl<T: TextLayout> Editor<T> {
             toolbar: self.toolbar,
             whitespace: self.whitespace,
             word_wrap: self.wrap,
+            appearance: match self.config.theme {
+                view::ThemeChoice::System => mdedit_menu_win::AppearanceChoice::System,
+                view::ThemeChoice::Dark => mdedit_menu_win::AppearanceChoice::Dark,
+                view::ThemeChoice::Light => mdedit_menu_win::AppearanceChoice::Light,
+            },
         });
     }
 
@@ -7267,14 +7398,9 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             // Coming back to the window is when an external edit has almost always happened: the
             // user went away, something ran, and they returned. See `check_disk`.
             WindowEvent::Focused(true) => self.on_focus(),
-            WindowEvent::Resized(size) => {
-                if let Some(renderer) = self.renderer.as_mut() {
-                    renderer.resize(size.width, size.height);
-                }
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
-                }
-            }
+            // The value it carries is deliberately ignored. See `follow_system_appearance`.
+            WindowEvent::ThemeChanged(_) => self.follow_system_appearance(),
+            WindowEvent::Resized(size) => self.on_resized(size),
             WindowEvent::ScaleFactorChanged { .. } => {
                 // Glyphs are rasterized per scale factor, so the atlas is stale. Dropping it is the
                 // correct response to WM_DPICHANGED and cheap — it refills on the next frame.
