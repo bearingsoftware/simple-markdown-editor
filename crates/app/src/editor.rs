@@ -7294,10 +7294,17 @@ impl<T: TextLayout> Editor<T> {
         if (self.scroll.offset() - anchor.offset).abs() > f32::EPSILON {
             return;
         }
+        // The `occurrence`-th chunk with this content, not the first — see [`Anchor::occurrence`].
+        // A document whose block count changed above the anchor may not have that many any more, and
+        // then there is nothing to correct against: leaving the offset alone is what this function
+        // already did when it could not find the content at all.
         let Some(index) = frame
             .keys
             .iter()
-            .position(|key| key.content == anchor.content)
+            .enumerate()
+            .filter(|(_, key)| key.content == anchor.content)
+            .nth(anchor.occurrence)
+            .map(|(index, _)| index)
         else {
             return;
         };
@@ -7316,6 +7323,10 @@ impl<T: TextLayout> Editor<T> {
             .saturating_sub(1);
         self.anchor = frame.keys.get(index).map(|key| Anchor {
             content: key.content,
+            occurrence: frame.keys[..index]
+                .iter()
+                .filter(|earlier| earlier.content == key.content)
+                .count(),
             into_chunk: offset - frame.tops[index],
             offset,
         });
@@ -7760,6 +7771,17 @@ struct Anchor {
     /// chunk's height at once, and without an anchor the reader would be thrown somewhere else in
     /// the document.
     content: u64,
+    /// How many chunks with this same content come before it.
+    ///
+    /// **The disambiguator.** `ChunkKey::of` hashes a chunk's kind and its bytes, so identical
+    /// top-level blocks share a content hash — repeated `---` breaks, a run of duplicated
+    /// paragraphs, a log of similar entries. Resolving by first match snapped the viewport toward
+    /// the first of them on any redraw, from the fortieth of fifty identical entries to the first
+    /// (MDEDIT-108).
+    ///
+    /// An occurrence count rather than an index into `frame.keys`, because the index is what the
+    /// height corrections this whole mechanism exists to absorb are allowed to move.
+    occurrence: usize,
     /// How far into that chunk the viewport's top edge sits.
     into_chunk: f32,
     /// The scroll offset when this was taken. If it has changed, the user has scrolled and the
