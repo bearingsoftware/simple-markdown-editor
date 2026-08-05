@@ -17,6 +17,7 @@ use std::rc::Rc;
 use mdedit_app::editor::Editor;
 use mdedit_app::prompt::{Closing, Unsaved, UnsavedPrompt};
 use mdedit_session::Workspace;
+use mdedit_session::snapshot::Store;
 use tempfile::TempDir;
 
 mod stub;
@@ -52,12 +53,6 @@ impl UnsavedPrompt for Scripted {
         asked.dialogs.push(vec![name.to_owned()]);
         asked.answer.expect("asked without a scripted answer")
     }
-
-    fn ask_all(&mut self, names: &[String]) -> Unsaved {
-        let mut asked = self.0.borrow_mut();
-        asked.dialogs.push(names.to_vec());
-        asked.answer.expect("asked without a scripted answer")
-    }
 }
 
 /// An editor on `count` saved files, with a scripted answer.
@@ -84,6 +79,19 @@ fn dirty(editor: &mut Editor<Grid>, index: usize) {
 }
 
 /// Nothing to lose, so nothing to ask. A prompt on every close is one people learn to dismiss.
+/// Points an editor's recovery store at a scratch directory, as `main` does.
+fn with_store(editor: &mut Editor<Grid>, dir: &TempDir) {
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+}
+
+/// What the store holds, as text.
+fn stored(dir: &TempDir) -> Vec<String> {
+    let (recovered, skipped) = Store::in_directory(dir.path().join("recovery")).read_all();
+    assert!(skipped.is_empty(), "{skipped:?}");
+    recovered.into_iter().map(|entry| entry.text).collect()
+}
+
+/// Nothing to lose, so nothing to ask. A prompt on every close is one people learn to dismiss.
 #[test]
 fn a_clean_editor_closes_without_asking() {
     let dir = TempDir::new().unwrap();
@@ -94,204 +102,160 @@ fn a_clean_editor_closes_without_asking() {
     assert!(prompt.dialogs().is_empty());
 }
 
-/// The bug. Closing with unsaved work must ask.
+/// **The feature.** Closing the program with unsaved work closes it. MDEDIT-64 put a dialog here
+/// because a close used to lose the work; MDEDIT-54 and MDEDIT-66 then made the work survive, and
+/// the dialog was left asking the user to decide something already handled.
 #[test]
-fn unsaved_work_is_asked_about() {
+fn unsaved_work_closes_without_asking() {
     let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Cancel);
-    let (mut editor, _) = editor(&dir, 1, &prompt);
-    dirty(&mut editor, 0);
-
-    assert!(!editor.may_close(), "cancel must keep the editor open");
-    assert_eq!(prompt.dialogs().len(), 1);
-}
-
-/// One dialog, not one per file — three consecutive dialogs is a thing people dismiss without
-/// reading, which turns a safeguard into a formality.
-#[test]
-fn three_modified_files_produce_one_dialog_naming_all_three() {
-    let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Cancel);
+    let prompt = Scripted::default();
     let (mut editor, _) = editor(&dir, 3, &prompt);
+    with_store(&mut editor, &dir);
     for index in 0..3 {
         dirty(&mut editor, index);
     }
 
-    editor.may_close();
-
-    let dialogs = prompt.dialogs();
-    assert_eq!(dialogs.len(), 1, "one dialog: {dialogs:?}");
-    assert_eq!(dialogs[0].len(), 3, "naming all three: {dialogs:?}");
+    assert!(editor.may_close(), "closing the program closes it");
+    assert!(
+        prompt.dialogs().is_empty(),
+        "and asks nothing: {:?}",
+        prompt.dialogs()
+    );
 }
 
-/// And only the modified ones are named — listing files with nothing wrong with them makes the list
-/// useless.
+/// And the work is there to come back to, which is the whole reason nothing is asked.
 #[test]
-fn only_the_modified_files_are_named() {
+fn the_unsaved_work_is_in_the_store_afterwards() {
     let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Cancel);
-    let (mut editor, _) = editor(&dir, 3, &prompt);
+    let prompt = Scripted::default();
+    let (mut editor, _) = editor(&dir, 2, &prompt);
+    with_store(&mut editor, &dir);
+    dirty(&mut editor, 0);
     dirty(&mut editor, 1);
 
     editor.may_close();
 
-    let dialogs = prompt.dialogs();
-    assert_eq!(dialogs[0], vec!["note-1.md".to_owned()]);
+    let kept = stored(&dir);
+    assert_eq!(kept.len(), 2, "both buffers should be kept: {kept:?}");
+    assert!(kept.iter().all(|text| text.contains("EDITED")));
 }
 
+/// **The flush is synchronous, and that is not a detail.** The copy on disk is whatever the idle
+/// timer last wrote, so an edit made and the window closed inside that interval would come back a
+/// few keystrokes short — which is worse than the dialog was, because it looks like the feature
+/// working.
+///
+/// Nothing calls `on_idle` here, deliberately: this is the interval.
 #[test]
-fn cancel_keeps_everything_where_it_was() {
+fn closing_flushes_what_the_idle_timer_has_not_written_yet() {
+    let dir = TempDir::new().unwrap();
+    let prompt = Scripted::default();
+    let (mut editor, _) = editor(&dir, 1, &prompt);
+    with_store(&mut editor, &dir);
+
+    dirty(&mut editor, 0);
+    editor.on_idle();
+    // And then more typing, with no tick after it.
+    editor.insert_text("LAST WORDS");
+
+    editor.may_close();
+
+    let kept = stored(&dir);
+    assert_eq!(kept.len(), 1);
+    assert!(
+        kept[0].contains("LAST WORDS"),
+        "the last keystrokes before the close were lost: {:?}",
+        kept[0]
+    );
+}
+
+/// An untitled buffer has nowhere to be saved and the most to lose, which is why the old flow asked
+/// where to put it. It is kept instead, and asked about not at all.
+#[test]
+fn an_untitled_buffer_is_kept_rather_than_asked_about() {
+    let dir = TempDir::new().unwrap();
+    let prompt = Scripted::default();
+    let (mut editor, _) = editor(&dir, 1, &prompt);
+    with_store(&mut editor, &dir);
+
+    let index = editor.workspace_mut().add_untitled();
+    editor.workspace_mut().activate(index).unwrap();
+    editor.insert_text("never saved anywhere");
+
+    assert!(editor.may_close());
+    assert!(prompt.dialogs().is_empty());
+    assert!(
+        stored(&dir).iter().any(|text| text.contains("never saved")),
+        "the buffer with the most to lose was not kept"
+    );
+}
+
+/// **Seamless caching is not auto-save.** The file on disk is not written on the way out; the copy
+/// beside the session file is. That distinction is deliberate and is what keeps this from being a
+/// feature that edits people's files behind them.
+#[test]
+fn nothing_is_written_to_the_files_themselves() {
+    let dir = TempDir::new().unwrap();
+    let prompt = Scripted::default();
+    let (mut editor, paths) = editor(&dir, 2, &prompt);
+    with_store(&mut editor, &dir);
+    let before: Vec<String> = paths
+        .iter()
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .collect();
+
+    dirty(&mut editor, 0);
+    dirty(&mut editor, 1);
+    editor.may_close();
+
+    for (path, was) in paths.iter().zip(before) {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), was);
+    }
+}
+
+/// **Closing a *tab* still asks.** That is where a document is deliberately discarded, and the user
+/// is looking at it. The unprompted flow is for leaving the program, not for every close.
+#[test]
+fn closing_a_tab_still_asks() {
     let dir = TempDir::new().unwrap();
     let prompt = Scripted::saying(Unsaved::Cancel);
-    let (mut editor, paths) = editor(&dir, 1, &prompt);
-    dirty(&mut editor, 0);
-
-    assert!(!editor.may_close());
-    assert!(editor.workspace().has_unsaved_changes());
-    assert_eq!(
-        std::fs::read_to_string(&paths[0]).unwrap(),
-        "# Note 0\n",
-        "cancelling must not have written anything"
-    );
-}
-
-/// **MDEDIT-66 replaced Discard All with Keep for now.** Keep closes the editor without writing —
-/// the stored copy the idle timer already made is what brings the work back next launch.
-#[test]
-fn keep_closes_without_writing() {
-    let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Keep);
-    let (mut editor, paths) = editor(&dir, 1, &prompt);
-    dirty(&mut editor, 0);
-
-    assert!(editor.may_close());
-    assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "# Note 0\n");
-}
-
-/// Discard is deliberately **not** a window-level answer: throwing away every unsaved buffer in one
-/// click is not a thing to offer on the way out of the door, and it would be Keep with worse words
-/// anyway, since the stored copies would survive it. If a prompt ever returns it, the editor stays
-/// open rather than guessing which the user meant.
-#[test]
-fn discard_is_not_a_window_level_answer() {
-    let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Discard);
     let (mut editor, _) = editor(&dir, 1, &prompt);
     dirty(&mut editor, 0);
 
-    assert!(!editor.may_close());
+    assert!(!editor.apply_chord("w", false), "cancel keeps the tab");
+    assert_eq!(prompt.dialogs().len(), 1, "and it asked");
+    assert_eq!(editor.workspace().tabs().len(), 1);
 }
 
+/// An editor with nobody to ask still closes, which is the other half of asking nothing: the answer
+/// does not depend on a dialog being available.
 #[test]
-fn save_writes_every_modified_file_and_then_closes() {
+fn an_editor_with_no_prompt_closes_over_unsaved_work() {
     let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Save);
-    let (mut editor, paths) = editor(&dir, 3, &prompt);
-    dirty(&mut editor, 0);
-    dirty(&mut editor, 2);
-
-    assert!(editor.may_close());
-
-    assert!(
-        std::fs::read_to_string(&paths[0])
-            .unwrap()
-            .contains("EDITED")
-    );
-    assert!(
-        std::fs::read_to_string(&paths[2])
-            .unwrap()
-            .contains("EDITED")
-    );
-    assert_eq!(
-        std::fs::read_to_string(&paths[1]).unwrap(),
-        "# Note 1\n",
-        "the untouched file must be untouched"
-    );
-    assert!(!editor.workspace().has_unsaved_changes());
-}
-
-/// An untitled buffer has nowhere to go, so Save has to ask. Declining leaves it modified, and the
-/// close is cancelled — exiting then would lose exactly the work the user asked to keep.
-#[test]
-fn declining_where_to_put_an_untitled_buffer_cancels_the_close() {
-    let dir = TempDir::new().unwrap();
-    let prompt = Scripted::saying(Unsaved::Save);
-    let (mut editor, _) = editor(&dir, 1, &prompt);
-
-    let index = editor.workspace_mut().add_untitled();
-    editor.workspace_mut().activate(index).unwrap();
-    editor.insert_text("never saved");
-    // The default picker declines, which is what a dismissed Save As dialog is.
-
-    assert!(
-        !editor.may_close(),
-        "with work still unsaved, the editor must stay open"
-    );
-    assert!(editor.workspace().has_unsaved_changes());
-}
-
-/// And choosing a location for it writes it and lets the close through.
-#[test]
-fn saving_an_untitled_buffer_somewhere_lets_the_close_through() {
-    let dir = TempDir::new().unwrap();
-    let target = dir.path().join("chosen.md");
-    let prompt = Scripted::saying(Unsaved::Save);
-    let (mut editor, _) = editor(&dir, 1, &prompt);
-
-    let chosen = target.clone();
-    editor.with_file_picker(Box::new(move |_| Some(chosen.clone())));
-
-    let index = editor.workspace_mut().add_untitled();
-    editor.workspace_mut().activate(index).unwrap();
-    editor.insert_text("never saved");
-
-    assert!(editor.may_close());
-    assert!(
-        std::fs::read_to_string(&target)
-            .unwrap()
-            .contains("never saved")
-    );
-}
-
-/// A save that cannot happen must not let the editor close over the top of it. Here the file's
-/// directory has gone, so the write fails.
-#[test]
-fn a_failed_save_cancels_the_close() {
-    let dir = TempDir::new().unwrap();
-    let inner = dir.path().join("inner");
-    std::fs::create_dir(&inner).unwrap();
-    let path = inner.join("note.md");
-    std::fs::write(&path, "# Note\n").unwrap();
-
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "# Notes\n").unwrap();
     let mut workspace = Workspace::new();
-    workspace.add(path);
-    let mut editor = Editor::with_workspace(workspace, Grid::new());
-    editor.activate_saved_tab();
-    editor.with_prompt(Box::new(Scripted::saying(Unsaved::Save)));
-    editor.insert_text("EDITED");
-
-    // The directory goes away between the edit and the save.
-    std::fs::remove_dir_all(&inner).unwrap();
-
-    assert!(
-        !editor.may_close(),
-        "a save that did not happen must not let the editor close"
-    );
-}
-
-/// The editor with no dialog answers Cancel, which for a close means staying open. Safe, and the
-/// same default every other prompt seam has.
-#[test]
-fn an_editor_with_no_prompt_does_not_close_over_unsaved_work() {
-    let dir = TempDir::new().unwrap();
-    let mut workspace = Workspace::new();
-    let path = dir.path().join("note.md");
-    std::fs::write(&path, "# Note\n").unwrap();
     workspace.add(path);
 
     let mut editor = Editor::with_workspace(workspace, Grid::new());
     editor.activate_saved_tab();
+    with_store(&mut editor, &dir);
     editor.insert_text("EDITED");
 
-    assert!(!editor.may_close());
+    assert!(editor.may_close());
+    assert!(stored(&dir).iter().any(|text| text.contains("EDITED")));
+}
+
+/// And an editor with no store still closes rather than refusing. Losing the copy is a smaller
+/// problem than an editor that will not shut down, and `Editor::stores_unsaved_work` is the seam
+/// `main` uses to make sure that case is only ever a test's.
+#[test]
+fn an_editor_with_no_store_still_closes() {
+    let dir = TempDir::new().unwrap();
+    let prompt = Scripted::default();
+    let (mut editor, _) = editor(&dir, 1, &prompt);
+    dirty(&mut editor, 0);
+
+    assert!(!editor.stores_unsaved_work());
+    assert!(editor.may_close());
 }

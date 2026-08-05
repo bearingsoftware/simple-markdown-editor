@@ -50,26 +50,15 @@ pub enum Closing {
 pub trait UnsavedPrompt {
     /// Asks about the tab called `name`.
     ///
+    /// **Closing a tab, never the program.** MDEDIT-82 took the way-out question away entirely —
+    /// unsaved work is kept and comes back — and this is what is left: the one place a document is
+    /// deliberately discarded, with the user looking at it.
+    ///
     /// `what` is there so the dialog can offer "Save As…" for a buffer that has nowhere to go. It
     /// used to offer "Save" for both, and picking it on an untitled buffer did nothing at all: the
     /// save had no path, silently declined, and the tab refused to close with only a line in the log
     /// to say why.
     fn ask(&mut self, name: &str, what: Closing) -> Unsaved;
-
-    /// Asks about all of `names` at once, on the way out of the editor.
-    ///
-    /// **One dialog, not one per file.** Three modified tabs must not mean three consecutive
-    /// dialogs — that is a thing people dismiss without reading, which turns a safeguard into a
-    /// formality. The names go in the message so the answer is an informed one.
-    ///
-    /// Defaulted to asking about the first name alone so an implementation that only has the
-    /// single-file dialog still compiles and still asks *something*. The native one overrides it;
-    /// the answer applies to every file either way.
-    fn ask_all(&mut self, names: &[String]) -> Unsaved {
-        names
-            .first()
-            .map_or(Unsaved::Cancel, |name| self.ask(name, Closing::File))
-    }
 }
 
 /// What an editor with nobody to ask does: nothing.

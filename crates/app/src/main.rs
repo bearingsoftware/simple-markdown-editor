@@ -12,8 +12,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(windows)]
-use std::fmt::Write as _;
-
 #[cfg(windows)]
 use mdedit_app::{SAMPLE, editor::Editor};
 #[cfg(windows)]
@@ -64,43 +62,6 @@ impl mdedit_app::prompt::UnsavedPrompt for NativePrompt {
             rfd::MessageDialogResult::Custom(choice) if choice == "Discard" => Unsaved::Discard,
             // Anything else — Cancel, or the dialog being dismissed — keeps the tab. Losing work is
             // the one outcome that must never be the default.
-            _ => Unsaved::Cancel,
-        }
-    }
-
-    fn ask_all(&mut self, names: &[String]) -> mdedit_app::prompt::Unsaved {
-        use mdedit_app::prompt::Unsaved;
-
-        // Named, not counted. "3 files have unsaved changes" makes the user reconstruct which, and
-        // the whole reason for one dialog rather than three is that the answer should be informed.
-        // Capped, because a hundred names is a dialog taller than the screen — and past a handful
-        // the list has stopped being the useful part anyway.
-        const SHOWN: usize = 10;
-        let listed: Vec<&str> = names.iter().take(SHOWN).map(String::as_str).collect();
-        let mut description = format!("These files have unsaved changes:\n\n{}", listed.join("\n"));
-        if names.len() > SHOWN {
-            let rest = names.len() - SHOWN;
-            let _ = write!(description, "\n…and {rest} more");
-        }
-        // Says what Keep actually does, because "keep for now" on its own could be read as "leave
-        // the editor open" — the opposite of what it does.
-        description
-            .push_str("\n\nKeep for now closes the editor and brings the changes back next time.");
-
-        let answer = rfd::MessageDialog::new()
-            .set_title("Unsaved changes")
-            .set_description(description)
-            .set_level(rfd::MessageLevel::Warning)
-            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-                "Save All".to_owned(),
-                "Keep for now".to_owned(),
-                "Cancel".to_owned(),
-            ))
-            .show();
-
-        match answer {
-            rfd::MessageDialogResult::Custom(choice) if choice == "Save All" => Unsaved::Save,
-            rfd::MessageDialogResult::Custom(choice) if choice == "Keep for now" => Unsaved::Keep,
             _ => Unsaved::Cancel,
         }
     }

@@ -1635,11 +1635,14 @@ impl<T: TextLayout> Editor<T> {
         }
 
         // The two cases deserve different words. Coming back to your own unsaved edits after an
-        // ordinary quit is the feature working and needs no announcement; the same text appearing
-        // after the process was killed is worth saying out loud, because the user did not choose it
-        // and may be wondering what survived.
+        // ordinary quit is **the feature working** — since MDEDIT-82 that is what leaving the
+        // program does, with nothing asked on the way out — so it is noted and not announced. The
+        // same text appearing after the process was killed is worth saying out loud, because the
+        // user did not choose it and may be wondering what survived.
         if after_clean_exit {
-            crate::log_error!("restored {count} unsaved buffer(s) from the last session");
+            crate::log_error!(
+                "restored {count} unsaved buffer(s) left open at the last ordinary quit"
+            );
         } else {
             crate::log_error!(
                 "recovered {count} unsaved buffer(s) from a previous run that did not exit cleanly"
@@ -2497,97 +2500,34 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Asks about every unsaved buffer, once, and says whether the editor may close.
+    /// Says whether the editor may close, and makes sure it can.
     ///
-    /// # Why this exists at all
+    /// # Nothing is asked
     ///
-    /// `WindowEvent::CloseRequested` used to call `event_loop.exit()` and nothing else, so Alt+F4
-    /// or the close button lost every unsaved buffer without a word — and then the clean-exit path
-    /// cleared the crash-recovery snapshots that would have got it back. A *crash* was survivable
-    /// and a *close* was not, which is exactly backwards. MDEDIT-64.
+    /// MDEDIT-82. Closing the program with unsaved work closes it, and the work comes back on the
+    /// next launch — which is what MDEDIT-54 and MDEDIT-66 already built, and what MDEDIT-64 then
+    /// put a dialog in front of. Every dirty buffer, titled or untitled, is already copied beside
+    /// the session file, and those copies already survive a clean quit; Save All / Keep for now /
+    /// Cancel was asking the user to decide something the editor had already handled.
     ///
-    /// # One dialog
+    /// **Closing a *tab* still asks.** That is where a document is deliberately discarded and the
+    /// user is looking at it. This is about leaving the program.
     ///
-    /// Three modified tabs must not mean three consecutive dialogs. That is a thing people dismiss
-    /// without reading, which turns a safeguard into a formality — so the files are named in one
-    /// message and the answer applies to all of them.
+    /// # It flushes first, and that is not optional
     ///
-    /// # What each answer does
+    /// The copy on disk is whatever the idle timer last wrote. An edit made and the window closed
+    /// inside that interval would come back a few keystrokes short — which is worse than the dialog
+    /// was, because it looks like the feature working. So the snapshot is taken **synchronously**
+    /// here, before anything says yes.
     ///
-    /// **Save** writes every file that has somewhere to go, and asks where to put anything untitled.
-    /// If anything is still unsaved afterwards — a save that failed, a location the user declined to
-    /// choose — the close is **cancelled**, because exiting then would lose exactly the work they
-    /// just asked to keep.
+    /// # Why it still returns a bool
     ///
-    /// **Discard** closes. **Cancel** does not, and a cancelled exit is not a clean one: the
-    /// recovery snapshots stay where they are, which `main` relies on by only clearing them once
-    /// this has said yes.
+    /// This is the seam `main` and the tests drive, and a reason to refuse would live here — a save
+    /// in flight, a modal the platform owns. There is none today, and a caller that ignored the
+    /// answer would also skip the flush.
     pub fn may_close(&mut self) -> bool {
-        let names: Vec<String> = self
-            .workspace
-            .tabs()
-            .iter()
-            .filter(|tab| tab.is_modified())
-            .map(mdedit_session::Tab::display_name)
-            .collect();
-
-        if names.is_empty() {
-            return true;
-        }
-
-        match self.prompt.ask_all(&names) {
-            // The snapshots are already on disk — the idle timer wrote them as the user typed — so
-            // "keep" is a matter of *not* clearing them, and the work is already done.
-            Unsaved::Keep => true,
-            // Not offered by the window-level dialog, and meaningless if it ever were: it would
-            // close the editor and leave the stored copies, which is Keep with worse words.
-            Unsaved::Discard | Unsaved::Cancel => false,
-            Unsaved::Save => {
-                self.save_all();
-                // An untitled buffer has nowhere to go, so `save_all` skipped it; it needs a
-                // location chosen, which is a question rather than a save.
-                self.save_untitled_buffers();
-
-                let unsaved = self.workspace.has_unsaved_changes();
-                if unsaved {
-                    // Not an error to report and dismiss — the editor stays open, which is the
-                    // message. Logged because the reason (a full disk, a declined dialog) is not
-                    // otherwise recoverable afterwards.
-                    crate::log_error!("not closing: some files are still unsaved");
-                }
-                !unsaved
-            }
-        }
-    }
-
-    /// Asks where to put each untitled buffer that has anything in it.
-    ///
-    /// One dialog each, which is the one place a file-at-a-time question is right: each needs its
-    /// own answer, and there is nothing to batch.
-    fn save_untitled_buffers(&mut self) {
-        let was_active = self.workspace.active();
-
-        for index in 0..self.workspace.tabs().len() {
-            let needs_a_home = self
-                .workspace
-                .tabs()
-                .get(index)
-                .is_some_and(|tab| tab.is_untitled() && tab.is_modified());
-            if !needs_a_home {
-                continue;
-            }
-            if self.workspace.activate(index).is_err() {
-                continue;
-            }
-            // The answer is deliberately not checked. Declining, or a write that failed, leaves the
-            // tab modified — which is exactly what `may_close` reads as "do not close", so there is
-            // nothing to do here but carry on and ask about the next one.
-            let _ = self.save_as_prompted();
-        }
-
-        if let Some(index) = was_active {
-            let _ = self.workspace.activate(index);
-        }
+        self.snapshot_dirty_buffers();
+        true
     }
 
     /// The window title: the file name, marked when there are unsaved changes, with a tab count.
