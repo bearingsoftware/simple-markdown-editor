@@ -9,6 +9,7 @@
 
 use mdedit_document::format::Inline;
 use mdedit_document::{Document, Selection};
+use mdedit_language::{Marker, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use proptest::prelude::*;
 
@@ -24,6 +25,32 @@ fn selecting(text: &str, from: usize, to: usize) -> Document {
     let mut doc = Document::from(text);
     doc.set_selection(Selection::new(ByteOffset::new(from), ByteOffset::new(to)));
     doc
+}
+
+/// How many bytes the parse calls delimiters of this construct.
+///
+/// The parse, not the characters: `**` left behind in the text after a mis-paired removal is no
+/// longer a marker, and that difference is the whole of what the counting property below can see.
+fn delimiter_bytes(doc: &Document, what: Inline) -> usize {
+    let wanted = match what {
+        Inline::Bold => Marker::Strong,
+        Inline::Italic => Marker::Emphasis,
+        Inline::Strikethrough => Marker::Strikethrough,
+        Inline::Code => Marker::CodeSpan,
+    };
+    doc.segments()
+        .iter()
+        .filter(|segment| segment.kind() == SegmentKind::Marker(wanted))
+        .map(|segment| segment.span().end().get() - segment.span().start().get())
+        .sum()
+}
+
+/// The text with every inline delimiter character taken out, which is everything a toggle must leave
+/// alone.
+fn content_only(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '*' | '_' | '~' | '`'))
+        .collect()
 }
 
 // ---- turning it on ----
@@ -112,6 +139,55 @@ fn removing_the_outer_construct_leaves_the_inner_alone() {
     let mut doc = at("**a _b_ c**\n", 5);
     assert!(doc.toggle_inline(Inline::Bold));
     assert_eq!(doc.to_string(), "a _b_ c\n");
+}
+
+/// MDEDIT-98. `**a __b__ c**` is one strong construct inside another — legal CommonMark, because the
+/// inner one is spelled with the other delimiter — so the parser reports **four** `Strong` markers in
+/// open, open, close, close order. Pairing them two at a time matched the outer opening delimiter
+/// with the inner one, and removing that pair deleted bytes in the middle of the line.
+#[test]
+fn unbolding_the_outer_of_two_strong_constructs_removes_its_own_delimiters() {
+    // Caret just after `a`, which is inside the outer construct and outside the inner one.
+    let mut doc = at("**a __b__ c**\n", 3);
+    assert!(doc.toggle_inline(Inline::Bold));
+    assert_eq!(doc.to_string(), "a __b__ c\n");
+}
+
+/// And from inside the inner one, the inner delimiters are what come off — not a third construct
+/// wrapped around them, which is what a wrong pairing turned the toggle into.
+#[test]
+fn unbolding_the_inner_of_two_strong_constructs_removes_its_own_delimiters() {
+    let mut doc = at("**a __b__ c**\n", 6);
+    assert!(doc.toggle_inline(Inline::Bold));
+    assert_eq!(doc.to_string(), "**a b c**\n");
+}
+
+/// The same shape one construct down: `*a _b_ c*` is emphasis inside emphasis.
+#[test]
+fn the_same_holds_for_emphasis_inside_emphasis() {
+    let mut doc = at("*a _b_ c*\n", 2);
+    assert!(doc.toggle_inline(Inline::Italic));
+    assert_eq!(doc.to_string(), "a _b_ c\n");
+
+    let mut doc = at("*a _b_ c*\n", 4);
+    assert!(doc.toggle_inline(Inline::Italic));
+    assert_eq!(doc.to_string(), "*a b c*\n");
+}
+
+/// Two *sibling* constructs of one kind put four markers in the document as well, and the caret in
+/// the gap between them is inside neither. Pairing has to say so rather than reading the first one's
+/// closing delimiter and the second one's opening delimiter as a pair.
+#[test]
+fn a_caret_between_two_sibling_constructs_is_inside_neither() {
+    // `**a** and **b**`, caret in `and`.
+    let mut doc = at("**a** and **b**\n", 7);
+    assert!(!doc.is_inside(Inline::Bold));
+    assert!(doc.toggle_inline(Inline::Bold));
+    assert_eq!(
+        doc.to_string(),
+        "**a** **and** **b**\n",
+        "the word between them should have been wrapped, not something unwrapped"
+    );
 }
 
 /// The caret has to follow the text it was in, or the second press of a repeated toggle acts
@@ -251,6 +327,112 @@ proptest! {
         doc.toggle_inline(what);
 
         prop_assert_eq!(doc.to_string(), text);
+    }
+
+    /// MDEDIT-98, first half. The property above generates `[a-z]` words and nothing else, which is
+    /// exactly why a defect that can only happen *between* existing delimiters survived it for so
+    /// long. This one puts markup in the document, and demands that putting a construct on and taking
+    /// it straight off again leaves every byte where it was.
+    ///
+    /// **On and off, not off and on.** Removing a construct does not record how much content it held,
+    /// so putting it back wraps the word at the caret — a round trip that starts by *removing*
+    /// `**a b c**` is legitimately not an identity, and nor is one over the same-kind nesting that
+    /// was the actual defect, where two presses of Ctrl+B correctly peel both levels of `**__x__**`.
+    /// The removing direction is held up by the property below instead.
+    #[test]
+    fn toggling_twice_over_existing_markup_is_the_identity(
+        fragments in prop::collection::vec(
+            prop_oneof![
+                Just("word"),
+                Just("*em*"),
+                Just("_em_"),
+                Just("**strong**"),
+                Just("__strong__"),
+                Just("~~struck~~"),
+                Just("`code`"),
+            ],
+            1..6,
+        ),
+        caret in 0_usize..70,
+        which in 0_usize..4,
+    ) {
+        let text = format!("{}\n", fragments.join(" "));
+        let what = [Inline::Bold, Inline::Italic, Inline::Strikethrough, Inline::Code][which];
+
+        let mut doc = Document::from(text.as_str());
+        let at = ByteOffset::new(caret.min(text.len().saturating_sub(1)));
+        doc.set_selection(Selection::caret(at));
+
+        // An empty pair put in hard up against an existing delimiter of the same kind is not an
+        // empty pair: it lengthens the run, so `` ` `` typed beside `` `code` `` leaves a run of
+        // three and the document parses as something else entirely. No second press can undo that,
+        // and it is not what this property is about — Ctrl+Z is.
+        let mark = what.delimiter().as_bytes()[0];
+        let touching = text.as_bytes().get(at.get().wrapping_sub(1)) == Some(&mark)
+            || text.as_bytes().get(at.get()) == Some(&mark);
+        if doc.is_inside(what) || touching {
+            return Ok(());
+        }
+
+        doc.toggle_inline(what);
+        doc.toggle_inline(what);
+
+        prop_assert_eq!(doc.to_string(), text);
+    }
+
+    /// MDEDIT-98, second half, and the sharp form of it: taking a construct off takes off **that**
+    /// construct and no other.
+    ///
+    /// A round trip cannot say this over nested markup, so the parse says it instead. One press
+    /// leaves the document holding exactly one fewer construct of that kind — two delimiters' worth
+    /// of marker bytes, no more — and every byte that is not a delimiter still where it was. The
+    /// defect deleted the outer opening delimiter and the *inner* one, which took four delimiters out
+    /// of the parse for one press and is exactly what this counts.
+    #[test]
+    fn removing_a_construct_removes_exactly_one_construct(
+        fragments in prop::collection::vec(
+            prop_oneof![
+                Just("word"),
+                Just("*em*"),
+                Just("**strong**"),
+                Just("~~struck~~"),
+                Just("`code`"),
+                Just("**a __b__ c**"),
+                Just("*a _b_ c*"),
+                Just("**__both__**"),
+            ],
+            1..6,
+        ),
+        caret in 0_usize..70,
+        which in 0_usize..4,
+    ) {
+        let text = format!("{}\n", fragments.join(" "));
+        let what = [Inline::Bold, Inline::Italic, Inline::Strikethrough, Inline::Code][which];
+
+        let mut doc = Document::from(text.as_str());
+        let at = ByteOffset::new(caret.min(text.len().saturating_sub(1)));
+        doc.set_selection(Selection::caret(at));
+
+        // Inside a code span nothing is markup and nothing happens, which is its own test.
+        if !doc.is_inside(what) || (what != Inline::Code && doc.is_inside(Inline::Code)) {
+            return Ok(());
+        }
+
+        let before = delimiter_bytes(&doc, what);
+        prop_assert!(doc.toggle_inline(what));
+        let after = delimiter_bytes(&doc, what);
+
+        prop_assert_eq!(
+            before.checked_sub(after),
+            Some(2 * what.delimiter().len()),
+            "one press should have taken off one pair of delimiters, in {:?}",
+            text
+        );
+        prop_assert_eq!(
+            content_only(&doc.to_string()),
+            content_only(&text),
+            "nothing but delimiters may move"
+        );
     }
 
     /// And one undo takes back a toggle whatever it did.

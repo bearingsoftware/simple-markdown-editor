@@ -14,7 +14,8 @@
 //!
 //! Four states, and they are the four a caret can be in:
 //!
-//! - **Inside the construct already** — remove exactly the two enclosing marker spans.
+//! - **Inside the construct already** — remove exactly the two enclosing marker spans. A caret
+//!   standing between the two stars of `**` counts as inside; see [`Document::enclosing`].
 //! - **With a selection** — wrap it.
 //! - **Mid-word, no selection** — wrap the word. What Typora's chords do, and what people expect
 //!   when they bold a word by standing in it.
@@ -27,13 +28,19 @@
 //! no-op, and the reason is stronger than the precedent. `**` typed inside a code span is not
 //! markup — the parser will not report it as a marker — so a second press could not find it to take
 //! it away. **A toggle that cannot be un-toggled is not a toggle**, and it would break the
-//! toggle-twice-is-byte-identical property that the rest of this module rests on.
+//! on-then-off property that the rest of this module rests on.
 //!
 //! # Bytes
 //!
 //! Every edit goes through [`Document::replace`], so the byte-preservation invariant is untouched:
-//! the only bytes that change are the delimiters, which the user asked for. Toggling twice restores
-//! the original exactly, and that is property-tested rather than asserted.
+//! the only bytes that change are the delimiters, which the user asked for.
+//!
+//! **On and then off restores the original exactly**, and that is property-tested rather than
+//! asserted. Off and then *on* is a different question and deliberately not an identity: removing a
+//! construct does not record how much content it held, so putting it back wraps the word at the
+//! caret — and on `**__x__**` the two presses correctly peel two levels rather than one. What holds
+//! in that direction is that one press takes off exactly one construct, which is property-tested
+//! against the parse (MDEDIT-98).
 
 use mdedit_language::{BlockKind, Marker, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -207,8 +214,31 @@ impl Document {
         if !text.is_char_boundary(start) || end > text.len() {
             return None;
         }
-        (&text[start..caret] == delimiter && &text[caret..end] == delimiter)
-            .then(|| ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)))
+        if &text[start..caret] != delimiter || &text[caret..end] != delimiter {
+            return None;
+        }
+
+        // Narrow is not narrow enough on its own. A caret between the two characters of a live `**`
+        // also has one `*` on each side of it, so pressing Ctrl+I there matched this and deleted a
+        // strong delimiter the user wrote (MDEDIT-98). `enclosing` cannot rule that out, because the
+        // construct in the way is of a different kind from the one being toggled — but the parser
+        // can: an empty pair is no construct at all, while a real delimiter belongs to one.
+        //
+        // **Inline markers only.** An empty pair really can end up inside a *block* marker — `~~~~`
+        // typed at the start of a line is a tilde fence, and the four characters the parser then
+        // calls a fence are the ones this just put there. Those are exactly the ones to take back.
+        let at = self.selection().head();
+        let inside_a_delimiter = self.segments().iter().any(|segment| {
+            matches!(
+                segment.kind(),
+                SegmentKind::Marker(
+                    Marker::Strong | Marker::Emphasis | Marker::Strikethrough | Marker::CodeSpan
+                )
+            ) && segment.span().start() < at
+                && at < segment.span().end()
+        });
+
+        (!inside_a_delimiter).then(|| ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)))
     }
 
     /// Whether `at` is inside the content of an inline code span.
@@ -218,23 +248,78 @@ impl Document {
 
     /// The two marker spans enclosing `at`, if `at` sits inside a construct of this kind.
     ///
-    /// The markers of one kind alternate open, close, open, close through the document — which is
-    /// what makes pairing them a matter of taking them two at a time rather than of matching
-    /// anything. Nesting a construct inside another of the *same* kind is not a thing CommonMark
-    /// produces, so there is no stack to keep.
+    /// # Why this is a stack and not two at a time
+    ///
+    /// It used to take the markers of one kind two at a time, on the premise that they alternate
+    /// open, close, open, close and that a construct never nests inside another of its own kind.
+    /// The second half of that is wrong: `**a __b__ c**` is strong inside strong, spelled with the
+    /// other delimiter, and is ordinary CommonMark. Four markers arrive in open, open, close, close
+    /// order, so the pairing matched the outer opening delimiter with the inner one and MDEDIT-98 was
+    /// a toggle that deleted bytes in the middle of a line.
+    ///
+    /// What makes the nesting legal is exactly what makes it resolvable: CommonMark cannot nest a
+    /// construct inside another written with the *same* delimiter, so a marker closes the nearest
+    /// open one spelled the same way. That is all the stack keys on, and it is why it needs no parser
+    /// of its own.
+    ///
+    /// # A marker segment is not always one delimiter
+    ///
+    /// Adjacent markers of one kind are merged into a single segment, so the closing `_` and the
+    /// opening `*` of `*_em_*` arrive as one two-byte `Emphasis` marker. Each segment is therefore
+    /// walked as runs of one byte, and it is the runs that are paired — which is also what makes
+    /// `**__b__**`, where the two delimiters of a nest touch, come apart correctly.
+    ///
+    /// # A caret in a delimiter is in the construct
+    ///
+    /// The test is `open.start() < at < close.end()`, not "between the two delimiters". A caret
+    /// standing *between the two stars of `**`* is inside the bold text as far as the user is
+    /// concerned, and the narrower test sent it to the wrapping path, where it inserted an empty pair
+    /// into the middle of a live delimiter. The two outer edges stay excluded, so a caret parked
+    /// immediately before or after a construct is still outside it.
+    ///
+    /// The innermost enclosing pair is the one returned, because the innermost is the first to close.
     fn enclosing(&self, what: Inline, at: ByteOffset) -> Option<(ByteSpan, ByteSpan)> {
         let wanted = what.marker();
-        let markers: Vec<ByteSpan> = self
+        let rope = self.rope();
+        let mut open: Vec<((usize, u8), ByteSpan)> = Vec::new();
+
+        for bounds in self
             .segments()
             .iter()
             .filter(|segment| segment.kind() == SegmentKind::Marker(wanted))
             .map(mdedit_language::Segment::span)
-            .collect();
+        {
+            let mut start = bounds.start().get();
+            while start < bounds.end().get() {
+                let byte = rope.byte(start);
+                let mut end = start + 1;
+                while end < bounds.end().get() && rope.byte(end) == byte {
+                    end += 1;
+                }
+                let span = ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end));
+                let delimiter = (end - start, byte);
 
-        markers.chunks_exact(2).find_map(|pair| {
-            let (open, close) = (pair[0], pair[1]);
-            (open.end() <= at && at <= close.start()).then_some((open, close))
-        })
+                match open
+                    .iter()
+                    .rposition(|(candidate, _)| *candidate == delimiter)
+                {
+                    Some(position) => {
+                        let (_, opening) = open.remove(position);
+                        if opening.start() < at && at < span.end() {
+                            return Some((opening, span));
+                        }
+                    }
+                    None => open.push((delimiter, span)),
+                }
+                // Nothing is open and the walk is past `at`, so every pair still to come opens after
+                // it. This is what keeps the per-frame cost of `is_inside` off the document's length.
+                if open.is_empty() && span.start() > at {
+                    return None;
+                }
+                start = end;
+            }
+        }
+        None
     }
 
     /// Removes a construct's two delimiters, leaving its content where it was.
@@ -242,7 +327,19 @@ impl Document {
         let opening = open.end().get() - open.start().get();
         // Where the caret ends up once the opening delimiter has gone. Worked out before anything
         // moves, because afterwards the old offsets mean nothing.
-        let caret = ByteOffset::new(self.selection().head().get().saturating_sub(opening));
+        //
+        // Clamped into what will be left of the content, because a caret standing *inside* a
+        // delimiter — which `enclosing` now counts as being in the construct — has nowhere else to
+        // land once that delimiter is gone. Without this it slid out in front of the content, and a
+        // second press then wrapped the whitespace it had landed on instead of the word.
+        let content = open.start().get()..(close.start().get() - opening);
+        let caret = ByteOffset::new(
+            self.selection()
+                .head()
+                .get()
+                .saturating_sub(opening)
+                .clamp(content.start, content.end),
+        );
 
         self.transact(|doc| {
             // The closing delimiter first: removing the opening one would shift the closing one's
