@@ -574,8 +574,17 @@ impl Document {
             .map(|block| block.span().start().get())
             .collect();
 
+        // `before` counts the block starts at or before the edit, so the block holding it is
+        // `before - 1` and the one block of margin is `before - 2`. Saturating that subtraction was
+        // the MDEDIT-97 bug: with fewer than two blocks above the edit it lands on index 0, which is
+        // the *first block's* start — after the edit when the document opens with blank lines. There
+        // is no margin to take in that case and the top of the buffer is the honest answer, so the
+        // shortfall has to fall through to 0 rather than be clamped into a lookup.
         let before = starts.partition_point(|start| *start <= span.start().get());
-        let start = starts.get(before.saturating_sub(2)).copied().unwrap_or(0);
+        let start = before
+            .checked_sub(2)
+            .and_then(|index| starts.get(index).copied())
+            .unwrap_or(0);
 
         let after = starts.partition_point(|start| *start <= span.end().get());
         let end = starts
