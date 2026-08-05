@@ -5,3 +5,8 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 738aaa5588440595a2eafa75c0bea026cdafcab23df2b7c74d9bb1888e61b82c # shrinks to words = ["a"], caret = 1, which = 0
+cc fd13506f6e38b7b693b74e8d861ada1a23a973fcfc7f3b0d08b0a2a8fbeaca51 # shrinks to fragments = ["**strong**", "word", "**strong**", "_em_", "word"], caret = 27, which = 1
+cc 2352b58646bd784b72757a960c21fbe89c4f92b1e4bf7b6dac71e96bf6bd5b6d # shrinks to fragments = ["*a _b_ c*", "**a __b__ c**"], caret = 11, which = 0
+cc cc780dbe6c6e912b2ec0d3c99d682dbe7046bd744aceb4eaebbeccdb8ea5e5f5 # shrinks to fragments = ["**strong**", "**strong**", "**strong**"], caret = 30, which = 0
+cc 81a6e87c13c53a242d43afee893e5b085ae6d41607d8732e9e7704f4d7561192 # shrinks to fragments = ["`code`", "`code`"], caret = 6, which = 3
+cc 329c79b3a3c65d5d7cbeef0a805533faa1b4e7d8b5fbae3a84c91a028c6b8067 # shrinks to fragments = ["*em*"], caret = 0, which = 2
