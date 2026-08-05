@@ -25,6 +25,7 @@ use mdedit_language::Language;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use serde::{Deserialize, Serialize};
 
+mod atomic;
 pub mod path;
 pub mod recent;
 pub mod snapshot;
@@ -646,14 +647,12 @@ impl Workspace {
             detail: e.to_string(),
         })?;
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| SessionError::Io {
-                action: "creating directory for",
-                path: path.to_path_buf(),
-                source: e,
-            })?;
-        }
-        std::fs::write(path, json).map_err(|e| SessionError::Io {
+        // **Atomic**, like every other state file this crate writes — which this one was not, while
+        // `recent.rs` said in a comment that it was. A crash or a full disk part way through
+        // truncated `session.json`, and `restore_session` reads a truncated one as `Malformed`: the
+        // tab list is gone, and the `clean_exit` marker goes with it, so the *next* launch reports
+        // the previous quit as a crash too. MDEDIT-106.
+        crate::atomic::write(path, &json).map_err(|e| SessionError::Io {
             action: "writing",
             path: path.to_path_buf(),
             source: e,

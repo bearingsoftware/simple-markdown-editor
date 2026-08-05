@@ -700,3 +700,58 @@ fn a_clean_exit_marker_does_not_outlive_the_next_launch() {
         "a killed run must not inherit the previous clean exit's marker"
     );
 }
+
+// ---- the session file is state, and a truncated one loses more than itself (MDEDIT-106) ----
+
+/// Every state file this crate writes goes through a temporary file and a rename. The session file
+/// was the one that did not, while `recent.rs` claimed in a comment that it did.
+///
+/// A truncated `session.json` reads as `Malformed`, which loses the tab list **and** the
+/// `clean_exit` marker — so the next launch also reports the previous quit as a crash. What this
+/// pins is the mechanism: a temporary file appears beside the target and is renamed over it, so
+/// there is no window in which the target is a partial file.
+#[test]
+fn writing_a_session_leaves_no_temporary_behind_and_replaces_the_old_one_whole() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    std::fs::write(&session, "{\"previous\": true}").unwrap();
+
+    let mut workspace = Workspace::new();
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "# Notes\n").unwrap();
+    workspace.add(path.clone());
+    workspace.save_session(&session).unwrap();
+
+    let written = std::fs::read_to_string(&session).unwrap();
+    assert!(
+        written.contains("notes.md"),
+        "the new session should be there whole: {written}"
+    );
+    assert!(
+        !written.contains("previous"),
+        "and the old one gone, not partly overwritten"
+    );
+
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| {
+            std::path::Path::new(name)
+                .extension()
+                .is_some_and(|e| e == "tmp")
+        })
+        .collect();
+    assert!(leftovers.is_empty(), "left behind: {leftovers:?}");
+}
+
+/// And the directory is created on the way, which is what a first run needs.
+#[test]
+fn a_session_can_be_written_into_a_directory_that_does_not_exist_yet() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("never").join("made").join("session.json");
+
+    Workspace::new().save_session(&session).unwrap();
+
+    assert!(session.exists());
+}

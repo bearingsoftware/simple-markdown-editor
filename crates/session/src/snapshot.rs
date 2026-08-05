@@ -292,10 +292,4 @@ impl Store {
     }
 }
 
-/// Writes via a temporary file and a rename, so an interrupted write cannot destroy what was there.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut temporary = path.to_path_buf();
-    temporary.set_extension("tmp");
-    std::fs::write(&temporary, bytes)?;
-    std::fs::rename(&temporary, path)
-}
+use crate::atomic::write as write_atomically;
