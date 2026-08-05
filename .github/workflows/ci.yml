@@ -24,14 +24,17 @@ on:
       - "**.md"
       - "docs/**"
 
-# A second push supersedes the first, so the first stops costing money. Without this a branch pushed
-# three times in a minute paid for three full Windows runs, two of which nobody would ever read.
+# A later commit supersedes the one before it, so the one before stops costing money. Without this a
+# branch pushed three times in a minute paid for three full Windows runs, two of which nobody would
+# ever read — and five pull requests merged in a row paid for five runs of `main`.
 #
-# `main` is excluded from cancellation: its runs feed the status board, and a cancelled one leaves a
-# gap in it rather than saving anything worth having.
+# **`main` cancels too**, which is the opposite of the usual advice and right here. Its runs feed the
+# status board through `workflow_run`, and the board wants the *newest* commit: an intermediate
+# coverage number that nobody will look at is not worth a Windows run at twice the rate. The last
+# merge of a batch still measures.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
