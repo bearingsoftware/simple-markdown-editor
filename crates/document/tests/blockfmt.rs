@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use mdedit_document::format::Block;
+use mdedit_document::format::{Block, Inline};
 use mdedit_document::{Document, Selection};
 use mdedit_offsets::ByteOffset;
 use proptest::prelude::*;
@@ -350,4 +350,113 @@ fn an_atx_heading_still_takes_the_prefix_path() {
     let mut doc = at("## A heading\n\nprose\n", 5);
     doc.set_block(Block::Heading(4));
     assert_eq!(doc.to_string(), "#### A heading\n\nprose\n");
+}
+
+// ---- states a document passes through while it is being typed (MDEDIT-107) ----
+
+/// **Data loss.** An unclosed fence is what a fence looks like halfway through being typed, and
+/// `unwrap_fence` treated the block's last line as the closing one and deleted it.
+#[test]
+fn unwrapping_an_unclosed_fence_keeps_every_line_of_code() {
+    let mut doc = at("```\nsome code\nmore code", 6);
+    doc.toggle_fence();
+    assert!(
+        doc.to_string().contains("more code"),
+        "the last line was destroyed: {:?}",
+        doc.to_string()
+    );
+}
+
+/// **Data loss.** A setext heading's text may span lines — CommonMark says so — and `rewrite_setext`
+/// kept only the first, throwing the rest away.
+#[test]
+fn a_multi_line_setext_heading_keeps_all_of_its_text() {
+    let mut doc = at("Foo\nbar\n===\n", 1);
+    doc.set_block(Block::Heading(2));
+    assert!(
+        doc.to_string().contains("bar"),
+        "the second line was destroyed: {:?}",
+        doc.to_string()
+    );
+}
+
+/// **A toggle that cannot be un-toggled.** `toggle_inline` refuses inside a code *span* and did not
+/// inside a code *block*, where `**` is equally not markup — so the first press inserted delimiters
+/// the parser reports no markers for, and the second could not find them to take away.
+#[test]
+fn inline_formatting_does_nothing_inside_a_fenced_block() {
+    let mut doc = at("```\nsome code\n```\n", 6);
+    let before = doc.to_string();
+
+    assert!(!doc.toggle_inline(mdedit_document::format::Inline::Bold));
+    assert_eq!(doc.to_string(), before);
+
+    assert!(!doc.toggle_inline(mdedit_document::format::Inline::Italic));
+    assert!(!doc.toggle_inline(mdedit_document::format::Inline::Strikethrough));
+    assert_eq!(doc.to_string(), before);
+}
+
+/// The same for an indented code block, whose marker is the indent rather than a fence.
+#[test]
+fn inline_formatting_does_nothing_inside_an_indented_block() {
+    let mut doc = at("paragraph\n\n    some code\n", 18);
+    let before = doc.to_string();
+
+    assert!(!doc.toggle_inline(mdedit_document::format::Inline::Bold));
+    assert_eq!(doc.to_string(), before);
+}
+
+proptest! {
+    /// MDEDIT-107. The three states above are what a document looks like *while it is being typed*,
+    /// and every one of them lost content. This runs the inline toggle over them at every caret and
+    /// demands the same thing the ordinary property does: putting a construct on and taking it
+    /// straight off again leaves every byte where it was.
+    ///
+    /// Inside a code block that is satisfied by both presses doing nothing, which is the fix.
+    #[test]
+    fn toggling_twice_in_a_half_typed_document_is_the_identity(
+        which_document in 0_usize..4,
+        caret in 0_usize..40,
+        which in 0_usize..4,
+    ) {
+        let text = [
+            // An unclosed fence, mid-typing.
+            "```\nsome code\nmore code",
+            // A setext heading whose text spans lines.
+            "Foo\nbar\n===\n\nprose\n",
+            // A closed fence with prose either side of it.
+            "before\n\n```\nsome code\n```\n\nafter\n",
+            // An indented code block.
+            "prose\n\n    some code\n\nmore prose\n",
+        ][which_document];
+        let what = [Inline::Bold, Inline::Italic, Inline::Strikethrough, Inline::Code][which];
+
+        let mut doc = Document::from(text);
+        let at = ByteOffset::new(boundary(text, caret));
+        doc.set_selection(Selection::caret(at));
+
+        // The same two preconditions the ordinary property carries: a press that *removes* markup is
+        // not required to put back the same extent, and an empty pair inserted hard against an
+        // existing delimiter lengthens the run instead of making a pair.
+        let mark = what.delimiter().as_bytes()[0];
+        let touching = text.as_bytes().get(at.get().wrapping_sub(1)) == Some(&mark)
+            || text.as_bytes().get(at.get()) == Some(&mark);
+        if doc.is_inside(what) || touching {
+            return Ok(());
+        }
+
+        doc.toggle_inline(what);
+        doc.toggle_inline(what);
+
+        prop_assert_eq!(doc.to_string(), text);
+    }
+}
+
+/// Snaps an offset onto a character boundary at or below it.
+fn boundary(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
 }

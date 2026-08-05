@@ -123,16 +123,28 @@ impl Document {
         if what != Inline::Code && self.inside_code_span(caret) {
             return false;
         }
-
         if let Some((open, close)) = self.enclosing(what, caret) {
             return self.unwrap_construct(open, close);
         }
         // An empty pair this module put in a moment ago. Not a construct, so `enclosing` cannot see
         // it — see `empty_pair`.
+        //
+        // **Above the code-block refusal below**, deliberately: taking back a pair this module just
+        // inserted is the *un*-toggle, not a new toggle. `~~~~` at the start of a line is a tilde
+        // fence, so a press that left one there would otherwise be unrepeatable — which is the exact
+        // thing the refusal exists to prevent.
         if let Some(pair) = self.empty_pair(what) {
             let _ = self.replace(pair, "");
             return true;
         }
+        // Inside a code *block*, fenced or indented, `**` is not markup either — which this used to
+        // miss entirely, refusing only inside a code *span*. The first press put delimiters in that
+        // the parser reports no markers for, and the second press wrapped them again rather than
+        // taking them away. MDEDIT-107.
+        if self.in_code_block(caret) {
+            return false;
+        }
+
         let target = self.target_span();
         self.wrap(target, what)
     }
@@ -692,6 +704,12 @@ impl Document {
     }
 }
 
+/// Whether `line` is a fence line — the opening or closing one, rather than code.
+fn fence_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 /// A line without its trailing newline, which block formatting never rewrites.
 fn line_body(line: &str) -> &str {
     let line = line.strip_suffix('\n').unwrap_or(line);
@@ -835,6 +853,12 @@ impl Document {
             return false;
         }
 
+        // **An unclosed fence has no closing line**, and its last line is code. Taking the block's
+        // last line on the assumption that it is a fence destroyed that line — MDEDIT-107 — and an
+        // unclosed fence is exactly what one looks like halfway through being typed, so this is the
+        // common state rather than a pathological one. The line has to *be* a fence to be removed as
+        // one, which is the same "point at it rather than guess" rule the inline toggles rest on.
+        let closes = fence_line(line_body(closing.slice(&text)));
         let caret = ByteOffset::new(
             self.selection()
                 .head()
@@ -842,7 +866,9 @@ impl Document {
                 .saturating_sub(opening.end().get() - opening.start().get()),
         );
         self.transact(|doc| {
-            let _ = doc.replace(closing, "");
+            if closes {
+                let _ = doc.replace(closing, "");
+            }
             let _ = doc.replace(opening, "");
             doc.set_selection(Selection::caret(ByteOffset::new(
                 caret.get().min(doc.len_bytes()),
@@ -894,11 +920,21 @@ impl Document {
     fn rewrite_setext(&mut self, span: ByteSpan, what: Block) -> bool {
         let text = self.to_string();
         let body = span.slice(&text);
-        // The heading's text is everything above the underline.
-        let title = body
-            .lines()
-            .next()
-            .map_or(String::new(), |line| line.trim_end().to_owned());
+        // The heading's text is everything above the underline — **every** line of it. Keeping only
+        // the first threw the rest away, and CommonMark is explicit that a setext heading's content
+        // may span lines (MDEDIT-107).
+        //
+        // Joined with a space, because what it is becoming is one line. That is the faithful
+        // rendering rather than a compromise: a setext heading's content is those lines as one run
+        // of inline text, and an ATX heading has nowhere else to put them.
+        let mut lines: Vec<&str> = body.lines().collect();
+        lines.pop();
+        let title = lines
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
 
         let mut parts = split_line(&title);
         strip_block_marker(&mut parts);

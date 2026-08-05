@@ -437,15 +437,39 @@ impl Document {
     }
 
     /// The innermost code block containing `offset`, if there is one.
+    ///
+    /// **Binary search and a bounded walk**, not a scan of the block list. This is asked once per
+    /// visible marker segment per frame, which is the exact shape MDEDIT-37 found `block_at` in:
+    /// four thousand blocks times thirty-six runs times twenty chunks is millions of comparisons a
+    /// frame on a large JSON document. Same walk as [`Self::in_block_quote`], for the same reason.
     fn code_block_at(&self, offset: ByteOffset) -> Option<&Block> {
-        self.blocks
-            .iter()
-            .filter(|block| {
-                block.kind() == BlockKind::CodeBlock
-                    && block.span().start() <= offset
-                    && offset < block.span().end()
-            })
-            .max_by_key(|block| block.depth())
+        let candidates = self
+            .blocks
+            .partition_point(|block| block.span().start() <= offset);
+
+        let mut innermost: Option<&Block> = None;
+        for block in self.blocks[..candidates].iter().rev() {
+            if offset < block.span().end() {
+                if block.kind() == BlockKind::CodeBlock
+                    && innermost.is_none_or(|found| block.depth() > found.depth())
+                {
+                    innermost = Some(block);
+                }
+            } else if block.depth() == 0 {
+                break;
+            }
+        }
+        innermost
+    }
+
+    /// Whether `offset` is inside a code block — fenced or indented.
+    ///
+    /// The block-level counterpart of the code-span check the inline toggles already make. `**`
+    /// inside a code block is not markup either, so a toggle there could put delimiters in that a
+    /// second press could not find to take away (MDEDIT-107).
+    #[must_use]
+    pub fn in_code_block(&self, offset: ByteOffset) -> bool {
+        self.code_block_at(offset).is_some()
     }
 
     /// Replaces the bytes in `span` with `replacement`.
