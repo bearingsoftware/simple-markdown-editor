@@ -197,3 +197,41 @@ proptest::proptest! {
         assert_partitions(&source, "proptest text");
     }
 }
+
+// ---- a parser that panics (MDEDIT-114) ----
+
+/// **`pulldown-cmark` panics on some documents, and a document is a file somebody opened.**
+///
+/// Nine characters — a list marker, a tab, a link reference definition whose label is a NUL, and a
+/// vertical tab — unwrap a `None` in `pulldown-cmark` 0.13.4's `parse.rs`. Found by the fuzz job
+/// within four minutes of its first real run, minimised from the seventeen bytes libFuzzer produced,
+/// and reproduced on Windows as well as on the Linux runner.
+///
+/// Upstream's defect, and this project's problem: it crashes the editor on opening a file. The parse
+/// is contained, so what comes back is the whole source as content — which still tiles, which is the
+/// invariant everything above rests on.
+#[test]
+fn a_document_that_panics_the_parser_comes_back_as_content() {
+    let source = "+\t[\0]:d\n\u{b}";
+
+    let segments = assert_partitions(source, "the pulldown-cmark panic");
+
+    assert_eq!(
+        segments.len(),
+        1,
+        "the fallback is one segment: {segments:?}"
+    );
+    assert!(
+        matches!(segments[0].kind(), SegmentKind::Content),
+        "and it is content, so the renderer draws plain text"
+    );
+}
+
+/// The fallback has to hold the same invariant as the parse it replaces, including for the empty
+/// document — a zero-length segment would break the "no empty segments" half of it.
+#[test]
+fn the_fallback_tiles_the_awkward_lengths_too() {
+    for source in ["", "\0", "+\t[\0]:d\n\u{b}", "ordinary prose"] {
+        assert_partitions(source, "fallback");
+    }
+}
