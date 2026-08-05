@@ -3,12 +3,18 @@
 //! A help page and the code it describes drift the moment nothing checks them against each other.
 //! These are that check — imperfect, because nothing here can read `handle_chord`, but enough to
 //! catch a chord that was added or renamed and never written down.
+//!
+//! **Both directions since MDEDIT-101.** The one-way check let Ctrl+Tab sit in the reference with
+//! nothing implementing it, and let Ctrl+F, Ctrl+H and Ctrl+G be implemented with nothing writing
+//! them down. The list of what works now lives in `chordlist`, shared with `chords.rs`, which
+//! presses every entry in it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_app::editor::Editor;
 use mdedit_app::shortcuts;
 
+mod chordlist;
 mod stub;
 use stub::Grid;
 
@@ -20,47 +26,43 @@ fn claimed() -> Vec<&'static str> {
         .collect()
 }
 
-/// The chords `Editor::handle_chord` actually answers to, as this test knows them.
+/// Every Ctrl chord the reference claims.
 ///
-/// Kept by hand and deliberately so: the alternative is deriving the list from the match arms, which
-/// nothing can do, or asserting nothing. A chord added to `handle_chord` and not to this list makes
-/// no test fail — but one added here and not to the reference does, which is the direction the
-/// drift actually goes.
-const IMPLEMENTED: &[&str] = &[
-    "Ctrl+N",
-    "Ctrl+O",
-    "Ctrl+S",
-    "Ctrl+Shift+S",
-    "Ctrl+W",
-    "Ctrl+Z",
-    "Ctrl+Y",
-    "Ctrl+X",
-    "Ctrl+C",
-    "Ctrl+V",
-    "Ctrl+A",
-    "Ctrl+/",
-    "Ctrl+B",
-    "Ctrl+I",
-    "Ctrl+Shift+X",
-    "Ctrl+E",
-    "Ctrl+K",
-    "Ctrl+1 … Ctrl+6",
-    "Ctrl+Shift+E",
-    "Ctrl+= / Ctrl+-",
-    "Ctrl+0",
-    "Ctrl+Tab",
-];
+/// The rest of the page is menu items, motion keys and find-bar keys, which are not chords and are
+/// not what this pair of assertions is about.
+fn claimed_chords() -> Vec<&'static str> {
+    claimed()
+        .into_iter()
+        .filter(|keys| keys.starts_with("Ctrl+"))
+        .collect()
+}
 
 #[test]
 fn every_implemented_chord_is_written_down() {
-    let claimed = claimed();
-    let missing: Vec<_> = IMPLEMENTED
+    let claimed = claimed_chords();
+    let missing: Vec<_> = chordlist::CHORDS
         .iter()
-        .filter(|chord| !claimed.contains(*chord))
+        .map(|chord| chord.label)
+        .filter(|label| !claimed.contains(label))
         .collect();
     assert!(
         missing.is_empty(),
         "these chords work but the reference does not mention them: {missing:?}"
+    );
+}
+
+/// The direction MDEDIT-101 was missing. Ctrl+Tab was written down here and reachable from nowhere:
+/// `handle_chord` dispatched only `Key::Character`, and Tab arrives named. A page that promises a
+/// chord the editor does not have is worse than one that omits a chord it does — the reader tries it.
+#[test]
+fn every_written_down_chord_is_implemented() {
+    let unimplemented: Vec<_> = claimed_chords()
+        .into_iter()
+        .filter(|keys| !chordlist::CHORDS.iter().any(|chord| chord.label == *keys))
+        .collect();
+    assert!(
+        unimplemented.is_empty(),
+        "the reference promises these and nothing answers them: {unimplemented:?}"
     );
 }
 
