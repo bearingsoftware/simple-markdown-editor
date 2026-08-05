@@ -137,6 +137,85 @@ fn choosing_the_encoding_it_already_has_changes_nothing() {
     );
 }
 
+/// MDEDIT-103. Picking a different encoding and then picking the original one back has to leave the
+/// file exactly as it was found — including the two flags that decide how it is written.
+///
+/// `set_encoding` used to latch `re_encode = true` and `round_trips = true` and never restore
+/// either, and `choice.matches(self.format)` is false on the way back as well as on the way out. So
+/// after two clicks an **unedited** buffer skipped both the byte-identical fast path and the
+/// `NotRoundTrippable` refusal, and was re-encoded. For Shift-JIS, whose duplicate mappings this
+/// crate's own fixtures prove are not reversible, that silently rewrites bytes nobody touched.
+#[test]
+fn choosing_an_encoding_and_changing_back_leaves_the_bytes_alone() {
+    let dir = TempDir::new().unwrap();
+    // `ED 40` is one of the Shift-JIS duplicate mappings: it decodes to a character that encodes
+    // back as `FA 5C`, so this file provably does not round-trip.
+    let original = b"\x82\xa0\xed\x40\n".to_vec();
+    let path = write(&dir, "sjis.txt", &original);
+
+    let mut file = load_as(&path, encoding_rs::SHIFT_JIS).unwrap();
+    assert!(!file.round_trips(), "the fixture has to be a lossy one");
+
+    assert!(file.set_encoding(choices()[0]), "UTF-8");
+    assert!(file.set_encoding(choices()[6]), "and back to Shift-JIS");
+
+    save(&path, file.text(), &file).unwrap();
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        original,
+        "a toggle and a toggle back must not rewrite a byte"
+    );
+}
+
+/// The same, for a file that *does* round-trip: back where it started means the fast path again, not
+/// a re-encode that happens to agree.
+#[test]
+fn changing_back_disarms_the_re_encode() {
+    let dir = TempDir::new().unwrap();
+    let original = b"hello\n".to_vec();
+    let path = write(&dir, "plain.txt", &original);
+
+    let mut file = load(&path).unwrap();
+    assert!(file.set_encoding(choices()[2]), "UTF-16 LE");
+    assert!(file.set_encoding(choices()[0]), "and back to UTF-8");
+
+    save(&path, file.text(), &file).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+}
+
+/// MDEDIT-103. Reopen with Encoding exists for the file the editor cannot decide about, so the one
+/// thing it must never do is decide anyway.
+///
+/// `Encoding::decode` sniffs for a byte-order mark and switches encoding on one. A windows-1252 file
+/// beginning `FF FE` — two perfectly ordinary characters in that encoding — was therefore reopened
+/// as UTF-16LE, overriding the explicit choice this whole feature exists to honour.
+#[test]
+fn reopening_with_an_encoding_ignores_a_byte_order_mark() {
+    let dir = TempDir::new().unwrap();
+    // `FF FE` is a UTF-16LE BOM, and in windows-1252 it is `ÿþ`.
+    let path = write(&dir, "cp1252.txt", b"\xff\xfehello\n");
+
+    let file = load_as(&path, encoding_rs::WINDOWS_1252).unwrap();
+    assert_eq!(file.format().encoding(), "windows-1252");
+    assert_eq!(file.text(), "ÿþhello\n");
+    assert!(
+        !file.format().has_bom(),
+        "those bytes are content in this encoding, not a mark"
+    );
+}
+
+/// And the BOM is still stripped when it *is* the mark for the encoding being read, or every
+/// UTF-8-with-BOM file would grow a zero-width no-break space at the front.
+#[test]
+fn a_matching_byte_order_mark_is_still_format_rather_than_content() {
+    let dir = TempDir::new().unwrap();
+    let path = write(&dir, "bom.txt", b"\xef\xbb\xbfhello\n");
+
+    let file = load_as(&path, encoding_rs::UTF_8).unwrap();
+    assert_eq!(file.text(), "hello\n");
+    assert!(file.format().has_bom());
+}
+
 /// **The refusal, and the reason this ticket names it.** `encoding_rs` substitutes HTML numeric
 /// character references for anything it cannot map, so a save that ignored the error would write
 /// `&#27721;` where the user had 汉 and report success.
