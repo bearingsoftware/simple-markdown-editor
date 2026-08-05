@@ -808,3 +808,46 @@ fn the_strip_is_drawn_after_the_document_not_instead_of_it() {
         "and the document should still be drawn"
     );
 }
+
+// ---- the scroll anchor, over a document that repeats itself (MDEDIT-108) ----
+
+/// **The defect.** The anchor resolves a chunk by its content hash, and `ChunkKey::of` hashes only
+/// kind and bytes — so fifty identical entries share one key. Resolving by *first* match snapped the
+/// viewport from the fortieth toward the first on any redraw at all: a keystroke, a resize, anything
+/// that built a frame.
+///
+/// `frame.rs` already pins that identical blocks *draw* in different places. Nothing pinned that the
+/// anchor survives them.
+#[test]
+fn scrolling_into_a_run_of_identical_blocks_stays_put() {
+    // Fifty blocks that are byte-for-byte identical, which is what a log or a run of `---`-separated
+    // entries looks like.
+    let mut text = String::new();
+    for _ in 0..50 {
+        text.push_str("An entry that reads exactly like every other entry.\n\n---\n\n");
+    }
+
+    let mut editor = Editor::new(&text, Grid::new());
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    // Well down the document, into the middle of the run.
+    editor.scroll_by(2_000.0);
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let settled = editor.scroll_offset();
+    assert!(settled > 500.0, "the test needs to be scrolled: {settled}");
+
+    // Two more frames with no input at all. Nothing may move.
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let after_one = editor.scroll_offset();
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let after_two = editor.scroll_offset();
+
+    assert!(
+        (after_one - settled).abs() < 1.0,
+        "a redraw with no input moved the view from {settled} to {after_one}"
+    );
+    assert!(
+        (after_two - settled).abs() < 1.0,
+        "and again, to {after_two}"
+    );
+}
