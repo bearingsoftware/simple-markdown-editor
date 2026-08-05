@@ -610,6 +610,44 @@ fn a_file_that_changed_underneath_is_asked_about() {
     );
 }
 
+/// MDEDIT-100, and the other order — the one that loses work.
+///
+/// Every test around this one rewrites the file *after* the snapshot was taken, which is why the
+/// defect was invisible to the suite. Do it before, which is precisely the gap MDEDIT-55 acknowledges
+/// — a file rewritten while the window stays focused — and the store used to record what the file
+/// looked like at snapshot time rather than what the buffer had been built on. The manifest then
+/// agreed with the *new* disk state, the next launch called it unchanged, and a stale edit went back
+/// on top of somebody else's write with no question asked.
+#[test]
+fn a_file_rewritten_before_the_snapshot_is_still_asked_about() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "# Notes\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(path.clone());
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+    editor.with_snapshot_store(Store::in_directory(dir.path().join("recovery")));
+    editor.insert_text("MY EDIT");
+
+    // Something else writes the file with the window still up, before the idle tick fires.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, "# Notes\n\nsomething else wrote this\n").unwrap();
+    editor.on_idle();
+    drop(editor);
+
+    let conflict = Conflicted::saying(mdedit_app::prompt::Conflict::Cancel);
+    let mut editor = restoring(&dir, &conflict);
+    editor.restore_unsaved_work(true);
+
+    assert_eq!(
+        conflict.asked(),
+        1,
+        "the stored text was built on bytes the file no longer holds"
+    );
+}
+
 /// Choosing the file drops the stored edit — and drops it *for good*, or the same question would be
 /// asked on every launch from now on.
 #[test]

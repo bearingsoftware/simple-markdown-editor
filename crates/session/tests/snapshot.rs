@@ -31,7 +31,14 @@ fn a_snapshot_survives_and_comes_back() {
     let path = a_file(&dir, "notes.md");
 
     let mut writer = store(&dir);
-    writer.write(1, Some(&path), "unsaved work\n").unwrap();
+    writer
+        .write(
+            1,
+            Some(&path),
+            mdedit_file::Stamp::of(&path),
+            "unsaved work\n",
+        )
+        .unwrap();
 
     // A separate store, as the next run's would be.
     let mut reader = store(&dir);
@@ -49,7 +56,7 @@ fn a_snapshot_survives_and_comes_back() {
 fn an_untitled_buffer_comes_back_too() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(7, None, "never saved\n").unwrap();
+    writer.write(7, None, None, "never saved\n").unwrap();
 
     let (recovered, skipped) = store(&dir).read_all();
     assert!(skipped.is_empty(), "{skipped:?}");
@@ -62,8 +69,8 @@ fn an_untitled_buffer_comes_back_too() {
 fn writing_twice_replaces_rather_than_accumulates() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(1, None, "first\n").unwrap();
-    writer.write(1, None, "second\n").unwrap();
+    writer.write(1, None, None, "first\n").unwrap();
+    writer.write(1, None, None, "second\n").unwrap();
 
     let (recovered, _) = store(&dir).read_all();
     assert_eq!(recovered.len(), 1, "one buffer, one snapshot");
@@ -76,8 +83,8 @@ fn writing_twice_replaces_rather_than_accumulates() {
 fn forgetting_removes_it() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(1, None, "a\n").unwrap();
-    writer.write(2, None, "b\n").unwrap();
+    writer.write(1, None, None, "a\n").unwrap();
+    writer.write(2, None, None, "b\n").unwrap();
     writer.forget(1).unwrap();
 
     let (recovered, _) = store(&dir).read_all();
@@ -95,8 +102,8 @@ fn forgetting_removes_it() {
 fn forgetting_everything_leaves_nothing_behind() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(1, None, "a\n").unwrap();
-    writer.write(2, None, "b\n").unwrap();
+    writer.write(1, None, None, "a\n").unwrap();
+    writer.write(2, None, None, "b\n").unwrap();
     writer.forget(1).unwrap();
     writer.forget(2).unwrap();
 
@@ -174,7 +181,7 @@ fn nothing_at_all_is_the_ordinary_case() {
 fn writing_leaves_no_temporary_behind() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(1, None, "content\n").unwrap();
+    writer.write(1, None, None, "content\n").unwrap();
 
     let strays: Vec<_> = std::fs::read_dir(dir.path().join("recovery"))
         .unwrap()
@@ -189,7 +196,7 @@ fn writing_leaves_no_temporary_behind() {
 #[test]
 fn an_unwritable_directory_is_an_error_not_a_panic() {
     let mut writer = Store::in_directory(std::path::PathBuf::from("\0invalid"));
-    assert!(writer.write(1, None, "x").is_err());
+    assert!(writer.write(1, None, None, "x").is_err());
 }
 
 /// A missing file is not a hostile one.
@@ -203,7 +210,14 @@ fn a_deleted_file_keeps_its_text_and_loses_its_path() {
     let path = a_file(&dir, "notes.md");
 
     let mut writer = store(&dir);
-    writer.write(1, Some(&path), "the only copy\n").unwrap();
+    writer
+        .write(
+            1,
+            Some(&path),
+            mdedit_file::Stamp::of(&path),
+            "the only copy\n",
+        )
+        .unwrap();
     std::fs::remove_file(&path).unwrap();
 
     let (recovered, skipped) = store(&dir).read_all();
@@ -252,7 +266,9 @@ fn the_stamp_round_trips_exactly() {
     let taken = mdedit_file::Stamp::of(&path).unwrap();
 
     let mut writer = store(&dir);
-    writer.write(1, Some(&path), "unsaved\n").unwrap();
+    writer
+        .write(1, Some(&path), mdedit_file::Stamp::of(&path), "unsaved\n")
+        .unwrap();
 
     let (recovered, _) = store(&dir).read_all();
     assert_eq!(recovered[0].stamp, Some(taken));
@@ -263,7 +279,7 @@ fn the_stamp_round_trips_exactly() {
 fn a_scratch_buffer_has_no_stamp() {
     let dir = TempDir::new().unwrap();
     let mut writer = store(&dir);
-    writer.write(1, None, "a thought\n").unwrap();
+    writer.write(1, None, None, "a thought\n").unwrap();
 
     let (recovered, _) = store(&dir).read_all();
     assert!(recovered[0].stamp.is_none());

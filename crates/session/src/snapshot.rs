@@ -130,22 +130,32 @@ impl Store {
 
     /// Records one buffer's contents, replacing whatever was there for that id.
     ///
+    /// `stamp` describes the bytes `text` was built on — the caller's [`mdedit_file::LoadedFile`]
+    /// stamp, not the file as it is now. It is a parameter rather than something read here for the
+    /// reason MDEDIT-100 was: this used to take its own `Stamp::of(path)`, so a file rewritten
+    /// between the load and the idle tick was recorded as though the buffer had been built on the
+    /// *new* bytes. The next launch then compared the manifest against a matching disk state, called
+    /// it unchanged, and put a stale edit back over somebody else's write without asking. `None` for
+    /// a buffer that has no file.
+    ///
     /// # Errors
     ///
     /// Any I/O failure. The caller logs it and carries on: failing to snapshot is a smaller problem
     /// than refusing to keep editing.
-    pub fn write(&mut self, id: u64, path: Option<&Path>, text: &str) -> std::io::Result<()> {
+    pub fn write(
+        &mut self,
+        id: u64,
+        path: Option<&Path>,
+        stamp: Option<mdedit_file::Stamp>,
+        text: &str,
+    ) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
         write_atomically(&self.snapshot_path(id), text.as_bytes())?;
 
-        // What the file looked like at the moment this copy was taken, so a later restore can tell
-        // whether anything else has written it since. `None` for a buffer with no file.
-        let (modified_ms, len) =
-            path.and_then(mdedit_file::Stamp::of)
-                .map_or((None, None), |stamp| {
-                    let (modified_ms, len) = stamp.parts();
-                    (modified_ms, Some(len))
-                });
+        let (modified_ms, len) = stamp.map_or((None, None), |stamp| {
+            let (modified_ms, len) = stamp.parts();
+            (modified_ms, Some(len))
+        });
 
         if let Some(entry) = self
             .manifest
