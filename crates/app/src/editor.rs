@@ -116,8 +116,15 @@ enum Checked {
 }
 
 enum Snapshotting {
-    /// This buffer has unsaved work at this revision, and here it is.
-    Write(u64, Option<PathBuf>, u64, String),
+    /// This buffer has unsaved work at this revision, and here it is — with the stamp of the file it
+    /// was read from, which is what a restore compares against (MDEDIT-100).
+    Write(
+        u64,
+        Option<PathBuf>,
+        Option<mdedit_file::Stamp>,
+        u64,
+        String,
+    ),
     /// This buffer is safe on disk; its snapshot should go.
     Forget(u64),
 }
@@ -1557,6 +1564,10 @@ impl<T: TextLayout> Editor<T> {
             todo.push(Snapshotting::Write(
                 id,
                 tab.path().map(Path::to_path_buf),
+                // The stamp of the bytes this buffer was *read* from, not of the file as it is now.
+                // MDEDIT-100: taking it here would record a rewrite that happened since the load as
+                // though the buffer already knew about it, and the restore would then not ask.
+                open.file.as_ref().and_then(mdedit_file::LoadedFile::stamp),
                 revision,
                 open.document.to_string(),
             ));
@@ -1564,8 +1575,8 @@ impl<T: TextLayout> Editor<T> {
 
         for item in todo {
             match item {
-                Snapshotting::Write(id, path, revision, text) => {
-                    if let Err(error) = store.write(id, path.as_deref(), &text) {
+                Snapshotting::Write(id, path, stamp, revision, text) => {
+                    if let Err(error) = store.write(id, path.as_deref(), stamp, &text) {
                         crate::log_error!("could not write a recovery snapshot: {error}");
                         continue;
                     }
