@@ -1,0 +1,71 @@
+name: Mutants
+
+# MDEDIT-111, and a **trial** rather than a gate — `continue-on-error`, so a surviving mutant is a
+# comment on a pull request rather than a red build. Promote it to blocking if it earns its keep.
+#
+# What it is for: this is a solo project, so nothing in it has had a second reviewer. cargo-mutants
+# is the mechanical version of one — it changes a `<` to a `<=`, deletes a line, replaces a return
+# value, and reports what the tests still let through. The review that produced this ticket found
+# several tests whose bodies could not fail; that is exactly the class this detects without anybody
+# having to read for it.
+#
+# `--in-diff`, so it mutates only what a pull request changed. A whole-workspace run is hours and
+# would never be looked at; a diff-sized one is minutes and lands with the change that caused it.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    name: cargo-mutants (in diff)
+    runs-on: ubuntu-latest
+    # A trial. It reports; it does not block.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # `--in-diff` needs the merge base, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants,cargo-nextest
+
+      - name: What this pull request changed
+        run: git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff
+
+      # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
+      # hang or abort must take down its own process and nothing else.
+      #
+      # The Windows-only crates are absent from this list because they do not build here at all —
+      # `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and their
+      # tests are the ones that need a real system stack anyway.
+      - name: Mutate
+        run: |
+          cargo mutants --in-diff /tmp/pr.diff \
+            --test-tool nextest \
+            --package mdedit-offsets \
+            --package mdedit-language \
+            --package mdedit-json \
+            --package mdedit-yaml \
+            --package mdedit-markers \
+            --package mdedit-document \
+            --package mdedit-file \
+            --package mdedit-session \
+            --timeout-multiplier 4 \
+            --no-shuffle
+
+      # The report is the whole output of the job, so it survives the run being tidied away.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out/
+          if-no-files-found: ignore
