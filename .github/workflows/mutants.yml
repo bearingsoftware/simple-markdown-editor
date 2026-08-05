@@ -38,9 +38,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Keeps `~/.cargo/bin`, so the source build below happens once rather than every run.
+          cache-bin: true
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-mutants,cargo-nextest
+          tool: cargo-nextest
+      # **Built from source, unlike nextest.** The prebuilt `cargo-mutants` is linked against
+      # GLIBC 2.39 and the self-hosted box is older than that, so the downloaded binary dies on
+      # `version 'GLIBC_2.39' not found` before it has done anything. Compiling it costs a few
+      # minutes of a runner that is not billed, and `Swatinem/rust-cache` keeps `~/.cargo/bin`
+      # between runs so it is the first run that pays.
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
 
       - name: What this pull request changed
         run: git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff

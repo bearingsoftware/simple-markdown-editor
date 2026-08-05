@@ -107,6 +107,9 @@ jobs:
     runs-on: [self-hosted, Linux, X64, proxmox, general]
     steps:
       - uses: actions/checkout@v4
+      # The Docker action brought its own Rust; nothing else does. Without this the job dies on
+      # `cargo: command not found`, which is what it did the first time.
+      - uses: dtolnay/rust-toolchain@stable
       # `taiki-e/install-action` rather than `EmbarkStudios/cargo-deny-action`, which is a Docker
       # action: a container runtime is one more thing the self-hosted box would have to have, and
       # this is the same installer the other three jobs already use here.
