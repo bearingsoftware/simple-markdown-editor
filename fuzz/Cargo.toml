@@ -1,0 +1,56 @@
+# Fuzz targets (MDEDIT-111). Its own workspace, deliberately.
+#
+# `libfuzzer-sys` builds a C++ runtime and is Unix-only, so this must not be a member of the main
+# workspace: `cargo check` on Windows — where this editor actually runs — would then try to build it
+# and fail. The parser crates it fuzzes are platform-agnostic, which is what makes running this on
+# Linux alone the right trade rather than a compromise.
+#
+# Nightly only, which is `cargo fuzz`'s own requirement rather than this project's: nothing here is
+# compiled by CI's stable jobs or by the MSRV check.
+[workspace]
+
+[package]
+name = "mdedit-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+mdedit-json = { path = "../crates/json" }
+mdedit-language = { path = "../crates/language" }
+mdedit-markers = { path = "../crates/markers" }
+mdedit-yaml = { path = "../crates/yaml" }
+
+# Every target is a `[[bin]]` with the harness off, which is what `cargo fuzz` expects.
+
+[[bin]]
+name = "markers_segment"
+path = "fuzz_targets/markers_segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_validate"
+path = "fuzz_targets/json_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_format"
+path = "fuzz_targets/json_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "yaml_analyze"
+path = "fuzz_targets/yaml_analyze.rs"
+test = false
+doc = false
+bench = false

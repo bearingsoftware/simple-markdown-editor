@@ -26,3 +26,11 @@ Thumbs.db
 *.pem
 *.pfx
 *.snk
+
+# cargo-fuzz (MDEDIT-111). The corpus and the crashing inputs are build output: CI caches the corpus
+# between runs and uploads an artifact for anything that crashed, and a Cargo.lock for a nightly-only
+# crate that nothing ships would be one more thing to keep current.
+/fuzz/corpus/
+/fuzz/artifacts/
+/fuzz/coverage/
+/fuzz/Cargo.lock

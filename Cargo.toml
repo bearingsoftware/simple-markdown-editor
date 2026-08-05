@@ -16,7 +16,7 @@ members = [
     "crates/app",
 ]
 # Spikes are throwaway probes, deliberately outside the workspace so they stay out of CI.
-exclude = ["spikes/*"]
+exclude = ["spikes/*", "fuzz"]
 
 [workspace.package]
 edition = "2024"

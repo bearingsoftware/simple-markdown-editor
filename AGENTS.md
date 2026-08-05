@@ -1035,6 +1035,21 @@ After CI passes on `main`, `.github/workflows/project-status.yml` measures unit 
 `status.json` and the lcov bundle from one measurement, and can be run locally to see the numbers.
 The figure is the Linux one — the Windows-gated code has no regions to measure there.
 
+**Fuzzing is a separate workflow and a separate workspace** (MDEDIT-111). `fuzz/` holds four targets
+— the marker locator against its tiling gate, JSON's validator, JSON's formatter against the
+`meaningful_bytes` oracle it shares with the property test, and the YAML lexer. It is **excluded from
+the workspace on purpose**: `libfuzzer-sys` builds a C++ runtime and is Unix-only, so a Windows
+`cargo check` would try to build it and fail. The four crates it covers are platform-agnostic, which
+is what makes Linux-only the right place for it rather than a compromise.
+
+```bash
+cargo +nightly fuzz run markers_segment -- -max_total_time=60   # nightly is cargo-fuzz's requirement
+```
+
+Five minutes a target on a PR, half an hour on the Sunday schedule, corpus cached between runs and
+the crashing input uploaded as an artifact. AddressSanitizer comes with it, which is the only place
+this project gets one: rustc has no sanitizer support on Windows.
+
 `cargo test --release -- --ignored` is reserved for the perf assertions described under
 **Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised
 and on AC power, which is the condition the research says is least informative. They belong in a

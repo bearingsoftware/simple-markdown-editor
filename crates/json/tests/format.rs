@@ -8,7 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use mdedit_json::{format, validate};
+use mdedit_json::{format, meaningful_bytes, validate};
 use proptest::prelude::*;
 
 fn formatted(source: &str) -> String {
@@ -173,46 +173,6 @@ proptest! {
         let once = format(&source).expect("the generator only makes valid JSON");
         prop_assert_eq!(format(&once).expect("formatted output stays valid"), once);
     }
-}
-
-/// Every byte outside a string that is not JSON whitespace, plus every string verbatim.
-///
-/// Comparing this either side of a format is what "only the whitespace moved" means precisely.
-/// Whitespace *inside* a string is content and must be kept, which is why this cannot simply strip
-/// every space in the document.
-fn meaningful_bytes(source: &str) -> String {
-    let mut out = String::with_capacity(source.len());
-    let bytes = source.as_bytes();
-    let mut at = 0;
-    while at < bytes.len() {
-        match bytes[at] {
-            b' ' | b'\t' | b'\n' | b'\r' => at += 1,
-            b'"' => {
-                let start = at;
-                at += 1;
-                while at < bytes.len() {
-                    match bytes[at] {
-                        b'\\' => at += 2,
-                        b'"' => {
-                            at += 1;
-                            break;
-                        }
-                        _ => at += 1,
-                    }
-                }
-                out.push_str(&source[start..at.min(source.len())]);
-            }
-            _ => {
-                let start = at;
-                at += 1;
-                while at < bytes.len() && !source.is_char_boundary(at) {
-                    at += 1;
-                }
-                out.push_str(&source[start..at]);
-            }
-        }
-    }
-    out
 }
 
 /// Valid JSON documents, nested a few levels, with the spellings that matter in them.

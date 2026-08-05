@@ -42,6 +42,59 @@ use crate::validate::{self, Tok};
 /// One level of indent. An option later, if anybody asks; two spaces until then.
 const INDENT: &str = "  ";
 
+/// Every byte outside a string that is not JSON whitespace, plus every string verbatim.
+///
+/// **The oracle for this module**, not a formatting step — nothing here calls it. Comparing it either
+/// side of a [`format`](crate::format) is what "only the whitespace moved" means precisely, which is the byte
+/// invariant applied to the one operation allowed to break its letter. Whitespace *inside* a string
+/// is content and must be kept, which is why this cannot simply strip every space.
+///
+/// It is here rather than in the test that first needed it because the fuzz target needs the same
+/// answer (MDEDIT-111), and an oracle kept in two places is an oracle that drifts.
+#[must_use]
+pub fn meaningful_bytes(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b' ' | b'\t' | b'\n' | b'\r' => at += 1,
+            b'"' => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() {
+                    match bytes[at] {
+                        b'\\' => at += 2,
+                        b'"' => {
+                            at += 1;
+                            break;
+                        }
+                        _ => at += 1,
+                    }
+                }
+                // An escape skips two *bytes*, and in a document nobody validated the byte after a
+                // backslash can be the first of a multi-byte character — so the walk can stop mid
+                // character. Snapping up is what keeps this from panicking on input the fuzzer will
+                // certainly produce; an oracle that panics reports itself as the bug.
+                at = at.min(source.len());
+                while at < source.len() && !source.is_char_boundary(at) {
+                    at += 1;
+                }
+                out.push_str(&source[start..at]);
+            }
+            _ => {
+                let start = at;
+                at += 1;
+                while at < bytes.len() && !source.is_char_boundary(at) {
+                    at += 1;
+                }
+                out.push_str(&source[start..at]);
+            }
+        }
+    }
+    out
+}
+
 /// Reformats `source`, or reports the first thing wrong with it.
 ///
 /// `Ok` is the whole document, ready to replace it. It ends with a newline, as every other text file
