@@ -145,6 +145,11 @@ fn converting_to_the_style_it_already_has_does_nothing() {
 
 /// **Enter follows the file.** It used to insert `\n` whatever the document was, which is how a CRLF
 /// file becomes Mixed without anybody pasting anything into it.
+///
+/// This test used to insert `editor.newline().as_str()` — asking the editor what to insert and then
+/// inserting it, which is true of any implementation and would have passed against the very bug it
+/// is named for (MDEDIT-110). `insert_newline` is the key arm's own body, so pressing it is what
+/// pressing Enter does.
 #[test]
 fn enter_inserts_the_documents_own_ending() {
     let dir = TempDir::new().unwrap();
@@ -153,9 +158,13 @@ fn enter_inserts_the_documents_own_ending() {
 
     editor.select_all();
     editor.insert_text("x");
-    editor.insert_text(editor.newline().as_str());
+    editor.insert_newline();
 
-    assert_eq!(editor.document().to_string(), "x\r\n");
+    assert_eq!(
+        editor.document().to_string(),
+        "x\r\n",
+        "Enter in a CRLF document must not insert a bare LF"
+    );
 }
 
 /// And after a conversion it follows the *new* style, which is the half that keeps a converted file
@@ -167,6 +176,12 @@ fn enter_follows_a_conversion() {
 
     assert!(editor.apply_command(mdedit_menu_win::Command::ConvertToLf));
     assert_eq!(editor.newline().as_str(), "\n");
+
+    // And pressing it inserts the new one, which is the half a `newline()` comparison cannot see.
+    editor.select_all();
+    editor.insert_text("x");
+    editor.insert_newline();
+    assert_eq!(editor.document().to_string(), "x\n");
 }
 
 /// An untitled buffer has no file to have detected anything from, and answers with the default —

@@ -506,11 +506,18 @@ Known gaps, so nobody assumes they are done:
   at a document for a moment rather than a preference.
 
   **Two of its three defects were only visible in the window, and both came from the same place** —
-  the headless stub shapes text more simply than DirectWrite does. DirectWrite gives `\n` a glyph of
-  its own, so the offset past a row's last glyph is sometimes the terminator and sometimes past it
-  (`view::ending_before` answers both); and it does not shape trailing whitespace at all, so the
-  spaces at the end of a line — the thing people switch this on to find — had no glyph to mark and
-  are now walked over from the text. **A test on the stub cannot see either.**
+  the headless stub shapes text more simply than DirectWrite does. `view::ending_before` exists
+  because the offset past a row's last glyph may be the terminator or past it, and the whitespace
+  marks walk trailing spaces out of the *text* rather than off the glyphs. **A test on the stub
+  cannot see either.**
+
+  **The DirectWrite behaviour those two were written for is not what DirectWrite does**, which
+  MDEDIT-110 measured and MDEDIT-113 carries. This entry used to say a `\n` gets a glyph of its own
+  and trailing whitespace is not shaped; on Windows 11 26200 against the installed Segoe UI, both are
+  the other way round — `"ab\ncd"` produces glyphs for bytes 0, 1, 3 and 4, and `"ab   "` produces
+  one for every trailing space. `crates/text-dwrite/tests/layout.rs` pins that as a characterisation
+  test, so a change is noticed rather than assumed; whether `ending_before` and the whitespace walk
+  should be simplified to match is MDEDIT-113, and wants an eye on Windows rather than a test.
 - **The breadcrumb shows headings, and nothing else.** A caret above the document's first heading
   gets an empty breadcrumb rather than a root. Nothing in the bar is clickable.
 - **The status bar is two containers that truncate, not one row that overflows.** The right-hand

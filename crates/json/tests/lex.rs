@@ -215,7 +215,7 @@ fn an_empty_document_is_not_a_special_case() {
 proptest! {
     /// The gate, over arbitrary bytes: whatever it is handed, the segments reproduce it.
     #[test]
-    fn segments_tile_any_input(source in ".*") {
+    fn segments_tile_any_input(source in "(?s).*") {
         prop_assert!(tiles(&source));
     }
 

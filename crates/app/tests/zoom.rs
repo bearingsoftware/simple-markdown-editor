@@ -122,7 +122,17 @@ fn each_step_is_the_same_ratio() {
 #[test]
 fn a_zoom_lays_every_chunk_out_again() {
     let mut editor = Editor::new(&document(60), Grid::new());
+
+    // What a cold frame costs, which is the number this test is named after. Comparing against the
+    // *idle* frame instead — as this used to — passes with a handful of chunks laid out and four of
+    // the five caches cleared, which is exactly the bug it is guarding against (MDEDIT-110).
+    let start = editor.text_backend().layouts();
     editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let cold = editor.text_backend().layouts() - start;
+    assert!(
+        cold > 4,
+        "the fixture should be worth measuring, not {cold}"
+    );
 
     // A second frame at the same size lays out almost nothing — that is MDEDIT-17's guarantee, and
     // it is what makes the count after a zoom meaningful.
@@ -134,14 +144,18 @@ fn a_zoom_lays_every_chunk_out_again() {
         "a still frame should lay out ~nothing, not {idle}"
     );
 
+    // Zooming *out*, so at least as much is on screen afterwards as before — otherwise a smaller
+    // count could mean either a stale cache or simply fewer visible chunks, and the assertion could
+    // not tell them apart.
     let before = editor.text_backend().layouts();
-    editor.zoom_by(2);
+    editor.zoom_by(-2);
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     let after_zoom = editor.text_backend().layouts() - before;
 
     assert!(
-        after_zoom > idle,
-        "a zoom must lay chunks out again: {idle} on a still frame, {after_zoom} after zooming"
+        after_zoom >= cold,
+        "a zoom must lay every chunk out again: {cold} on a cold frame, {idle} on a still one, \
+         {after_zoom} after zooming"
     );
 }
 

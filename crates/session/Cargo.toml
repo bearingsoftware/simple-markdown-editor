@@ -19,6 +19,8 @@ serde_json = "1"
 thiserror.workspace = true
 
 [dev-dependencies]
+# The end-to-end byte-preservation property (MDEDIT-110) generates edit sequences.
+proptest = "1.11.0"
 tempfile = "3"
 
 [lints]

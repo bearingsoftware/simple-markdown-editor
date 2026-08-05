@@ -2846,13 +2846,7 @@ impl<T: TextLayout> Editor<T> {
                 self.page(1.0);
                 true
             }
-            // What the file already uses, rather than always `\n` — MDEDIT-59. Enter used to add an
-            // LF to a CRLF document, which is how a file becomes Mixed without anybody pasting
-            // anything.
-            Key::Named(NamedKey::Enter) => {
-                let ending = self.newline().as_str();
-                self.insert(ending)
-            }
+            Key::Named(NamedKey::Enter) => self.insert_newline(),
             Key::Named(NamedKey::Space) => self.insert(" "),
             Key::Character(text) => self.insert(text),
             _ => false,
@@ -6672,6 +6666,20 @@ impl<T: TextLayout> Editor<T> {
             .map_or_else(mdedit_file::Newline::default, |file| {
                 file.format().newline()
             })
+    }
+
+    /// What Enter does: inserts the terminator **this file already uses**, not always `\n`.
+    ///
+    /// MDEDIT-59 — Enter used to add an LF to a CRLF document, which is how a file becomes Mixed
+    /// without anybody pasting anything into it.
+    ///
+    /// Split out of the key handler for the reason [`Self::apply_chord`] is: a winit `KeyEvent`
+    /// cannot be constructed by a test, so a test that wanted to check this had to re-derive what to
+    /// insert — and a test that asks the editor what its newline is and then inserts that would pass
+    /// against the bug it was written for (MDEDIT-110). This *is* the arm's body.
+    pub fn insert_newline(&mut self) -> bool {
+        let ending = self.newline().as_str();
+        self.insert(ending)
     }
 
     /// Rewrites every line terminator in the active document to `to` (MDEDIT-59).

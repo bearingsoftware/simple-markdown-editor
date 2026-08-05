@@ -337,6 +337,18 @@ fn the_find_highlight_and_the_selection_are_a_hue_apart_not_a_brightness_apart()
     for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         let found = over(theme.find_match, theme.background);
         let selected = over(theme.selection, theme.background);
+        // **They have to be different colours**, which this never checked (MDEDIT-110): the
+        // brightness assertion below is happiest of all when the two are identical, and identical is
+        // the one answer the whole warm/cool pair exists to rule out.
+        let distance = (found.r - selected.r).abs()
+            + (found.g - selected.g).abs()
+            + (found.b - selected.b).abs();
+        assert!(
+            distance > 0.05,
+            "the {mode} find highlight and selection blend to nearly the same colour \
+             ({found:?} against {selected:?}) — told apart by neither hue nor weight"
+        );
+
         let apart = ratio(found, selected);
         assert!(
             apart < 1.6,

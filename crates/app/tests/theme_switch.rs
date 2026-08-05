@@ -98,20 +98,64 @@ fn switching_leaves_nothing_drawn_at_the_old_colours() {
     editor.set_theme_choice(ThemeChoice::Light);
     let after = palette_used(&mut editor);
 
-    for (role, colour) in [
-        ("text", dark.text),
-        ("background", dark.background),
-        ("marker", dark.marker),
-        ("gutter", dark.gutter),
-        ("strip", dark.strip),
-        ("tab_active", dark.tab_active),
-        ("caret", dark.caret),
-    ] {
+    // **Every role, not seven of them** (MDEDIT-110). Seven was enough to catch a switch that did
+    // nothing at all and nothing narrower — a single role left behind is exactly the shape a missed
+    // draw site takes.
+    let light = Theme::light();
+    for (role, dark_colour, light_colour) in roles(&dark, &light) {
+        // A role the two palettes spell the same way cannot be told apart by its colour, and there
+        // is nothing to assert about it. `token_punctuation` and friends may legitimately match.
+        if dark_colour == light_colour {
+            continue;
+        }
         assert!(
-            !after.contains(&is(colour)),
+            !after.contains(&is(dark_colour)),
             "a quad is still drawn in the dark palette's {role} after switching to light"
         );
     }
+}
+
+/// Every colour role, paired between the two palettes.
+///
+/// Hand-kept, because nothing can derive it from a struct — the same position `chordlist` is in. A
+/// role added and not listed here is simply unchecked, which is the failure mode to know about.
+fn roles(dark: &Theme, light: &Theme) -> Vec<(&'static str, Rgba, Rgba)> {
+    vec![
+        ("background", dark.background, light.background),
+        ("text", dark.text, light.text),
+        ("marker", dark.marker, light.marker),
+        ("caret", dark.caret, light.caret),
+        ("selection", dark.selection, light.selection),
+        ("find_match", dark.find_match, light.find_match),
+        ("status_error", dark.status_error, light.status_error),
+        ("span_error", dark.span_error, light.span_error),
+        ("warn", dark.warn, light.warn),
+        ("link", dark.link, light.link),
+        ("muted", dark.muted, light.muted),
+        ("gutter", dark.gutter, light.gutter),
+        ("caret_line", dark.caret_line, light.caret_line),
+        ("line", dark.line, light.line),
+        ("panel", dark.panel, light.panel),
+        ("strip", dark.strip, light.strip),
+        ("tab_active", dark.tab_active, light.tab_active),
+        ("tab_inactive", dark.tab_inactive, light.tab_inactive),
+        ("tab_modified", dark.tab_modified, light.tab_modified),
+        ("token_key", dark.token_key, light.token_key),
+        ("token_string", dark.token_string, light.token_string),
+        ("token_number", dark.token_number, light.token_number),
+        ("token_literal", dark.token_literal, light.token_literal),
+        (
+            "token_punctuation",
+            dark.token_punctuation,
+            light.token_punctuation,
+        ),
+        ("token_comment", dark.token_comment, light.token_comment),
+        (
+            "scrollbar_thumb",
+            dark.scrollbar_thumb,
+            light.scrollbar_thumb,
+        ),
+    ]
 }
 
 /// And back again, because a switch that only works one way is half a feature.
