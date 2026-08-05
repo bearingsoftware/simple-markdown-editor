@@ -475,3 +475,81 @@ fn switching_tab_searches_the_document_now_showing() {
         "the other document's offsets must not survive the switch"
     );
 }
+
+// ---- staleness stamps, and the identity they are keyed on (MDEDIT-105) ----
+
+/// **The defect.** Every `(document, revision)` stamp used the tab *index*, and indices are reused:
+/// closing tab 0 makes the old tab 1 into tab 0. Two documents nobody has typed in are both at
+/// revision 0, so the stamp compared equal across the close and the survivor inherited the closed
+/// tab's match list — offsets into a document that is no longer there, drawn over the one that is.
+///
+/// Nothing rescued it: the status-bar catch-up compares the same stamp, and a mouse-driven close
+/// fires no idle tick.
+#[test]
+fn closing_a_tab_does_not_leave_its_matches_lit_on_the_next_one() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("first.md");
+    let second = dir.path().join("second.md");
+    // The needle is in the first document only, so a match on the second is provably inherited.
+    std::fs::write(&first, "alpha alpha alpha\n").unwrap();
+    std::fs::write(&second, "nothing to find here\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(first);
+    workspace.add(second);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.workspace_mut().activate(0).unwrap();
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.apply_chord("f", false);
+    editor.apply_find_key(&Key::Edit(Press::Text("alpha".to_owned())), false);
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.find_bar().unwrap().matches().len(),
+        3,
+        "the first document should have three matches"
+    );
+
+    // Close the first tab. The second inherits index 0, and both are at revision 0.
+    assert!(editor.apply_chord("w", false));
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert_eq!(
+        editor.document().to_string(),
+        "nothing to find here\n",
+        "the second document should be showing"
+    );
+    assert!(
+        editor.find_bar().unwrap().matches().is_empty(),
+        "the closed tab's matches are lit over the surviving document: {:?}",
+        editor.find_bar().unwrap().matches()
+    );
+}
+
+/// The same class, with the word count: the survivor showed the closed tab's number until something
+/// scheduled an idle tick, and closing with the mouse schedules none.
+#[test]
+fn closing_a_tab_does_not_leave_its_word_count_on_the_next_one() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("first.md");
+    let second = dir.path().join("second.md");
+    std::fs::write(&first, "one two three four five six\n").unwrap();
+    std::fs::write(&second, "just two\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(first);
+    workspace.add(second);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.workspace_mut().activate(0).unwrap();
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(editor.words(), Some(6));
+
+    assert!(editor.apply_chord("w", false));
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert_eq!(
+        editor.words(),
+        Some(2),
+        "the survivor is showing the closed tab's word count"
+    );
+}

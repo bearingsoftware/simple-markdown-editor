@@ -780,7 +780,7 @@ pub struct Editor<T: TextLayout> {
     /// survived the switch would be pointing at the last one. Held rather than hooked into every
     /// path that activates a tab, of which there are eight: a comparison here cannot be forgotten
     /// by the ninth.
-    floating_for: Option<usize>,
+    floating_for: Option<u64>,
     /// The first *visible* row of the selection, in window coordinates, recorded while drawing it.
     ///
     /// The selection's rectangles are otherwise transient — `row_selection` returns x-extents that
@@ -956,7 +956,7 @@ pub struct Editor<T: TextLayout> {
     /// Tracked rather than cleared at each of the nine places that activate a tab, because a count
     /// that belongs to the tab you just left is not stale, it is wrong — and one forgotten call site
     /// is a bug nobody would see until they switched files.
-    counted_for: Option<usize>,
+    counted_for: Option<u64>,
     /// What is wrong with the active document, as of the last idle timer (MDEDIT-47).
     ///
     /// Empty for every language but JSON, and empty for valid JSON.
@@ -968,7 +968,7 @@ pub struct Editor<T: TextLayout> {
     /// a revision alone would not do, because two tabs nobody has typed in are both at revision
     /// zero. A stale set is not merely out of date — the menu item moves the caret to one of these
     /// spans, so a span from before an edit points somewhere that has moved.
-    diagnosed_for: Option<(usize, u64)>,
+    diagnosed_for: Option<(u64, u64)>,
     /// What the Tools menu was last told, so it is only told again when the answer changes.
     ///
     /// **Compared rather than hooked.** Which document is active changes on a great many paths, and
@@ -3501,7 +3501,7 @@ impl<T: TextLayout> Editor<T> {
         }
         let was = self.floating;
         self.floating = true;
-        self.floating_for = self.workspace.active();
+        self.floating_for = self.active_document_id();
         !was
     }
 
@@ -3542,7 +3542,7 @@ impl<T: TextLayout> Editor<T> {
     /// a selection offering to reformat the whole file is a different operation in the same clothes.
     fn floating_actions(&self) -> &'static [toolbar::Action] {
         if !self.floating
-            || self.floating_for != self.workspace.active()
+            || self.floating_for != self.active_document_id()
             || self.document().selection().is_collapsed()
         {
             return &[];
@@ -3653,7 +3653,7 @@ impl<T: TextLayout> Editor<T> {
         // never set the idle timer, so without this it would show no count until first edited. It
         // costs one walk of the buffer, once per document — a keystroke leaves a count in place, so
         // it cannot recur on the path this is kept off.
-        if self.words.is_none() || self.counted_for != self.workspace.active() {
+        if self.words.is_none() || self.counted_for != self.active_document_id() {
             self.recount_words();
         }
 
@@ -3667,7 +3667,7 @@ impl<T: TextLayout> Editor<T> {
         // exists to keep off this path. Once per document, then the timer owns it.
         if self
             .diagnosed_for
-            .is_none_or(|(tab, _)| Some(tab) != self.workspace.active())
+            .is_none_or(|(tab, _)| Some(tab) != self.active_document_id())
         {
             self.revalidate();
         }
@@ -3902,12 +3902,12 @@ impl<T: TextLayout> Editor<T> {
     /// Recounts the words. Called on the idle timer, never on the keystroke path.
     fn recount_words(&mut self) {
         self.words = Some(status::count_words(&self.document().rope().to_string()));
-        self.counted_for = self.workspace.active();
+        self.counted_for = self.active_document_id();
     }
 
     /// Which document, at which revision, the diagnostics would describe if recomputed now.
-    fn diagnosis_stamp(&self) -> Option<(usize, u64)> {
-        Some((self.workspace.active()?, self.document().revision()))
+    fn diagnosis_stamp(&self) -> Option<(u64, u64)> {
+        Some((self.active_document_id()?, self.document().revision()))
     }
 
     /// Re-runs the language's strict check. Called on the idle timer, never on the keystroke path.
@@ -5325,8 +5325,31 @@ impl<T: TextLayout> Editor<T> {
     /// The active tab, or a value no tab index can be for the scratch buffer. Held as part of the
     /// match list's key rather than hooked into the eight paths that activate a tab — the same
     /// answer, and for the same reason, as the floating bar's `floating_for`.
-    fn find_document(&self) -> usize {
-        self.workspace.active().unwrap_or(usize::MAX)
+    fn find_document(&self) -> u64 {
+        self.document_id()
+    }
+
+    /// Which document is showing, by an identity that survives another tab closing.
+    ///
+    /// **Not the index.** `Workspace::active` is a position in a `Vec`, and positions are reused:
+    /// closing tab 0 makes the old tab 1 into tab 0. Two documents nobody has typed in are both at
+    /// revision 0 — the common case — so every `(document, revision)` staleness stamp keyed on the
+    /// index compared *equal* across a close, and the survivor inherited the closed tab's find
+    /// highlights, diagnostics, error count and word count until something moved. MDEDIT-105.
+    ///
+    /// `Tab::snapshot_id` counts up and is never reused, which is exactly the property the recovery
+    /// store already relies on for the same reason.
+    fn active_document_id(&self) -> Option<u64> {
+        let index = self.workspace.active()?;
+        self.workspace
+            .tabs()
+            .get(index)
+            .map(mdedit_session::Tab::snapshot_id)
+    }
+
+    /// [`Self::active_document_id`], with a value no document can have when there is no tab.
+    fn document_id(&self) -> u64 {
+        self.active_document_id().unwrap_or(u64::MAX)
     }
 
     /// Height the find bar occupies, which is nothing when it is closed and two rows for Replace.

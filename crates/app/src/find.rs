@@ -507,7 +507,7 @@ pub struct Bar {
 /// The document is in here because a revision counts a document's own edits and says nothing about
 /// *which* document — two tabs opened and not yet typed in are both at revision zero, so without it
 /// switching between them would keep the first one's offsets and light the wrong bytes.
-type Stamp = (String, bool, Mode, usize, u64);
+type Stamp = (String, bool, Mode, u64, u64);
 
 /// A key press the find bar answers to, decoded from a winit event.
 ///
@@ -600,7 +600,7 @@ impl Bar {
     }
 
     /// Rescans if anything the match list depends on has moved. Returns whether it did.
-    pub fn refresh(&mut self, source: &str, document: usize, revision: u64) -> bool {
+    pub fn refresh(&mut self, source: &str, document: u64, revision: u64) -> bool {
         let key = (
             self.field.text().to_owned(),
             self.case_sensitive,
