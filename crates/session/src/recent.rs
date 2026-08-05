@@ -120,18 +120,11 @@ impl Recent {
         let Ok(json) = serde_json::to_vec_pretty(&stored) else {
             return;
         };
-        if let Some(directory) = file.parent() {
-            if std::fs::create_dir_all(directory).is_err() {
-                return;
-            }
-        }
         // Temp-then-rename, as the session and snapshot files are: a crash part way through must
-        // leave the previous list rather than a truncated one.
-        let mut temporary = file.to_path_buf();
-        temporary.set_extension("tmp");
-        if std::fs::write(&temporary, &json).is_ok() {
-            let _ = std::fs::rename(&temporary, file);
-        }
+        // leave the previous list rather than a truncated one. One implementation of that for all
+        // three now — the session file did not do it at all when this comment was written, which is
+        // MDEDIT-106.
+        let _ = crate::atomic::write(file, &json);
     }
 }
 
