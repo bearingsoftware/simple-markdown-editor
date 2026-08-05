@@ -149,17 +149,18 @@ fn closing_a_tab_forgets_its_stored_copy() {
     assert!(skipped.is_empty(), "and left nothing dangling: {skipped:?}");
 }
 
-/// Discarding at the *window* level is not offered, and would be wrong if it were: it would close
-/// the editor and leave the stored copies, which is Keep with worse words.
+/// Leaving the program leaves the work stored, and asks nothing on the way (MDEDIT-82). The prompt
+/// here would answer Cancel to anything it were asked, which is what makes "asks nothing" the thing
+/// being tested rather than "was answered agreeably".
 #[test]
-fn keeping_on_the_way_out_leaves_the_work_stored() {
+fn leaving_the_program_leaves_the_work_stored() {
     let dir = TempDir::new().unwrap();
     let (mut editor, path) = editor(&dir, "# Notes\n");
     type_into(&mut editor, "UNSAVED");
     editor.on_idle();
 
-    editor.with_prompt(Box::new(AlwaysKeep));
-    assert!(editor.may_close(), "Keep must let the editor close");
+    editor.with_prompt(Box::new(AlwaysCancel));
+    assert!(editor.may_close(), "closing the program closes it");
 
     let (kept, _) = Store::in_directory(dir.path().join("recovery")).read_all();
     assert_eq!(kept.len(), 1);
@@ -268,23 +269,17 @@ impl mdedit_app::prompt::UnsavedPrompt for AlwaysDiscard {
     }
 }
 
-/// Answers Keep to everything. For the window close, which is the one place *that* is offered.
+/// Refuses everything it is asked. Installed where the point is that it is **not** asked.
 #[derive(Debug)]
-struct AlwaysKeep;
+struct AlwaysCancel;
 
-impl mdedit_app::prompt::UnsavedPrompt for AlwaysKeep {
-    /// Never reached — this one is only ever asked `ask_all`. Cancel rather than Discard so an
-    /// accidental call cannot silently throw work away.
+impl mdedit_app::prompt::UnsavedPrompt for AlwaysCancel {
     fn ask(
         &mut self,
         _name: &str,
         _what: mdedit_app::prompt::Closing,
     ) -> mdedit_app::prompt::Unsaved {
         mdedit_app::prompt::Unsaved::Cancel
-    }
-
-    fn ask_all(&mut self, _names: &[String]) -> mdedit_app::prompt::Unsaved {
-        mdedit_app::prompt::Unsaved::Keep
     }
 }
 

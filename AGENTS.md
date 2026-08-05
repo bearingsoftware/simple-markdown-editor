@@ -289,14 +289,30 @@ Known gaps, so nobody assumes they are done:
   *not modified*, carrying its own text as its record of disk, because a reference document asking to
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
   it can be regenerated, and a stale copy of a reference is worse than none.
-- **Closing the window asks once, naming every modified file.** MDEDIT-64. `CloseRequested` used to
-  call `event_loop.exit()` and nothing else, losing every unsaved buffer — a crash was survivable and
-  a close was not. `Editor::may_close` is the decision and the thing to test; the event arm is one
-  `if` over it. **One dialog, not one per file**: three consecutive dialogs is a thing people dismiss
-  without reading, which turns a safeguard into a formality. Save All writes everything and asks
-  where to put anything untitled; if any work is still unsaved afterwards the close is **cancelled**,
-  because exiting then would lose exactly what the user asked to keep. See the stored-work entries
-  below for what the middle button is now and why.
+- **Closing the window asks nothing at all.** MDEDIT-82. `CloseRequested` once called
+  `event_loop.exit()` and lost every unsaved buffer, which is what MDEDIT-64 put a Save All / Keep
+  for now / Cancel dialog in front of — and then MDEDIT-54 and MDEDIT-66 made the work *survive*, so
+  the dialog was asking the user to decide something the editor had already handled. It is gone.
+  Leaving the program leaves the program; the work is beside the session file and comes back next
+  launch.
+
+  **`may_close` flushes a snapshot synchronously first**, and that is the part to keep. The copy on
+  disk is whatever the idle timer last wrote, so an edit made and the window closed inside that
+  interval would come back a few keystrokes short — which is worse than the dialog was, because it
+  looks like the feature working. It still returns a `bool`: that is the seam `main` and the tests
+  drive, and a caller that ignored the answer would also skip the flush.
+
+  **Closing a *tab* still asks**, and `UnsavedPrompt::ask` is what is left of the dialog — one place,
+  where a document is deliberately discarded with the user looking at it. `ask_all` and its native
+  implementation are gone with the question they answered.
+
+  **Not done, and the reason it matters:** a machine shutdown or log-off is still not an ordinary
+  exit. winit handles neither `WM_QUERYENDSESSION` nor `WM_ENDSESSION` — checked in 0.30.13, the
+  strings do not appear in its Windows backend — so a shutdown loses up to an idle interval of typing
+  and the next launch calls it a recovery from an unclean run. The fix is a window subclass in
+  `mdedit-menu-win`, where the platform `unsafe` already lives: flush, mark the exit clean, return
+  `TRUE`, do not block the shutdown. It is the third item on MDEDIT-82's plan and wants a machine to
+  test on, not a test.
 - **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and
   never written back" — four features were stalled on it. The file is read into a `serde_json::Map`
   as well as the typed `Config`, and a write merges the changed fields into that map, so a key from a
@@ -410,12 +426,13 @@ Known gaps, so nobody assumes they are done:
   optional: a killed run never rewrites the file, so without it the previous quit's `true` survives
   and the next launch calls a crash recovery an ordinary restore. Only the wording depends on it, but
   the wording is the whole point — an ordinary restore says nothing, a recovery says so.
-- **Closing the window offers Save All / Keep for now / Cancel; Discard lives on the per-tab close.**
-  Throwing away every unsaved buffer in one click is not a thing to offer on the way out of the door,
-  and it would be Keep with worse words anyway, since the stored copies survive it. Closing *one* tab
-  is where a document is discarded, because the user is looking at it. A scratch tab is asked with
-  "Save As…" rather than "Save" — a button labelled Save that opens a file picker is a small lie, and
-  before MDEDIT-66 picking it did nothing at all.
+- **The way out asks nothing; Discard lives on the per-tab close.** MDEDIT-82 removed the window
+  dialog entirely — see the entry above — and the reasoning that shaped its buttons is why there is
+  nothing left to ask: Keep was "do what the store already does", Discard would have been Keep with
+  worse words since the copies survive it, and Save was a question the editor could answer itself.
+  Closing *one* tab is where a document is discarded, because the user is looking at it. A scratch
+  tab is asked with "Save As…" rather than "Save" — a button labelled Save that opens a file picker
+  is a small lie, and before MDEDIT-66 picking it did nothing at all.
 - **A stored edit is checked against the file before it is put back.** If something else wrote the
   file since, restoring silently would put an edit on top of somebody's work — the same hazard
   MDEDIT-55 answers while the editor runs. Declining removes the stored copy, or the question returns
