@@ -42,7 +42,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - uses: taiki-e/install-action@cargo-fuzz
+      # `with: tool:` rather than the `@cargo-fuzz` tag form. There is no such tag, and the action
+      # does not fail when it cannot find one — it warns "no tool specified", installs nothing, and
+      # succeeds, so the failure surfaces four lines later as `no such command: fuzz`.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
 
       # The corpus is the point of running this repeatedly: a fuzzer that starts from nothing every
       # time re-derives "a document begins with a brace" on every run.
