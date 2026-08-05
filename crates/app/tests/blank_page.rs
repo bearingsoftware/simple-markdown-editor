@@ -24,7 +24,7 @@
 use mdedit_app::config::Config;
 use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
-use mdedit_app::view::{Rgba, Theme};
+use mdedit_app::view::{Appearance, Rgba, Theme, ThemeChoice};
 
 mod stub;
 use stub::{Grid, MARGIN};
@@ -111,8 +111,18 @@ fn a_blank_page_has_a_line_number_and_a_lit_row() {
     let mut editor = Editor::new("", Grid::new());
     editor.with_config(Config {
         line_numbers: true,
+        // **Pinned, or this test is about the machine it runs on.** `with_config` resolves
+        // `ThemeChoice::System` by reading the registry, so on a light-themed Windows — which is
+        // what a CI runner is — the assertions below would be looking for a palette the editor is
+        // not drawing with. `caret_line.rs` documents the same trap; this test did not follow it,
+        // and main went red for exactly that.
+        theme: ThemeChoice::Dark,
         ..Config::default()
     });
+    // Says out loud what the pin above is for, so a pin that stopped binding fails here rather
+    // than by quietly comparing against the wrong palette.
+    assert_eq!(editor.appearance(), Appearance::Dark);
+
     let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
 
     assert_eq!(
