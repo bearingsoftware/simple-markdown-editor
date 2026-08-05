@@ -70,13 +70,17 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
         // here as MDEDIT-112 — the locator is the highest-risk component in the project and its own
         // gate is the tiling property, which this does not weaken.
         //
-        // Whitespace *only*, so a span that has swallowed a content letter is still caught.
-        let whitespace = !text.is_empty() && text.chars().all(char::is_whitespace);
-        let plausible = whitespace
+        // Whitespace is **ignored** in the four inline arms rather than accepted wholesale: the gap
+        // is sometimes its own segment (`" "`) and sometimes merged with the delimiter beside it
+        // (`" *"`), because adjacent markers of one kind are coalesced. Both are the same defect.
+        // Every other character still has to be the construct's syntax, so a span that has swallowed
+        // a content letter is caught exactly as before.
+        let inline: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        let plausible = text.chars().all(char::is_whitespace) && !text.is_empty()
             || match marker {
-                Marker::Emphasis | Marker::Strong => text.chars().all(|c| c == '*' || c == '_'),
-                Marker::Strikethrough => text.chars().all(|c| c == '~'),
-                Marker::CodeSpan => text.chars().all(|c| c == '`'),
+                Marker::Emphasis | Marker::Strong => inline.chars().all(|c| c == '*' || c == '_'),
+                Marker::Strikethrough => inline.chars().all(|c| c == '~'),
+                Marker::CodeSpan => inline.chars().all(|c| c == '`'),
                 Marker::ThematicBreak => text.chars().all(|c| "*-_ \t".contains(c)),
                 Marker::Escape => text == "\\",
                 Marker::HardBreak => text.chars().all(|c| c == ' ' || c == '\\'),

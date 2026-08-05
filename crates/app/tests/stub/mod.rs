@@ -93,6 +93,14 @@ impl TextLayout for Grid {
                 pen_x += ADVANCE;
             }
         }
+        // **Empty input lays out to nothing**, as DirectWrite does — `Layout::default()`, no lines
+        // at all. This used to fabricate line 0 for it, and MDEDIT-81 is what that hid: a new
+        // document drew no caret, because `caret_position` gave up on `lines.get(0)` and the stub
+        // never let a test see it. `crates/text-dwrite/tests/layout.rs` pins the real behaviour;
+        // this is the stub agreeing with it.
+        if runs.iter().all(|run| run.text.is_empty()) {
+            return Ok(Layout::default());
+        }
         while lines.len() <= row {
             lines.push(new_line(lines.len()));
         }
