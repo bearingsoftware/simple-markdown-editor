@@ -6,6 +6,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::fmt::Write as _;
+
 use mdedit_language::{Language, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_yaml::{Yaml, analyze};
@@ -59,6 +61,66 @@ fn comments_are_comments_and_a_hash_in_a_value_is_not() {
         tokens(source)
     );
     assert!(tiles(source));
+}
+
+/// MDEDIT-99 bounded the trailing-comment scan at the next flow indicator instead of at the end of
+/// the line. It has to still find a comment on either side of one, and still not invent one.
+#[test]
+fn a_trailing_comment_survives_around_flow_indicators() {
+    // Before the indicator, after it, and inside a flow collection.
+    for source in [
+        "key: value # after a plain scalar\n",
+        "list: [a, b] # after a flow collection\n",
+        "list: [a, b # inside one\n",
+        "key: a # before a colon: not a comment marker\n",
+    ] {
+        assert!(
+            tokens(source)
+                .iter()
+                .any(|(token, _)| *token == Token::Comment),
+            "no comment found in {source:?}: {:?}",
+            tokens(source)
+        );
+        assert!(tiles(source), "{source:?}");
+    }
+
+    // And the other direction: a `#` with no whitespace in front of it is not one, wherever the
+    // flow indicators fall.
+    for source in ["list: [a#b, c#d]\n", "key: a#b, c\n"] {
+        assert!(
+            !tokens(source)
+                .iter()
+                .any(|(token, _)| *token == Token::Comment),
+            "invented a comment in {source:?}: {:?}",
+            tokens(source)
+        );
+        assert!(tiles(source), "{source:?}");
+    }
+}
+
+/// A minified flow document is one line with tens of thousands of scalars on it — JSON renamed
+/// `.yaml`, which is valid YAML and a realistic thing to open. It used to cost 36 seconds a megabyte
+/// because every scalar re-scanned the rest of the line looking for a comment (MDEDIT-99).
+///
+/// This is a *correctness* test on that shape; `lex_cost.rs` carries the numbers.
+#[test]
+fn a_long_single_line_flow_document_lexes() {
+    let mut source = String::from("[");
+    for index in 0..2_000 {
+        if index > 0 {
+            source.push(',');
+        }
+        write!(source, "item{index} of some length").expect("a String never fails to write");
+    }
+    source.push_str("]\n");
+
+    assert!(tiles(&source));
+    assert!(
+        !tokens(&source)
+            .iter()
+            .any(|(token, _)| *token == Token::Comment),
+        "there is no comment in it"
+    );
 }
 
 #[test]
