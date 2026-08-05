@@ -346,3 +346,34 @@ fn a_deferred_tab_is_not_read_to_check_it() {
         "checking for external changes must not materialise a deferred tab"
     );
 }
+
+/// MDEDIT-109. Reloading clears every layout cache and, until now, not the word count — so after a
+/// file was rewritten underneath and reloaded, the status bar showed the *old* file's number.
+///
+/// It lasted because nothing schedules an idle tick on a focus change: the count sat wrong until the
+/// next keystroke. `reopen_with` clears both, for exactly this stated reason, and `reload` was its
+/// inconsistent twin.
+#[test]
+fn reloading_recounts_the_words() {
+    let dir = TempDir::new().unwrap();
+    let answers = Answers::saying(Conflict::Reload);
+    let (mut editor, path) = editor(
+        &dir,
+        "one two three four five six
+",
+        &answers,
+    );
+
+    editor.build_frame(900.0, 400.0, 1.0);
+    assert_eq!(editor.words(), Some(6), "the count starts right");
+
+    externally_write(&path, "just two\n");
+    assert!(editor.check_disk(), "the file changed and was reloaded");
+    editor.build_frame(900.0, 400.0, 1.0);
+
+    assert_eq!(
+        editor.words(),
+        Some(2),
+        "the bar is showing the word count of a file that is no longer there"
+    );
+}
