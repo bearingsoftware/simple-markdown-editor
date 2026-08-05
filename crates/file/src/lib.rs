@@ -489,6 +489,12 @@ pub struct LoadedFile {
     /// Whether the encoding has been changed deliberately, so the original bytes are no longer what
     /// this file should be written as. See [`LoadedFile::set_encoding`].
     re_encode: bool,
+    /// The encoding, the BOM and the round-trip answer this file was **read** with.
+    ///
+    /// Kept so that picking the original encoding back restores the state exactly rather than
+    /// leaving the two flags above latched — MDEDIT-103, where a toggle and a toggle back re-encoded
+    /// an unedited Shift-JIS buffer through mappings that are not reversible.
+    loaded: (&'static Encoding, bool, bool),
     /// What the file looked like from outside when these bytes were read. `None` when the metadata
     /// could not be taken, which makes every later comparison say "unchanged".
     stamp: Option<Stamp>,
@@ -522,14 +528,25 @@ impl LoadedFile {
     /// rewriting them is now the whole point. What protects the user instead is
     /// [`FileError::Unrepresentable`], which refuses the save if the new encoding cannot hold the
     /// text at all.
+    ///
+    /// # Both flags are derived, not latched
+    ///
+    /// Because the user can pick the original encoding back, and then none of the above applies: the
+    /// file is what it was read as, the original bytes are once again the right ones to write, and
+    /// the round-trip answer is the one the read produced. Latching them was MDEDIT-103 — two clicks
+    /// on a Shift-JIS file skipped both the fast path and the refusal and re-encoded an *unedited*
+    /// buffer through mappings that are provably not reversible.
     pub fn set_encoding(&mut self, choice: Choice) -> bool {
         if choice.matches(self.format) {
             return false;
         }
         self.format.encoding = choice.encoding;
         self.format.bom = choice.bom;
-        self.re_encode = true;
-        self.round_trips = true;
+
+        let (encoding, bom, round_trips) = self.loaded;
+        let as_read = std::ptr::eq(self.format.encoding, encoding) && self.format.bom == bom;
+        self.re_encode = !as_read;
+        self.round_trips = if as_read { round_trips } else { true };
         true
     }
 
@@ -589,6 +606,7 @@ pub fn in_memory(text: &str) -> LoadedFile {
         text: text.to_owned(),
         round_trips: true,
         re_encode: false,
+        loaded: (UTF_8, false, true),
         stamp: None,
     }
 }
@@ -656,9 +674,23 @@ fn decode(
     encoding: &'static Encoding,
     stamp: Option<Stamp>,
 ) -> Result<LoadedFile, FileError> {
-    // `decode` strips a BOM for the encoding it belongs to, which is what we want: the BOM is
-    // format, not content, and is put back on save.
-    let (text, actual, had_errors) = encoding.decode(&bytes);
+    // **`Encoding::decode` is the BOM-*sniffing* variant**, and it does not merely strip a mark — it
+    // switches encoding on one. That is right for [`load`], where the encoding came from the mark in
+    // the first place, and wrong for [`load_as`], where the user's explicit choice is the one thing
+    // this crate promises never to override. A windows-1252 file beginning `FF FE` was reopened as
+    // UTF-16LE, which is MDEDIT-103.
+    //
+    // So the mark is handled here instead: stripped when it belongs to the encoding being read —
+    // where it is format rather than content, and is put back on save — and otherwise left alone,
+    // because in that encoding it *is* content. `ÿþ` is two ordinary characters.
+    let bom =
+        matches!(Encoding::for_bom(&bytes), Some((found, _)) if std::ptr::eq(found, encoding));
+    let body = match Encoding::for_bom(&bytes) {
+        Some((_, length)) if bom => &bytes[length..],
+        _ => &bytes[..],
+    };
+
+    let (text, had_errors) = encoding.decode_without_bom_handling(body);
     if had_errors {
         return Err(FileError::Malformed {
             path: path.to_path_buf(),
@@ -666,9 +698,8 @@ fn decode(
         });
     }
 
-    let bom = Encoding::for_bom(&bytes).is_some();
     let format = FileFormat {
-        encoding: actual,
+        encoding,
         bom,
         newline: Newline::detect(&text),
     };
@@ -685,6 +716,7 @@ fn decode(
         original: bytes,
         round_trips,
         re_encode: false,
+        loaded: (format.encoding, format.bom, round_trips),
         stamp,
     })
 }

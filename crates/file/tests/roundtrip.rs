@@ -70,6 +70,13 @@ fn fixtures() -> Vec<(&'static str, Vec<u8>, &'static encoding_rs::Encoding)> {
         // Without a BOM these need an explicit encoding; `load` would read them as UTF-8.
         ("utf16le-nobom.md", utf16le("plain\n", false), UTF_16LE),
         ("utf16be-nobom.md", utf16be("plain\n", false), UTF_16BE),
+        // MDEDIT-103. `FileFormat::encode` does UTF-16 by hand, because `encoding_rs` maps the
+        // UTF-16 *output* encodings to UTF-8 and returns UTF-8 bytes with no error — which behind a
+        // UTF-16 BOM is a file no reader can parse, reported as a successful save. A surrogate pair
+        // is the case that hand-written encoder exists for, and until now nothing exercised it in
+        // either byte order.
+        ("utf16le-astral.md", utf16le("汉字 🎉 é\n", true), UTF_16LE),
+        ("utf16be-astral.md", utf16be("汉字 🎉 é\n", true), UTF_16BE),
     ];
 
     // windows-1252: every byte that has a mapping, so the whole table is exercised.
@@ -265,29 +272,63 @@ fn saving_leaves_no_temporary_file() {
 }
 
 /// A file that claims to round-trip must re-encode to exactly the bytes it came from.
+///
+/// **This test used to assert nothing** (MDEDIT-103), and it is the only one behind the whole
+/// non-UTF-8 write path. It saved an edit and then saved the original text again — and that second
+/// save takes the byte-identical fast path, writing a copy of the original bytes held in memory. The
+/// final comparison was therefore against bytes the encoder had never touched, and would have passed
+/// had `FileFormat::encode` emitted anything at all.
+///
+/// Both halves are asserted now, separately, because they are two different claims: the *edited*
+/// save runs the encoder and has to decode back, and the *unedited* save has to be byte-identical.
 #[test]
 fn the_round_trip_flag_tells_the_truth() {
     let dir = TempDir::new().unwrap();
+    let mut skipped = Vec::new();
 
     for (name, bytes, encoding) in fixtures() {
         let path = fixture(&dir, name, &bytes);
         let file = load_as(&path, encoding).unwrap();
         if !file.round_trips() {
+            // Recorded rather than quietly passed over. `round_trips` is computed *by the encoder
+            // this test is checking*, so a broken encoder drops its own fixtures out of the loop and
+            // the test goes green with nothing left in it. Verified: mutating the UTF-16 byte order
+            // left all fourteen passing.
+            skipped.push(name);
             continue;
         }
 
-        // Saving the *unedited* text takes the copy-the-original path, so it proves nothing about
-        // the encoder. Force the encoding path by editing and then removing the edit.
+        // The encoder, held up against the decoder. Nothing here reads the original bytes.
         let edited = format!("{}x", file.text());
         save(&path, &edited, &file).unwrap();
-        save(&path, file.text(), &file).unwrap();
+        let reread = load_as(&path, encoding).unwrap();
+        assert_eq!(
+            reread.text(),
+            edited,
+            "{name}: what the encoder wrote does not decode back"
+        );
 
+        // And an unedited save is byte-identical, which is the guarantee the original is kept for.
+        std::fs::write(&path, &bytes).unwrap();
+        let file = load_as(&path, encoding).unwrap();
+        save(&path, file.text(), &file).unwrap();
         assert_eq!(
             std::fs::read(&path).unwrap(),
             bytes,
             "{name}: claims to round-trip, but does not"
         );
     }
+
+    // **None of them, as it turns out.** Every fixture here is canonical in its own encoding — the
+    // legacy ones are built by encoding text rather than by hand — so the `continue` above is a
+    // guard that never fires, and saying so is what keeps it that way. A fixture that starts being
+    // skipped is either a lossy byte sequence somebody added deliberately, in which case this line
+    // is where it gets named, or an encoder that has stopped round-tripping and would otherwise
+    // have removed itself from its own test.
+    assert!(
+        skipped.is_empty(),
+        "these fixtures no longer round-trip, so nothing above tested them: {skipped:?}"
+    );
 }
 
 /// The case that proves the whole design, and that the naive one would have corrupted files.
