@@ -306,7 +306,7 @@ proptest! {
     /// inside the document. The menu item moves the caret to one of these, so a span that is not is
     /// a panic from a render on a file the user merely opened.
     #[test]
-    fn every_span_is_usable(source in ".{0,200}") {
+    fn every_span_is_usable(source in "(?s).{0,200}") {
         let mut previous = 0;
         for diagnostic in validate(&source) {
             let (start, end) = (diagnostic.span.start().get(), diagnostic.span.end().get());
@@ -320,10 +320,33 @@ proptest! {
         }
     }
 
-    /// Whatever it is handed, it terminates and stays within its budget. Both are the sort of thing
-    /// a hand-rolled scanner gets wrong on input nobody imagined.
+    /// Whatever it is handed, it terminates and reports spans that address the document it was
+    /// given. Both are the sort of thing a hand-rolled scanner gets wrong on input nobody imagined.
+    ///
+    /// **The bound was the only assertion here, and it is true by construction** — `validate` stops
+    /// at `LIMIT` — so this property held for any implementation at all (MDEDIT-110). What it checks
+    /// now is what a caller does with the answer: `Tools → Validate Document` puts the caret on a
+    /// span and the renderer draws a squiggle under it, so a span past the end or through the middle
+    /// of a character is a panic in the window.
+    ///
+    /// The character class contained a literal backslash and an `n` rather than a newline, which is
+    /// how a *line-sensitive* scanner came to be property-tested on single-line documents only.
     #[test]
-    fn it_always_terminates_and_stays_bounded(source in "[\\{\\}\\[\\]\",:0-9a-z \\\\n]{0,300}") {
-        prop_assert!(validate(&source).len() <= mdedit_json::LIMIT);
+    fn it_always_terminates_and_reports_spans_that_address_the_document(
+        source in "[\\{\\}\\[\\]\",:0-9a-z \\\\\n\t]{0,300}",
+    ) {
+        let diagnostics = validate(&source);
+        prop_assert!(diagnostics.len() <= mdedit_json::LIMIT);
+
+        let mut previous = 0;
+        for diagnostic in &diagnostics {
+            let (start, end) = (diagnostic.span.start().get(), diagnostic.span.end().get());
+            prop_assert!(start <= end, "backwards span in {source:?}");
+            prop_assert!(end <= source.len(), "span past the end in {source:?}");
+            prop_assert!(source.is_char_boundary(start), "start off a boundary in {source:?}");
+            prop_assert!(source.is_char_boundary(end), "end off a boundary in {source:?}");
+            prop_assert!(start >= previous, "out of order in {source:?}");
+            previous = start;
+        }
     }
 }

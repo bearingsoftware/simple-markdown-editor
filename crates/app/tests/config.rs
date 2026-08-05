@@ -281,18 +281,57 @@ fn a_zoom_set_out_of_range_is_clamped_too() {
     assert!(settings.config().zoom <= 4.0);
 }
 
-/// The rule that has not changed, and must not: no setting may name a path. Asserted structurally —
-/// a config that parses must not have produced one.
+/// The rule that has not changed, and must not: no setting may name a path.
+///
+/// **This test used to prove nothing** (MDEDIT-110). Its fixture contained invalid JSON escapes —
+/// `\s` and `\x` — so `load_from` took the malformed-file fallback and returned defaults whether or
+/// not a path-typed field existed. A named security rule with an empty guard behind it.
+///
+/// The fixture is valid JSON now, and it sets a real key as well, so the file provably parsed: if it
+/// did not, `zoom` would not have come back and the unknown-key half would be asserting the fallback
+/// again.
 #[test]
 fn a_config_naming_a_path_sets_nothing() {
     let dir = TempDir::new().unwrap();
     written(
         &dir,
-        r#"{"session_path": "\\evil.example\share", "startup_file": "C:\tmp\x.md"}"#,
+        r#"{"session_path": "\\\\evil.example\\share", "startup_file": "C:\\tmp\\x.md", "zoom": 2.0}"#,
     );
 
-    // Both keys are unknown, so they are ignored on read — which is exactly the protection. The
-    // rule is that no *field* exists for them, and the only way to break it is to add one.
     let config = Config::load_from(&dir.path().join("config.json"));
-    assert_eq!(config, Config::default());
+    assert!(
+        (config.zoom - 2.0).abs() < f32::EPSILON,
+        "the file has to have parsed, or the rest of this test is about the fallback"
+    );
+    // The two path keys are unknown, so they set nothing — which is exactly the protection. The rule
+    // is that no *field* exists for them, and the only way to break it is to add one.
+    assert_eq!(
+        config,
+        Config {
+            zoom: 2.0,
+            ..Config::default()
+        }
+    );
+}
+
+/// And the rule stated structurally, which is what actually holds it: these are every field there
+/// is, so adding a path-typed one is a change to this list rather than something nobody notices.
+#[test]
+fn the_config_has_exactly_these_fields_and_none_of_them_is_a_path() {
+    let value = serde_json::to_value(Config::default()).expect("a config serialises");
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .expect("a config is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+
+    assert_eq!(
+        keys,
+        ["chrome", "line_numbers", "theme", "zoom"],
+        "a field was added or renamed. If it names a path, see the module docs: the config file is \
+         read-only by design and untrusted by rule, and a path in it is a path this process would \
+         open on somebody else's say-so"
+    );
 }

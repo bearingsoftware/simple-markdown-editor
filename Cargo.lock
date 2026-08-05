@@ -1090,6 +1090,7 @@ dependencies = [
  "mdedit-file",
  "mdedit-language",
  "mdedit-offsets",
+ "proptest",
  "serde",
  "serde_json",
  "tempfile",

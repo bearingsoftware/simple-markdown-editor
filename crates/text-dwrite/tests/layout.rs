@@ -438,3 +438,68 @@ fn a_rule_grows_with_the_style() {
         drop(&small)
     );
 }
+
+// ---- what this backend does with newlines and trailing spaces (MDEDIT-110) ----
+
+/// **A `\n` gets no glyph, and trailing spaces do.**
+///
+/// Both halves are the opposite of what `AGENTS.md` recorded from MDEDIT-46 — which said DirectWrite
+/// "gives `\n` a glyph of its own" and "does not shape trailing whitespace at all". Measured here on
+/// Windows 11 with the installed Segoe UI:
+///
+/// ```text
+/// "ab\ncd"   -> glyphs at bytes [0, 1, 3, 4]      the newline at 2 is absent
+/// "ab  \ncd" -> glyphs at bytes [0, 1, 2, 3, 5, 6] both spaces present, the newline at 4 absent
+/// "\n"       -> no glyphs at all
+/// "ab   "    -> glyphs at bytes [0, 1, 2, 3, 4]   every trailing space present
+/// ```
+///
+/// This is a **characterisation** test: its job is to fail if that ever changes, because two pieces
+/// of the renderer were written on the strength of the description rather than the measurement —
+/// `view::ending_before`, which exists to answer "is the offset past the last glyph the terminator
+/// or past it", and the whitespace marks, which walk trailing spaces out of the *text* because they
+/// were believed to have no glyphs. MDEDIT-113 carries re-checking both against this.
+///
+/// It asserts source-byte mapping rather than metrics, so it does not depend on which build of which
+/// font is installed — the thing the header of this file warns about.
+#[test]
+fn a_newline_gets_no_glyph_and_trailing_spaces_do() {
+    let mut text = engine();
+    let mapped = |source: &str| -> Vec<usize> {
+        let mut engine = engine();
+        let layout = engine
+            .layout(&[run(source, TextStyle::body(16.0))], 1000.0)
+            .unwrap();
+        layout
+            .glyphs()
+            .map(|glyph| glyph.source.start().get())
+            .collect()
+    };
+
+    assert_eq!(
+        mapped("ab\ncd"),
+        vec![0, 1, 3, 4],
+        "a newline between two words should produce no glyph of its own"
+    );
+    assert_eq!(
+        mapped("\n"),
+        Vec::<usize>::new(),
+        "a lone newline should lay out to nothing"
+    );
+    assert_eq!(
+        mapped("ab   "),
+        vec![0, 1, 2, 3, 4],
+        "trailing spaces should each be shaped"
+    );
+    assert_eq!(
+        mapped("ab  \ncd"),
+        vec![0, 1, 2, 3, 5, 6],
+        "spaces before a newline should be shaped and the newline should not"
+    );
+
+    // And the layout still reports two lines, so the newline does its work without a glyph.
+    let layout = text
+        .layout(&[run("ab\ncd", TextStyle::body(16.0))], 1000.0)
+        .unwrap();
+    assert_eq!(layout.lines.len(), 2, "a newline should still break a line");
+}

@@ -311,7 +311,7 @@ fn a_region_starting_inside_a_block_scalar_would_be_wrong() {
 proptest! {
     /// The gate, over arbitrary input.
     #[test]
-    fn segments_tile_any_input(source in ".*") {
+    fn segments_tile_any_input(source in "(?s).*") {
         prop_assert!(tiles(&source));
     }
 
@@ -338,7 +338,7 @@ proptest! {
     }
 
     #[test]
-    fn spans_land_on_character_boundaries(source in ".*") {
+    fn spans_land_on_character_boundaries(source in "(?s).*") {
         for segment in &analyze(&source).segments {
             prop_assert!(source.is_char_boundary(segment.span().start().get()));
             prop_assert!(source.is_char_boundary(segment.span().end().get()));
