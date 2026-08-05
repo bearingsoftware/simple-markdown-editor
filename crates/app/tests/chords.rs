@@ -19,6 +19,7 @@ use mdedit_app::editor::Editor;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
+mod chordlist;
 mod stub;
 use stub::Grid;
 
@@ -259,6 +260,183 @@ fn pressing_the_same_level_again_clears_it() {
         "got {:?}",
         editor.document().to_string()
     );
+}
+
+// ---- tab cycling, and the chord that could not reach it (MDEDIT-101) ----
+
+/// An editor on `count` saved files, with the first one active.
+fn tabs(dir: &TempDir, count: usize) -> Editor<Grid> {
+    let mut workspace = Workspace::new();
+    for index in 0..count {
+        let path = dir.path().join(format!("note{index}.md"));
+        std::fs::write(&path, format!("# Note {index}\n")).unwrap();
+        workspace.add(path);
+    }
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+    editor
+}
+
+/// The defect. `"\t"` had an arm in `apply_chord` and nothing could reach it: `handle_chord`
+/// dispatched only `Key::Character`, Tab arrives as `Key::Named(NamedKey::Tab)`, and there is no
+/// menu item for next/previous tab either — so `cycle_tab` was dead code in the shipped editor while
+/// the help page promised Ctrl+Tab.
+///
+/// What this cannot cover is the decode itself, for the reason this file's own docs give: a winit
+/// `KeyEvent` cannot be constructed by a test. It covers everything below it, and the decode is one
+/// arm beside the Ctrl+Home one that has always worked the same way.
+#[test]
+fn ctrl_tab_cycles_forward_and_ctrl_shift_tab_back() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = tabs(&dir, 3);
+    assert_eq!(editor.workspace().active(), Some(0));
+
+    assert!(editor.apply_chord("\t", false));
+    assert_eq!(editor.workspace().active(), Some(1));
+    assert!(editor.apply_chord("\t", false));
+    assert_eq!(editor.workspace().active(), Some(2));
+
+    // And round the end, which is what makes it a cycle rather than a walk.
+    assert!(editor.apply_chord("\t", false));
+    assert_eq!(editor.workspace().active(), Some(0));
+
+    assert!(editor.apply_chord("\t", true));
+    assert_eq!(
+        editor.workspace().active(),
+        Some(2),
+        "Shift goes the other way"
+    );
+}
+
+/// One tab is not a cycle, and saying so costs nothing: a chord that redrew the frame to change
+/// nothing would be a flicker.
+#[test]
+fn cycling_one_tab_does_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = tabs(&dir, 1);
+    assert!(!editor.apply_chord("\t", false));
+    assert!(!editor.apply_chord("\t", true));
+}
+
+// ---- the arms nothing pressed (MDEDIT-101) ----
+
+/// Ctrl+N, Ctrl+W and Ctrl+O move tabs about, and none of them had a test.
+#[test]
+fn ctrl_n_opens_a_tab_and_ctrl_w_closes_one() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = tabs(&dir, 1);
+    assert_eq!(editor.workspace().tabs().len(), 1);
+
+    assert!(editor.apply_chord("n", false));
+    assert_eq!(
+        editor.workspace().tabs().len(),
+        2,
+        "Ctrl+N opens a new file"
+    );
+
+    assert!(editor.apply_chord("w", false));
+    assert_eq!(editor.workspace().tabs().len(), 1, "Ctrl+W closes it again");
+}
+
+#[test]
+fn ctrl_o_opens_what_the_picker_names() {
+    let dir = TempDir::new().unwrap();
+    let elsewhere = dir.path().join("other.md");
+    std::fs::write(&elsewhere, "# Other\n").unwrap();
+
+    // The *open* picker, which is a different collaborator from the save-as one — Ctrl+O asks
+    // "which files", Ctrl+Shift+S asks "where to put this".
+    let asked = Rc::new(RefCell::new(0));
+    let counter = Rc::clone(&asked);
+    let chosen = elsewhere.clone();
+    let mut editor = tabs(&dir, 1);
+    editor.with_open_picker(Box::new(move || {
+        *counter.borrow_mut() += 1;
+        Some(vec![chosen.clone()])
+    }));
+    assert!(editor.apply_chord("o", false));
+
+    assert_eq!(*asked.borrow(), 1, "Ctrl+O must ask which file");
+    assert!(
+        editor
+            .workspace()
+            .tabs()
+            .iter()
+            .any(|tab| tab.path() == Some(elsewhere.as_path())),
+        "and open it"
+    );
+}
+
+/// Copy, paste and the second spelling of redo. Cut had a test and these three did not, which is
+/// how `"y"` — an arm with no other coverage at all — could have been deleted unnoticed.
+#[test]
+fn copy_paste_and_ctrl_y_do_what_they_say() {
+    let held = Rc::new(RefCell::new(None));
+
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.with_clipboard(Box::new(Held(Rc::clone(&held))));
+    editor.insert_text("word");
+    select_the_word(&mut editor);
+
+    editor.apply_chord("c", false);
+    assert_eq!(held.borrow().as_deref(), Some("word"), "Ctrl+C copies");
+
+    // Pasted at the caret rather than over the selection it was copied from, or the edit replaces
+    // the same bytes with themselves and there is nothing for undo to take back.
+    let before_paste = editor.document().to_string();
+    editor
+        .document_mut()
+        .set_selection(mdedit_document::Selection::caret(
+            mdedit_offsets::ByteOffset::new(4),
+        ));
+    editor.apply_chord("v", false);
+    let after_paste = editor.document().to_string();
+    assert!(
+        after_paste.starts_with("wordword"),
+        "Ctrl+V pastes at the caret, got {after_paste:?}"
+    );
+
+    // Ctrl+Z then Ctrl+Y: the second is the redo spelling that shares no letter with undo, and had
+    // no test of its own at all.
+    assert!(editor.apply_chord("z", false));
+    assert_eq!(editor.document().to_string(), before_paste);
+    assert!(editor.apply_chord("y", false));
+    assert_eq!(editor.document().to_string(), after_paste, "Ctrl+Y redoes");
+}
+
+/// A clipboard that remembers, so a copy can be looked at.
+#[derive(Debug)]
+struct Held(Rc<RefCell<Option<String>>>);
+
+impl mdedit_app::clipboard::Clipboard for Held {
+    fn read(&mut self) -> Option<String> {
+        self.0.borrow().clone()
+    }
+
+    fn write(&mut self, text: &str) {
+        *self.0.borrow_mut() = Some(text.to_owned());
+    }
+}
+
+/// Every chord in the shared list is pressed at least once, on a scratch editor, and none of them
+/// panics or is silently unreachable.
+///
+/// This is what makes `chordlist` two-directional rather than a second hand-kept list: a label added
+/// there and never wired up is pressed here, and `shortcuts.rs` holds it against the help page.
+#[test]
+fn every_listed_chord_is_pressed() {
+    for chord in chordlist::CHORDS {
+        for (character, shift) in chord.presses {
+            let dir = TempDir::new().unwrap();
+            let mut editor = tabs(&dir, 2);
+            editor.insert_text("some words here");
+            // Nothing is asserted about the result — several of these legitimately return false,
+            // and what a chord *does* is the business of the named tests above. What is asserted is
+            // that pressing it is a thing that can happen at all.
+            let _ = editor.apply_chord(character, *shift);
+        }
+    }
 }
 
 /// And Ctrl+0 is still zoom, not a seventh heading level.

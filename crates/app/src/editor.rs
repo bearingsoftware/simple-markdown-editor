@@ -2612,6 +2612,13 @@ impl<T: TextLayout> Editor<T> {
                 self.select(end, self.modifiers.shift_key());
                 return true;
             }
+            // Tab is a *named* key, not a character — which `find_key`'s own decode already relied
+            // on — so the `"\t"` arm below was unreachable from the keyboard and `cycle_tab` could
+            // not be reached at all: there is no menu item for it either. MDEDIT-101, and MDEDIT-65's
+            // class exactly, a label and a binding disagreeing with nothing to catch it.
+            Key::Named(NamedKey::Tab) => {
+                return self.apply_chord("\t", self.modifiers.shift_key());
+            }
             _ => {}
         }
 
