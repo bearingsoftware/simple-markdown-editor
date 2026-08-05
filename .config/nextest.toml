@@ -1,0 +1,27 @@
+# cargo-nextest, MDEDIT-111.
+#
+# Why this runner rather than `cargo test`: nextest runs every test in its own process. `cargo test`
+# runs a binary's tests on threads of one process, and this project has already been bitten hard by
+# that — MDEDIT-67 was a heap corruption from two threads of one process touching the Windows
+# clipboard, which aborted `context_menu` 15 runs in 20 and could not be reproduced in isolation.
+# Process-per-test is the structural answer to that whole class, not a workaround for one bug.
+#
+# What it does not run: doctests. Cargo owns those, so CI runs `cargo test --doc` beside this.
+
+[profile.default]
+# Anything slower than this is either a genuine hang or a perf regression worth looking at. It is a
+# warning rather than a kill, because the property tests and the 400-block scoped-parse fixtures are
+# legitimately slow in a debug build.
+slow-timeout = { period = "60s", terminate-after = 8 }
+
+[profile.ci]
+# One run should name every failure. Stopping at the first means a second push to find the second.
+fail-fast = false
+# Failures again at the end, so the summary is readable without scrolling a parallel log.
+failure-output = "immediate-final"
+status-level = "fail"
+
+# **No retries, deliberately.** They are one line away and they are the wrong line here: an
+# intermittent failure in this codebase has twice been a real defect — the clipboard corruption above
+# and the recovery store's default path — and a runner that quietly passes on the second attempt is a
+# runner that hides exactly those. If a test is flaky, that is the finding.

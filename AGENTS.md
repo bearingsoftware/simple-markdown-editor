@@ -1006,14 +1006,20 @@ open stack-corrupting overflow in `serialize()`).
 ```bash
 cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
+cargo nextest run --all-features   # what CI runs; needs `cargo install cargo-nextest --locked`
+cargo test --all-features --doc    # nextest does not run doctests, so this is the other half
 cargo doc --no-deps --all-features # broken intra-doc links are denied, and CI runs this
 cargo deny check                   # licences + advisories
 cargo bench -p mdedit-markers      # segmentation cost against the keystroke budget
 cargo bench -p mdedit-document     # what an undo group and a transaction cost against typing
 ```
 
-CI runs fmt, clippy, tests and docs on both Linux and Windows. Check the MSRV before pushing —
+`cargo test --all-features` still works and is fine for a quick loop. **CI runs nextest** (MDEDIT-111),
+which puts every test in its own process — the structural answer to the MDEDIT-67 class, where two
+threads of one process reading the Windows clipboard aborted a whole test binary. There are **no
+retries** configured and that is deliberate; see `.config/nextest.toml`.
+
+CI runs fmt, clippy, tests, doctests and docs on both Linux and Windows. Check the MSRV before pushing —
 `cargo +1.87.0 check --all-features` — because the local toolchain is newer and will happily accept
 things the floor rejects. Let-chains are the trap: they stabilised in 1.88.
 
