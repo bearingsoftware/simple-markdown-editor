@@ -851,3 +851,32 @@ fn scrolling_into_a_run_of_identical_blocks_stays_put() {
         "and again, to {after_two}"
     );
 }
+
+/// MDEDIT-109. A left click below the content fell through to `click_at`, whose `offset_at_point`
+/// clamps an out-of-band y to the last chunk — so clicking the word count in the status bar moved
+/// the caret to the end of the document and started a drag from there.
+///
+/// `right_click_at` has checked `content.contains` since it was written. The left button did not.
+#[test]
+fn clicking_the_status_bar_does_not_move_the_caret() {
+    let mut editor = editor(40);
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::ZERO));
+    let before = editor.document().selection();
+
+    // Squarely in the status bar, which is the bottom `BAR_HEIGHT` of the window.
+    let acted = editor.click(WIDTH - 40.0, HEIGHT - BAR_HEIGHT / 2.0);
+
+    assert!(
+        !acted,
+        "a click on the status bar is not a click in the document"
+    );
+    assert_eq!(
+        editor.document().selection(),
+        before,
+        "the caret moved to the end of the document"
+    );
+}

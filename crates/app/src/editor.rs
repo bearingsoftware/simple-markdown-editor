@@ -129,6 +129,32 @@ enum Snapshotting {
     Forget(u64),
 }
 
+/// Whether this key is a modifier and nothing else — a press that cannot have moved the caret.
+///
+/// Holding one is not an edit and not a motion, so it must not re-arm the caret reveal. See where it
+/// is called: MDEDIT-49 found this the hard way for Shift+wheel, where holding Shift undid the pan
+/// on the very next frame.
+fn modifier_only(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::AltGraph
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
 /// Whether a key press carrying these modifiers is a chord rather than text to insert.
 ///
 /// **Ctrl without Alt**, and the `!alt` is the whole of MDEDIT-102 rather than a nicety. Windows
@@ -1364,6 +1390,13 @@ impl<T: TextLayout> Editor<T> {
             // Every cached layout is keyed on bytes that are no longer in the buffer.
             self.layouts.clear();
             self.heights.clear();
+            // **And so is the word count**, for exactly the reason `reopen_with` gives and for
+            // exactly as long as it was the inconsistent twin of it (MDEDIT-109): a count is left to
+            // age because a stale one is nearly right, and after a file has been rewritten
+            // underneath it is not stale but *wrong*. Nothing schedules an idle tick on a focus
+            // change, so the bar showed the old file's number until the next keystroke.
+            self.words = None;
+            self.counted_for = None;
         }
         changed
     }
@@ -2673,7 +2706,13 @@ impl<T: TextLayout> Editor<T> {
                 true
             }
             // Shift+Ctrl+Z is the other conventional redo, and costs one arm to support.
-            "z" if !shift => self.document_mut().undo(),
+            //
+            // **Both spellings read `shift` explicitly**, which the first version did not: `"z" if
+            // !shift` then `"z" | "Z" | …` meant Caps Lock — which delivers `"Z"` with `shift`
+            // false — turned Ctrl+Z into Redo. The s/S, x/X and e/E pairs were already immune
+            // because each reads the flag; only this one leaned on the letter's case to carry it
+            // (MDEDIT-109).
+            "z" | "Z" if !shift => self.document_mut().undo(),
             "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
             "w" | "W" => self.close_tab(),
             "	" => self.cycle_tab(!shift),
@@ -2737,9 +2776,21 @@ impl<T: TextLayout> Editor<T> {
             return false;
         }
 
-        // A key press should leave the caret on screen. The two keys that scroll without moving it
-        // say so themselves, below.
-        self.follow_caret = true;
+        // A key press should leave the caret on screen — but only a press that can move it.
+        //
+        // This used to arm unconditionally, and MDEDIT-109 is the two things that cost. Typing into
+        // the **find field** yanked the view back to the document's caret, which is the focus model
+        // leaking in the direction the field was built to prevent. And a bare **modifier** press
+        // armed it while doing nothing at all, so the next redraw from any source snapped a
+        // deliberately-scrolled view back — which is the same hazard MDEDIT-49 documented for
+        // Shift+wheel and repaired only in `pan_by`. Its rule was "anything that moves the viewport
+        // deliberately has to say so", and this was the half that did not.
+        //
+        // Still **before** dispatch: the two keys that scroll without moving the caret clear it
+        // again themselves below, and arming afterwards would undo that.
+        if !self.find_focused() && !modifier_only(&event.logical_key) {
+            self.follow_caret = true;
+        }
 
         // F3 works wherever focus is, which is the point of having it as well as Enter — it is how
         // you step through matches while typing in the document.
@@ -4687,6 +4738,15 @@ impl<T: TextLayout> Editor<T> {
             // followed by one in the document from counting as a double-click on the document.
             self.clicks.reset();
             return true;
+        }
+        // **And nothing below the content is a click in the document.** The status bar is the only
+        // thing down there, and the press fell through to `click_at`, whose `offset_at_point` clamps
+        // an out-of-band y to the last chunk: clicking the word count moved the caret to the end of
+        // the document and started a drag from there (MDEDIT-109). See `ContentRect::is_below` for
+        // why this is not `contains`.
+        if self.content.is_below(y) {
+            self.clicks.reset();
+            return false;
         }
         // Clicking into the text is how focus comes back without closing the bar, which is what
         // makes "find it, then edit it there" one gesture rather than two.

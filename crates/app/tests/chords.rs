@@ -497,3 +497,25 @@ fn ctrl_0_is_still_zoom() {
     assert!(editor.body_size() < zoomed, "Ctrl+0 should have reset zoom");
     assert!(!editor.document().to_string().starts_with('#'));
 }
+
+/// MDEDIT-109. Caps Lock delivers `"Z"` with `shift` **false**, and the undo arm matched on the
+/// letter's case rather than on the flag: `"z" if !shift` then `"z" | "Z" | …`. So with Caps Lock on,
+/// Ctrl+Z redid instead of undoing.
+///
+/// The s/S, x/X and e/E pairs were already immune because each reads `shift` explicitly. Only this
+/// one leaned on the case to carry it.
+#[test]
+fn caps_lock_does_not_turn_undo_into_redo() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    editor.insert_text("EDITED");
+
+    // What Caps Lock sends: the capital, and no Shift.
+    editor.apply_chord("Z", false);
+
+    assert!(
+        !editor.document().to_string().contains("EDITED"),
+        "Ctrl+Z with Caps Lock on should undo, not redo: {:?}",
+        editor.document().to_string()
+    );
+}

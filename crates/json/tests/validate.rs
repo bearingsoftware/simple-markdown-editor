@@ -350,3 +350,31 @@ proptest! {
         }
     }
 }
+
+/// MDEDIT-109. `{"a"}` is a key with nothing after it, and the closer fell to the catch-all: it
+/// reported "this `}` closes nothing" about a brace that closes the object right there, and "this is
+/// never closed" about an object that is — while never mentioning the missing colon.
+///
+/// Worse than the wrong words: the catch-all stepped over the closer without popping, so every
+/// diagnostic after it was measured against a stack that still held the object.
+#[test]
+fn a_key_with_no_value_is_named_and_the_container_still_closes() {
+    assert_eq!(messages(r#"{"a"}"#), ["this key has no value"]);
+    assert_eq!(pointed_at(r#"{"a"}"#), ["}"]);
+}
+
+/// And the stack is right afterwards, which is the half that made the old behaviour cascade: a
+/// second object after the first must be its own object rather than something nested in a container
+/// that was never popped.
+#[test]
+fn a_key_with_no_value_does_not_leave_the_stack_holding_the_object() {
+    assert_eq!(
+        messages(r#"{"a"} {"b"}"#).as_slice(),
+        [
+            "this key has no value",
+            "a JSON document holds one value",
+            "this key has no value"
+        ],
+        "the second object is a second top-level value, not a nested one"
+    );
+}

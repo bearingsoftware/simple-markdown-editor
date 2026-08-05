@@ -138,6 +138,23 @@ impl ContentRect {
         x >= self.left && y >= self.top && x < self.left + self.width && y < self.top + self.height
     }
 
+    /// Whether a window point is below the document altogether — the status bar's band.
+    ///
+    /// [`contains`](Self::contains) is the right test for a *right*-click, which has nothing to
+    /// offer over chrome. It is too strict for a left one, in both directions: the rect stops short
+    /// of the right margin, and a click out there is a click on the end of that line, which is what
+    /// every editor does and what `scrollbar.rs` pins for the case where there is no bar to hit;
+    /// and the margin *above* the first row is the document's too.
+    ///
+    /// Below it is not. Nothing is drawn there but the status bar, and a click that fell through
+    /// clamped to the last chunk — so clicking the word count moved the caret to the end of the
+    /// document and started a drag (MDEDIT-109). Anything above that is chrome has already been
+    /// offered to the strip, the pane and the find bar by the time this is asked.
+    #[must_use]
+    pub fn is_below(self, y: f32) -> bool {
+        y >= self.top + self.height
+    }
+
     /// The band of the document that is on screen, in document coordinates.
     ///
     /// What culling compares against, so that the check happens in the same space the layout is in

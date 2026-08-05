@@ -204,6 +204,20 @@ impl<'a> Checker<'a> {
                 }
             }
 
+            // **A closer where a colon belongs**: `{"a"}`. This fell to the catch-all below, which
+            // named neither the real problem nor anything true — "this `}` closes nothing" about a
+            // brace that closes the object right there, plus "this is never closed" about an object
+            // that is, and the missing colon never mentioned at all. And because the catch-all steps
+            // over the closer without popping, every diagnostic after it was measured against a
+            // stack that still held the object (MDEDIT-109).
+            //
+            // The key has no value, which is the thing to say; then the closer does its ordinary
+            // job, so the stack and everything after it are right.
+            (Expect::Colon, Tok::Close(bracket)) => {
+                self.report(span, "this key has no value");
+                self.close(bracket, span)
+            }
+
             // Two values with nothing between them: `[1 2]`.
             (Expect::After, Tok::Str | Tok::Scalar | Tok::Open(_)) => {
                 if self.stack.is_empty() {
@@ -222,13 +236,12 @@ impl<'a> Checker<'a> {
                 expect
             }
 
-            // Everything else is a separator with nothing to separate: a stray comma or colon, or a
-            // closer at the top level. Reported and stepped over, which is the only recovery that
-            // does not invent structure.
-            (_, Tok::Close(bracket)) => {
-                self.report(span, unexpected_close(bracket));
-                expect
-            }
+            // Everything else is a separator with nothing to separate: a stray comma or colon.
+            // Reported and stepped over, which is the only recovery that does not invent structure.
+            //
+            // **There is no catch-all for a closer any more.** Every expectation now has an arm for
+            // one — the last of them was `Expect::Colon`, and adding it made this unreachable, which
+            // is the compiler saying the recovery is complete rather than a place to fall into.
             (_, Tok::Comma) => {
                 self.report(span, "a `,` separates nothing here");
                 expect
