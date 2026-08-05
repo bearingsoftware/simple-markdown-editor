@@ -426,11 +426,20 @@ impl<'a> Lexer<'a> {
                     .iter()
                     .position(|byte| matches!(byte, b',' | b'[' | b']' | b'{' | b'}' | b':'))
                     .map_or(end, |offset| at + offset);
-                let comment = bytes
+                // Only as far as the flow indicator. The token stops at whichever comes first, so a
+                // ` #` beyond `flow` could never be used — and scanning for one to the end of the
+                // line regardless is what made this quadratic (MDEDIT-99). `end` is the *line's*
+                // end, and a minified flow document is one line with tens of thousands of scalars
+                // on it, so every scalar was re-reading the rest of the file: 36 seconds to lex a
+                // megabyte, on the keystroke path.
+                //
+                // Nothing is missed at the seam: a pair straddling `flow` would need `#` *at*
+                // `flow`, and `flow` is where a flow indicator is. When there is none it is `end`,
+                // and the window then covers everything.
+                let stop = bytes[..flow - at]
                     .windows(2)
                     .position(|pair| pair[0].is_ascii_whitespace() && pair[1] == b'#')
-                    .map_or(end, |offset| at + offset);
-                let stop = flow.min(comment);
+                    .map_or(flow, |offset| at + offset);
                 // A trailing space belongs to the whitespace run, not to the token.
                 let trimmed = self.source[at..stop].trim_end();
                 self.boundary(at + trimmed.len())
