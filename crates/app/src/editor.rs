@@ -129,6 +129,26 @@ enum Snapshotting {
     Forget(u64),
 }
 
+/// Whether a key press carrying these modifiers is a chord rather than text to insert.
+///
+/// **Ctrl without Alt**, and the `!alt` is the whole of MDEDIT-102 rather than a nicety. Windows
+/// reports `AltGr` as Ctrl+Alt, and `AltGr` is how most of Europe types the characters a Markdown
+/// editor is least able to do without: on a German layout `@` is `AltGr`+Q, `{`, `[`, `]` and `}`
+/// are `AltGr`+7/8/9/0, and `€` is `AltGr`+E. All of them arrive as ordinary `Key::Character` events
+/// with `control_key()` true.
+///
+/// Every chord in this editor is Ctrl-only, so a gate that read Ctrl alone sent those into the chord
+/// dispatch, where they matched no arm and were dropped — the character never reached the buffer. A
+/// German-layout user could not type `@` or braces at all.
+///
+/// A free function taking two plain flags because that is the part a test can reach: the gate itself
+/// reads a winit `Modifiers`, and a winit `KeyEvent` cannot be constructed by a test. Same seam, and
+/// same reason, as [`Editor::apply_chord`].
+#[must_use]
+pub fn is_chord(control: bool, alt: bool) -> bool {
+    control && !alt
+}
+
 /// Where one of the find bar's text boxes is being drawn.
 #[derive(Clone, Copy)]
 struct TermAt {
@@ -2733,7 +2753,7 @@ impl<T: TextLayout> Editor<T> {
         // Chords first, so a modified key never inserts its own letter. Deliberately **above** the
         // dismissal: Ctrl+B is one of the bar's own actions arriving by keyboard, and taking the bar
         // away only to have the idle timer put it back is a flicker for no rule.
-        if self.modifiers.control_key() {
+        if is_chord(self.modifiers.control_key(), self.modifiers.alt_key()) {
             return self.handle_chord(event);
         }
 
@@ -2839,7 +2859,9 @@ impl<T: TextLayout> Editor<T> {
     /// select all, copy, paste and cut — are taken here, and the rest go where they always went.
     fn find_key(&mut self, event: &KeyEvent) -> bool {
         let shift = self.modifiers.shift_key();
-        if self.modifiers.control_key() {
+        // The same gate as the document's, and for the same reason: a search box that could not be
+        // typed `@` into would be the MDEDIT-102 bug with a smaller blast radius.
+        if is_chord(self.modifiers.control_key(), self.modifiers.alt_key()) {
             let Key::Character(character) = &event.logical_key else {
                 return self.handle_chord(event);
             };

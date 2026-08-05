@@ -146,6 +146,14 @@ Known gaps, so nobody assumes they are done:
   Microsoft IME (Japanese) installed and the layout active, injected input leaves the IME closed
   (`IMC_GETOPENSTATUS` stays 0) and no `WindowEvent::Ime` ever arrives. MDEDIT-6 carries the
   seven-step script for a human.
+- **AltGr is fixed but unconfirmed at a real keyboard**, and belongs in the same manual session as
+  MDEDIT-6's IME script. Windows reports AltGr as Ctrl+Alt, and the chord gate read Ctrl alone — so
+  `@` (AltGr+Q), `{[]}` (AltGr+7/8/9/0) and `€` (AltGr+E) went into the chord dispatch, matched no
+  arm, and were dropped: a German-layout user could not type a `@` at all. MDEDIT-102 made the gate
+  Ctrl **without** Alt, which is the conventional rule and the one every other editor uses. What no
+  test here can confirm is the premise — that AltGr arrives that way — because a winit `KeyEvent`
+  cannot be constructed. **The check:** install a German layout, activate it, and type `@`, `{`, `}`
+  and `€` into the document and into the find box.
 - **The pre-edit does not reflow the line it is on.** It is drawn over the following text on its own
   background rather than pushing it along, because it is deliberately not in the buffer and so
   cannot take part in layout. Fine at the end of a line, which is where composition usually happens;

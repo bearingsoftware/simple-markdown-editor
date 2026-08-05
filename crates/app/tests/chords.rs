@@ -106,6 +106,50 @@ fn shift_turns_undo_into_redo() {
     assert!(editor.document().to_string().contains("EDITED"));
 }
 
+// ---- what counts as a chord at all (MDEDIT-102) ----
+
+/// Windows reports `AltGr` as Ctrl+Alt, so the gate has to be Ctrl **without** Alt. Reading Ctrl alone
+/// sent `@`, `{`, `}` and `€` — `AltGr`+Q, `AltGr`+7/0 and `AltGr`+E on the layouts most of Europe uses —
+/// into the chord dispatch, where they matched no arm and were dropped.
+///
+/// The gate reads a winit `Modifiers` and a winit `KeyEvent` cannot be constructed by a test, so
+/// what is held up here is the predicate. That it is the predicate the gate calls is a one-line
+/// reading; that `AltGr` arrives as Ctrl+Alt at a real keyboard is on the manual checklist.
+#[test]
+fn a_chord_is_ctrl_without_alt() {
+    assert!(
+        mdedit_app::editor::is_chord(true, false),
+        "Ctrl+S is a chord"
+    );
+    assert!(
+        !mdedit_app::editor::is_chord(true, true),
+        "Ctrl+Alt is AltGr, and AltGr+Q is an `@` rather than a chord"
+    );
+    assert!(
+        !mdedit_app::editor::is_chord(false, true),
+        "Alt alone is not one"
+    );
+    assert!(
+        !mdedit_app::editor::is_chord(false, false),
+        "and nor is a bare key"
+    );
+}
+
+/// And the characters `AltGr` produces are ones `apply_chord` has no arm for anyway — so even if one
+/// did reach the chord path it would fall through rather than doing something else's job. This is
+/// the second half of "the character is dropped": nothing claims it.
+#[test]
+fn no_chord_answers_to_an_altgr_character() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _, _) = editor(&dir, None);
+    for character in ["@", "{", "[", "]", "}", "€", "\\", "~", "|"] {
+        assert!(
+            !editor.apply_chord(character, false),
+            "{character:?} must not be a chord"
+        );
+    }
+}
+
 /// A chord nothing answers to must do nothing, rather than falling into a neighbouring arm.
 #[test]
 fn an_unbound_chord_does_nothing() {
