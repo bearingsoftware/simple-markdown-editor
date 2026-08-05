@@ -79,9 +79,60 @@ impl Language for Markdown {
     }
 }
 /// Partitions `source` and reports its block structure, in one parse.
+///
+/// # A panic in the parser is contained here
+///
+/// `pulldown-cmark` 0.13.4 panics on some documents — `"+\t[\0]:d\n\u{b}"` is nine characters that
+/// unwrap a `None` in its `parse.rs`, found by the fuzz job on MDEDIT-114 and reproduced on Windows.
+/// It is upstream's defect and not this crate's, and it arrives the way every defect at this boundary
+/// arrives: in a **file somebody opened**. `AGENTS.md` names file parsing as the trust boundary and
+/// hand-rolled parsing as the CVE class this project exists not to reintroduce; taking a third-party
+/// parser's word for it and crashing the editor is the same failure with somebody else's name on it.
+///
+/// So the parse is contained, and a document that panics it comes back as **one content segment
+/// covering the whole source**. That tiles — which is the invariant everything above depends on — and
+/// it renders as plain text, which is a Markdown file drawn without its syntax highlighted rather
+/// than an editor that will not open it. The bytes are untouched either way, because nothing here
+/// ever rewrites them.
+///
+/// It is not free and it is not on the keystroke path for a large document: `catch_unwind` costs
+/// nothing when nothing unwinds, and `analyze_region` is what a keystroke reaches.
 #[must_use]
 pub fn analyze(source: &str) -> Analysis {
-    classify::analyze(source)
+    contained(source)
+}
+
+/// [`classify::analyze`], with a parser panic turned into "it is all content".
+///
+/// See [`analyze`] for why this exists at all. `AssertUnwindSafe` is sound here because the closure
+/// borrows `source` immutably and this crate keeps no state across the call — a panicking parse
+/// leaves nothing of ours half-written, and the fallback reads only `source.len()`.
+fn contained(source: &str) -> Analysis {
+    let parsed =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| classify::analyze(source)));
+    match parsed {
+        Ok(analysis) => analysis,
+        Err(_) => all_content(source),
+    }
+}
+
+/// The whole source as one content segment, and no blocks.
+///
+/// The safe answer for a document the parser could not handle: it tiles exactly, so every caller's
+/// invariant holds, and the renderer draws plain text.
+fn all_content(source: &str) -> Analysis {
+    let segments = if source.is_empty() {
+        Vec::new()
+    } else {
+        vec![Segment::new(
+            ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
+            SegmentKind::Content,
+        )]
+    };
+    Analysis {
+        segments,
+        blocks: Vec::new(),
+    }
 }
 
 /// Analyses only `region`, as if the rest of `source` were not there.
@@ -109,7 +160,9 @@ pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
     let start = floor_boundary(source, region.start().get().min(source.len()));
     let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
 
-    let mut analysis = classify::analyze(&source[start..end]);
+    // Contained, like [`analyze`] — a region of a document that panics the parser is exactly as
+    // likely to panic it, and this is the one a keystroke reaches.
+    let mut analysis = contained(&source[start..end]);
     if start == 0 {
         return analysis;
     }
