@@ -1,0 +1,79 @@
+name: Fuzz
+
+# MDEDIT-111. Linux only, and not as a compromise: `libfuzzer-sys` builds a C++ runtime and is
+# Unix-only, while the four crates fuzzed here are platform-agnostic by design. The one platform
+# thing it buys on the way is AddressSanitizer, which rustc does not support on Windows in 2026.
+#
+# Two cadences. On a pull request each target gets five minutes, which is enough to reach the shallow
+# input and short enough that nobody starts skipping the job; the weekly run gets half an hour a
+# target and starts from the corpus the PR runs left behind.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Sunday, 03:00 UTC. Long runs belong where nobody is waiting for them.
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      # One failing target must not cancel the other three: which inputs the others found is the
+      # useful half of the report.
+      fail-fast: false
+      matrix:
+        target:
+          - markers_segment
+          - json_validate
+          - json_format
+          - yaml_analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      # `cargo fuzz` needs nightly. Nothing else in this repo does, and nothing stable builds here.
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # `with: tool:` rather than the `@cargo-fuzz` tag form. There is no such tag, and the action
+      # does not fail when it cannot find one — it warns "no tool specified", installs nothing, and
+      # succeeds, so the failure surfaces four lines later as `no such command: fuzz`.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      # The corpus is the point of running this repeatedly: a fuzzer that starts from nothing every
+      # time re-derives "a document begins with a brace" on every run.
+      - name: Restore the corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
+      # `--target` is pinned to gnu because cargo-fuzz defaults to musl here, and musl links libc
+      # statically — which the sanitizer refuses outright ("sanitizer is incompatible with statically
+      # linked libc"), before the target is even installed. ASan is half the reason this job exists,
+      # so the target that supports it is the one to build for.
+      - name: Fuzz
+        run: |
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event_name == 'schedule' && 1800 || 300 }} \
+            -max_len=16384
+
+      # A crash is worth more than the run that found it: without the input, the next person has a
+      # stack trace and no way to reproduce it.
+      - name: Keep whatever crashed it
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore

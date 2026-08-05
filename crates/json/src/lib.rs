@@ -52,7 +52,7 @@ use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
 mod format;
 mod validate;
 
-pub use format::format;
+pub use format::{format, meaningful_bytes};
 pub use validate::{LIMIT, validate};
 
 /// JSON, as this editor renders it.
