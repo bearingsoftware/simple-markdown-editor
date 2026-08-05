@@ -1065,6 +1065,20 @@ Five minutes a target on a PR, half an hour on the Sunday schedule, corpus cache
 the crashing input uploaded as an artifact. AddressSanitizer comes with it, which is the only place
 this project gets one: rustc has no sanitizer support on Windows.
 
+**cargo-mutants runs on the diff, and reports rather than blocks** (MDEDIT-111). It changes a `<` to
+a `<=`, deletes a line, replaces a return value, and says what the tests still let through — the
+mechanical version of the second reviewer a solo project does not have, and the class of finding that
+produced MDEDIT-110. `--in-diff` keeps it to minutes; a whole-workspace run is hours and would never
+be read. Linux, `continue-on-error`, `.cargo/mutants.toml` for what is excluded and why.
+
+```bash
+cargo mutants --in-diff <(git diff origin/main...HEAD)   # needs `cargo install cargo-mutants`
+```
+
+A **surviving mutant is a question, not a defect**: sometimes the right answer is a better assertion,
+and sometimes it is that the mutated line genuinely does not matter. Promote the job to blocking only
+if it earns it.
+
 `cargo test --release -- --ignored` is reserved for the perf assertions described under
 **Performance** below. None exist yet, and they will not run in CI: GitHub runners are virtualised
 and on AC power, which is the condition the research says is least informative. They belong in a

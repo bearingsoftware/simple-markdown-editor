@@ -1,0 +1,30 @@
+# cargo-mutants, MDEDIT-111. See .github/workflows/mutants.yml for what runs it and why.
+
+# Not worth mutating, and each for its own reason rather than to make the number look better:
+#
+# - The three Windows-only crates do not build on the Linux runner at all.
+# - The fuzz targets are a harness; a mutant in one is a mutant in the test.
+# - The cost harnesses print measurements and assert nothing, deliberately — see `find_cost.rs`.
+exclude_globs = [
+    "crates/text-dwrite/**",
+    "crates/menu-win/**",
+    "crates/shell-win/**",
+    "fuzz/**",
+    "**/tests/*_cost.rs",
+    "spikes/**",
+]
+
+# `Default::default()` is a plausible mutant almost everywhere and a useless one here: this codebase
+# newtypes every offset, so a mutant returning `ByteOffset::default()` is caught by the first
+# assertion in whatever calls it and says nothing about the tests.
+exclude_re = [
+    "impl Default",
+]
+
+# nextest, so a mutant that hangs or aborts takes down its own process rather than the run — the
+# same reason CI uses it for the ordinary suite.
+test_tool = "nextest"
+
+# The property tests are legitimately slow in a debug build, and a mutant that merely makes one
+# slower must not be scored as caught by a timeout.
+timeout_multiplier = 4.0
