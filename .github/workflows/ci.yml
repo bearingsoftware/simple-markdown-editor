@@ -26,6 +26,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
 
       - name: rustfmt
         run: cargo fmt --all --check
@@ -33,10 +34,17 @@ jobs:
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # nextest rather than `cargo test`: every test gets its own process. MDEDIT-67 was a heap
+      # corruption caused by two threads of one process reading the Windows clipboard, and it aborted
+      # a whole test binary — the isolation is the defense against that class. See .config/nextest.toml.
       - name: test
-        run: cargo test --all-features
+        run: cargo nextest run --profile ci --all-features
 
-      # Doc examples are tests; broken intra-doc links are denied in [workspace.lints.rustdoc].
+      # nextest does not run doctests; cargo still owns those, and this project has them.
+      - name: doctest
+        run: cargo test --all-features --doc
+
+      # Broken intra-doc links are denied in [workspace.lints.rustdoc].
       - name: doc
         run: cargo doc --no-deps --all-features
 
