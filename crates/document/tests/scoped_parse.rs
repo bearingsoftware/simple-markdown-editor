@@ -165,6 +165,35 @@ fn an_edit_at_the_very_start_agrees() {
     assert_agrees(&doc, "after an edit at offset zero");
 }
 
+/// MDEDIT-97. Every other fixture here starts a block at byte 0, which is what hid this: a document
+/// that opens with blank lines has its first block start *later*, and an edit in that gap made
+/// `scope_for`'s one-block margin index underflow onto the first block's start — a scope beginning
+/// after the edit it was measured for. The pre-scope segments then kept offsets the splice had
+/// moved, and with multibyte text one of them lands mid-character, where `ByteSpan::slice` panics.
+#[test]
+fn an_edit_before_the_first_block_agrees() {
+    let mut text = String::from("\n\néh, a paragraph that opens with an accent.\n\n");
+    text.push_str(&padding(0, PADDING_BLOCKS));
+    let mut doc = Document::from(text.as_str());
+
+    doc.delete(ByteSpan::new(ByteOffset::new(0), ByteOffset::new(1)))
+        .unwrap();
+    assert_tiles(&doc, "after deleting a leading blank line");
+    assert_agrees(&doc, "after deleting a leading blank line");
+}
+
+/// The same gap, typed into rather than deleted from.
+#[test]
+fn typing_before_the_first_block_agrees() {
+    let mut text = String::from("\n\néh, a paragraph that opens with an accent.\n\n");
+    text.push_str(&padding(0, PADDING_BLOCKS));
+    let mut doc = Document::from(text.as_str());
+
+    doc.insert(ByteOffset::new(1), "ü").unwrap();
+    assert_tiles(&doc, "after typing into the gap before the first block");
+    assert_agrees(&doc, "after typing into the gap before the first block");
+}
+
 #[test]
 fn an_edit_at_the_very_end_agrees() {
     let (text, _) = buried("body\n\n");
@@ -277,6 +306,33 @@ proptest! {
             )
             .unwrap();
             assert_tiles(&doc, "during a generated edit sequence");
+        }
+    }
+
+    /// MDEDIT-97 in its general form. What varies is the gap before the first block, and every edit
+    /// lands inside or just past it; the text is multibyte throughout, because a segment left on a
+    /// stale offset only *panics* when it splits a character — and tiles wrongly but quietly when it
+    /// does not.
+    #[test]
+    fn edits_around_a_leading_gap_still_tile(
+        gap in "[\n ]{0,6}",
+        edits in prop::collection::vec((0usize..24, 0usize..4, "[a-zéü *#\n]{0,4}"), 1..8),
+    ) {
+        let mut text = gap;
+        text.push_str("éh, a paragraph with wide characters — plenty of them.\n\n");
+        text.push_str(&padding(0, PADDING_BLOCKS));
+        let mut doc = Document::from(text.as_str());
+
+        for (at, len, replacement) in edits {
+            let current = doc.to_string();
+            let start = boundary(&current, at);
+            let end = boundary(&current, start + len);
+            doc.replace(
+                ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),
+                &replacement,
+            )
+            .unwrap();
+            assert_tiles(&doc, "while editing around a leading gap");
         }
     }
 
