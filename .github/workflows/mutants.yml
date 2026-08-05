@@ -16,13 +16,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A superseded push should stop costing the one runner time it could be giving the next pull request.
+concurrency:
+  group: mutants-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   mutants:
     name: cargo-mutants (in diff)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, proxmox, general]
     # A trial. It reports; it does not block.
     continue-on-error: true
     steps:

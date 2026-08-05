@@ -17,13 +17,22 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
+# One self-hosted runner takes one job at a time, so the four targets queue behind each other. A
+# superseded push must not add four more to that queue.
+#
+# The schedule is exempt: a weekly long run cancelled by a Sunday push is a week of fuzzing lost
+# rather than a minute saved.
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, proxmox, general]
     # **`markers_segment` reports rather than blocks, and only until upstream fixes MDEDIT-114.**
     #
     # `pulldown-cmark` 0.13.4 panics on documents this target reaches in about two minutes, and the
