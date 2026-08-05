@@ -7176,7 +7176,25 @@ impl<T: TextLayout> Editor<T> {
             &frame.text,
         );
         let styled = view::as_styled(&runs);
-        let layout = self.text.layout(&styled, frame.width).ok()?;
+        let mut layout = self.text.layout(&styled, frame.width).ok()?;
+        // **An empty document is a document with one empty line**, and a text engine handed nothing
+        // to shape does not agree: `DirectWriteText::layout` returns `Layout::default()`, with no
+        // rows at all. Everything downstream is keyed off rows, so a blank page — File → New, or a
+        // zero-byte file, which is the first thing anybody sees — drew no caret, no line number and
+        // no caret-line tint. Keystrokes worked and nothing said where they would land (MDEDIT-81).
+        //
+        // Repaired here rather than in each of those, because "one empty line" is what every editor
+        // shows for a blank page and one `LayoutLine` with no glyphs is the whole of saying so. The
+        // height is the nominal one, which is what an unmeasured chunk already gets.
+        if layout.lines.is_empty() {
+            let height = (self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0);
+            layout.lines.push(mdedit_text::LayoutLine {
+                baseline: height,
+                height,
+                glyphs: Vec::new(),
+                underlines: Vec::new(),
+            });
+        }
 
         let cached = Rc::new(Cached::new(layout, &chunk, body, key.last));
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a

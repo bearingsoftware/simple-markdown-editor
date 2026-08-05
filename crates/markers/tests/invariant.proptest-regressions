@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 88fb7a061b3cff249564c95d2fe062c91899704fc7b5dba3adf4a7b05f0b8f58 # shrinks to indices = [1, 0, 14, 15, 2, 1, 3]
 cc 0e8d5f3d1e6f1137ab50713040ff4675114ed56f5b8c8c0aa4cdfcd84e5ed1b1 # shrinks to source = "AA*〡\t\n¡*"
+cc 997f4b7ff7ea20e9924a4da0e13c53ed13d083485f45ceee4f1e1c21f4538ac2 # shrinks to indices = [1, 2, 14, 15, 0, 3, 0, 3, 1]
