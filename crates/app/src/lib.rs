@@ -34,6 +34,7 @@ pub mod shortcuts;
 pub mod status;
 pub mod tabs;
 pub mod toolbar;
+pub mod tooltip;
 pub mod view;
 
 /// The document the slice opens with.

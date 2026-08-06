@@ -50,6 +50,7 @@ use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::tabs;
 use crate::toolbar;
+use crate::tooltip;
 use crate::view::Chrome;
 use mdedit_document::format::{self, Inline};
 
@@ -788,6 +789,26 @@ pub struct Editor<T: TextLayout> {
     toolbar_buttons: Vec<toolbar::ButtonRect>,
     /// Each button's glyph, laid out once. The fourth cache of this kind — see `crate::toolbar`.
     toolbar_labels: HashMap<String, Label>,
+    /// Which button the pointer is over, if any. Hovering, not yet dwelling.
+    hovered: Option<toolbar::Action>,
+    /// Which button's tooltip is showing. Set when the dwell elapses, cleared by anything at all.
+    ///
+    /// Separate from [`hovered`](Self::hovered) because the two answer different questions and the
+    /// gap between them *is* the dwell: the pointer is over a button for the whole time it takes to
+    /// travel the bar, and a panel appears only if it stops.
+    tooltip: Option<toolbar::Action>,
+    /// Each tooltip's line, laid out once. The eighth cache of this kind — see `set_zoom`.
+    tooltip_labels: HashMap<String, Label>,
+    /// When the pointer will have rested long enough, if it is resting.
+    ///
+    /// One of the two deadlines the loop's single next-wake-up has to serve. See
+    /// [`next_wake`](Self::next_wake).
+    dwell_at: Option<Instant>,
+    /// When the whole-document re-parse and everything else on the idle beat comes due.
+    ///
+    /// The other of the two. This used to be set straight into `ControlFlow::WaitUntil` at the
+    /// keystroke, which worked while it was the only deadline there was.
+    reconcile_at: Option<Instant>,
     /// Whether the bar that follows a selection is wanted.
     ///
     /// Wanted, not shown: it appears only when there is also a selection to hang it on and that
@@ -1082,6 +1103,11 @@ impl<T: TextLayout> Editor<T> {
             toolbar: true,
             toolbar_buttons: Vec::new(),
             toolbar_labels: HashMap::new(),
+            hovered: None,
+            tooltip: None,
+            tooltip_labels: HashMap::new(),
+            dwell_at: None,
+            reconcile_at: None,
             floating: false,
             floating_buttons: Vec::new(),
             floating_at: None,
@@ -2716,6 +2742,11 @@ impl<T: TextLayout> Editor<T> {
             return false;
         }
 
+        // Typing means the pointer is not what the user is doing, whatever it is resting on.
+        // Unconditional, unlike the caret-reveal below: a bare modifier press is still a person at
+        // the keyboard rather than at the mouse.
+        let tooltip_gone = self.dismiss_tooltip();
+
         // A key press should leave the caret on screen — but only a press that can move it.
         //
         // This used to arm unconditionally, and MDEDIT-109 is the two things that cost. Typing into
@@ -2735,30 +2766,31 @@ impl<T: TextLayout> Editor<T> {
         // F3 works wherever focus is, which is the point of having it as well as Enter — it is how
         // you step through matches while typing in the document.
         if matches!(&event.logical_key, Key::Named(NamedKey::F3)) {
-            return if self.modifiers.shift_key() {
-                self.find_previous()
-            } else {
-                self.find_next()
-            };
+            return tooltip_gone
+                | if self.modifiers.shift_key() {
+                    self.find_previous()
+                } else {
+                    self.find_next()
+                };
         }
 
         // Everything else goes to whichever of the two has focus, and the find field having it is
         // the only case where the document does not. That is the whole focus model.
         if self.find_focused() {
-            return self.find_key(event);
+            return self.find_key(event) || tooltip_gone;
         }
 
         // Chords first, so a modified key never inserts its own letter. Deliberately **above** the
         // dismissal: Ctrl+B is one of the bar's own actions arriving by keyboard, and taking the bar
         // away only to have the idle timer put it back is a flicker for no rule.
         if is_chord(self.modifiers.control_key(), self.modifiers.alt_key()) {
-            return self.handle_chord(event);
+            return self.handle_chord(event) || tooltip_gone;
         }
 
         // Any other key takes the floating bar away. It is put back by the idle timer when the key
         // was a shift-motion and the selection has stopped growing — which is the whole of the
         // "settles" rule for the keyboard, and why this can be blunt.
-        let dismissed = self.dismiss_floating();
+        let dismissed = self.dismiss_floating() || tooltip_gone;
         if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
             // Esc closes the find bar even when focus has gone back to the document — the bar is
             // still taking room and still lighting matches, so leaving it open would make Esc do
@@ -3046,6 +3078,12 @@ impl<T: TextLayout> Editor<T> {
     /// that had not asked for one.
     pub fn insert_text(&mut self, text: &str) -> bool {
         self.follow_caret = true;
+        // The second of the two places a tooltip is dismissed by the keyboard, and it is not a
+        // duplicate of the one in `handle_key`: that one covers the keys which do not insert —
+        // arrows, Esc, Backspace — and this one is the funnel every *character* comes through,
+        // including an IME commit and a paste. Text arriving in the document means the user is not
+        // pointing at a button, however it got there.
+        self.dismiss_tooltip();
         self.insert(text)
     }
 
@@ -3288,11 +3326,89 @@ impl<T: TextLayout> Editor<T> {
         // over any chrome it happens to overlap, which is what "floating" means with no depth
         // buffer to say so.
         self.draw_floating(&mut quads, scale);
+        // Genuinely last, after even the floating bar. `AGENTS.md`'s painter-order rule is that
+        // chrome drawn first gets painted over, and a tooltip is the one thing that must be on top
+        // of everything — including the bar it describes, which it does not overlap, and the
+        // document, which it does.
+        self.draw_tooltip(&mut quads, width, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the panel that says what the hovered button does.
+    ///
+    /// Its line is laid out **once** and kept, like every other piece of chrome text here — the
+    /// eighth cache of that kind, and `set_zoom` clears it with the rest.
+    ///
+    /// **Never hit-tested.** There is no `click_tooltip`, deliberately: the panel hangs over the
+    /// document, and a click landing on it has to reach the text underneath. "It is only a tooltip"
+    /// is exactly how a control ends up unpressable.
+    fn draw_tooltip(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
+        let Some(action) = self.tooltip else {
+            return;
+        };
+        let Some(button) = self
+            .toolbar_buttons
+            .iter()
+            .find(|button| button.action == action)
+            .copied()
+        else {
+            // The bar was re-laid-out narrower and this button is no longer on it. Nothing to point
+            // at, so nothing to draw.
+            return;
+        };
+
+        let line = action.tooltip();
+        if !self.tooltip_labels.contains_key(&line) {
+            let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+            if let Some(label) = self.lay_out_label(&line, style) {
+                self.tooltip_labels.insert(line.clone(), label);
+            }
+        }
+        let Some(label) = self.tooltip_labels.get(&line) else {
+            return;
+        };
+
+        let panel_width = tooltip::width_of(label.width);
+        let (x, y) = tooltip::place(
+            panel_width,
+            button.x + button.width / 2.0,
+            toolbar::HEIGHT,
+            width / scale,
+        );
+
+        // A hairline edge under the ground, one pixel proud on each side. `theme.line` has had no
+        // consumer since MDEDIT-71 put it there; this is it.
+        quads.push(Self::solid(
+            [
+                (x - 1.0) * scale,
+                (y - 1.0) * scale,
+                (panel_width + 2.0) * scale,
+                (tooltip::HEIGHT + 2.0) * scale,
+            ],
+            self.theme.line,
+        ));
+        quads.push(Self::solid(
+            [
+                x * scale,
+                y * scale,
+                panel_width * scale,
+                tooltip::HEIGHT * scale,
+            ],
+            self.theme.panel,
+        ));
+
+        let where_ = LabelAt {
+            x: x + tooltip::PADDING,
+            baseline: y + tooltip::HEIGHT / 2.0 + self.theme.body_size * 0.3,
+            scale,
+            colour: self.theme.text,
+        };
+        let glyphs = label.glyphs.clone();
+        self.draw_label_glyphs(quads, &glyphs, where_);
     }
 
     /// Draws the formatting bar below the tab strip, and remembers where its buttons went.
@@ -4719,6 +4835,15 @@ impl<T: TextLayout> Editor<T> {
     /// handler so that a test clicks the same way the window does — a test that reached past this
     /// into [`click_at`](Self::click_at) would be exercising a dispatch the app does not use.
     pub fn click(&mut self, x: f32, y: f32) -> bool {
+        // Before the chain, and **before** the floating bar's early return, because every click
+        // dismisses a tooltip — including the one on the button the tooltip is describing. The
+        // button still acts; the panel goes.
+        //
+        // Note what is *not* here: the tooltip is never hit-tested. It is drawn over the document
+        // and asking it about a click would make the text under it unclickable, which is how "it is
+        // only a tooltip" ends in a control nobody can press.
+        let dismissed = self.dismiss_tooltip();
+
         // The floating bar before anything else, because it is drawn over everything else. Order in
         // this one function is the whole of the z-order, in both directions: drawn last, asked
         // first.
@@ -4752,12 +4877,12 @@ impl<T: TextLayout> Editor<T> {
         // why this is not `contains`.
         if self.content.is_below(y) {
             self.clicks.reset();
-            return false;
+            return dismissed;
         }
         // Clicking into the text is how focus comes back without closing the bar, which is what
         // makes "find it, then edit it there" one gesture rather than two.
         self.find_focused = false;
-        self.click_at(x, y)
+        self.click_at(x, y) || dismissed
     }
 
     /// Decides where the caret goes for a right-click at `(x, y)`, and returns whether to show a
@@ -4903,7 +5028,118 @@ impl<T: TextLayout> Editor<T> {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
+            // A drag is not a rest. Both early exits here are also the answer to "should a tooltip
+            // appear while the pointer is held down", which is no.
+            return;
         }
+
+        if self.hover(point.0, point.1) {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
+        }
+    }
+
+    /// Notes where the pointer is, and restarts the dwell.
+    ///
+    /// Returns whether anything visible changed — which is only ever a tooltip being taken *away*,
+    /// since one appearing is [`on_dwell`](Self::on_dwell)'s job a few hundred milliseconds later.
+    ///
+    /// **The dwell restarts per button, not per pixel.** Moving inside the button you are already on
+    /// leaves the deadline where it is, so resting still counts as resting while a hand shakes;
+    /// moving to a different button, or off the bar, starts it again. A dwell that restarted on
+    /// every `CursorMoved` would never elapse for anybody without a very steady hand.
+    ///
+    /// Public because a test cannot deliver a `CursorMoved`, and because the dwell it schedules is
+    /// what `next_wake` is then asked about.
+    pub fn hover(&mut self, x: f32, y: f32) -> bool {
+        let over = if self.toolbar_buttons.is_empty() || !(0.0..toolbar::HEIGHT).contains(&y) {
+            None
+        } else {
+            toolbar::hit_test(&self.toolbar_buttons, x, y)
+        };
+
+        if over == self.hovered {
+            return false;
+        }
+        self.hovered = over;
+        self.dwell_at = over.map(|_| Instant::now() + tooltip::DWELL);
+        // Whatever was showing belonged to the button we have just left.
+        self.tooltip.take().is_some()
+    }
+
+    /// The pointer has now rested long enough. Shows the tooltip, if there is still a button under
+    /// it.
+    ///
+    /// Public for the same reason [`on_idle`](Self::on_idle) is: a test cannot deliver a
+    /// `StartCause::ResumeTimeReached`, and sleeping for the dwell in a unit test would be four
+    /// hundred milliseconds nobody gets back.
+    pub fn on_dwell(&mut self) -> bool {
+        let Some(action) = self.hovered else {
+            return false;
+        };
+        if self.tooltip == Some(action) {
+            return false;
+        }
+        self.tooltip = Some(action);
+        true
+    }
+
+    /// Which button's tooltip is showing, if any.
+    #[must_use]
+    pub fn tooltip(&self) -> Option<toolbar::Action> {
+        self.tooltip
+    }
+
+    /// Takes the tooltip away, and stops one being on its way.
+    ///
+    /// Called from everything that means the user has moved on: a click, a keystroke, a wheel notch,
+    /// a tab switch, the pointer leaving the window. Deliberately blunt — a tooltip that lingered
+    /// over a document the user is now typing into is worse than one that is a little too eager to
+    /// go.
+    fn dismiss_tooltip(&mut self) -> bool {
+        self.dwell_at = None;
+        self.hovered = None;
+        self.tooltip.take().is_some()
+    }
+
+    /// When the loop should wake up next, out of everything waiting on a clock.
+    ///
+    /// **There is one `ControlFlow` and two things want it**, which is the whole of MDEDIT-85's
+    /// named risk. The reconcile timer owned it outright until this story: the keystroke handler set
+    /// `WaitUntil(now + RECONCILE_AFTER)` directly, and `new_events` set `Wait` again afterwards.
+    /// Adding a second deadline to that arrangement breaks it in both directions — a dwell set while
+    /// a reconcile is pending pushes the reconcile out, and a reconcile set while a dwell is pending
+    /// swallows the tooltip.
+    ///
+    /// The fix is not clever: keep both and take the earliest. It gets a test rather than a comment
+    /// because the failure is silent and intermittent — the same shape as MDEDIT-49's `follow_caret`
+    /// bug, where two features quietly fought over one field.
+    #[must_use]
+    pub fn next_wake(&self) -> Option<Instant> {
+        match (self.reconcile_at, self.dwell_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (deadline, None) | (None, deadline) => deadline,
+        }
+    }
+
+    /// Arms the idle beat, which is what a keystroke owes.
+    ///
+    /// Public for the same reason `on_idle` is: the keystroke that would set it arrives as a winit
+    /// `KeyEvent`, which a test cannot construct.
+    pub fn schedule_reconcile(&mut self) {
+        self.reconcile_at = Some(Instant::now() + RECONCILE_AFTER);
+    }
+
+    /// Points the loop at whichever deadline comes first, or lets it sleep.
+    ///
+    /// The **only** place `ControlFlow` is set after start-up, which is what keeps
+    /// [`next_wake`](Self::next_wake) the single answer rather than one opinion among several.
+    fn reschedule(&self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(
+            self.next_wake()
+                .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
+        );
     }
 
     /// Whether the pointer is dragging out a text selection.
@@ -5000,6 +5236,9 @@ impl<T: TextLayout> Editor<T> {
         self.status_labels = [None, None, None];
         self.row_labels.clear();
         self.toolbar_labels.clear();
+        // MDEDIT-85's, and the eighth. A tooltip is a line of laid-out text like every other piece
+        // of chrome here, and the text size is not in its key either.
+        self.tooltip_labels.clear();
         // The sixth thing holding laid-out text. The layout caches above are cleared because the
         // text size is not in their key; this one is cleared for the same reason.
         self.marks.clear();
@@ -7568,9 +7807,24 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
         if !matches!(cause, StartCause::ResumeTimeReached { .. }) {
             return;
         }
-        event_loop.set_control_flow(ControlFlow::Wait);
 
-        if self.on_idle() {
+        // Whichever deadlines have come due, and only those. This used to be an unconditional
+        // `set_control_flow(Wait)` followed by `on_idle`, which was right while the reconcile timer
+        // was the only thing on the clock — and would have cancelled a pending dwell the first time
+        // it was not. See `next_wake`.
+        let now = Instant::now();
+        let mut redraw = false;
+        if self.reconcile_at.is_some_and(|at| at <= now) {
+            self.reconcile_at = None;
+            redraw |= self.on_idle();
+        }
+        if self.dwell_at.is_some_and(|at| at <= now) {
+            self.dwell_at = None;
+            redraw |= self.on_dwell();
+        }
+        self.reschedule(event_loop);
+
+        if redraw {
             if let Some(window) = self.window.as_ref() {
                 window.request_redraw();
             }
@@ -7651,7 +7905,18 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 self.cursor = point;
                 self.on_pointer_moved(point);
             }
+            // New with MDEDIT-85, and the window handler had no arm for it before: without one, a
+            // tooltip raised on the last button before the pointer left the window stays up over an
+            // editor nobody is pointing at.
+            WindowEvent::CursorLeft { .. } => {
+                if self.dismiss_tooltip() {
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => {
+                self.dismiss_tooltip();
                 self.wheel(delta);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
@@ -7725,12 +7990,28 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 // status bar was whatever it had been when the file opened, and MDEDIT-54's
                 // snapshots would never have been written for exactly the small, unsaved buffers
                 // they most exist to protect.
-                event_loop
-                    .set_control_flow(ControlFlow::WaitUntil(Instant::now() + RECONCILE_AFTER));
+                //
+                // Recorded rather than set straight into `ControlFlow`, since MDEDIT-85: a dwell may
+                // be pending and come sooner. See `next_wake`.
+                self.schedule_reconcile();
             }
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
+
+        // **Every arm, unconditionally, and that is the point of it being here rather than in the
+        // arms that arm a deadline.** Two of them do — a keystroke records `reconcile_at`, a pointer
+        // move records `dwell_at` — and a deadline that nothing turns into a `ControlFlow` is a
+        // deadline that never arrives: `new_events` only runs on `ResumeTimeReached`, so the loop
+        // sleeps on `Wait` for ever and neither the idle beat nor the dwell fires.
+        //
+        // MDEDIT-85 shipped that bug to the window. The keystroke arm used to call
+        // `set_control_flow` itself and stopped when the deadline became a field; nothing replaced
+        // it, so the whole-document re-parse, the word count, the recovery snapshots and the theme
+        // check all went quiet, and no tooltip ever appeared. **No test here could see it** — the
+        // handler needs an `ActiveEventLoop`, which cannot be constructed, and the tooltip tests
+        // drive `on_dwell` directly. Found by opening the editor and resting on a button.
+        self.reschedule(event_loop);
     }
 }
 

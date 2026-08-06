@@ -220,6 +220,53 @@ Known gaps, so nobody assumes they are done:
   inactive tab's quad, and a dimmed label's `gutter`. Without that, moving the drawing and not the
   clicks (or the reverse) passes every other test in the file, and so does leaving the tab *labels*
   at their old baseline while their backgrounds move.
+- **Resting on a toolbar button says what it does, and the panel is the least of it.** MDEDIT-85.
+  `toolbar.rs` said there were no tooltips "because there is no hover affordance in this editor to
+  hang one on", and that sentence was the ticket. The editor had always tracked the pointer and used
+  it for dragging; nothing anywhere was *hover* state.
+
+  **Two deadlines, one `ControlFlow`, and that is the whole risk.** The loop sleeps on `Wait`, so
+  "the pointer stopped moving 400 ms ago" is not an event — it needs a `WaitUntil`, and the reconcile
+  timer already owned the only one there is. A dwell set while a reconcile is pending would push the
+  reconcile out; a reconcile set while a dwell is pending would swallow the tooltip. So both are
+  fields and `Editor::next_wake` takes the earliest, `reschedule` is the only place `ControlFlow` is
+  set after start-up, and the keystroke handler records `reconcile_at` rather than setting the loop
+  directly. It has its own test because the failure is silent and intermittent — the same shape as
+  MDEDIT-49's `follow_caret` bug, where two features quietly fought over one field.
+
+  **And `reschedule` is called at the end of `window_event`, unconditionally, which is the line that
+  was missing when this first went to the window.** Turning the keystroke's `set_control_flow` into a
+  field left nothing to convert `next_wake` into a `ControlFlow`: `new_events` runs only on
+  `ResumeTimeReached`, so the loop slept on `Wait` for ever. No tooltip ever appeared — and the idle
+  beat was dead with it, so the whole-document re-parse, the word count, the recovery snapshots and
+  the theme check all went quiet. **No test could see it.** The handler needs an `ActiveEventLoop`,
+  which cannot be constructed, and the tooltip tests drive `on_dwell` directly, which is precisely
+  what let them pass over a feature that never fired. Found by opening the editor and resting on a
+  button. It is outside the match rather than in the two arms that arm a deadline, so a third cannot
+  forget it.
+
+  **The dwell restarts per button, not per pixel.** Moving inside the button you are already on
+  leaves the deadline alone, or nobody without a very steady hand would ever see a tooltip.
+
+  **The panel is never hit-tested**, and there is deliberately no `click_tooltip`: it hangs over the
+  document and a click on it has to reach the text. Asserted by comparing the same click with and
+  without a panel, which is a claim that cannot go vacuous when the geometry moves. Drawn genuinely
+  last, after even the floating bar. `theme.line` gets its first consumer since MDEDIT-71 as its
+  edge; `theme.panel` gets its second.
+
+  **Its words are in `toolbar.rs`, not looked up from `shortcuts.rs`, and the drift is caught by a
+  test instead.** The plan asked for the lookup; the reference document reads like a reference
+  ("Heading level — press the same level again to clear it") where a button label has to read like a
+  label. What actually matters is not advertising a chord that does not exist — MDEDIT-65 exactly —
+  and `tests/tooltip.rs` asserts every chord `Action::chord` names appears in `shortcuts::ALL`.
+
+  **A tooltip is not an accessible name.** Mouse-only, and a screen reader will not read it. The bar
+  still owes accesskit its names and its keyboard reach, and this does not pay that debt.
+
+  Dismissed by a click, a keystroke, a wheel notch, the pointer leaving the window, and switching
+  tab — the last through the click that switched, rather than a hook on every path that activates
+  one. Two keyboard sites, not one: `handle_key` for the keys that do not insert, and `insert_text`
+  for every character, which is also the funnel an IME commit and a paste come through.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it
