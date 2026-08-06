@@ -234,6 +234,17 @@ Known gaps, so nobody assumes they are done:
   directly. It has its own test because the failure is silent and intermittent — the same shape as
   MDEDIT-49's `follow_caret` bug, where two features quietly fought over one field.
 
+  **And `reschedule` is called at the end of `window_event`, unconditionally, which is the line that
+  was missing when this first went to the window.** Turning the keystroke's `set_control_flow` into a
+  field left nothing to convert `next_wake` into a `ControlFlow`: `new_events` runs only on
+  `ResumeTimeReached`, so the loop slept on `Wait` for ever. No tooltip ever appeared — and the idle
+  beat was dead with it, so the whole-document re-parse, the word count, the recovery snapshots and
+  the theme check all went quiet. **No test could see it.** The handler needs an `ActiveEventLoop`,
+  which cannot be constructed, and the tooltip tests drive `on_dwell` directly, which is precisely
+  what let them pass over a feature that never fired. Found by opening the editor and resting on a
+  button. It is outside the match rather than in the two arms that arm a deadline, so a third cannot
+  forget it.
+
   **The dwell restarts per button, not per pixel.** Moving inside the button you are already on
   leaves the deadline alone, or nobody without a very steady hand would ever see a tooltip.
 

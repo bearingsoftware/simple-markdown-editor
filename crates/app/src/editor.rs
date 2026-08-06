@@ -7998,6 +7998,20 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
         }
+
+        // **Every arm, unconditionally, and that is the point of it being here rather than in the
+        // arms that arm a deadline.** Two of them do — a keystroke records `reconcile_at`, a pointer
+        // move records `dwell_at` — and a deadline that nothing turns into a `ControlFlow` is a
+        // deadline that never arrives: `new_events` only runs on `ResumeTimeReached`, so the loop
+        // sleeps on `Wait` for ever and neither the idle beat nor the dwell fires.
+        //
+        // MDEDIT-85 shipped that bug to the window. The keystroke arm used to call
+        // `set_control_flow` itself and stopped when the deadline became a field; nothing replaced
+        // it, so the whole-document re-parse, the word count, the recovery snapshots and the theme
+        // check all went quiet, and no tooltip ever appeared. **No test here could see it** — the
+        // handler needs an `ActiveEventLoop`, which cannot be constructed, and the tooltip tests
+        // drive `on_dwell` directly. Found by opening the editor and resting on a button.
+        self.reschedule(event_loop);
     }
 }
 
