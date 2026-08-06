@@ -3308,7 +3308,7 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
-        for action in actions {
+        for action in &actions {
             let glyph = action.glyph();
             if !self.toolbar_labels.contains_key(&glyph) {
                 if let Some(label) = self.lay_out_label(&glyph, style) {
@@ -3326,7 +3326,7 @@ impl<T: TextLayout> Editor<T> {
             })
             .collect();
         let logical_width = width / scale;
-        self.toolbar_buttons = toolbar::layout(actions, &widths, logical_width);
+        self.toolbar_buttons = toolbar::layout(&actions, &widths, logical_width);
 
         let top = self.strip_height();
         quads.push(Self::solid(
@@ -3334,12 +3334,16 @@ impl<T: TextLayout> Editor<T> {
             self.theme.strip,
         ));
 
-        let lit: Vec<bool> = self
+        // Both answers are collected before the loop, because drawing borrows `self` mutably and
+        // asking mid-loop would not compile. `is_lit` is a state and `is_enabled` is a capability;
+        // a button can be neither, either or — for a heading the caret is already in, on a document
+        // with nothing to save — both.
+        let states: Vec<(bool, bool)> = self
             .toolbar_buttons
             .iter()
-            .map(|button| self.is_lit(button.action))
+            .map(|button| (self.is_lit(button.action), self.is_enabled(button.action)))
             .collect();
-        for (button, active) in self.toolbar_buttons.clone().into_iter().zip(lit) {
+        for (button, (active, enabled)) in self.toolbar_buttons.clone().into_iter().zip(states) {
             if active {
                 quads.push(Self::solid(
                     [
@@ -3358,7 +3362,15 @@ impl<T: TextLayout> Editor<T> {
                 x: button.x + (button.width - label.width) / 2.0,
                 baseline: top + toolbar::HEIGHT / 2.0 + self.theme.body_size * 0.3,
                 scale,
-                colour: self.theme.text,
+                // `gutter` is the palette's role for "present but not the thing you are reading",
+                // and MDEDIT-72 chose its value so that it clears 4.5:1 on a panel as well as on the
+                // page. The bar's ground is `strip`, so `contrast.rs` asserts that pair too — a
+                // dimmed button has to be legible, not merely faint.
+                colour: if enabled {
+                    self.theme.text
+                } else {
+                    self.theme.gutter
+                },
             };
             let glyphs = label.glyphs.clone();
             self.draw_label_glyphs(quads, &glyphs, where_);
@@ -3572,7 +3584,20 @@ impl<T: TextLayout> Editor<T> {
                 .is_some_and(|block| block.kind() == BlockKind::CodeBlock),
             // Neither is a state. A rule is inserted and a link is made; there is no "inside a
             // horizontal rule" for a button to reflect.
-            toolbar::Action::Rule | toolbar::Action::Link => false,
+            //
+            // Nor is any of the standard set: Save and Paste are things you do, not modes the caret
+            // can be in. Whether they can be done at all is `is_enabled`, which is a different
+            // question with a different colour.
+            toolbar::Action::Rule
+            | toolbar::Action::Link
+            | toolbar::Action::New
+            | toolbar::Action::Open
+            | toolbar::Action::Save
+            | toolbar::Action::Undo
+            | toolbar::Action::Redo
+            | toolbar::Action::Cut
+            | toolbar::Action::Copy
+            | toolbar::Action::Paste => false,
         }
     }
 
@@ -4079,35 +4104,69 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Height the formatting bar occupies, which is nothing when it is off or has nothing to show.
+    /// Height the formatting bar occupies, which is nothing only when it is switched off.
     ///
-    /// **An empty bar is worse than none**, so a language with no button set takes no room rather
-    /// than drawing a blank strip. That is also what happens with no tabs open at all.
+    /// It used to be nothing whenever the *language* had no buttons, which is how a JSON tab got no
+    /// bar. MDEDIT-84's standard set removed that case: with the bar on there is always something in
+    /// it, so the row is a fixed thing — which is what the tab strip below it needs, since a row
+    /// that came and went would move the strip on every tab switch.
     fn toolbar_height(&self) -> f32 {
-        if self.toolbar_actions().is_empty() {
-            0.0
-        } else {
-            toolbar::HEIGHT
-        }
+        if self.toolbar { toolbar::HEIGHT } else { 0.0 }
     }
 
-    /// The buttons the visible document's language gets, or nothing.
+    /// The buttons the bar shows: the standard set, then the visible document's language's.
     ///
     /// Keyed off the language **here**, in the app, rather than through `mdedit_language::Language`.
     /// Actions are UI vocabulary and the trait is parsing vocabulary; a parser has no business
     /// knowing what a toolbar is.
-    fn toolbar_actions(&self) -> &'static [toolbar::Action] {
+    ///
+    /// Returns an owned list rather than a `&'static` slice, because the two halves are separate
+    /// constants and Rust cannot concatenate slices in a const. It is called **once per frame**,
+    /// from `draw_toolbar` alone — `toolbar_height` deliberately no longer asks, since the answer
+    /// stopped depending on the language.
+    fn toolbar_actions(&self) -> Vec<toolbar::Action> {
         if !self.toolbar {
-            return &[];
+            return Vec::new();
         }
-        match self.workspace.active_open() {
-            // Markdown is the only language with actions so far. JSON's Format and Validate arrive
-            // with MDEDIT-47 and MDEDIT-48; until then it gets no bar, because a button that does
-            // nothing is worse than no button.
+        let language = match self.workspace.active_open() {
+            // Markdown is the only language with actions of its own so far. JSON's Format and
+            // Validate would be its set, and belong to whichever ticket gives it one; until then it
+            // gets the standard buttons and no more, because a button that does nothing is worse
+            // than no button.
             Some(open) if open.document.language().name() == "Markdown" => toolbar::MARKDOWN,
             // The scratch document, before anything is open, is Markdown too.
             None => toolbar::MARKDOWN,
             Some(_) => &[],
+        };
+        [toolbar::STANDARD, language].concat()
+    }
+
+    /// Whether a button can do anything right now, which decides both its colour and its clicks.
+    ///
+    /// Save with nothing to save, Undo with no history, Copy with no selection: all ordinary, and
+    /// drawing them live and having them do nothing is the failure MDEDIT-52 named. The precedent is
+    /// Tools → Format Document, which is greyed rather than hidden.
+    ///
+    /// **Paste is never dimmed, which is a deliberate departure from MDEDIT-84's plan.** Deciding
+    /// needs the system clipboard, and there are only two ways to have that answer: read it as the
+    /// frame is drawn, which means opening the platform clipboard sixty times a second — the thing
+    /// [`crate::clipboard`]'s docs say not to do, and the API whose misuse MDEDIT-67 was — or cache
+    /// it and refresh on some event, which means that when the cache is stale the button is dimmed
+    /// while the clipboard has text, and a *wrong* dim loses the user a paste. A live Paste that
+    /// inserts nothing is exactly what Ctrl+V already is, and nobody calls that broken.
+    ///
+    /// The language's own actions are always live: they act on the caret's line or the selection,
+    /// and each does something sensible with either.
+    #[must_use]
+    pub fn is_enabled(&self, action: toolbar::Action) -> bool {
+        match action {
+            toolbar::Action::Save => self.is_modified(),
+            toolbar::Action::Undo => self.document().can_undo(),
+            toolbar::Action::Redo => self.document().can_redo(),
+            toolbar::Action::Cut | toolbar::Action::Copy => {
+                !self.document().selection().span().is_empty()
+            }
+            _ => true,
         }
     }
 
@@ -5015,9 +5074,15 @@ impl<T: TextLayout> Editor<T> {
 
     /// Resolves a click in the formatting bar.
     ///
-    /// **Returns true for any click inside the bar's height**, including the gaps between buttons.
-    /// A click on chrome must never reach the document, and "it fell between two buttons" is not a
-    /// reason to start a selection in the text underneath.
+    /// **Returns true for any click inside the bar's height**, including the gaps between buttons
+    /// and including a dimmed button. A click on chrome must never reach the document, and neither
+    /// "it fell between two buttons" nor "that one cannot act" is a reason to start a selection in
+    /// the text underneath.
+    ///
+    /// The dimmed check is here rather than in [`perform`](Self::perform), and that is the same
+    /// second-door rule the whole bar follows: `perform` is what a chord reaches too, and Ctrl+S on
+    /// an unmodified document is allowed to be a no-op. What a *dimmed button* means is that this
+    /// particular door is shut, which is a fact about the click.
     fn click_toolbar(&mut self, x: f32, y: f32) -> bool {
         if self.toolbar_buttons.is_empty() {
             return false;
@@ -5028,7 +5093,9 @@ impl<T: TextLayout> Editor<T> {
         }
 
         if let Some(action) = toolbar::hit_test(&self.toolbar_buttons, x, y - top) {
-            self.perform(action);
+            if self.is_enabled(action) {
+                self.perform(action);
+            }
         }
         true
     }
@@ -5041,6 +5108,23 @@ impl<T: TextLayout> Editor<T> {
         use mdedit_document::format::{Block, Inline};
 
         match action {
+            toolbar::Action::New => {
+                self.new_file();
+                true
+            }
+            toolbar::Action::Open => self.open_prompted(),
+            toolbar::Action::Save => {
+                self.save();
+                false
+            }
+            toolbar::Action::Undo => self.document_mut().undo(),
+            toolbar::Action::Redo => self.document_mut().redo(),
+            toolbar::Action::Cut => self.cut(),
+            toolbar::Action::Copy => {
+                self.copy();
+                false
+            }
+            toolbar::Action::Paste => self.paste(),
             toolbar::Action::Bold => self.document_mut().toggle_inline(Inline::Bold),
             toolbar::Action::Italic => self.document_mut().toggle_inline(Inline::Italic),
             toolbar::Action::Strikethrough => {

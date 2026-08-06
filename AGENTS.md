@@ -178,13 +178,33 @@ Known gaps, so nobody assumes they are done:
   behaviour that exists only when clicked. It is per-run — View → Formatting Bar, no chord, and
   nothing written back to the config. **Its buttons are text**, drawn by the same engine as
   everything else and laid out once into `toolbar_labels`, which is therefore a fifth cache
-  `set_zoom` has to clear. **Only Markdown has a set.** JSON's would be Format Document and Validate,
-  which are MDEDIT-48 and MDEDIT-47 and have not landed, so JSON and YAML show no bar and take no
-  height — the ticket's own rule, that a button which does nothing is worse than no button. No
-  tooltips (there is no hover affordance to hang one on) and no accessible names (those wait for the
-  accesskit pass). Lighting is lookups only: `is_inside` asks the segments, `carries` and `is_quoted`
-  read the caret's line out of the rope, and headings ask the block list so a setext one still
-  lights. Rule and Link never light, because neither is a state.
+  `set_zoom` has to clear. No tooltips (there is no hover affordance to hang one on) and no
+  accessible names (those wait for the accesskit pass). Lighting is lookups only: `is_inside` asks
+  the segments, `carries` and `is_quoted` read the caret's line out of the rope, and headings ask the
+  block list so a setext one still lights. Rule and Link never light, because neither is a state.
+
+  **Every document gets a standard set, and that is what stopped the bar disappearing.** MDEDIT-84.
+  `toolbar::STANDARD` is New, Open, Save, Undo, Redo, Cut, Copy and Paste — eight buttons a language
+  appends its own after, so JSON and YAML have a bar where they used to have none. It used to be
+  Markdown's alone, on the rule that a button which does nothing is worse than no button; that rule
+  is intact and the *bar* is no longer the thing it applies to. Close is deliberately not in the set:
+  a one-click Close beside Save is a misclick that shuts a document, and it is on the menu, on Ctrl+W
+  and on each tab's `×`.
+
+  **The standard set is leftmost, so overflow cuts the language's buttons first.** The standard
+  actions are what somebody who does not know the chords is looking for, and every formatting button
+  has a chord *and* a menu item. Words rather than symbols, because there is no glyph for Open that
+  reads without a legend — MDEDIT-92 makes both sets icons, after MDEDIT-85's tooltips.
+
+  **A button that cannot act right now is dimmed and ignores its click**, in `theme.gutter` over the
+  bar's `strip`, asserted legible by `contrast.rs`. Save with nothing to save, Undo with no history,
+  Cut and Copy with no selection. **Paste is never dimmed, against the ticket's plan**: deciding needs
+  the system clipboard, and reading it per frame is what `crate::clipboard` says not to do while
+  caching it means a stale dim costs the user a paste — where a live Paste that inserts nothing is
+  exactly what Ctrl+V already is. The dimmed check is in `click_toolbar` rather than in `perform`,
+  because `perform` is what a chord reaches too and Ctrl+S on an unmodified document is allowed.
+  **Geometry does not change with state** — a dimmed button keeps its rect, or the row would reflow
+  as the user selects and deselects.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it
