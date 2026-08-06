@@ -3328,7 +3328,10 @@ impl<T: TextLayout> Editor<T> {
         let logical_width = width / scale;
         self.toolbar_buttons = toolbar::layout(&actions, &widths, logical_width);
 
-        let top = self.strip_height();
+        // MDEDIT-84: the bar is the topmost chrome, and the tab strip is drawn below it. See
+        // `build_tab_strip` for the other half, and `click_toolbar` and `click_strip` for the two
+        // hit tests that have to agree with both.
+        let top = 0.0;
         quads.push(Self::solid(
             [0.0, top * scale, width, toolbar::HEIGHT * scale],
             self.theme.strip,
@@ -4275,9 +4278,13 @@ impl<T: TextLayout> Editor<T> {
 
         self.tab_rects = tabs::layout(&label_widths, logical_width);
 
+        // MDEDIT-84: the formatting bar is above the strip now, so the strip starts where the bar
+        // ends. `tabs.rs` is untouched by that — it lays out within a row whose origin the caller
+        // supplies, which is exactly so this is the only place that has to know.
+        let top = self.toolbar_height();
         let active = self.workspace.active();
         let mut quads = vec![Self::solid(
-            [0.0, 0.0, width, tabs::STRIP_HEIGHT * scale],
+            [0.0, top * scale, width, tabs::STRIP_HEIGHT * scale],
             self.theme.strip,
         )];
 
@@ -4292,7 +4299,7 @@ impl<T: TextLayout> Editor<T> {
             quads.push(Self::solid(
                 [
                     rect.x * scale,
-                    0.0,
+                    top * scale,
                     (rect.width - 1.0) * scale,
                     tabs::STRIP_HEIGHT * scale,
                 ],
@@ -4320,7 +4327,7 @@ impl<T: TextLayout> Editor<T> {
                 label_style,
                 close_x + close_width / 2.0 - 4.0,
                 // Placed so the label sits centred in the strip.
-                tabs::STRIP_HEIGHT * 0.68,
+                top + tabs::STRIP_HEIGHT * 0.68,
                 colour,
                 scale,
                 close_width,
@@ -4332,7 +4339,7 @@ impl<T: TextLayout> Editor<T> {
                     name,
                     label_style,
                     rect.label_x(),
-                    tabs::STRIP_HEIGHT * 0.68,
+                    top + tabs::STRIP_HEIGHT * 0.68,
                     if is_active {
                         self.theme.text
                     } else {
@@ -5072,6 +5079,17 @@ impl<T: TextLayout> Editor<T> {
         pane::hit_test(&self.row_rects, x, y - self.toolbar_height())
     }
 
+    /// What a window position means to the tab strip, if anything.
+    ///
+    /// The strip's twin of [`pane_hit`](Self::pane_hit), and it exists for the same reason that one
+    /// does: since MDEDIT-84 the strip starts below the formatting bar, so the window's y has to
+    /// come back to the strip's — and there are **two** callers, a left click and a middle click.
+    /// Doing the subtraction in both places is how one of them ends up not doing it, which is
+    /// exactly what happened here when only the left click was moved.
+    fn strip_hit(&self, x: f32, y: f32) -> Option<tabs::Hit> {
+        tabs::hit_test(&self.tab_rects, x, y - self.toolbar_height())
+    }
+
     /// Resolves a click in the formatting bar.
     ///
     /// **Returns true for any click inside the bar's height**, including the gaps between buttons
@@ -5087,7 +5105,9 @@ impl<T: TextLayout> Editor<T> {
         if self.toolbar_buttons.is_empty() {
             return false;
         }
-        let top = self.strip_height();
+        // The bar is the topmost chrome, so its own top is the window's. `click_strip` starts where
+        // this ends, and `the_two_bands_abut_exactly` is what says they still do.
+        let top = 0.0;
         if !(top..top + toolbar::HEIGHT).contains(&y) {
             return false;
         }
@@ -5710,6 +5730,15 @@ impl<T: TextLayout> Editor<T> {
         true
     }
 
+    /// Where the strip's tabs are, in the strip's own coordinates, for a test.
+    ///
+    /// The strip's origin is not in here — it is the formatting bar's height, and a caller turning
+    /// a window position into a hit should use `strip_hit` rather than doing the arithmetic again.
+    #[must_use]
+    pub fn tab_rects(&self) -> &[tabs::TabRect] {
+        &self.tab_rects
+    }
+
     /// Where the bar's buttons are, for a test.
     #[must_use]
     pub fn toolbar_buttons(&self) -> &[toolbar::ButtonRect] {
@@ -5718,7 +5747,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// Resolves a click in the tab strip.
     fn click_strip(&mut self, x: f32, y: f32) -> bool {
-        let Some(hit) = tabs::hit_test(&self.tab_rects, x, y) else {
+        let Some(hit) = self.strip_hit(x, y) else {
             return false;
         };
         match hit {
@@ -7655,15 +7684,13 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                     MouseButton::Left => self.click(x, y),
                     MouseButton::Right => self.popup_context_menu(x, y),
                     // Middle-click closes, as every editor with tabs does.
-                    MouseButton::Middle => {
-                        match (tabs::hit_test(&self.tab_rects, x, y), self.pane_hit(x, y)) {
-                            (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
-                            | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
-                                self.close_tab_at(index)
-                            }
-                            (None, None) => false,
+                    MouseButton::Middle => match (self.strip_hit(x, y), self.pane_hit(x, y)) {
+                        (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
+                        | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
+                            self.close_tab_at(index)
                         }
-                    }
+                        (None, None) => false,
+                    },
                     _ => false,
                 };
                 if changed {

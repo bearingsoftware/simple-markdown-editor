@@ -166,8 +166,8 @@ Known gaps, so nobody assumes they are done:
   report. The Windows Event Log is deliberately not used — a services convention needing a registered
   message source, read by administrators rather than by the person whose editor misbehaved.
 - **All chrome draws after the document.** There is no depth buffer and no scissor, so the painter's
-  order is the whole of the answer: the tab strip, file pane and status bar are appended after
-  `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
+  order is the whole of the answer: the formatting bar, tab strip, file pane and status bar are
+  appended after `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
 - **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
@@ -205,6 +205,21 @@ Known gaps, so nobody assumes they are done:
   because `perform` is what a chord reaches too and Ctrl+S on an unmodified document is allowed.
   **Geometry does not change with state** — a dimmed button keeps its rect, or the row would reflow
   as the user selects and deselects.
+
+  **It is the topmost chrome, above the tab strip.** MDEDIT-84's second item, and it is four y
+  offsets and two hit tests in `editor.rs` — `tabs.rs` and `toolbar.rs` are untouched, because each
+  lays out within a row whose origin the caller supplies. The document's top edge does not move:
+  `Insets::top` is a sum and a sum does not care about order. The find bar, status bar and file pane
+  keep their places.
+
+  **The strip's conversion is `strip_hit`, and it exists because there are two callers.** A left
+  click and a middle-click-to-close both turn a window position into a tab, and the first version of
+  this moved only the left one — the same mistake `pane_hit` was written to prevent, made again one
+  function away from it. **Both bands are thirty pixels of `strip`**, so a test cannot tell the two
+  backgrounds apart; `the_bar_is_drawn_above_the_strip` reads what is unique to each instead — an
+  inactive tab's quad, and a dimmed label's `gutter`. Without that, moving the drawing and not the
+  clicks (or the reverse) passes every other test in the file, and so does leaving the tab *labels*
+  at their old baseline while their backgrounds move.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it
