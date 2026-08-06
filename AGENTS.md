@@ -166,8 +166,8 @@ Known gaps, so nobody assumes they are done:
   report. The Windows Event Log is deliberately not used — a services convention needing a registered
   message source, read by administrators rather than by the person whose editor misbehaved.
 - **All chrome draws after the document.** There is no depth buffer and no scissor, so the painter's
-  order is the whole of the answer: the tab strip, file pane and status bar are appended after
-  `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
+  order is the whole of the answer: the formatting bar, tab strip, file pane and status bar are
+  appended after `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
 - **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
@@ -178,13 +178,48 @@ Known gaps, so nobody assumes they are done:
   behaviour that exists only when clicked. It is per-run — View → Formatting Bar, no chord, and
   nothing written back to the config. **Its buttons are text**, drawn by the same engine as
   everything else and laid out once into `toolbar_labels`, which is therefore a fifth cache
-  `set_zoom` has to clear. **Only Markdown has a set.** JSON's would be Format Document and Validate,
-  which are MDEDIT-48 and MDEDIT-47 and have not landed, so JSON and YAML show no bar and take no
-  height — the ticket's own rule, that a button which does nothing is worse than no button. No
-  tooltips (there is no hover affordance to hang one on) and no accessible names (those wait for the
-  accesskit pass). Lighting is lookups only: `is_inside` asks the segments, `carries` and `is_quoted`
-  read the caret's line out of the rope, and headings ask the block list so a setext one still
-  lights. Rule and Link never light, because neither is a state.
+  `set_zoom` has to clear. No tooltips (there is no hover affordance to hang one on) and no
+  accessible names (those wait for the accesskit pass). Lighting is lookups only: `is_inside` asks
+  the segments, `carries` and `is_quoted` read the caret's line out of the rope, and headings ask the
+  block list so a setext one still lights. Rule and Link never light, because neither is a state.
+
+  **Every document gets a standard set, and that is what stopped the bar disappearing.** MDEDIT-84.
+  `toolbar::STANDARD` is New, Open, Save, Undo, Redo, Cut, Copy and Paste — eight buttons a language
+  appends its own after, so JSON and YAML have a bar where they used to have none. It used to be
+  Markdown's alone, on the rule that a button which does nothing is worse than no button; that rule
+  is intact and the *bar* is no longer the thing it applies to. Close is deliberately not in the set:
+  a one-click Close beside Save is a misclick that shuts a document, and it is on the menu, on Ctrl+W
+  and on each tab's `×`.
+
+  **The standard set is leftmost, so overflow cuts the language's buttons first.** The standard
+  actions are what somebody who does not know the chords is looking for, and every formatting button
+  has a chord *and* a menu item. Words rather than symbols, because there is no glyph for Open that
+  reads without a legend — MDEDIT-92 makes both sets icons, after MDEDIT-85's tooltips.
+
+  **A button that cannot act right now is dimmed and ignores its click**, in `theme.gutter` over the
+  bar's `strip`, asserted legible by `contrast.rs`. Save with nothing to save, Undo with no history,
+  Cut and Copy with no selection. **Paste is never dimmed, against the ticket's plan**: deciding needs
+  the system clipboard, and reading it per frame is what `crate::clipboard` says not to do while
+  caching it means a stale dim costs the user a paste — where a live Paste that inserts nothing is
+  exactly what Ctrl+V already is. The dimmed check is in `click_toolbar` rather than in `perform`,
+  because `perform` is what a chord reaches too and Ctrl+S on an unmodified document is allowed.
+  **Geometry does not change with state** — a dimmed button keeps its rect, or the row would reflow
+  as the user selects and deselects.
+
+  **It is the topmost chrome, above the tab strip.** MDEDIT-84's second item, and it is four y
+  offsets and two hit tests in `editor.rs` — `tabs.rs` and `toolbar.rs` are untouched, because each
+  lays out within a row whose origin the caller supplies. The document's top edge does not move:
+  `Insets::top` is a sum and a sum does not care about order. The find bar, status bar and file pane
+  keep their places.
+
+  **The strip's conversion is `strip_hit`, and it exists because there are two callers.** A left
+  click and a middle-click-to-close both turn a window position into a tab, and the first version of
+  this moved only the left one — the same mistake `pane_hit` was written to prevent, made again one
+  function away from it. **Both bands are thirty pixels of `strip`**, so a test cannot tell the two
+  backgrounds apart; `the_bar_is_drawn_above_the_strip` reads what is unique to each instead — an
+  inactive tab's quad, and a dimmed label's `gutter`. Without that, moving the drawing and not the
+  clicks (or the reverse) passes every other test in the file, and so does leaving the tab *labels*
+  at their old baseline while their backgrounds move.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it

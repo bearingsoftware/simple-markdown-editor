@@ -210,6 +210,21 @@ const PAIRS: &[Pair] = &[
         foreground: |t| t.status_error,
         ground: |t| t.strip,
     },
+    // The formatting bar, which fills with `strip` too. MDEDIT-84's standard set brought a second
+    // state to a surface that had only one: a button that cannot act right now is drawn in `gutter`
+    // rather than `text`. **Dimmed has to mean legible**, or it is indistinguishable from a
+    // rendering fault — which is why it is asserted against the same floor as everything else here
+    // rather than allowed a lower one for being deliberately quiet.
+    Pair {
+        what: "a live toolbar button",
+        foreground: |t| t.text,
+        ground: |t| t.strip,
+    },
+    Pair {
+        what: "a dimmed toolbar button",
+        foreground: |t| t.gutter,
+        ground: |t| t.strip,
+    },
 ];
 
 /// WCAG AA for body text, and the floor the design pack commits to.

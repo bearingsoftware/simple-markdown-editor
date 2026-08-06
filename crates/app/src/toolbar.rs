@@ -10,6 +10,17 @@
 //! nothing itself; it is the discoverability surface for people arriving from Word, and trivially
 //! hidden for everyone who would rather have the chords.
 //!
+//! # Two sets, and the first is why the bar never disappears
+//!
+//! [`STANDARD`] is what every document gets; a language appends its own after a gap. Before
+//! MDEDIT-84 the bar was Markdown's alone and took no height on JSON or YAML, which was fine while
+//! it sat *below* the tab strip and untenable once it sits above one — a bar that comes and goes
+//! would move the strip on every tab switch.
+//!
+//! Whether a button can act right now is the editor's question, not this module's: see
+//! `Editor::is_enabled`. Geometry does not change with state, which is deliberate — a dimmed button
+//! keeps its rect, so the row does not reflow as you select and deselect.
+//!
 //! # The button glyphs are text
 //!
 //! A bold `B`, an italic `I`, `H1`, `</>`. Drawn by the text engine the rest of the editor uses, so
@@ -43,6 +54,22 @@ const GROUP_GAP: f32 = 10.0;
 /// Something a button does, which is always something a chord already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
+    /// A new, empty document.
+    New,
+    /// The file picker.
+    Open,
+    /// Write the buffer back where it came from.
+    Save,
+    /// Reverse the last group of edits.
+    Undo,
+    /// Put back what [`Undo`](Self::Undo) took away.
+    Redo,
+    /// Copy the selection and delete it.
+    Cut,
+    /// Copy the selection.
+    Copy,
+    /// Insert whatever is on the clipboard.
+    Paste,
     /// `**bold**`.
     Bold,
     /// `*italic*`.
@@ -74,9 +101,23 @@ impl Action {
     ///
     /// Short enough to read at 30 pixels and conventional enough not to need a legend: `B` and `I`
     /// are what every word processor has used for forty years.
+    ///
+    /// The standard set is **words**, where the Markdown set is symbols. That is not an
+    /// inconsistency to tidy up: `B` and `I` are a forty-year convention and there is no equivalent
+    /// glyph for Open that anybody would read without a legend. MDEDIT-92 replaces both sets with
+    /// icons, and MDEDIT-85's tooltips come first because a row of unlabelled glyphs is unusable
+    /// without them.
     #[must_use]
     pub fn glyph(self) -> String {
         match self {
+            Self::New => "New".to_owned(),
+            Self::Open => "Open".to_owned(),
+            Self::Save => "Save".to_owned(),
+            Self::Undo => "Undo".to_owned(),
+            Self::Redo => "Redo".to_owned(),
+            Self::Cut => "Cut".to_owned(),
+            Self::Copy => "Copy".to_owned(),
+            Self::Paste => "Paste".to_owned(),
             Self::Bold => "B".to_owned(),
             Self::Italic => "I".to_owned(),
             Self::Strikethrough => "S".to_owned(),
@@ -101,15 +142,48 @@ impl Action {
 
     /// Whether a gap goes *before* this button, separating it from the group before.
     ///
-    /// Grouping is the only thing standing in for labels: inline styling, then headings, then lists,
-    /// then blocks. Without it the bar reads as an undifferentiated row of symbols.
+    /// Grouping is the only thing standing in for labels: file, history, clipboard, then the
+    /// language's own — inline styling, headings, lists, blocks. Without it the bar reads as an
+    /// undifferentiated row of symbols.
+    ///
+    /// [`Bold`](Self::Bold) is in the list because it is the first of the language's set, and the
+    /// gap before it is the one that says where the standard set ends. [`layout`] suppresses a gap
+    /// before the *first* button, so the floating bar — which starts at Bold — is unaffected.
     #[must_use]
     fn starts_a_group(self) -> bool {
-        matches!(self, Self::Heading(1) | Self::Bullet | Self::Quote)
+        matches!(
+            self,
+            Self::Undo | Self::Cut | Self::Bold | Self::Heading(1) | Self::Bullet | Self::Quote
+        )
     }
 }
 
-/// The buttons a Markdown document gets.
+/// The buttons **every** document gets, whatever its language.
+///
+/// MDEDIT-84. Before this the bar was Markdown's alone, so a JSON tab had no bar at all — and once
+/// the bar sits above the tab strip, a bar that comes and goes moves the *strip* every time the user
+/// switches tab. A set every document has is what makes the bar's row a fixed thing, which is why
+/// this constant exists before the swap rather than after it.
+///
+/// Leftmost, deliberately. [`layout`] stops at the window's edge, so a narrow window loses the
+/// language's buttons before it loses Save — and the standard actions are the ones somebody who does
+/// not know the chords is looking for, while every formatting button has both a chord and a menu
+/// item.
+///
+/// **Close is not here.** A one-click Close beside Save is a misclick that shuts a document, and the
+/// bar is meant to be the safe surface. It is on the File menu, on Ctrl+W, and on each tab's `×`.
+pub const STANDARD: &[Action] = &[
+    Action::New,
+    Action::Open,
+    Action::Save,
+    Action::Undo,
+    Action::Redo,
+    Action::Cut,
+    Action::Copy,
+    Action::Paste,
+];
+
+/// The buttons a Markdown document gets, *after* [`STANDARD`].
 ///
 /// Ordered as the plan asked: inline styling, headings, lists, blocks. Three heading levels rather
 /// than six — H4 and below are rare enough that the chords carry them, and a bar of sixteen buttons
@@ -138,6 +212,9 @@ pub const MARKDOWN: &[Action] = &[
 /// whole lines rather than on a selection, so offering them here would be a different operation
 /// wearing the same clothes. A selection bar full of document-level buttons is a category error, and
 /// the whole reason the two sets are separate constants rather than one.
+///
+/// [`STANDARD`] is not here either, and for a stronger version of the same argument: New and Save
+/// have no business floating over a paragraph the user has just highlighted.
 pub const SELECTION: &[Action] = &[
     Action::Bold,
     Action::Italic,
