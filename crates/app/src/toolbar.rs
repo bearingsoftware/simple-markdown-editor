@@ -32,10 +32,14 @@
 //!
 //! # What it does not have
 //!
-//! **No tooltips**, because there is no hover affordance in this editor to hang one on. **No
-//! accessible names** either; those wait for the accesskit pass. Both are recorded rather than
-//! quietly skipped, because a toolbar is exactly the chrome a screen-reader user would expect to be
-//! able to reach.
+//! **No accessible names**; those wait for the accesskit pass. Recorded rather than quietly skipped,
+//! because a toolbar is exactly the chrome a screen-reader user would expect to be able to reach —
+//! and MDEDIT-85's tooltips are **not** that. A tooltip is mouse-only and a screen reader will not
+//! read it.
+//!
+//! There were no tooltips either until MDEDIT-85, "because there is no hover affordance in this
+//! editor to hang one on". That sentence was the ticket rather than an excuse; see
+//! [`crate::tooltip`] for what building the affordance actually cost.
 
 use std::fmt::Write as _;
 
@@ -138,6 +142,93 @@ impl Action {
             Self::Rule => "—".to_owned(),
             Self::Link => "[]()".to_owned(),
         }
+    }
+
+    /// What the button does, in the words a tooltip shows.
+    ///
+    /// MDEDIT-85's plan asked for these to be looked up out of [`crate::shortcuts::ALL`], so the
+    /// phrase lives in one place. **They are here instead, and the drift is caught by a test rather
+    /// than by a lookup** — because the list is a *reference document* and reads like one where a
+    /// tooltip has to read like a label. Its entry for a heading is one row covering all six levels
+    /// ("Heading level — press the same level again to clear it"), which is right on a help page and
+    /// wrong on a button that means H2 specifically; its entry for a link carries a clause about the
+    /// clipboard.
+    ///
+    /// The drift that actually matters is **advertising a chord that does not exist**, which is
+    /// MDEDIT-65 exactly, and `tests/tooltip.rs` asserts every chord named by [`chord`](Self::chord)
+    /// appears in the shortcut list. A wording that reads differently in two places is not a defect;
+    /// a button promising Ctrl+B when nothing answers to it is.
+    #[must_use]
+    pub fn describes(self) -> String {
+        match self {
+            Self::New => "New file".to_owned(),
+            Self::Open => "Open a file".to_owned(),
+            Self::Save => "Save".to_owned(),
+            Self::Undo => "Undo".to_owned(),
+            Self::Redo => "Redo".to_owned(),
+            Self::Cut => "Cut".to_owned(),
+            Self::Copy => "Copy".to_owned(),
+            Self::Paste => "Paste".to_owned(),
+            Self::Bold => "Bold".to_owned(),
+            Self::Italic => "Italic".to_owned(),
+            Self::Strikethrough => "Strikethrough".to_owned(),
+            Self::Code => "Inline code".to_owned(),
+            Self::Heading(level) => {
+                let mut label = String::from("Heading ");
+                let _ = write!(label, "{level}");
+                label
+            }
+            Self::Bullet => "Bullet list".to_owned(),
+            Self::Ordered => "Numbered list".to_owned(),
+            Self::Task => "Task list".to_owned(),
+            Self::Quote => "Block quote".to_owned(),
+            Self::Fence => "Code block".to_owned(),
+            Self::Rule => "Horizontal rule".to_owned(),
+            Self::Link => "Link".to_owned(),
+        }
+    }
+
+    /// The chord that does the same thing, if there is one.
+    ///
+    /// `None` for the block actions, which have never had one — the bar is the only way to reach a
+    /// bullet list or a fence, which is a good part of why the bar exists. Spelled the way
+    /// [`crate::shortcuts::ALL`] spells a chord, because a test compares the two.
+    #[must_use]
+    pub fn chord(self) -> Option<String> {
+        let chord = match self {
+            Self::New => "Ctrl+N",
+            Self::Open => "Ctrl+O",
+            Self::Save => "Ctrl+S",
+            Self::Undo => "Ctrl+Z",
+            Self::Redo => "Ctrl+Y",
+            Self::Cut => "Ctrl+X",
+            Self::Copy => "Ctrl+C",
+            Self::Paste => "Ctrl+V",
+            Self::Bold => "Ctrl+B",
+            Self::Italic => "Ctrl+I",
+            Self::Strikethrough => "Ctrl+Shift+X",
+            Self::Code => "Ctrl+E",
+            Self::Link => "Ctrl+K",
+            Self::Heading(level) => {
+                let mut chord = String::from("Ctrl+");
+                let _ = write!(chord, "{level}");
+                return Some(chord);
+            }
+            Self::Bullet | Self::Ordered | Self::Task | Self::Quote | Self::Fence | Self::Rule => {
+                return None;
+            }
+        };
+        Some(chord.to_owned())
+    }
+
+    /// The whole line a tooltip shows: what it does, and the chord that does the same.
+    #[must_use]
+    pub fn tooltip(self) -> String {
+        let mut line = self.describes();
+        if let Some(chord) = self.chord() {
+            let _ = write!(line, " — {chord}");
+        }
+        line
     }
 
     /// Whether a gap goes *before* this button, separating it from the group before.

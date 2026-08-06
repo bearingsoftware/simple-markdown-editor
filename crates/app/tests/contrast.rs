@@ -148,8 +148,11 @@ const PAIRS: &[Pair] = &[
         foreground: |t| t.span_error,
         ground: |t| t.background,
     },
+    // `panel` was the file pane's alone until MDEDIT-85 gave it a second consumer: a tooltip's
+    // ground. Same pair, so nothing to add — recorded because this file's rule is that a pair is
+    // here because the renderer produces it, and now two draw sites do.
     Pair {
-        what: "text on a panel",
+        what: "text on a panel, and a tooltip's line",
         foreground: |t| t.text,
         ground: |t| t.panel,
     },
