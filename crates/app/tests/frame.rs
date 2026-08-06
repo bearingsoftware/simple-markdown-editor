@@ -289,17 +289,35 @@ fn blocks_document(count: usize) -> String {
 }
 
 /// The point of the whole ticket: what is off screen is not laid out.
+///
+/// **Measured as a difference between two documents, not as an absolute count.** A frame lays out
+/// chrome as well as text — the gutter's digits, the status bar's fields, the toolbar's faces — and
+/// counting all of it makes this test a hostage to chrome it is not about. MDEDIT-92 is what proved
+/// that: the icon fallback lays a button out twice on the first frame (once for the icon, once for
+/// the word when the icon comes back `.notdef`), and a threshold that had nothing to do with the
+/// document went red.
+///
+/// Both editors pay exactly the same chrome, so what is left is the document's own chunks.
 #[test]
 fn only_the_chunks_on_screen_are_laid_out() {
-    let mut editor = Editor::new(&blocks_document(400), Grid::new());
-    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let mut small = Editor::new(&blocks_document(1), Grid::new());
+    let _ = small.build_frame(WIDTH, HEIGHT, 1.0);
+    let chrome = small.text_backend().layouts();
 
-    let laid_out = editor.text_backend().layouts();
+    let mut big = Editor::new(&blocks_document(400), Grid::new());
+    let _ = big.build_frame(WIDTH, HEIGHT, 1.0);
+    let laid_out = big.text_backend().layouts();
+
     assert!(
-        laid_out < 40,
-        "a 400-block document should not lay out 400 blocks to fill 200 pixels: {laid_out}"
+        laid_out > chrome,
+        "something of the document has to be drawn"
     );
-    assert!(laid_out > 0, "something has to be drawn");
+    assert!(
+        laid_out - chrome < 40,
+        "a 400-block document should not lay out 400 blocks to fill 200 pixels: {} beyond the \
+         {chrome} a one-block document already costs",
+        laid_out - chrome
+    );
 }
 
 /// The cache is what makes the second frame cheap, and it survives an edit elsewhere.

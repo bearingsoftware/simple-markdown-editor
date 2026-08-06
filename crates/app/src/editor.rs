@@ -305,6 +305,13 @@ const SQUIGGLE_DROP: f32 = 4.0;
 /// same size — one cache serves both only while that holds.
 const TOOLBAR_TEXT: f32 = 0.62;
 
+/// Icon size on the bar, as a multiple of the body size.
+///
+/// 22 pixels at the default 16, which is what MDEDIT-92's mock-up drew and what a 48-pixel bar
+/// wants. A multiple rather than a constant so it follows the zoom, exactly as every other piece of
+/// chrome text does.
+const TOOLBAR_ICON: f32 = 1.375;
+
 /// How thick the floating bar's outline is.
 const FLOAT_BORDER: f32 = 1.0;
 
@@ -3423,21 +3430,15 @@ impl<T: TextLayout> Editor<T> {
             return;
         }
 
-        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
         for action in &actions {
-            let glyph = action.glyph();
-            if !self.toolbar_labels.contains_key(&glyph) {
-                if let Some(label) = self.lay_out_label(&glyph, style) {
-                    self.toolbar_labels.insert(glyph, label);
-                }
-            }
+            self.button_face(*action);
         }
 
         let widths: Vec<f32> = actions
             .iter()
             .map(|action| {
                 self.toolbar_labels
-                    .get(&action.glyph())
+                    .get(&action.label())
                     .map_or(0.0, |label| label.width)
             })
             .collect();
@@ -3474,12 +3475,13 @@ impl<T: TextLayout> Editor<T> {
                     self.theme.tab_active,
                 ));
             }
-            let Some(label) = self.toolbar_labels.get(&button.action.glyph()) else {
+            let key = button.action.label();
+            let Some(label) = self.toolbar_labels.get(&key) else {
                 continue;
             };
             let where_ = LabelAt {
                 x: button.x + (button.width - label.width) / 2.0,
-                baseline: top + toolbar::HEIGHT / 2.0 + self.theme.body_size * 0.3,
+                baseline: top + self.face_baseline(label, &key),
                 scale,
                 // `gutter` is the palette's role for "present but not the thing you are reading",
                 // and MDEDIT-72 chose its value so that it clears 4.5:1 on a panel as well as on the
@@ -3512,21 +3514,15 @@ impl<T: TextLayout> Editor<T> {
             return;
         }
 
-        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
         for action in actions {
-            let glyph = action.glyph();
-            if !self.toolbar_labels.contains_key(&glyph) {
-                if let Some(label) = self.lay_out_label(&glyph, style) {
-                    self.toolbar_labels.insert(glyph, label);
-                }
-            }
+            self.button_face(*action);
         }
 
         let widths: Vec<f32> = actions
             .iter()
             .map(|action| {
                 self.toolbar_labels
-                    .get(&action.glyph())
+                    .get(&action.label())
                     .map_or(0.0, |label| label.width)
             })
             .collect();
@@ -3589,12 +3585,13 @@ impl<T: TextLayout> Editor<T> {
                     self.theme.selection,
                 ));
             }
-            let Some(label) = self.toolbar_labels.get(&button.action.glyph()) else {
+            let key = button.action.label();
+            let Some(label) = self.toolbar_labels.get(&key) else {
                 continue;
             };
             let where_ = LabelAt {
                 x: button.x + (button.width - label.width) / 2.0,
-                baseline: y + toolbar::HEIGHT / 2.0 + self.theme.body_size * 0.22,
+                baseline: y + self.face_baseline(label, &key),
                 scale,
                 colour: self.theme.text,
             };
@@ -3977,6 +3974,60 @@ impl<T: TextLayout> Editor<T> {
     /// The gutter, the status bar and the file pane each grew their own copy of this before there
     /// were four of them. Shared from here on; the other three are left alone because moving them
     /// would be a refactor of three working caches inside a feature ticket.
+    /// Lays out a button's face once and keeps it: its icon if the font has one, its word if not.
+    ///
+    /// Returns the cache key, which is the button's **word** whether or not that is what got drawn.
+    /// One key per action either way, so a caller asking twice gets the same entry and a machine
+    /// without the icon font uses the same cache the icons would have.
+    ///
+    /// **The `.notdef` check is the fallback, and it has to be here rather than in a table.**
+    /// `Action::icon` returns private-use code points, which are a promise about a font: `U+E8DD` is
+    /// Bold in Segoe Fluent Icons and nothing at all in a font that has not got it. Asking the text
+    /// layer and looking at what came back is the only way to know, and it is the same oracle
+    /// MDEDIT-5's Han test uses. A machine with neither icon font draws the bar it had before this
+    /// story rather than twenty-two empty boxes.
+    fn button_face(&mut self, action: toolbar::Action) -> Option<String> {
+        let key = action.label();
+        if self.toolbar_labels.contains_key(&key) {
+            return Some(key);
+        }
+
+        let drawn = action.icon().and_then(|icon| {
+            let style = TextStyle {
+                family: mdedit_text::FontFamily::Icon,
+                ..TextStyle::body(self.theme.body_size * TOOLBAR_ICON)
+            };
+            self.lay_out_label(&icon.to_string(), style)
+                .filter(|label| !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()))
+        });
+
+        let label = if let Some(label) = drawn {
+            label
+        } else {
+            let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+            self.lay_out_label(&key, style)?
+        };
+        self.toolbar_labels.insert(key.clone(), label);
+        Some(key)
+    }
+
+    /// How far below the bar's top a button's face sits, so its ink is centred in the row.
+    ///
+    /// An icon and a word need different numbers because their ink sits differently in the em: an
+    /// icon fills most of it, where a 10-pixel word is a short cap height near the baseline. The two
+    /// are told apart by comparing the laid-out text against the cache key — a face that drew its
+    /// icon holds one private-use character, and one that fell back holds the word the key *is*.
+    /// That is why [`Label`] keeps its text; nothing else reads it.
+    fn face_baseline(&self, label: &Label, key: &str) -> f32 {
+        let drew_icon = label.text != key;
+        let size = if drew_icon {
+            self.theme.body_size * TOOLBAR_ICON * 0.41
+        } else {
+            self.theme.body_size * 0.3
+        };
+        toolbar::HEIGHT / 2.0 + size
+    }
+
     fn lay_out_label(&mut self, text: &str, style: TextStyle) -> Option<Label> {
         let run = StyledRun {
             text,
@@ -5976,6 +6027,18 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn tab_rects(&self) -> &[tabs::TabRect] {
         &self.tab_rects
+    }
+
+    /// What a button actually drew — its icon, or the word it fell back to — for a test.
+    ///
+    /// The distinction is invisible from outside otherwise, and it is the whole of MDEDIT-92's
+    /// fallback: a bar of words on a machine with no icon font is the old bar, and a bar of empty
+    /// boxes is a bug report. Only a frame decides which, so this reads what the last one cached.
+    #[must_use]
+    pub fn button_face_drawn(&self, action: toolbar::Action) -> Option<&str> {
+        self.toolbar_labels
+            .get(&action.label())
+            .map(|label| label.text.as_str())
     }
 
     /// Where the bar's buttons are, for a test.

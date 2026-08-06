@@ -59,6 +59,18 @@ pub enum FontFamily {
     Ui,
     /// Fixed pitch. Code spans, fenced blocks, and concealed syntax while it is revealed.
     Mono,
+    /// Monochrome pictograms. The formatting bar's buttons, and nothing else.
+    ///
+    /// MDEDIT-92, and it is a *role* for the same reason the other two are: the editor asks for
+    /// icons and the backend decides which font that means. On Windows that is Segoe Fluent Icons
+    /// with Segoe MDL2 Assets behind it; on a platform with neither it resolves to nothing, every
+    /// glyph comes back [`.notdef`](GlyphId::is_notdef), and the caller draws a word instead.
+    ///
+    /// **The code points are private-use, which makes them a promise about a font rather than a
+    /// standard.** `U+E8DD` is Bold in Segoe Fluent Icons and is nothing at all in a font that has
+    /// not got it, so a caller asking for this family owes its buttons a text fallback. That is why
+    /// `.notdef` is on [`GlyphId`] rather than being an implementation detail.
+    Icon,
 }
 
 /// How heavy a run is drawn.

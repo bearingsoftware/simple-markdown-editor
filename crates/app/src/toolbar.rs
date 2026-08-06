@@ -21,11 +21,17 @@
 //! `Editor::is_enabled`. Geometry does not change with state, which is deliberate — a dimmed button
 //! keeps its rect, so the row does not reflow as you select and deselect.
 //!
-//! # The button glyphs are text
+//! # The button glyphs come from a font, which is how they became icons
 //!
-//! A bold `B`, an italic `I`, `H1`, `</>`. Drawn by the text engine the rest of the editor uses, so
-//! there is no icon pipeline, no asset format and nothing to rasterise at two DPIs. It costs some
-//! elegance and buys the whole feature at the price of a label cache.
+//! They were text until MDEDIT-92 — a bold `B`, an italic `I`, `H1` — on the reasoning that there is
+//! no icon pipeline, no asset format and nothing to rasterise at two DPIs. **That reasoning was not
+//! overturned; it was satisfied.** Windows ships two monochrome icon fonts, so an icon costs a code
+//! point rather than a decoder and an atlas format, and the text engine draws it exactly as it drew
+//! the letter. The label cache, the measurement, the hit-testing and `set_zoom`'s clearing all kept
+//! working because to the renderer nothing changed.
+//!
+//! See [`Action::icon`] for the table, [`Action::label`] for what is drawn without it, and
+//! [`mdedit_text::FontFamily::Icon`] for the resolution.
 //!
 //! **Laid out once and cached.** The per-frame-layout trap has been paid for three times already —
 //! the gutter, the status bar and the file pane each hit it — and a fourth would be indefensible.
@@ -44,16 +50,30 @@
 use std::fmt::Write as _;
 
 /// Height of the bar when it is showing.
-pub const HEIGHT: f32 = 30.0;
+///
+/// **Thirty until MDEDIT-92, and this is where that ticket also answers MDEDIT-86.** A 22-pixel icon
+/// does not fit a 30-pixel row, so making the bar iconic and making it bigger are one change rather
+/// than two — the build order says as much. The numbers are the mock-up's: a 48-pixel bar, 22-pixel
+/// glyphs, and buttons that come out roughly square.
+pub const HEIGHT: f32 = 48.0;
 
 /// Space either side of a button's glyph.
-const PADDING: f32 = 5.0;
+///
+/// **Six rather than the mock-up's eight, and the difference is the whole bar fitting.** Twenty-two
+/// buttons at 22-pixel icons come to 930 logical pixels with eight, against a default window of 900
+/// — so a fresh install lost Fence, Rule and Link to the overflow rule without ever saying so. The
+/// icons are untouched; only the air around them is smaller, which is the cheapest of the three
+/// levers and the one nobody looking at the bar can see.
+const PADDING: f32 = 6.0;
 
-/// Narrowest a button may be, so a one-character glyph still has something to click.
-const MIN_WIDTH: f32 = 24.0;
+/// Narrowest a button may be, so a short label is still a comfortable target.
+///
+/// Binds on the three lettered heading buttons and nothing else — an icon is wider than this on its
+/// own. It is what stops `H1` being a sliver between two squares.
+const MIN_WIDTH: f32 = 34.0;
 
 /// Space between groups of related buttons.
-const GROUP_GAP: f32 = 10.0;
+const GROUP_GAP: f32 = 14.0;
 
 /// Something a button does, which is always something a chord already does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,18 +121,64 @@ pub enum Action {
 }
 
 impl Action {
-    /// The text drawn on the button.
+    /// The icon this button draws, if the icon font has one for it.
     ///
-    /// Short enough to read at 30 pixels and conventional enough not to need a legend: `B` and `I`
-    /// are what every word processor has used for forty years.
+    /// MDEDIT-92. Private-use code points from Segoe Fluent Icons, with Segoe MDL2 Assets behind it
+    /// — see [`mdedit_text::FontFamily::Icon`]. **A code point here is a promise about a font, not a
+    /// standard**, which is why [`label`](Self::label) still exists and why the renderer checks the
+    /// laid-out glyph for `.notdef` rather than trusting this table.
     ///
-    /// The standard set is **words**, where the Markdown set is symbols. That is not an
-    /// inconsistency to tidy up: `B` and `I` are a forty-year convention and there is no equivalent
-    /// glyph for Open that anybody would read without a legend. MDEDIT-92 replaces both sets with
-    /// icons, and MDEDIT-85's tooltips come first because a row of unlabelled glyphs is unusable
-    /// without them.
+    /// Every one of these was confirmed against the installed font rather than taken from a
+    /// reference page, and two of them were *chosen* by rasterising the candidates and looking:
+    /// `Fence` is `U+F0E3`, a bordered box with lines in it, and `Rule` is `U+E738`, which is
+    /// literally a horizontal line. Both were on the plan as "weak — check".
+    ///
+    /// **The three headings have none, and that is the ticket's one accepted exception.** Neither
+    /// font has a heading glyph because the convention does not exist — Word labels its heading
+    /// styles with letterforms too, and so does every editor that has them. The alternatives were
+    /// drawing three glyphs by hand as quads, which reintroduces the shape pipeline the font choice
+    /// exists to avoid, and collapsing six levels into one stepping button, which needs a label to
+    /// say which level it is on and so arrives back here. `H1` it is.
     #[must_use]
-    pub fn glyph(self) -> String {
+    pub fn icon(self) -> Option<char> {
+        let code = match self {
+            Self::New => '\u{E7C3}',
+            Self::Open => '\u{E8E5}',
+            Self::Save => '\u{E74E}',
+            Self::Undo => '\u{E7A7}',
+            Self::Redo => '\u{E7A6}',
+            Self::Cut => '\u{E8C6}',
+            Self::Copy => '\u{E8C8}',
+            Self::Paste => '\u{E77F}',
+            Self::Bold => '\u{E8DD}',
+            Self::Italic => '\u{E8DB}',
+            Self::Strikethrough => '\u{EDE0}',
+            Self::Code => '\u{E943}',
+            Self::Bullet => '\u{E8FD}',
+            Self::Ordered => '\u{E8FE}',
+            Self::Task => '\u{E9D5}',
+            Self::Quote => '\u{E9D2}',
+            Self::Fence => '\u{F0E3}',
+            Self::Rule => '\u{E738}',
+            Self::Link => '\u{E71B}',
+            // The documented exception. See above.
+            Self::Heading(_) => return None,
+        };
+        Some(code)
+    }
+
+    /// The text drawn on the button when there is no icon for it.
+    ///
+    /// Two jobs, and they used to be the only one. It is what the three heading buttons draw
+    /// **always** — `H1` is what a heading looks like everywhere — and it is what *every* button
+    /// draws on a machine whose icon font is missing, which is the whole of MDEDIT-92's fallback:
+    /// the old bar rather than a row of empty boxes.
+    ///
+    /// Short enough to read on a button and conventional enough not to need a legend: `B` and `I`
+    /// are what every word processor has used for forty years. The standard set is words, because
+    /// there is no letterform for Open that anybody would read without one.
+    #[must_use]
+    pub fn label(self) -> String {
         match self {
             Self::New => "New".to_owned(),
             Self::Open => "Open".to_owned(),

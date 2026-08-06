@@ -176,10 +176,10 @@ Known gaps, so nobody assumes they are done:
 - **The formatting bar is a second door, never a second implementation.** MDEDIT-52: every button
   calls the editor method its chord calls, through one `Editor::perform` match, so there is no
   behaviour that exists only when clicked. It is per-run — View → Formatting Bar, no chord, and
-  nothing written back to the config. **Its buttons are text**, drawn by the same engine as
-  everything else and laid out once into `toolbar_labels`, which is therefore a fifth cache
-  `set_zoom` has to clear. No tooltips (there is no hover affordance to hang one on) and no
-  accessible names (those wait for the accesskit pass). Lighting is lookups only: `is_inside` asks
+  nothing written back to the config. **Its buttons are icons from a font**, drawn by the same engine
+  as everything else and laid out once into `toolbar_labels`, which is therefore a fifth cache
+  `set_zoom` has to clear. No accessible names (those wait for the accesskit pass; a tooltip is not
+  one). Lighting is lookups only: `is_inside` asks
   the segments, `carries` and `is_quoted` read the caret's line out of the rope, and headings ask the
   block list so a setext one still lights. Rule and Link never light, because neither is a state.
 
@@ -267,6 +267,36 @@ Known gaps, so nobody assumes they are done:
   tab — the last through the click that switched, rather than a hook on every path that activates
   one. Two keyboard sites, not one: `handle_key` for the keys that do not insert, and `insert_text`
   for every character, which is also the funnel an IME commit and a paste come through.
+- **The bar is icons, and they come from a font rather than an asset pipeline.** MDEDIT-92.
+  `FontFamily::Icon` is the third role at the text boundary; `text-dwrite` resolves it **once, at
+  construction**, by asking the system collection for Segoe Fluent Icons and then Segoe MDL2 Assets.
+  The probe is not optional: naming a family DirectWrite has not got does not fail, it *substitutes*,
+  so a Windows 10 machine would have drawn tofu instead of falling back to MDL2. With neither it
+  resolves to Segoe UI, where every private-use code point is `.notdef` — which is the signal, not an
+  accident.
+
+  **The fallback is part of the feature.** `Editor::button_face` lays the icon out, looks at the
+  glyph, and draws the button's *word* instead if it came back `.notdef` — caching that under the
+  same key, so there is one entry per action either way. A machine with no icon font gets the bar it
+  had before this story; a row of empty boxes would be a bug report. It costs one extra layout per
+  button on the first frame of such a machine, and nothing after that.
+
+  **A private-use code point is a promise about a font, not a standard**, so every one of them is
+  asserted against the installed font in `crates/app/tests/icons.rs` — the only test file in that
+  crate that does not use the stub, because a stub answers yes to both questions by construction.
+  Two were chosen by rasterising candidates and *looking*: `Fence` is `U+F0E3` and `Rule` is
+  `U+E738`. The plan had both as "weak — check".
+
+  **The three heading buttons stay lettered**, and that is the ticket's one accepted exception:
+  neither font has a heading glyph because the convention does not exist — Word labels its heading
+  styles with letterforms too.
+
+  **This is also MDEDIT-86**, which the build order sanctions folding in. A 22-pixel icon does not
+  fit a 30-pixel row, so the bar is 48 pixels. **And the padding is six rather than the mock-up's
+  eight**, because at eight the row came to 930 logical pixels against a 900-pixel default window and
+  `toolbar::layout` silently dropped Fence, Rule and Link on a fresh install. Every stub test passed
+  through that, which is why `all_of_the_buttons_fit_a_default_window` measures real advances.
+  MDEDIT-87's Image and Table buttons will need this conversation again.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it

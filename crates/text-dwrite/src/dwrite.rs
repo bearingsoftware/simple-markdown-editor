@@ -42,6 +42,24 @@ use windows_core::{BOOL, IUnknown, Ref, implement};
 /// cover is DirectWrite's job, which is the property this implementation exists to get.
 const UI_FAMILY: &str = "Segoe UI";
 const MONO_FAMILY: &str = "Consolas";
+
+/// Windows 11's icon font, and Windows 10's, in that order (MDEDIT-92).
+///
+/// Both are system fonts, so this is the same "ask for what Windows has" rule the two above follow —
+/// nothing is bundled. Which one is present is resolved **once**, at construction, by asking the
+/// system collection: naming a family DirectWrite has not got does not fail, it substitutes, and a
+/// substituted font has none of these private-use code points. That would draw tofu on every button
+/// rather than falling back to Segoe MDL2 Assets, which is the whole reason the probe exists.
+const ICON_FAMILIES: [&str; 2] = ["Segoe Fluent Icons", "Segoe MDL2 Assets"];
+
+/// What `FontFamily::Icon` resolves to when the machine has neither.
+///
+/// Not a font that will render an icon — nothing will — and that is deliberate. Every private-use
+/// code point comes back `.notdef` from Segoe UI, which is exactly the signal
+/// `mdedit_app::toolbar` uses to draw a word instead. A bar of English labels is the old bar; a bar
+/// of empty boxes is a bug report.
+const ICON_FALLBACK: &str = UI_FAMILY;
+
 const LOCALE: &str = "en-us";
 
 /// Text layout and glyph rasterization via DirectWrite.
@@ -52,6 +70,8 @@ pub struct DirectWriteText {
     /// Font faces seen so far. A [`FontId`] is an index into this, which is what keeps the concrete
     /// `IDWriteFontFace` on this side of the trait boundary.
     faces: Vec<IDWriteFontFace>,
+    /// Which icon font this machine actually has, decided once. See [`ICON_FAMILIES`].
+    icons: &'static str,
 }
 
 impl std::fmt::Debug for DirectWriteText {
@@ -110,11 +130,55 @@ impl DirectWriteText {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }
             .map_err(|e| platform_err("DWriteCreateFactory", &e))?;
 
+        let icons = Self::installed_icon_family(&factory);
         Ok(Self {
             factory,
             formats: HashMap::new(),
             faces: Vec::new(),
+            icons,
         })
+    }
+
+    /// The first of [`ICON_FAMILIES`] the system collection has, or [`ICON_FALLBACK`].
+    ///
+    /// `FindFamilyName` answers directly, which is better than laying out a probe glyph and reading
+    /// `.notdef`: it needs no format, no layout and no chosen code point, and it separates "this
+    /// machine has no icon font" from "this particular icon is missing from the one it has". The
+    /// caller wants both answers and they are not the same answer.
+    ///
+    /// A failure to reach the collection at all is treated as "neither", which is the safe end: the
+    /// bar draws words.
+    fn installed_icon_family(factory: &IDWriteFactory) -> &'static str {
+        let mut collection = None;
+        // SAFETY: the out parameter is a fresh `Option<IDWriteFontCollection>` this call
+        // initialises; `false` asks for the cached collection rather than forcing a rescan, which
+        // is what every other consumer of the system collection wants.
+        if unsafe { factory.GetSystemFontCollection(&raw mut collection, false) }.is_err() {
+            return ICON_FALLBACK;
+        }
+        let Some(collection) = collection else {
+            return ICON_FALLBACK;
+        };
+
+        for family in ICON_FAMILIES {
+            let name = wide(family);
+            let mut index = 0u32;
+            let mut exists = BOOL(0);
+            // SAFETY: `name` is a NUL-terminated UTF-16 buffer that outlives the call, and both out
+            // parameters are stack locals DirectWrite writes through. `exists` decides whether
+            // `index` means anything, which is why it is the only thing read.
+            let found = unsafe {
+                collection.FindFamilyName(
+                    windows_core::PCWSTR(name.as_ptr()),
+                    &raw mut index,
+                    &raw mut exists,
+                )
+            };
+            if found.is_ok() && exists.as_bool() {
+                return family;
+            }
+        }
+        ICON_FALLBACK
     }
 
     fn format(&mut self, style: TextStyle) -> Result<IDWriteTextFormat, TextError> {
@@ -126,6 +190,7 @@ impl DirectWriteText {
         let family = wide(match style.family {
             FontFamily::Ui => UI_FAMILY,
             FontFamily::Mono => MONO_FAMILY,
+            FontFamily::Icon => self.icons,
         });
         let locale = wide(LOCALE);
         let weight = match style.weight {
@@ -455,6 +520,7 @@ impl TextLayout for DirectWriteText {
             let family = wide(match run.style.family {
                 FontFamily::Ui => UI_FAMILY,
                 FontFamily::Mono => MONO_FAMILY,
+                FontFamily::Icon => self.icons,
             });
 
             // SAFETY: `range` lies within the layout string by construction — the cursor advances
