@@ -27,6 +27,7 @@ pub mod ime;
 pub mod latency;
 pub mod log;
 pub mod pane;
+pub mod popup;
 pub mod prompt;
 pub mod scroll;
 pub mod scrollbar;
