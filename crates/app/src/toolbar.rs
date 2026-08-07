@@ -103,7 +103,22 @@ pub enum Action {
     /// `` `code` ``.
     Code,
     /// A heading of this level.
+    ///
+    /// On the *bar* this is [`Headings`](Self::Headings) — one button opening a list. This variant
+    /// is what that list's rows are, and what the floating selection bar and the chords still use
+    /// directly.
     Heading(u8),
+    /// Opens the list of heading levels. **Not an edit.**
+    ///
+    /// MDEDIT-116. Three buttons became one, which is what made room for MDEDIT-87's, and the list
+    /// carries all six levels rather than the three the bar had space for — so H4 to H6 stop being
+    /// chord-only.
+    Headings,
+    /// Opens the list of buttons that did not fit. **Not an edit.**
+    ///
+    /// Only ever on the bar when something was displaced, and it is why nothing is silently lost off
+    /// the right-hand end any more.
+    More,
     /// `- ` list.
     Bullet,
     /// `1. ` list.
@@ -161,8 +176,13 @@ impl Action {
             Self::Fence => '\u{F0E3}',
             Self::Rule => '\u{E738}',
             Self::Link => '\u{E71B}',
+            // Fluent's "More" — a horizontal ellipsis, which is the convention for an overflow.
+            Self::More => '\u{E712}',
             // The documented exception. See above.
-            Self::Heading(_) => return None,
+            //
+            // `Headings` letters for a second reason on top of that one: it has to say *which* level
+            // the caret is in, and a picture cannot.
+            Self::Heading(_) | Self::Headings => return None,
         };
         Some(code)
     }
@@ -197,6 +217,14 @@ impl Action {
                 let _ = write!(label, "{level}");
                 label
             }
+            // What the heading button reads when the caret is not in one. **`H1`, not a bare `H`**:
+            // a lone letter looks like a placeholder, and H1 is both the commonest level and what
+            // the button did before it opened a list. When the caret *is* in a heading it reads that
+            // level instead — see `Editor::face_key`, which is also the cache key.
+            Self::Headings => "H1".to_owned(),
+            // Only ever drawn if the icon font is missing, in which case an ellipsis is still the
+            // right word for it.
+            Self::More => "…".to_owned(),
             Self::Bullet => "•".to_owned(),
             Self::Ordered => "1.".to_owned(),
             // `[x]` and `[]()` rather than ☑ and 🔗: both of those resolve to the emoji font and
@@ -244,6 +272,8 @@ impl Action {
                 let _ = write!(label, "{level}");
                 label
             }
+            Self::Headings => "Heading".to_owned(),
+            Self::More => "More".to_owned(),
             Self::Bullet => "Bullet list".to_owned(),
             Self::Ordered => "Numbered list".to_owned(),
             Self::Task => "Task list".to_owned(),
@@ -280,7 +310,16 @@ impl Action {
                 let _ = write!(chord, "{level}");
                 return Some(chord);
             }
-            Self::Bullet | Self::Ordered | Self::Task | Self::Quote | Self::Fence | Self::Rule => {
+            // The block actions have never had one. Neither menu-opener has one either, and could
+            // not: a chord that opened a list would be a chord that does nothing on its own.
+            Self::Bullet
+            | Self::Ordered
+            | Self::Task
+            | Self::Quote
+            | Self::Fence
+            | Self::Rule
+            | Self::Headings
+            | Self::More => {
                 return None;
             }
         };
@@ -310,10 +349,71 @@ impl Action {
     fn starts_a_group(self) -> bool {
         matches!(
             self,
-            Self::Undo | Self::Cut | Self::Bold | Self::Heading(1) | Self::Bullet | Self::Quote
+            Self::Undo
+                | Self::Cut
+                | Self::Bold
+                | Self::Heading(1)
+                | Self::Headings
+                | Self::Bullet
+                | Self::Quote
+                | Self::More
         )
     }
+
+    /// Whether this button's face is a **letterform by design** rather than a missing icon.
+    ///
+    /// Only the headings, and it is the distinction that decides how big the face is drawn. A
+    /// letterform standing in for an icon has to hold its own beside one, so it is set near the icon
+    /// size; the *fallback* words a machine with no icon font draws are set small, because "Paste"
+    /// at that size would not fit a button. The two look identical from the outside — both are text
+    /// where an icon might have been — and sizing them the same made `H1` read as a caption between
+    /// two pictures.
+    #[must_use]
+    pub fn letters(self) -> bool {
+        matches!(self, Self::Heading(_) | Self::Headings)
+    }
+
+    /// The list this button opens instead of editing anything, if it opens one.
+    ///
+    /// **Two buttons on this bar are not a second door to a chord**, which is the rule every other
+    /// one follows. They open a panel; the panel's rows are the doors. Answering it here rather than
+    /// with two special cases in the click path is what keeps that path one lookup, and what makes
+    /// "did this button perform something?" a question with one answer.
+    ///
+    /// `More`'s rows are not known here — they are whatever [`overflowing`] displaced, which depends
+    /// on the window — so this returns the *kind* and the caller supplies the contents.
+    #[must_use]
+    pub fn opens(self) -> Option<Menu> {
+        match self {
+            Self::Headings => Some(Menu::Headings),
+            Self::More => Some(Menu::Overflow),
+            _ => None,
+        }
+    }
 }
+
+/// Which list a button opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Menu {
+    /// Every heading level, one to six.
+    Headings,
+    /// Whatever did not fit on the bar.
+    Overflow,
+}
+
+/// The heading levels the list offers.
+///
+/// **Six, where the bar only ever had room for three.** Collapsing them into one button is what paid
+/// for the other three, and H4 to H6 stop being chord-only as a result — the MDEDIT-92 coverage audit
+/// flagged that and no ticket had picked it up.
+pub const HEADINGS: &[Action] = &[
+    Action::Heading(1),
+    Action::Heading(2),
+    Action::Heading(3),
+    Action::Heading(4),
+    Action::Heading(5),
+    Action::Heading(6),
+];
 
 /// The buttons **every** document gets, whatever its language.
 ///
@@ -350,9 +450,9 @@ pub const MARKDOWN: &[Action] = &[
     Action::Italic,
     Action::Strikethrough,
     Action::Code,
-    Action::Heading(1),
-    Action::Heading(2),
-    Action::Heading(3),
+    // One button, six levels, since MDEDIT-116. It was `Heading(1)`, `Heading(2)`, `Heading(3)`,
+    // and dropping two of them is what made room for MDEDIT-87's Image and Table.
+    Action::Headings,
     Action::Bullet,
     Action::Ordered,
     Action::Task,
@@ -439,6 +539,63 @@ pub fn layout(actions: &[Action], glyph_widths: &[f32], available_width: f32) ->
 
     rects
 }
+
+/// A row of buttons, and whatever would not fit on it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Row {
+    /// What is drawn, in order. Ends with [`Action::More`] when `dropped` is not empty.
+    pub buttons: Vec<ButtonRect>,
+    /// What `More` opens. Empty when everything fitted, and then there is no `More` either.
+    pub dropped: Vec<Action>,
+}
+
+/// Lays the buttons out, and puts the ones that do not fit behind an overflow button.
+///
+/// MDEDIT-116, and the difference from [`layout`] is the whole ticket: that one **stops at the
+/// edge**, which is correct for the floating bar and was silently losing controls on the fixed one.
+/// A window narrow enough to displace Link used to just not have Link.
+///
+/// # Two things this has to get right
+///
+/// **The reserve is conditional.** Room for `More` is only taken when `More` is actually needed, so
+/// a wide window is not one button short for the sake of an overflow that never appears. That means
+/// laying out twice in the overflowing case — once to discover the shortfall, once with the reserve
+/// — which is a few dozen comparisons and happens once per frame.
+///
+/// **What is drawn and what is behind the button come from one call.** They are two halves of one
+/// partition, and computing them separately is how an action ends up in neither. `every_button_is_
+/// either_drawn_or_in_the_overflow` is the test that says so.
+#[must_use]
+pub fn overflowing(actions: &[Action], glyph_widths: &[f32], available_width: f32) -> Row {
+    let placed = layout(actions, glyph_widths, available_width);
+    if placed.len() == actions.len() {
+        return Row {
+            buttons: placed,
+            dropped: Vec::new(),
+        };
+    }
+
+    // `More` is a group of its own at the right-hand end, so it costs a gap as well as a button.
+    let more = (MORE_WIDTH + PADDING * 2.0).max(MIN_WIDTH);
+    let reserve = more + GROUP_GAP + PADDING;
+    let mut buttons = layout(actions, glyph_widths, available_width - reserve);
+    let dropped = actions[buttons.len().min(actions.len())..].to_vec();
+
+    let x = buttons.last().map_or(PADDING, ButtonRect::right) + GROUP_GAP;
+    buttons.push(ButtonRect {
+        action: Action::More,
+        x,
+        width: more,
+    });
+    Row { buttons, dropped }
+}
+
+/// What [`overflowing`] budgets for the overflow button's glyph.
+///
+/// A constant rather than a measurement because the reserve has to be known *before* the row is laid
+/// out, and the row is what would supply the measurement. `More` is one icon like any other, so this
+/// is the icon size — and [`MIN_WIDTH`] catches it if the fallback ellipsis measures narrower.
+const MORE_WIDTH: f32 = 22.0;
 
 /// How wide a bar holding these buttons is, including the padding at its right end.
 #[must_use]

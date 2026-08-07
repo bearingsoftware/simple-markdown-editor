@@ -216,6 +216,22 @@ fn every_markdown_button_does_something() {
         let (x, y) = centre_of(&editor, *action);
         assert!(editor.click(x, y), "the bar should swallow the click");
 
+        // MDEDIT-116's two exceptions, and they are exceptions to *this* rule rather than to the
+        // bar's: a button that opens a list has done something, and what it did is
+        // `a_menu_button_opens_its_list_rather_than_editing`.
+        if action.opens().is_some() {
+            assert_eq!(
+                editor.document().to_string(),
+                before,
+                "{action:?} opens a list and must not also edit"
+            );
+            assert!(
+                editor.menu_rows().is_some(),
+                "{action:?} should have opened"
+            );
+            continue;
+        }
+
         assert_ne!(
             editor.document().to_string(),
             before,
@@ -229,7 +245,9 @@ fn a_button_does_what_its_chord_does() {
     let cases: &[(Action, &str)] = &[
         (Action::Bold, "**prose**\n"),
         (Action::Italic, "*prose*\n"),
-        (Action::Heading(2), "## prose\n"),
+        // `Heading(2)` is no longer *on* the bar — MDEDIT-116 replaced the three heading buttons
+        // with one that opens a list, and the levels are its rows. Reaching one is two clicks, and
+        // `popup.rs` is where that is tested.
         (Action::Bullet, "- prose\n"),
         (Action::Quote, "> prose\n"),
     ];
@@ -1062,4 +1080,56 @@ fn without_the_icon_font_the_bar_draws_its_words() {
 fn the_heading_buttons_letter_whatever_the_font_has() {
     assert_eq!(Action::Heading(1).icon(), None);
     assert_eq!(Action::Heading(2).label(), "H2");
+}
+
+/// **A caret at the very end of the document is still inside the last block.**
+///
+/// `Document::block_at` is half-open — a block's span ends where the next begins, which is the right
+/// rule for the renderer asking who owns a byte. A caret is not a byte: it sits between them, and
+/// the position after the last character of the last block is a legitimate place to be.
+///
+/// It only bites where nothing follows, so a file ending `### Title` with no trailing newline had a
+/// caret in no block at all: the heading button read its default `H1` while the caret was in an H3,
+/// and did not light. Adding a newline fixed it, which is what made it look like a parser bug rather
+/// than an off-by-one at a boundary.
+#[test]
+fn the_heading_button_reads_a_heading_that_ends_the_document() {
+    let source = "### Title";
+    let mut editor = editor(source);
+    caret_at(&mut editor, source.len());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert!(
+        editor.is_lit(Action::Headings),
+        "the caret is in a heading, so the button should be lit"
+    );
+    assert_eq!(
+        editor.button_face_drawn(Action::Headings),
+        Some("H3"),
+        "and it should say which level, not fall back to its default"
+    );
+}
+
+/// The same document with a newline after it, which always worked. Here so the test above is known
+/// to be about the boundary rather than about headings.
+#[test]
+fn the_heading_button_reads_one_that_does_not_end_the_document() {
+    let source = "### Title\n";
+    let mut editor = editor(source);
+    caret_at(&mut editor, 5);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert_eq!(editor.button_face_drawn(Action::Headings), Some("H3"));
+}
+
+/// With the caret in ordinary prose it falls back to its default, which is what makes `H1` on the
+/// button ambiguous enough to be worth the test above.
+#[test]
+fn the_heading_button_defaults_outside_a_heading() {
+    let mut editor = editor("just prose\n");
+    caret_at(&mut editor, 4);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    assert!(!editor.is_lit(Action::Headings));
+    assert_eq!(editor.button_face_drawn(Action::Headings), Some("H1"));
 }

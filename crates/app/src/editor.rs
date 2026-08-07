@@ -42,6 +42,7 @@ use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::pane;
+use crate::popup;
 use crate::prompt::{
     self, ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved,
     UnsavedPrompt,
@@ -258,6 +259,19 @@ struct Label {
     width: f32,
 }
 
+/// A list that is showing: what is in it, and where it landed.
+#[derive(Debug, Clone)]
+struct OpenMenu {
+    /// Which button opened it, so a widened window can close the right one.
+    kind: toolbar::Menu,
+    /// The rows, in order.
+    rows: Vec<toolbar::Action>,
+    /// Top-left corner, in window coordinates.
+    at: (f32, f32),
+    /// Panel width, measured from the widest row when it opened.
+    width: f32,
+}
+
 /// Where a laid-out label goes, and in what.
 ///
 /// One parameter rather than four, because they always travel together and four positional `f32`s
@@ -311,6 +325,15 @@ const TOOLBAR_TEXT: f32 = 0.62;
 /// wants. A multiple rather than a constant so it follows the zoom, exactly as every other piece of
 /// chrome text does.
 const TOOLBAR_ICON: f32 = 1.375;
+
+/// Size of a face that is a letterform **on purpose** — the heading buttons and rows.
+///
+/// Near the icon size rather than the label size, so `H1` reads as a sibling of the pictures either
+/// side of it instead of as a caption between them. Twenty pixels at the default 16, against the
+/// icons' 22: two characters at twenty are about as wide as one icon at twenty-two, which is what
+/// keeps the button square. See [`toolbar::Action::letters`] for why this is not the same question
+/// as the missing-font fallback.
+const TOOLBAR_LETTERS: f32 = 1.25;
 
 /// How thick the floating bar's outline is.
 const FLOAT_BORDER: f32 = 1.0;
@@ -796,8 +819,24 @@ pub struct Editor<T: TextLayout> {
     toolbar_buttons: Vec<toolbar::ButtonRect>,
     /// Each button's glyph, laid out once. The fourth cache of this kind — see `crate::toolbar`.
     toolbar_labels: HashMap<String, Label>,
+    /// The list a toolbar button has opened, if one is open.
+    ///
+    /// MDEDIT-116. Holds its rows as well as its rectangle, because the overflow list's contents
+    /// depend on how narrow the window was when it opened, and re-deriving them on the click would
+    /// be the second computation the ticket's own risk section warns about.
+    open_menu: Option<OpenMenu>,
+    /// What the bar could not fit last frame, which is exactly what `More` opens.
+    ///
+    /// Kept rather than recomputed on the click: it and `toolbar_buttons` are two halves of one
+    /// partition, and computing them separately is how an action ends up in neither.
+    dropped: Vec<toolbar::Action>,
+    /// The window's logical width last frame, so a list can be clamped inside it.
+    window_width: f32,
     /// Which button the pointer is over, if any. Hovering, not yet dwelling.
     hovered: Option<toolbar::Action>,
+    /// Which row of the open list the pointer is over. Separate from `hovered` because a row is
+    /// highlighted the instant the pointer reaches it, where a button waits out a dwell.
+    hovered_row: Option<usize>,
     /// Which button's tooltip is showing. Set when the dwell elapses, cleared by anything at all.
     ///
     /// Separate from [`hovered`](Self::hovered) because the two answer different questions and the
@@ -1110,6 +1149,10 @@ impl<T: TextLayout> Editor<T> {
             toolbar: true,
             toolbar_buttons: Vec::new(),
             toolbar_labels: HashMap::new(),
+            open_menu: None,
+            hovered_row: None,
+            dropped: Vec::new(),
+            window_width: 0.0,
             hovered: None,
             tooltip: None,
             tooltip_labels: HashMap::new(),
@@ -2752,7 +2795,7 @@ impl<T: TextLayout> Editor<T> {
         // Typing means the pointer is not what the user is doing, whatever it is resting on.
         // Unconditional, unlike the caret-reveal below: a bare modifier press is still a person at
         // the keyboard rather than at the mouse.
-        let tooltip_gone = self.dismiss_tooltip();
+        let tooltip_gone = self.dismiss_panels();
 
         // A key press should leave the caret on screen — but only a press that can move it.
         //
@@ -3090,7 +3133,7 @@ impl<T: TextLayout> Editor<T> {
         // arrows, Esc, Backspace — and this one is the funnel every *character* comes through,
         // including an IME commit and a paste. Text arriving in the document means the user is not
         // pointing at a button, however it got there.
-        self.dismiss_tooltip();
+        self.dismiss_panels();
         self.insert(text)
     }
 
@@ -3338,11 +3381,145 @@ impl<T: TextLayout> Editor<T> {
         // of everything — including the bar it describes, which it does not overlap, and the
         // document, which it does.
         self.draw_tooltip(&mut quads, width, scale);
+        // After even the tooltip. A list is the only thing that can be open *and* hit-tested, so it
+        // is the top of the z-order in both directions — see `Editor::click`.
+        self.draw_menu(&mut quads, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the list a toolbar button opened, if one is open.
+    ///
+    /// A row is its icon in a fixed column and then its words, so the words line up down the list
+    /// whether or not each row's icon resolved. Both come out of `toolbar_labels`, which by now
+    /// holds the button faces, the tooltips and these — one cache of laid-out chrome text, cleared
+    /// by `set_zoom` in one place.
+    ///
+    /// The lit row is the one the caret is already in, which for the heading list is the level being
+    /// shown on the button. It uses `tab_active`, as a lit button on the bar does.
+    fn draw_menu(&mut self, quads: &mut Vec<QuadInstance>, scale: f32) {
+        let Some(menu) = self.open_menu.clone() else {
+            return;
+        };
+        let (x, y) = menu.at;
+        let height = popup::height_of(menu.rows.len());
+
+        quads.push(Self::solid(
+            [
+                (x - 1.0) * scale,
+                (y - 1.0) * scale,
+                (menu.width + 2.0) * scale,
+                (height + 2.0) * scale,
+            ],
+            self.theme.line,
+        ));
+        quads.push(Self::solid(
+            [x * scale, y * scale, menu.width * scale, height * scale],
+            self.theme.panel,
+        ));
+
+        let icon_style = TextStyle {
+            family: mdedit_text::FontFamily::Icon,
+            ..TextStyle::body(self.theme.body_size * TOOLBAR_ICON)
+        };
+        let letters_style = TextStyle::body(self.theme.body_size * TOOLBAR_LETTERS);
+        let text_style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+
+        for (index, action) in menu.rows.clone().into_iter().enumerate() {
+            let top = y + popup::row_top(index);
+            // **Two grounds, and a row can have both.** Lit is "you are already in this one" and
+            // uses the raised surface a lit button on the bar does; hovered is "this is what you
+            // would press" and uses the selection tint, which is translucent and stacks over it —
+            // the same two-tints-on-one-row arrangement MDEDIT-77 made the caret line and the
+            // selection. A menu whose only feedback was the lit row would look inert on every
+            // document that is not already a heading.
+            let mut ground = |colour| {
+                quads.push(Self::solid(
+                    [
+                        (x + 2.0) * scale,
+                        top * scale,
+                        (menu.width - 4.0) * scale,
+                        popup::ROW_HEIGHT * scale,
+                    ],
+                    colour,
+                ));
+            };
+            if self.is_lit(action) {
+                ground(self.theme.tab_active);
+            }
+            if self.hovered_row == Some(index) {
+                ground(self.theme.selection);
+            }
+
+            // The column holds the row's **face**: its icon, or — for the heading levels, which have
+            // none by design — its letterform. That is what makes the heading list read H1 to H6
+            // down its own column rather than being six lines of prose, and it is the same face the
+            // button shows.
+            let (face, style, centred) = match action.icon() {
+                Some(icon) => (
+                    icon.to_string(),
+                    icon_style,
+                    self.theme.body_size * TOOLBAR_ICON * 0.41,
+                ),
+                None => (
+                    action.label(),
+                    letters_style,
+                    self.theme.body_size * TOOLBAR_LETTERS * 0.35,
+                ),
+            };
+            {
+                let glyph = face;
+                if !self.toolbar_labels.contains_key(&glyph) {
+                    if let Some(label) = self.lay_out_label(&glyph, style) {
+                        // Only kept when it resolved. A `.notdef` box in a list that also has words
+                        // is worse than a blank column, and the words carry the row regardless.
+                        if !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()) {
+                            self.toolbar_labels.insert(glyph.clone(), label);
+                        }
+                    }
+                }
+                if let Some(label) = self.toolbar_labels.get(&glyph) {
+                    let where_ = LabelAt {
+                        // **Centred in the column, not indented into it.** Left-aligning at
+                        // `PADDING` left whatever air the face did not use on the right, so a
+                        // heading list — which is the column and nothing else — had ten pixels down
+                        // one side and seven down the other, and read as shoved right.
+                        x: x + (popup::ICON_COLUMN - label.width) / 2.0,
+                        // Off the **face's own** size, not the body size. Using the body size put
+                        // the icon's ink about three pixels high in the row, which reads as the
+                        // words beside it sitting low. Same ratio `face_baseline` uses on the bar.
+                        baseline: top + popup::ROW_HEIGHT / 2.0 + centred,
+                        scale,
+                        colour: self.theme.text,
+                    };
+                    let glyphs = label.glyphs.clone();
+                    self.draw_label_glyphs(quads, &glyphs, where_);
+                }
+            }
+
+            let Some(text) = popup::text_for(action) else {
+                continue;
+            };
+            if !self.toolbar_labels.contains_key(&text) {
+                if let Some(label) = self.lay_out_label(&text, text_style) {
+                    self.toolbar_labels.insert(text.clone(), label);
+                }
+            }
+            let Some(label) = self.toolbar_labels.get(&text) else {
+                continue;
+            };
+            let where_ = LabelAt {
+                x: x + popup::ICON_COLUMN,
+                baseline: top + popup::ROW_HEIGHT / 2.0 + self.theme.body_size * 0.22,
+                scale,
+                colour: self.theme.text,
+            };
+            let glyphs = label.glyphs.clone();
+            self.draw_label_glyphs(quads, &glyphs, where_);
+        }
     }
 
     /// Draws the panel that says what the hovered button does.
@@ -3438,12 +3615,34 @@ impl<T: TextLayout> Editor<T> {
             .iter()
             .map(|action| {
                 self.toolbar_labels
-                    .get(&action.label())
+                    .get(&self.face_key(*action))
                     .map_or(0.0, |label| label.width)
             })
             .collect();
         let logical_width = width / scale;
-        self.toolbar_buttons = toolbar::layout(&actions, &widths, logical_width);
+        self.window_width = logical_width;
+        // MDEDIT-116: `overflowing` rather than `layout`, and the difference is that what does not
+        // fit is reported rather than dropped on the floor. The floating bar still uses `layout` —
+        // it is clamped into the content rect and an overflow button on a ten-button popup would be
+        // stranger than the clipping it replaces.
+        let row = toolbar::overflowing(&actions, &widths, logical_width);
+        self.toolbar_buttons = row.buttons;
+        self.dropped = row.dropped;
+        if self.dropped.is_empty() {
+            // The window was widened while the overflow list was open, so the list is about buttons
+            // that are now on the bar. Closing it is the only honest answer — leaving it would offer
+            // the same action twice, and re-pointing it at nothing would leave an empty panel.
+            if self
+                .open_menu
+                .as_ref()
+                .is_some_and(|open| open.kind == toolbar::Menu::Overflow)
+            {
+                self.open_menu = None;
+            }
+        } else {
+            // The overflow button has a face like any other, and it only exists on some frames.
+            self.button_face(toolbar::Action::More);
+        }
 
         // MDEDIT-84: the bar is the topmost chrome, and the tab strip is drawn below it. See
         // `build_tab_strip` for the other half, and `click_toolbar` and `click_strip` for the two
@@ -3475,13 +3674,13 @@ impl<T: TextLayout> Editor<T> {
                     self.theme.tab_active,
                 ));
             }
-            let key = button.action.label();
+            let key = self.face_key(button.action);
             let Some(label) = self.toolbar_labels.get(&key) else {
                 continue;
             };
             let where_ = LabelAt {
                 x: button.x + (button.width - label.width) / 2.0,
-                baseline: top + self.face_baseline(label, &key),
+                baseline: top + self.face_baseline(label, &key, button.action),
                 scale,
                 // `gutter` is the palette's role for "present but not the thing you are reading",
                 // and MDEDIT-72 chose its value so that it clears 4.5:1 on a panel as well as on the
@@ -3522,7 +3721,7 @@ impl<T: TextLayout> Editor<T> {
             .iter()
             .map(|action| {
                 self.toolbar_labels
-                    .get(&action.label())
+                    .get(&self.face_key(*action))
                     .map_or(0.0, |label| label.width)
             })
             .collect();
@@ -3585,13 +3784,13 @@ impl<T: TextLayout> Editor<T> {
                     self.theme.selection,
                 ));
             }
-            let key = button.action.label();
+            let key = self.face_key(button.action);
             let Some(label) = self.toolbar_labels.get(&key) else {
                 continue;
             };
             let where_ = LabelAt {
                 x: button.x + (button.width - label.width) / 2.0,
-                baseline: y + self.face_baseline(label, &key),
+                baseline: y + self.face_baseline(label, &key, button.action),
                 scale,
                 colour: self.theme.text,
             };
@@ -3688,23 +3887,28 @@ impl<T: TextLayout> Editor<T> {
             toolbar::Action::Code => doc.is_inside(Inline::Code),
             // Asked of the block list rather than of the line, because a setext heading's first line
             // carries no marker and would otherwise never light.
-            toolbar::Action::Heading(level) => doc
-                .block_at(doc.selection().head())
-                .is_some_and(|block| block.kind() == BlockKind::Heading(level)),
+            toolbar::Action::Heading(level) => {
+                self.caret_block_kind() == Some(BlockKind::Heading(level))
+            }
             toolbar::Action::Bullet => doc.carries(Block::Bullet),
             toolbar::Action::Ordered => doc.carries(Block::Ordered),
             toolbar::Action::Task => doc.carries(Block::Task),
             toolbar::Action::Quote => doc.is_quoted(),
-            toolbar::Action::Fence => doc
-                .block_at(doc.selection().head())
-                .is_some_and(|block| block.kind() == BlockKind::CodeBlock),
+            toolbar::Action::Fence => self.caret_block_kind() == Some(BlockKind::CodeBlock),
             // Neither is a state. A rule is inserted and a link is made; there is no "inside a
             // horizontal rule" for a button to reflect.
             //
             // Nor is any of the standard set: Save and Paste are things you do, not modes the caret
             // can be in. Whether they can be done at all is `is_enabled`, which is a different
             // question with a different colour.
-            toolbar::Action::Rule
+            // The heading button lights for *any* level, because it stands for all six. Which one
+            // is shown by its face rather than by the light — see `face_key`.
+            toolbar::Action::Headings => {
+                matches!(self.caret_block_kind(), Some(BlockKind::Heading(_)))
+            }
+            // Nothing about the caret makes an overflow list more or less applicable either.
+            toolbar::Action::More
+            | toolbar::Action::Rule
             | toolbar::Action::Link
             | toolbar::Action::New
             | toolbar::Action::Open
@@ -3986,8 +4190,51 @@ impl<T: TextLayout> Editor<T> {
     /// layer and looking at what came back is the only way to know, and it is the same oracle
     /// MDEDIT-5's Han test uses. A machine with neither icon font draws the bar it had before this
     /// story rather than twenty-two empty boxes.
+    /// What a button's face is keyed by, which is its label except for the one that is stateful.
+    ///
+    /// The heading button stands for six levels and says which one the caret is in — `H2` inside a
+    /// level-two heading, `H` outside any. That makes its face depend on the document, so it makes
+    /// its *cache key* depend on the document too, which is fine: there are seven possible faces and
+    /// each is laid out once. Everything else is keyed by its own label and never moves.
+    fn face_key(&self, action: toolbar::Action) -> String {
+        if action != toolbar::Action::Headings {
+            return action.label();
+        }
+        match self.caret_block_kind() {
+            Some(BlockKind::Heading(level)) => toolbar::Action::Heading(level).label(),
+            _ => action.label(),
+        }
+    }
+
+    /// What kind of block the caret is in, counting the document's very end as inside the last one.
+    ///
+    /// **`Document::block_at` is half-open, and a caret can sit on the closing edge.** A block's span
+    /// ends where the next one begins, so `offset < end` is the right rule for the renderer asking
+    /// which block owns a byte — every byte has exactly one owner and nothing is drawn twice. A
+    /// *caret* is not a byte: it sits between them, and the position after the last character of the
+    /// last block is a legitimate place to be.
+    ///
+    /// It only bites at the end of the document, because everywhere else the block after it starts
+    /// there and answers instead. A file ending `# Title` with no trailing newline therefore had a
+    /// caret in no block at all — so the heading button read `H1` while the caret was in an `H3`, and
+    /// it did not light. Adding a newline fixed it, which is what made it look like a parser bug
+    /// rather than an off-by-one at the boundary.
+    fn caret_block_kind(&self) -> Option<BlockKind> {
+        let doc = self.document();
+        let caret = doc.selection().head();
+        if let Some(block) = doc.block_at(caret) {
+            return Some(block.kind());
+        }
+        // Only the end of the document reaches here, and only when nothing follows the last block.
+        if caret == ByteOffset::ZERO {
+            return None;
+        }
+        doc.block_at(self.previous_boundary(caret))
+            .map(mdedit_language::Block::kind)
+    }
+
     fn button_face(&mut self, action: toolbar::Action) -> Option<String> {
-        let key = action.label();
+        let key = self.face_key(action);
         if self.toolbar_labels.contains_key(&key) {
             return Some(key);
         }
@@ -4004,7 +4251,14 @@ impl<T: TextLayout> Editor<T> {
         let label = if let Some(label) = drawn {
             label
         } else {
-            let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+            // A letterform that is *meant* to be one is set near the icon size; a word the missing
+            // icon font left behind is set small, because "Paste" at that size would not fit.
+            let ratio = if action.letters() {
+                TOOLBAR_LETTERS
+            } else {
+                TOOLBAR_TEXT
+            };
+            let style = TextStyle::body(self.theme.body_size * ratio);
             self.lay_out_label(&key, style)?
         };
         self.toolbar_labels.insert(key.clone(), label);
@@ -4018,10 +4272,14 @@ impl<T: TextLayout> Editor<T> {
     /// are told apart by comparing the laid-out text against the cache key — a face that drew its
     /// icon holds one private-use character, and one that fell back holds the word the key *is*.
     /// That is why [`Label`] keeps its text; nothing else reads it.
-    fn face_baseline(&self, label: &Label, key: &str) -> f32 {
+    fn face_baseline(&self, label: &Label, key: &str, action: toolbar::Action) -> f32 {
         let drew_icon = label.text != key;
         let size = if drew_icon {
             self.theme.body_size * TOOLBAR_ICON * 0.41
+        } else if action.letters() {
+            // A deliberate letterform, set near the icon size, so it needs its own drop rather than
+            // the small word's.
+            self.theme.body_size * TOOLBAR_LETTERS * 0.35
         } else {
             self.theme.body_size * 0.3
         };
@@ -4895,6 +5153,13 @@ impl<T: TextLayout> Editor<T> {
         // only a tooltip" ends in a control nobody can press.
         let dismissed = self.dismiss_tooltip();
 
+        // **An open list is above even the floating bar**, and so is asked before it. MDEDIT-116
+        // made this function's order a three-way answer rather than a two-way one; it is still the
+        // whole of the z-order, in both directions.
+        if let Some(acted) = self.click_menu(x, y) {
+            return acted || dismissed;
+        }
+
         // The floating bar before anything else, because it is drawn over everything else. Order in
         // this one function is the whole of the z-order, in both directions: drawn last, asked
         // first.
@@ -5104,6 +5369,21 @@ impl<T: TextLayout> Editor<T> {
     /// Public because a test cannot deliver a `CursorMoved`, and because the dwell it schedules is
     /// what `next_wake` is then asked about.
     pub fn hover(&mut self, x: f32, y: f32) -> bool {
+        // **An open list takes the pointer, and takes it immediately.** No dwell: a menu highlights
+        // the row under the pointer at once, because the highlight *is* the feedback that the row is
+        // a target — where a tooltip is extra information about a button you can already see. The
+        // list is also above everything, so nothing behind it can be hovered while it is open, which
+        // is the same rule `click` follows one function along.
+        if let Some(menu) = self.open_menu.as_ref() {
+            let row = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
+            let moved = row != self.hovered_row;
+            self.hovered_row = row;
+            self.hovered = None;
+            self.dwell_at = None;
+            return moved | self.tooltip.take().is_some();
+        }
+        self.hovered_row = None;
+
         let over = if self.toolbar_buttons.is_empty() || !(0.0..toolbar::HEIGHT).contains(&y) {
             None
         } else {
@@ -5117,6 +5397,24 @@ impl<T: TextLayout> Editor<T> {
         self.dwell_at = over.map(|_| Instant::now() + tooltip::DWELL);
         // Whatever was showing belonged to the button we have just left.
         self.tooltip.take().is_some()
+    }
+
+    /// Which row of the open list the pointer is over, if any.
+    #[must_use]
+    pub fn hovered_row(&self) -> Option<usize> {
+        self.hovered_row
+    }
+
+    /// Where the open list's top-left corner is, for a test.
+    #[must_use]
+    pub fn menu_at(&self) -> Option<(f32, f32)> {
+        self.open_menu.as_ref().map(|menu| menu.at)
+    }
+
+    /// How wide the open list is, for a test.
+    #[must_use]
+    pub fn menu_width(&self) -> Option<f32> {
+        self.open_menu.as_ref().map(|menu| menu.width)
     }
 
     /// The pointer has now rested long enough. Shows the tooltip, if there is still a button under
@@ -5142,6 +5440,90 @@ impl<T: TextLayout> Editor<T> {
         self.tooltip
     }
 
+    /// The rows of the list that is open, if one is.
+    #[must_use]
+    pub fn menu_rows(&self) -> Option<&[toolbar::Action]> {
+        self.open_menu.as_ref().map(|menu| menu.rows.as_slice())
+    }
+
+    /// Opens the list `button` stands for, or closes it if it is already that one.
+    ///
+    /// **Clicking an open menu's own button closes it**, which is what every menu does and what
+    /// stops the button being a one-way door.
+    fn toggle_menu(&mut self, button: toolbar::ButtonRect, kind: toolbar::Menu) -> bool {
+        let rows: Vec<toolbar::Action> = match kind {
+            toolbar::Menu::Headings => toolbar::HEADINGS.to_vec(),
+            // **Whatever the bar dropped, taken from the row it drew** rather than recomputed. The
+            // two are one partition and deriving them twice is how an action ends up in neither.
+            toolbar::Menu::Overflow => self.dropped.clone(),
+        };
+        if rows.is_empty() {
+            return false;
+        }
+        if self.open_menu.is_some() {
+            return self.close_menu();
+        }
+
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        let mut widest = 0.0_f32;
+        for action in &rows {
+            let Some(text) = popup::text_for(*action) else {
+                continue;
+            };
+            if !self.toolbar_labels.contains_key(&text) {
+                if let Some(label) = self.lay_out_label(&text, style) {
+                    self.toolbar_labels.insert(text.clone(), label);
+                }
+            }
+            if let Some(label) = self.toolbar_labels.get(&text) {
+                widest = widest.max(label.width);
+            }
+        }
+
+        // A list of nothing but letterforms is the icon column and its padding, and no more.
+        let width = if popup::any_text(&rows) {
+            popup::width_of(widest)
+        } else {
+            popup::ICON_COLUMN
+        };
+        let at = popup::place(width, button.x, toolbar::HEIGHT, self.window_width);
+        self.open_menu = Some(OpenMenu {
+            kind,
+            rows,
+            at,
+            width,
+        });
+        // A menu and a tooltip about the same button at once is two panels saying different things.
+        self.tooltip = None;
+        true
+    }
+
+    /// Closes whatever list is open.
+    fn close_menu(&mut self) -> bool {
+        self.hovered_row = None;
+        self.open_menu.take().is_some()
+    }
+
+    /// Resolves a click while a list is open.
+    ///
+    /// **Asked before everything else in [`click`](Self::click)**, because it is drawn after
+    /// everything else — the floating bar's rule, and `click`'s order is the whole of the z-order in
+    /// both directions.
+    ///
+    /// Returns whether the click was the menu's. A click **anywhere** while a menu is open belongs
+    /// to the menu: on a row it acts, off the panel it closes and is swallowed. That is what every
+    /// menu does, and the alternative — a click that both dismisses and lands — is how somebody
+    /// closing a menu accidentally moves their caret.
+    fn click_menu(&mut self, x: f32, y: f32) -> Option<bool> {
+        let menu = self.open_menu.clone()?;
+        let hit = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
+        self.close_menu();
+        match hit.and_then(|row| menu.rows.get(row).copied()) {
+            Some(action) => Some(self.perform(action)),
+            None => Some(true),
+        }
+    }
+
     /// Takes the tooltip away, and stops one being on its way.
     ///
     /// Called from everything that means the user has moved on: a click, a keystroke, a wheel notch,
@@ -5152,6 +5534,21 @@ impl<T: TextLayout> Editor<T> {
         self.dwell_at = None;
         self.hovered = None;
         self.tooltip.take().is_some()
+    }
+
+    /// Takes the tooltip **and** any open list away.
+    ///
+    /// For everything that is not a click: a keystroke, a wheel notch, the pointer leaving the
+    /// window. Every reason to dismiss one is a reason to dismiss the other.
+    ///
+    /// **A click must not use this**, and getting that wrong is what shipped a heading menu whose
+    /// rows could not be clicked: `Editor::click` dismissed the tooltip first, which closed the menu
+    /// with it, so by the time `click_menu` looked there was nothing open and the click fell through
+    /// to the document. The two are separate functions now so the click path cannot reach the wrong
+    /// one — it was a comment claiming the right order, above code that did not have it.
+    fn dismiss_panels(&mut self) -> bool {
+        let menu = self.close_menu();
+        self.dismiss_tooltip() || menu
     }
 
     /// When the loop should wake up next, out of everything waiting on a clock.
@@ -5403,7 +5800,18 @@ impl<T: TextLayout> Editor<T> {
         }
 
         if let Some(action) = toolbar::hit_test(&self.toolbar_buttons, x, y - top) {
-            if self.is_enabled(action) {
+            // The two buttons that open a list rather than edit anything. One lookup rather than
+            // two special cases, so a third menu-opener cannot be forgotten here.
+            if let Some(kind) = action.opens() {
+                let button = self
+                    .toolbar_buttons
+                    .iter()
+                    .find(|button| button.action == action)
+                    .copied();
+                if let Some(button) = button {
+                    self.toggle_menu(button, kind);
+                }
+            } else if self.is_enabled(action) {
                 self.perform(action);
             }
         }
@@ -5435,6 +5843,12 @@ impl<T: TextLayout> Editor<T> {
                 false
             }
             toolbar::Action::Paste => self.paste(),
+            // **The two that are not a second door.** They open a list, and `click_toolbar` deals
+            // with them before it gets here — a chord never reaches them, because `Action::chord`
+            // gives them none. Reaching this arm means somebody called `perform` directly with one,
+            // which is a caller bug rather than a user action, so it does nothing rather than
+            // guessing which row was meant.
+            toolbar::Action::Headings | toolbar::Action::More => false,
             toolbar::Action::Bold => self.document_mut().toggle_inline(Inline::Bold),
             toolbar::Action::Italic => self.document_mut().toggle_inline(Inline::Italic),
             toolbar::Action::Strikethrough => {
@@ -6037,7 +6451,7 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn button_face_drawn(&self, action: toolbar::Action) -> Option<&str> {
         self.toolbar_labels
-            .get(&action.label())
+            .get(&self.face_key(action))
             .map(|label| label.text.as_str())
     }
 
@@ -7972,14 +8386,14 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             // tooltip raised on the last button before the pointer left the window stays up over an
             // editor nobody is pointing at.
             WindowEvent::CursorLeft { .. } => {
-                if self.dismiss_tooltip() {
+                if self.dismiss_panels() {
                     if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.dismiss_tooltip();
+                self.dismiss_panels();
                 self.wheel(delta);
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
