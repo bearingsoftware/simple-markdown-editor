@@ -34,7 +34,15 @@ use tempfile::TempDir;
 mod stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
-const WIDTH: f32 = 900.0;
+/// Wider than the 900-pixel default window, and MDEDIT-92 is why.
+///
+/// This grid has no icon font — it reports `.notdef` for every private-use code point, which is
+/// what a machine without Segoe Fluent Icons does — so every button here draws its **word**, and a
+/// row of words is wider than a row of icons. At 900 the last of them fall off the end, which is
+/// the overflow rule working rather than a defect; `a_narrow_window_cuts_the_language_buttons_first`
+/// is where that is asserted, and `tests/icons.rs` is where the real font is measured against the
+/// real default width.
+const WIDTH: f32 = 1000.0;
 const HEIGHT: f32 = MARGIN + 400.0;
 
 fn editor(text: &str) -> Editor<Grid> {
@@ -982,4 +990,76 @@ fn the_bar_is_drawn_above_the_strip() {
              strip and the glyphs did not"
         );
     }
+}
+
+// ---- icons, and what happens without them ----
+
+/// Every action has something to draw. A button with an empty face is a hole in the row.
+#[test]
+fn every_action_has_a_label() {
+    for action in [toolbar::STANDARD, toolbar::MARKDOWN, toolbar::SELECTION].concat() {
+        assert!(!action.label().is_empty(), "{action:?} has no label");
+    }
+}
+
+/// No two buttons draw the same icon. Two identical shapes side by side is the failure a table of
+/// hand-copied code points makes, and it is invisible in a screenshot until somebody clicks one.
+#[test]
+fn no_two_actions_share_an_icon() {
+    let mut seen: Vec<(Action, char)> = Vec::new();
+    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
+        let Some(icon) = action.icon() else {
+            continue;
+        };
+        if let Some((other, _)) = seen.iter().find(|(_, taken)| *taken == icon) {
+            panic!("{action:?} and {other:?} both draw U+{:04X}", icon as u32);
+        }
+        seen.push((action, icon));
+    }
+    assert!(seen.len() >= 19, "most of the bar should be iconic");
+}
+
+/// **The fallback, exercised.** This grid reports `.notdef` for every private-use code point, which
+/// is what a machine without Segoe Fluent Icons does — so these buttons draw their words, and the
+/// bar lays out and clicks exactly as it did before MDEDIT-92. A row of empty boxes would be a bug
+/// report; the old bar is merely the old bar.
+#[test]
+fn without_the_icon_font_the_bar_draws_its_words() {
+    let mut editor = editor("prose\n");
+    select(&mut editor, 0, 5);
+
+    let shown: Vec<Action> = editor
+        .toolbar_buttons()
+        .iter()
+        .map(|button| button.action)
+        .collect();
+    assert_eq!(
+        shown,
+        [toolbar::STANDARD, toolbar::MARKDOWN].concat(),
+        "every button is still there"
+    );
+
+    // **And each of them drew its word rather than a box.** Asserting the actions alone would pass
+    // just as well with the `.notdef` check taken out, which is a bar of tofu — the exact outcome
+    // the fallback exists to prevent.
+    for action in shown {
+        assert_eq!(
+            editor.button_face_drawn(action),
+            Some(action.label().as_str()),
+            "{action:?} drew something other than its word with no icon font present"
+        );
+    }
+
+    // And it still works, which is the half that matters.
+    let (x, y) = centre_of(&editor, Action::Bold);
+    editor.click(x, y);
+    assert_eq!(editor.document().to_string(), "**prose**\n");
+}
+
+/// The lettered heading buttons draw the same thing either way, so they are the one part of the bar
+/// a missing font cannot change.
+#[test]
+fn the_heading_buttons_letter_whatever_the_font_has() {
+    assert_eq!(Action::Heading(1).icon(), None);
+    assert_eq!(Action::Heading(2).label(), "H2");
 }

@@ -80,7 +80,17 @@ impl TextLayout for Grid {
                 lines[row].glyphs.push(PositionedGlyph {
                     key: GlyphKey {
                         font: FontId::new(0),
-                        glyph: GlyphId::new(1),
+                        // **A private-use code point is `.notdef` here, and that is a simulation
+                        // rather than a shortcut.** This grid has no icon font — nothing does off
+                        // Windows — so MDEDIT-92's `U+E8DD` has to come back the way it would on a
+                        // machine without Segoe Fluent Icons, or every test in this crate would
+                        // exercise the icon path and none would exercise the fallback that exists
+                        // for exactly that machine. The real font is asked in `tests/icons.rs`.
+                        glyph: if ('\u{E000}'..='\u{F8FF}').contains(&character) {
+                            GlyphId::new(0)
+                        } else {
+                            GlyphId::new(1)
+                        },
                         size: run.style.size,
                     },
                     pos: LayoutPos::new(pen_x, baseline),
