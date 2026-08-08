@@ -7043,10 +7043,6 @@ impl<T: TextLayout> Editor<T> {
 
         // The line ending, past the end of the row. An empty line has no glyphs, so its terminator
         // is found from where the row starts rather than from where it ends.
-        // Two shapes, and they need different questions asked. A row with glyphs is asked what comes
-        // *before* the offset past its last one, because the engine may or may not have given the
-        // terminator a glyph. A row with none is an empty line, whose terminator is exactly *at* its
-        // start — asking `before` there would walk back into the previous line and mark it twice.
         let (ending, mut pen) = match line.glyphs.last() {
             Some(last) => {
                 // Where the row's last character *ends*, taken from the document rather than from
@@ -7058,17 +7054,21 @@ impl<T: TextLayout> Editor<T> {
                 let mut after = start + row.text[start..].chars().next().map_or(0, char::len_utf8);
                 let mut pen = last.pos.x + last.advance;
 
-                // **Trailing whitespace, which is the thing people switch this on to find.**
-                // DirectWrite does not shape whitespace at the end of a line, so there is no glyph
-                // to stamp a mark into and these characters would be the only invisible ones the
-                // feature could not show. Walked over from past the last glyph, so nothing that did
-                // get a glyph can be marked twice.
+                // **Whatever the layout declined to shape, which on DirectWrite is the trailing
+                // tab.** MDEDIT-113 measured it: `"ab \r\ncd"` shapes the space, `"ab\t\ncd"` does
+                // not shape the tab. So a trailing tab has no glyph to stamp a mark into and would
+                // be the one invisible character this feature could not show.
+                //
+                // The condition is "has a mark and was not shaped" rather than a list of
+                // characters, because which ones a backend skips is the backend's business and the
+                // set is not the same on both. Walking from past the last glyph is what keeps a
+                // character that *did* get one from being marked twice, and `mark_for` returning
+                // `None` for `\r` and `\n` is what stops the walk at the terminator.
                 while let Some(character) = row.text[after..].chars().next() {
-                    if character != ' ' && character != '\t' {
+                    let Some(mark) = view::mark_for(character) else {
                         break;
-                    }
-                    if let Some(drawn) = view::mark_for(character).and_then(|mark| self.mark(mark))
-                    {
+                    };
+                    if let Some(drawn) = self.mark(mark) {
                         self.stamp(
                             quads,
                             drawn,
@@ -7083,7 +7083,7 @@ impl<T: TextLayout> Editor<T> {
                     after += character.len_utf8();
                 }
 
-                (view::ending_before(row.text, after), pen)
+                (view::ending_at(row.text, after), pen)
             }
             None => (
                 view::ending_at(row.text, Self::row_start(row.chunk, row.text, row.index)),

@@ -13,7 +13,8 @@
 use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_app::view::{self, Ending};
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{ByteOffset, ByteSpan};
+use mdedit_text::{StyledRun, TextLayout, TextStyle};
 
 mod stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT};
@@ -221,30 +222,62 @@ fn each_ending_is_told_apart() {
     assert_eq!(view::ending_at("ab", 99), None);
 }
 
-/// **Found by looking at the window, not by a test.** Whether the terminator gets a glyph of its own
-/// is the text engine's business: DirectWrite gives `\n` a zero-width one and the stub these tests
-/// run on does not. So the offset past a row's last glyph is sometimes the newline and sometimes
-/// past it, and every paragraph row lost its mark on the real backend while every test here passed.
+/// **A row's ending is read forward from past its last glyph, because no backend shapes the
+/// terminator.**
 ///
-/// `ending_before` answers both, and this is the test that could have caught it.
+/// This used to go through an `ending_before` that backed up over any `\r` and `\n` first, on the
+/// belief that DirectWrite gave `\n` a glyph of its own and the stub did not. MDEDIT-113 measured
+/// it — `crates/text-dwrite/tests/layout.rs::no_terminator_gets_a_glyph` — and neither does, for any
+/// of the three endings. The stub was corrected to match, so the offset is always *of* the ending.
+///
+/// The `\r\n` case is the one the backing-up was really carrying: read forward from inside a CRLF
+/// you get `Lf`, which would put the "this is probably damage" mark on every line of every Windows
+/// file. That cannot arise now, and this asserts it from the offsets a row actually produces.
 #[test]
-fn a_row_finds_its_ending_whether_or_not_the_terminator_had_a_glyph() {
+fn a_row_reads_its_ending_forward_from_past_its_last_glyph() {
     let text = "alpha\nbeta\r\ngamma\rdelta";
 
-    // The stub's shape: `after` is the offset *of* the terminator.
-    assert_eq!(view::ending_before(text, 5), Some(Ending::Lf));
-    assert_eq!(view::ending_before(text, 10), Some(Ending::CrLf));
-    assert_eq!(view::ending_before(text, 17), Some(Ending::Cr));
-
-    // DirectWrite's shape: `after` has stepped past it.
-    assert_eq!(view::ending_before(text, 6), Some(Ending::Lf));
-    assert_eq!(view::ending_before(text, 12), Some(Ending::CrLf));
-    assert_eq!(view::ending_before(text, 18), Some(Ending::Cr));
+    assert_eq!(view::ending_at(text, 5), Some(Ending::Lf));
+    assert_eq!(view::ending_at(text, 10), Some(Ending::CrLf));
+    assert_eq!(view::ending_at(text, 17), Some(Ending::Cr));
 
     // And a row that ends in the middle of a line still has no ending.
-    assert_eq!(view::ending_before(text, 3), None);
-    assert_eq!(view::ending_before(text, text.len()), None);
-    assert_eq!(view::ending_before(text, 9999), None);
+    assert_eq!(view::ending_at(text, 3), None);
+    assert_eq!(view::ending_at(text, text.len()), None);
+    assert_eq!(view::ending_at(text, 9999), None);
+}
+
+/// The stub agrees with DirectWrite about terminators, which is the whole reason the previous test
+/// can ask one question instead of two.
+///
+/// Asserted through the layout rather than by reading the stub, because the claim is about what a
+/// row hands the mark drawer: **the last glyph of a CRLF row is the character before the `\r`.**
+#[test]
+fn the_stub_gives_no_terminator_a_glyph() {
+    let mut grid = Grid::new();
+    for (source, ending) in [("ab\ncd", 2), ("ab\r\ncd", 2), ("ab\rcd", 2)] {
+        let layout = grid
+            .layout(
+                &[StyledRun {
+                    text: source,
+                    style: TextStyle::body(16.0),
+                    source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
+                }],
+                1000.0,
+            )
+            .expect("the stub never fails");
+
+        assert_eq!(layout.lines.len(), 2, "{source:?} should break a line");
+        let last = layout.lines[0]
+            .glyphs
+            .last()
+            .expect("the first row has two characters on it");
+        assert_eq!(
+            last.source.end().get(),
+            ending,
+            "{source:?} should end its first row at the terminator, not inside it"
+        );
+    }
 }
 
 /// CRLF must be read as one ending rather than as a CR followed by an LF, or every Windows file
@@ -268,29 +301,47 @@ fn only_a_lone_cr_is_suspect() {
 
 /// **The motivating case.** The editor preserves pasted CRLF into an LF file, so mixed endings exist
 /// and the status bar says "Mixed" without saying where. With the marks on, the lines are drawn
-/// differently from each other — which is the whole point, and is visible here as a quad count that
-/// changes when an ending does.
+/// differently from each other — which is the whole point.
+///
+/// **Counted exactly, not compared.** This was a `>` until MDEDIT-113, and a `>` is satisfied by any
+/// extra quad from any cause: the version of the stub that shaped a `\r` passed it while reading the
+/// CRLF as a plain `Lf` and drawing one mark, because the stray CR glyph made up the difference. An
+/// exact count per ending is the only shape of this test that can tell those two apart.
 #[test]
 fn a_mixed_document_draws_its_lines_differently() {
-    let mut all_lf = editor("alpha\nbeta\ngamma\n");
-    assert!(all_lf.set_whitespace(true));
-    let lf_quads = quads(&mut all_lf);
+    let marks = |text: &str| {
+        let mut editor = editor(text);
+        let off = quads(&mut editor);
+        assert!(editor.set_whitespace(true));
+        quads(&mut editor) - off
+    };
 
-    let mut mixed = editor("alpha\r\nbeta\ngamma\n");
-    assert!(mixed.set_whitespace(true));
-    let mixed_quads = quads(&mut mixed);
-
-    assert!(
-        mixed_quads > lf_quads,
-        "a CRLF line draws two marks where an LF line draws one: {lf_quads} then {mixed_quads}"
+    assert_eq!(marks("alpha\nbeta\ngamma\n"), 3, "one mark per LF");
+    assert_eq!(
+        marks("alpha\r\nbeta\r\ngamma\r\n"),
+        6,
+        "two marks per CRLF, which is what says it was not read as a lone LF"
+    );
+    assert_eq!(
+        marks("alpha\rbeta\rgamma\r"),
+        3,
+        "one mark per lone CR, which is what says the ending was found at all"
+    );
+    assert_eq!(
+        marks("alpha\r\nbeta\ngamma\n"),
+        4,
+        "and a mixed document draws each line the way that line ends"
     );
 }
 
 /// **Trailing whitespace is the thing people switch this on to find**, and it was the last thing to
-/// work. DirectWrite does not shape whitespace at the end of a line, so there is no glyph to stamp a
-/// mark into — found by looking at the window, where `trailing spaces here` had three invisible
-/// spaces and no marks. The stub *does* shape them, so this test passes either way and pins the
-/// count rather than the mechanism.
+/// work.
+///
+/// MDEDIT-113 measured what the note here used to claim. DirectWrite *does* shape a trailing space,
+/// so a space is marked in its own cell like any other; what it does not shape is a **tab**, which is
+/// an advance to the next stop and no glyph at all. The walk past the last glyph is what marks that
+/// one, on the real backend only — the stub shapes tabs, so this test pins the count rather than the
+/// mechanism, and `crates/text-dwrite/tests/layout.rs` pins the mechanism.
 #[test]
 fn trailing_spaces_are_marked_once_each() {
     // The *same* document either way, so what is counted is the marks alone. Comparing against a

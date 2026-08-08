@@ -62,18 +62,40 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   at a document for a moment rather than a preference.
 
   **Two of its three defects were only visible in the window, and both came from the same place** —
-  the headless stub shapes text more simply than DirectWrite does. `view::ending_before` exists
-  because the offset past a row's last glyph may be the terminator or past it, and the whitespace
-  marks walk trailing spaces out of the *text* rather than off the glyphs. **A test on the stub
-  cannot see either.**
+  the headless stub shaped text more simply than DirectWrite does. **A test on the stub could not see
+  either**, so both were written from a description of DirectWrite rather than a measurement of it,
+  and the description was wrong in both halves. MDEDIT-110 measured it and MDEDIT-113 acted on it.
 
-  **The DirectWrite behaviour those two were written for is not what DirectWrite does**, which
-  MDEDIT-110 measured and MDEDIT-113 carries. This entry used to say a `\n` gets a glyph of its own
-  and trailing whitespace is not shaped; on Windows 11 26200 against the installed Segoe UI, both are
-  the other way round — `"ab\ncd"` produces glyphs for bytes 0, 1, 3 and 4, and `"ab   "` produces
-  one for every trailing space. `crates/text-dwrite/tests/layout.rs` pins that as a characterisation
-  test, so a change is noticed rather than assumed; whether `ending_before` and the whitespace walk
-  should be simplified to match is MDEDIT-113, and wants an eye on Windows rather than a test.
+  **What DirectWrite actually does** (Windows 11 26200, installed Segoe UI, pinned in
+  `crates/text-dwrite/tests/layout.rs`):
+
+  | Character | Shaped? | |
+  | --- | --- | --- |
+  | `\n`, `\r`, `\r\n` | **no glyph** | each still ends a line |
+  | a space, trailing or not | **shaped** | ordinary glyph, ordinary advance |
+  | a tab | **no glyph** | advances to a 64 px stop instead, and they stack |
+  | a C0 control, `DEL` | **no glyph** | *and no advance* — dropped outright |
+  | U+000B | **no glyph** | DirectWrite ends a line on it |
+
+  Two consequences, and they pull in opposite directions.
+
+  **`ending_before` is gone.** It existed to answer "is the offset past the last glyph the terminator
+  or past it". No backend gives a terminator a glyph, so the offset is always *of* it and
+  `view::ending_at` reads forward from there. The stub used to shape a `\r`, which was the only thing
+  keeping the question alive; it now agrees with the measurement, which is what the stub is for.
+  Watch for this in review: the old `>`-shaped mark-count test passed with the CRLF read as a plain
+  `Lf`, because the stray CR glyph made the count go up anyway. **Counts, not comparisons.**
+
+  **The whitespace walk stays, and is now for tabs and controls rather than for spaces.** It walks
+  from past the last glyph, marking whatever `mark_for` names and the layout declined to shape. Its
+  condition is that pair of properties rather than a list of characters, because which characters a
+  backend skips is the backend's business.
+
+  It only reaches the ones that **trail** a row, though, and a tab or control in the middle of a line
+  has no cell either — so on Windows those cannot be marked at all. **That hole is MDEDIT-124**, and
+  the stub deliberately still shapes tabs and controls so the marking tests have cells to assert
+  against. That divergence is the same shape as the one that caused this ticket, and is written on
+  MDEDIT-124 so it is a known cost rather than a repeat.
 - **There are two palettes, and one of them is unreachable.** MDEDIT-71. `Theme::dark` is what the
   editor has always drawn with — **unchanged to the byte**, which was that story's whole acceptance
   criterion — and `Theme::light` is the MDEDIT-69 design pack's Nocturne, complete and
