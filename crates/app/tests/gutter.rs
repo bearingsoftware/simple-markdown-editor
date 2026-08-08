@@ -339,3 +339,110 @@ fn a_number_sits_on_the_same_baseline_as_its_line() {
         );
     }
 }
+
+/// The rightmost edge a line **number** reaches, with whichever chrome is showing.
+///
+/// Narrower than [`is_gutter`], and it has to be: with the file pane showing, "left of the text and
+/// between the two bars" also describes the pane's own background, its active row, and every glyph
+/// of the file name on it. A number is distinguished by being a glyph (so, small) that sits on a
+/// **document row** — the pane's label is above the content rect's top edge, and its panels are two
+/// hundred pixels wide.
+fn number_right_with_chrome(editor: &mut Editor<Grid>) -> f32 {
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let left = editor.content_rect().left_edge();
+    let top = editor.content_rect().top_edge();
+    let bar_top = HEIGHT - mdedit_app::status::BAR_HEIGHT;
+
+    quads
+        .iter()
+        .filter(|quad| {
+            quad.rect[0] + quad.rect[2] <= left
+                && quad.rect[1] >= top
+                && quad.rect[1] < bar_top
+                && quad.rect[2] < 20.0
+        })
+        .map(|quad| quad.rect[0] + quad.rect[2])
+        .fold(0.0_f32, f32::max)
+}
+
+/// **A line number sits the same distance from the text whatever is to its left** (MDEDIT-117).
+///
+/// The gutter is the second thing on the left when the file pane is showing — `insets.left` is
+/// `pane_width() + gutter_width()` — and the numbers used to be placed from the *window's* edge
+/// regardless. They landed inside the pane's own band, and `draw_pane` runs after `draw_chunks`, so
+/// they were drawn and then painted over. The give-away in the window was the empty gutter-width
+/// strip between the pane and the text: reserved, and holding nothing.
+///
+/// **Asserted as a gap rather than as a coordinate**, which is what makes it neither circular nor a
+/// restatement of the fix: wherever the text starts, the number ends just before it. Counting the
+/// quads would have passed straight through the defect — they were always emitted.
+#[test]
+fn a_number_sits_beside_the_text_whether_or_not_the_pane_is_showing() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, lines(30)).unwrap();
+
+    let open = || {
+        let mut workspace = mdedit_session::Workspace::new();
+        workspace.add(path.clone());
+        let mut editor = Editor::with_workspace(workspace, Grid::new());
+        editor.activate_saved_tab();
+        editor.with_config(Config {
+            line_numbers: true,
+            ..Config::default()
+        });
+        editor
+    };
+
+    let mut with_strip = open();
+    let strip_gap = {
+        let right = number_right_with_chrome(&mut with_strip);
+        with_strip.content_rect().left_edge() - right
+    };
+
+    let mut with_pane = open();
+    with_pane.toggle_chrome();
+    // The gap first: `content_rect` is only refreshed by a frame, and `number_right_with_chrome`
+    // builds one. Reading the edge before it gives whatever the last layout said, which after a
+    // chrome toggle is the wrong chrome.
+    let pane_gap = {
+        let right = number_right_with_chrome(&mut with_pane);
+        with_pane.content_rect().left_edge() - right
+    };
+    let pane_left = with_pane.content_rect().left_edge();
+
+    assert!(
+        pane_left > mdedit_app::pane::PANE_WIDTH,
+        "the document should start beyond the pane and its gutter"
+    );
+    assert_eq!(
+        pane_gap, strip_gap,
+        "the number should be the same distance from the text either way; with the pane it is \
+         {pane_gap} against {strip_gap}, which means it did not move with the gutter"
+    );
+}
+
+/// And it is beyond the pane, not merely a consistent distance from text that has itself moved.
+/// Without this the assertion above would also hold if both the numbers and the text stayed put.
+#[test]
+fn a_number_is_drawn_clear_of_the_pane() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, lines(30)).unwrap();
+    let mut workspace = mdedit_session::Workspace::new();
+    workspace.add(path);
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    editor.activate_saved_tab();
+    editor.with_config(Config {
+        line_numbers: true,
+        ..Config::default()
+    });
+    editor.toggle_chrome();
+
+    let right = number_right_with_chrome(&mut editor);
+    assert!(
+        right > mdedit_app::pane::PANE_WIDTH,
+        "a number ends at {right}, inside the pane's {}px band — it would be painted over",
+        mdedit_app::pane::PANE_WIDTH
+    );
+}
