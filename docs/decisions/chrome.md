@@ -220,31 +220,27 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   would be a button with three letters on it. `Button::row` returns a row *number* rather than a y
   offset so grouping buttons by row is an integer comparison; comparing two `f32`s for equality would
   work today and fail the first time a height is scaled.
-- **A settled selection also gets a bar that floats over it, and "settled" is the whole feature.**
-  MDEDIT-53. It appears on mouse *release*, or on the idle timer for a selection extended with Shift
-  — never during a drag, because a bar that chases the pointer is the classic bad implementation of
-  this pattern. It is dismissed by typing, Esc, scrolling, collapsing the selection, clicking
-  anywhere else, and switching tab. **Hidden on scroll rather than moved**: repositioning against a
-  viewport still in motion is jitter.
+- **There was a bar that floated over a settled selection, and MDEDIT-119 removed it.** MDEDIT-53
+  built it when the fixed bar was Markdown-only, per-run and *below* the tab strip — so a selection
+  in the middle of a document had no formatting surface within reach. Three tickets took each of
+  those reasons away: MDEDIT-84 gave every document a standard set and moved the bar to the top,
+  MDEDIT-92 made it icons, and MDEDIT-116 collapsed the headings and gave it an overflow. Its whole
+  set — the inline four plus three heading levels — ended up on the fixed bar, which now offers six
+  levels where the floating one offered three.
 
-  Three things are worth knowing before touching it. It anchors to the selection's **first visible
-  row**, not the bounding box, and that rect is recorded in `draw_chunks` because nothing else keeps
-  it — `row_selection` returns x-extents that go straight into a quad and are then gone, so
-  `selection_anchor` is to the floating bar what `caret_area` is to the IME. It is drawn **genuinely
-  last** and hit-tested **first**, and `Editor::click`'s order is the whole of that z-order in both
-  directions. And the tab it belongs to is held in `floating_for` rather than hooked into the eight
-  paths that activate a tab — a comparison cannot be forgotten by the ninth.
+  **The cost is real and was accepted rather than argued away:** a bar at the selection is zero
+  pointer travel, and Typora, Notion and Medium all keep one. What settled it is that the second
+  surface carried a maintenance cost invisible in the feature — a third z-order in `Editor::click`,
+  a second place every inline action was wired, and a set of rules (settle on release, settle on the
+  idle beat for a Shift-selection, never during a drag, not for a selection the search made) that
+  existed only to stop it being annoying.
 
-  Its buttons are the inline set plus three heading levels. The list and block actions stay on the
-  fixed bar: they act on lines rather than on a selection. The selection **survives** a press, which
-  is what makes bold-then-italic two clicks instead of two selections.
-
-  **It does not appear for a selection the search made.** `found_selection` says where the current
-  one came from, and `settle_selection` refuses while it is set. Both halves of that were found by
-  eye rather than by a test: every press of Find Next put a bar over the prose, and then Esc — the
-  gesture that dismisses chrome — raised one as a parting gift, because closing the find bar leaves
-  the match selected. Keying it on where the selection came from rather than on whether the find bar
-  is open is what fixes the second.
+  **What went with it is the interesting part.** `selection_anchor`, recorded in `draw_chunks`
+  because nothing else knew where a selection's first visible row was. `found_selection`, which
+  existed *only* so a search match would not raise a bar. `toolbar::place`, `shifted` and `Anchor`,
+  which had no other caller. Twenty-five tests. `tooltip::place` and `popup::place` still clamp the
+  way `toolbar::place` did and say so in their own words, because the reasoning outlived the
+  function.
 - **The View menu's toggles are check items, and the ticks follow the *chord* as well as the click.**
   MDEDIT-40. That is the whole reason a toggle belongs in a menu rather than only on a chord: a chord
   can toggle something but cannot tell you which way it is now. The cost is that every path which

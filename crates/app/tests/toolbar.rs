@@ -657,32 +657,6 @@ fn the_new_button_opens_a_tab() {
     assert_eq!(editor.workspace().tabs().len(), before + 1);
 }
 
-/// The floating bar is inline styling anchored to a selection. New and Save have no business
-/// floating over a paragraph, and the two sets being separate constants is what keeps them out.
-#[test]
-fn the_floating_bar_does_not_get_the_standard_set() {
-    let mut editor = editor("some prose here\n");
-    select(&mut editor, 0, 9);
-    editor.settle_selection();
-    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
-
-    let floating: Vec<Action> = editor
-        .floating_buttons()
-        .iter()
-        .map(|button| button.action)
-        .collect();
-    assert!(
-        !floating.is_empty(),
-        "there should be a floating bar at all"
-    );
-    assert!(
-        !floating
-            .iter()
-            .any(|action| toolbar::STANDARD.contains(action)),
-        "{floating:?} should be inline styling and headings only"
-    );
-}
-
 // ---- what it costs ----
 
 /// The trap the gutter, the status bar and the file pane each hit in turn. A fourth would be
@@ -1015,7 +989,7 @@ fn the_bar_is_drawn_above_the_strip() {
 /// Every action has something to draw. A button with an empty face is a hole in the row.
 #[test]
 fn every_action_has_a_label() {
-    for action in [toolbar::STANDARD, toolbar::MARKDOWN, toolbar::SELECTION].concat() {
+    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
         assert!(!action.label().is_empty(), "{action:?} has no label");
     }
 }
@@ -1132,4 +1106,26 @@ fn the_heading_button_defaults_outside_a_heading() {
 
     assert!(!editor.is_lit(Action::Headings));
     assert_eq!(editor.button_face_drawn(Action::Headings), Some("H1"));
+}
+
+/// **The selection survives a formatting press**, which is what made bold-then-italic two clicks
+/// rather than two selections — and it was the floating bar's headline property before MDEDIT-119
+/// deleted it. The behaviour belonged to `Editor::perform` all along, not to the bar that called it,
+/// which is exactly why removing one of the two callers was safe. Asserted here so that stays true.
+#[test]
+fn the_selection_survives_a_press_on_the_bar() {
+    let mut editor = editor("some prose here\n");
+    select(&mut editor, 0, 10);
+
+    let (x, y) = centre_of(&editor, Action::Bold);
+    editor.click(x, y);
+    assert_eq!(editor.document().to_string(), "**some prose** here\n");
+
+    let after = editor.document().selection();
+    assert!(!after.is_collapsed(), "the selection should still be one");
+    assert_ne!(
+        after.span().len(),
+        0,
+        "and cover something, so a second press is one click rather than a re-selection"
+    );
 }

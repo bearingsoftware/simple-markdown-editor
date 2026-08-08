@@ -235,17 +235,6 @@ fn validate_on_a_clean_document_does_nothing() {
     assert!(editor.document().selection().is_collapsed());
 }
 
-/// A jump is the editor placing a selection, not the user sweeping one out — so it must not raise
-/// the floating formatting bar, for the same reason a search match does not.
-#[test]
-fn the_jump_does_not_raise_the_floating_bar() {
-    let dir = TempDir::new().unwrap();
-    let mut editor = json(&dir, "{\"a\": 1,}\n");
-
-    assert!(editor.apply_command(mdedit_menu_win::Command::Validate));
-    assert!(!editor.settle_selection());
-}
-
 // ---- what it looks like (MDEDIT-76) ----
 
 /// How many quads this frame draws in the diagnostic colour.
