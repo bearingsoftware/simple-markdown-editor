@@ -50,7 +50,18 @@ jobs:
       # minutes of a runner that is not billed, and `Swatinem/rust-cache` keeps `~/.cargo/bin`
       # between runs so it is the first run that pays.
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        # **Only when it is not already there**, and that is not an optimisation. `cache-bin: true`
+        # above restores `~/.cargo/bin`, so on every run after the first `cargo install` finds its
+        # own binary already in place and stops with `binary 'cargo-mutants' already exists in
+        # destination` — exit 101, and a red X on every pull request for a job whose whole point is
+        # to report rather than block. `--force` would fix it by rebuilding from source every time,
+        # which is the cost the cache exists to avoid.
+        run: |
+          if ! command -v cargo-mutants >/dev/null 2>&1; then
+            cargo install cargo-mutants --locked
+          else
+            echo "cargo-mutants $(cargo mutants --version) restored from cache"
+          fi
 
       - name: What this pull request changed
         run: git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff
