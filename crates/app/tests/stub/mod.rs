@@ -52,10 +52,23 @@ impl TextLayout for Grid {
         let mut lines: Vec<LayoutLine> = Vec::new();
         let mut pen_x = 0.0;
         let mut row = 0usize;
+        // Set by a `\r`, so the `\n` of a CRLF does not break the line a second time.
+        let mut after_cr = false;
 
         for run in runs {
             for (index, character) in run.text.char_indices() {
-                if character == '\n' {
+                // **No terminator gets a glyph, and a lone `\r` ends a line.** Measured on
+                // DirectWrite under MDEDIT-113: `"ab\ncd"`, `"ab\rcd"` and `"ab\r\ncd"` all lay out
+                // to two lines with four glyphs, none of them the terminator. This used to shape a
+                // `\r` like any other character, which made the stub the only place in the editor
+                // where a CR occupied a cell — and `view::ending_before` existed to paper over
+                // exactly that difference.
+                if matches!(character, '\n' | '\r') {
+                    let second_half_of_crlf = character == '\n' && after_cr;
+                    after_cr = character == '\r';
+                    if second_half_of_crlf {
+                        continue;
+                    }
                     // An empty line still occupies one, so push it before moving on.
                     while lines.len() <= row {
                         lines.push(new_line(lines.len()));
@@ -64,6 +77,7 @@ impl TextLayout for Grid {
                     pen_x = 0.0;
                     continue;
                 }
+                after_cr = false;
                 // Wrapping, crudely: at the character rather than at a word boundary, which is
                 // wrong for prose and exactly right for a test — a row break happens at a position
                 // arithmetic can predict. Without it nothing that only happens on a wrapped line

@@ -455,27 +455,15 @@ fn a_rule_grows_with_the_style() {
 /// ```
 ///
 /// This is a **characterisation** test: its job is to fail if that ever changes, because two pieces
-/// of the renderer were written on the strength of the description rather than the measurement —
-/// `view::ending_before`, which exists to answer "is the offset past the last glyph the terminator
-/// or past it", and the whitespace marks, which walk trailing spaces out of the *text* because they
-/// were believed to have no glyphs. MDEDIT-113 carries re-checking both against this.
+/// of the renderer were written on the strength of the description rather than the measurement.
+/// MDEDIT-113 acted on it: `view::ending_before`, which existed to answer "is the offset past the
+/// last glyph the terminator or past it", is gone — see [`no_terminator_gets_a_glyph`] for why the
+/// question does not arise — and the whitespace walk now says which characters it is really for.
 ///
 /// It asserts source-byte mapping rather than metrics, so it does not depend on which build of which
 /// font is installed — the thing the header of this file warns about.
 #[test]
 fn a_newline_gets_no_glyph_and_trailing_spaces_do() {
-    let mut text = engine();
-    let mapped = |source: &str| -> Vec<usize> {
-        let mut engine = engine();
-        let layout = engine
-            .layout(&[run(source, TextStyle::body(16.0))], 1000.0)
-            .unwrap();
-        layout
-            .glyphs()
-            .map(|glyph| glyph.source.start().get())
-            .collect()
-    };
-
     assert_eq!(
         mapped("ab\ncd"),
         vec![0, 1, 3, 4],
@@ -498,8 +486,113 @@ fn a_newline_gets_no_glyph_and_trailing_spaces_do() {
     );
 
     // And the layout still reports two lines, so the newline does its work without a glyph.
-    let layout = text
-        .layout(&[run("ab\ncd", TextStyle::body(16.0))], 1000.0)
-        .unwrap();
-    assert_eq!(layout.lines.len(), 2, "a newline should still break a line");
+    assert_eq!(lines("ab\ncd"), 2, "a newline should still break a line");
+}
+
+/// **No line terminator gets a glyph — `\n`, `\r` and `\r\n` alike — and each ends a line.**
+///
+/// [`a_newline_gets_no_glyph_and_trailing_spaces_do`] measured only `\n`, and the `\r` half is what
+/// `view::ending_before` was really living on: the stub used to shape a `\r` like any other
+/// character, so the offset past a row's last glyph landed *inside* a CRLF and reading the ending
+/// forward from it gave `Lf` for a line that ends `\r\n`. Backing up over `\r` and `\n` hid that.
+///
+/// With this measured and the stub corrected to match, the offset past a row's last glyph is always
+/// the offset *of* its terminator, on both backends, and `view::ending_at` is the whole answer.
+#[test]
+fn no_terminator_gets_a_glyph() {
+    assert_eq!(
+        mapped("ab\r\ncd"),
+        vec![0, 1, 4, 5],
+        "CRLF should be absent"
+    );
+    assert_eq!(
+        mapped("ab\rcd"),
+        vec![0, 1, 3, 4],
+        "a lone CR should be absent"
+    );
+    assert_eq!(
+        mapped("ab \r\ncd"),
+        vec![0, 1, 2, 5, 6],
+        "a space before a CRLF should be shaped and the CRLF should not"
+    );
+    assert!(mapped("\r\n").is_empty(), "a lone CRLF lays out to nothing");
+    assert!(mapped("\r").is_empty(), "a lone CR lays out to nothing");
+
+    for source in ["ab\ncd", "ab\r\ncd", "ab\rcd"] {
+        assert_eq!(
+            lines(source),
+            2,
+            "{source:?} should break a line without a glyph"
+        );
+    }
+}
+
+/// **A tab is a layout feature, not a glyph, and a C0 control is dropped outright.**
+///
+/// Both are measured here because Show Whitespace (MDEDIT-46) draws its marks *into the cells the
+/// layout gave*, and neither of these has a cell:
+///
+/// ```text
+/// "a\tb"     -> glyphs at [0, 2], the 'b' at x = 64      a tab advances to a 64 px stop
+/// "a\t\tb"   -> glyphs at [0, 3], the 'b' at x = 128     and stacks
+/// "a\u{1}b"  -> glyphs at [0, 2], the 'b' where it would be in "ab"   zero advance
+/// ```
+///
+/// The tab is rendered correctly — it is the *advance* that carries it, which is why nobody noticed.
+/// What it means is that the arrow and the control pictures cannot be stamped from the glyph list on
+/// Windows, and only reach the screen at all when they trail a row and the whitespace walk picks
+/// them out of the text. **MDEDIT-124 carries the hole**; this test is here so it is a measured fact
+/// rather than a belief, which is the mistake MDEDIT-113 exists to correct.
+///
+/// The headless stub deliberately still shapes both, so the marking tests have cells to assert
+/// against. That divergence is on MDEDIT-124 too.
+#[test]
+fn a_tab_and_a_control_get_no_glyph_either() {
+    assert_eq!(mapped("a\tb"), vec![0, 2], "a tab should not be shaped");
+    assert_eq!(mapped("ab\t"), vec![0, 1], "nor a trailing one");
+    assert_eq!(
+        mapped("ab\u{1}c"),
+        vec![0, 1, 3],
+        "nor a C0 control character"
+    );
+    assert_eq!(mapped("ab\u{7f}c"), vec![0, 1, 3], "nor DEL");
+
+    let plain = advance_of_last("ab");
+    assert!(
+        (advance_of_last("a\u{1}b") - plain).abs() < 0.01,
+        "a control should take no width: {} against {plain}",
+        advance_of_last("a\u{1}b")
+    );
+    assert!(
+        advance_of_last("a\tb") >= 64.0,
+        "a tab should advance to a stop rather than to a glyph width: {}",
+        advance_of_last("a\tb")
+    );
+}
+
+fn mapped(source: &str) -> Vec<usize> {
+    laid_out(source)
+        .glyphs()
+        .map(|glyph| glyph.source.start().get())
+        .collect()
+}
+
+fn lines(source: &str) -> usize {
+    laid_out(source).lines.len()
+}
+
+/// Where the last glyph sits, which is what says whether what came before it took any width.
+fn advance_of_last(source: &str) -> f32 {
+    laid_out(source)
+        .glyphs()
+        .last()
+        .expect("these sources all shape something")
+        .pos
+        .x
+}
+
+fn laid_out(source: &str) -> mdedit_text::Layout {
+    engine()
+        .layout(&[run(source, TextStyle::body(16.0))], 1000.0)
+        .unwrap()
 }

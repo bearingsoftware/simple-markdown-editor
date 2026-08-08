@@ -911,28 +911,15 @@ impl Ending {
     }
 }
 
-/// The line ending a row ends with, given the offset just past its last glyph.
-///
-/// # Why this is not just [`ending_at`]
-///
-/// **Whether the terminator has a glyph of its own depends on the text engine.** DirectWrite gives
-/// `\n` a zero-width glyph and the headless test stub does not, so `after` is sometimes the offset
-/// *of* the newline and sometimes the offset *past* it. Backing up over any `\r` and `\n` before
-/// `after` answers both, and can swallow nothing else, because those are the only two bytes it will
-/// step over.
-///
-/// This was found by looking at the window: every paragraph row lost its mark on the real backend
-/// while every test passed on the stub.
-#[must_use]
-pub fn ending_before(text: &str, after: usize) -> Option<Ending> {
-    let mut at = after.min(text.len());
-    while at > 0 && matches!(text.as_bytes()[at - 1], b'\r' | b'\n') {
-        at -= 1;
-    }
-    ending_at(text, at)
-}
-
 /// The line ending starting at `at`, if there is one there.
+///
+/// # No backend gives a terminator a glyph
+///
+/// This used to be reached through an `ending_before`, which backed up over any `\r` and `\n` before
+/// the offset because DirectWrite was believed to give `\n` "a glyph of its own" and the stub was
+/// known not to. MDEDIT-113 measured it: `"ab\ncd"`, `"ab\rcd"` and `"ab\r\ncd"` each lay out to two
+/// lines and four glyphs, none of them the terminator. The stub now agrees, so the offset past a
+/// row's last glyph is always the offset *of* its ending and the backing-up had nothing left to do.
 #[must_use]
 pub fn ending_at(text: &str, at: usize) -> Option<Ending> {
     let rest = text.get(at..)?;
