@@ -76,16 +76,11 @@ static NEVER: NeverConceals = NeverConceals;
 fn a_language_that_never_conceals_reveals_every_segment() {
     let source = "# Title\n\nbody text\n";
 
-    let mut markdown = Document::from(source);
-    // Away from the heading, or its `#` is revealed by the caret touching it and the control case
-    // conceals nothing.
-    markdown.set_selection(mdedit_document::Selection::caret(ByteOffset::new(
-        source.find("body").unwrap(),
-    )));
+    let markdown = Document::from(source);
     let concealed = markdown
         .segments()
         .iter()
-        .filter(|segment| !markdown.is_revealed(segment, markdown.selection()))
+        .filter(|segment| !markdown.is_revealed(segment))
         .count();
     assert!(
         concealed > 0,
@@ -98,8 +93,8 @@ fn a_language_that_never_conceals_reveals_every_segment() {
         other
             .segments()
             .iter()
-            .all(|segment| other.is_revealed(segment, other.selection())),
-        "a language that does not conceal must reveal everything, wherever the caret is"
+            .all(|segment| other.is_revealed(segment)),
+        "a language that does not conceal must reveal everything"
     );
 }
 

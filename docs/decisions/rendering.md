@@ -5,6 +5,46 @@ The two palettes and the roles in them, how Markdown syntax is concealed and col
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
 
+- **Preview shows no syntax at all, including under the caret.** MDEDIT-118, and it overturns the
+  rule the editor was built on. `Document::is_revealed` used to be reveal-on-caret, modelled on
+  Typora: a marker concealed until the selection came near it, then shown dimmed so it could be
+  edited in place. Its own doc comment called that "the whole live-preview illusion".
+
+  The illusion is better without it. A heading is large text, and what says *which* heading it is is
+  the caret's own height — `caret_position` already takes that from the laid-out row, so the cue cost
+  nothing to build. Syntax that appears as you approach and vanishes as you leave is a fourth thing
+  on screen that moves on its own. `Ctrl+/` (plain markup) is the escape hatch and is unchanged; it
+  is now the **only** mode that draws a marker, which is where a test asserting a marker's colour or
+  slant has to go.
+
+  **The predicate no longer takes a `Selection`, and neither does `view::build_runs`.** Leaving an
+  unread parameter would have read as a dependency that is not there, and this one has a consequence:
+  what a chunk draws is now a function of its bytes, its kind and the width — exactly the layout
+  cache's key. So **the caret's own chunk is cached like every other**, and the one chunk that is
+  laid out on every keystroke stopped being.
+
+  **What it cost is that markers stopped being editable in place**, and that is why the ticket is
+  three changes rather than one — shipping the concealment alone would have given an editor whose
+  headings could not be un-headed:
+
+  - `Document::concealed_at` answers "is the caret standing in something invisible", by binary search
+    over the segments. Half-open, so the position *after* a marker — the one the caret rests at, and
+    the one Backspace acts from — is not in it.
+  - **A position inside a concealed marker is not a place the caret may be.** Bytes 0, 1 and 2 of
+    `# Title` are all the same x, so Left and Right normalise through the whole marker before and
+    after stepping. Right from a line's start lands after the first letter; Left from that letter
+    lands at the end of the line above, because a marker's *start* is as unreachable as its middle.
+  - **Backspace and Delete take a concealed marker whole**, in one transaction so one Ctrl+Z restores
+    every byte. Half of an invisible `**` left behind is two asterisks appearing from nowhere.
+
+  Two things were checked rather than assumed, and both held: the caret already grows with the
+  heading, and concealed markers were already absent from the laid-out text, so hit-testing needed no
+  change.
+
+  Copy is unchanged and carries the **source** bytes — `# Title`, not `Title`. Byte preservation
+  points that way and the alternative is a second serializer by the back door. It is the decision
+  here most likely to surprise somebody, which is why it is written down.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage

@@ -392,33 +392,34 @@ fn identical_blocks_in_different_places_draw_in_different_places() {
     );
 }
 
-/// Concealment is the document's answer, not the renderer's, and a chunk boundary must not change
-/// it. A fence reveals its `` ``` `` from anywhere inside the block — including when the caret's line is
-/// off screen, since the fence is one chunk.
+/// Concealment is the document's answer, not the renderer's, and **since MDEDIT-118 it is not the
+/// caret's either**. A fence keeps its `` ``` `` hidden from every caret position, including from
+/// inside the block, which is where it used to reveal them.
+///
+/// Asserted through whole frames rather than through the predicate, because the thing that could go
+/// wrong here is a cache: the caret's chunk is now cached like any other, so a frame built with the
+/// caret in the fence and a frame built with it elsewhere must be **identical**, not merely similar.
+/// Equality is what says the cached entry was the right one to serve.
 #[test]
-fn a_fence_reveals_its_markers_from_anywhere_inside_it() {
+fn a_fence_keeps_its_markers_hidden_from_every_caret() {
     let source = "before\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n\nafter\n";
-    let caret = source.find("let b").expect("the second line of the fence");
 
-    let mut editor = Editor::new(source, Grid::new());
-    editor
-        .document_mut()
-        .set_selection(Selection::caret(ByteOffset::new(caret)));
-    let quads = editor.build_frame(WIDTH, 2000.0, 1.0);
+    let baseline = {
+        let mut editor = Editor::new(source, Grid::new());
+        editor.build_frame(WIDTH, 2000.0, 1.0).len()
+    };
 
-    // The stub draws one glyph per character, so counting quads counts drawn characters. With the
-    // fences revealed there are six more than with them concealed.
-    let revealed = quads.len();
-
-    let mut away = Editor::new(source, Grid::new());
-    away.document_mut()
-        .set_selection(Selection::caret(ByteOffset::new(0)));
-    let concealed = away.build_frame(WIDTH, 2000.0, 1.0).len();
-
-    assert!(
-        revealed > concealed,
-        "the fence markers should be drawn when the caret is inside the block: {revealed} vs {concealed}"
-    );
+    for caret in [0, source.find("let b").expect("the fence's second line")] {
+        let mut editor = Editor::new(source, Grid::new());
+        editor
+            .document_mut()
+            .set_selection(Selection::caret(ByteOffset::new(caret)));
+        assert_eq!(
+            editor.build_frame(WIDTH, 2000.0, 1.0).len(),
+            baseline,
+            "the caret at {caret} changed what was drawn"
+        );
+    }
 }
 
 /// Chunks are laid out separately and stacked, so the arithmetic that joins them has to produce

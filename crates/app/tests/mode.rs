@@ -22,13 +22,12 @@ const WIDTH: f32 = 400.0;
 const HEIGHT: f32 = MARGIN + 400.0;
 
 /// Everything the decoration step would draw, as one string.
-fn drawn(source: &str, mode: Mode, caret: usize) -> String {
+fn drawn(source: &str, mode: Mode) -> String {
     let doc = Document::from(source);
     let theme = Theme::default();
     let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len()));
     build_runs_in(
         &doc,
-        Selection::caret(ByteOffset::new(caret)),
         Decoration {
             theme: &theme,
             mode,
@@ -52,7 +51,7 @@ fn plain_mode_draws_the_source_byte_for_byte() {
         "Text with 日本語 and an emoji 🦀.\n",
     ] {
         assert_eq!(
-            drawn(source, Mode::Plain, source.len()),
+            drawn(source, Mode::Plain),
             source,
             "plain mode dropped or added something in {source:?}"
         );
@@ -63,13 +62,13 @@ fn plain_mode_draws_the_source_byte_for_byte() {
 #[test]
 fn plain_mode_shows_markers_the_caret_is_nowhere_near() {
     let source = "# Heading\n\nSome **bold** text.\n";
-    assert_eq!(drawn(source, Mode::Plain, 0), source);
+    assert_eq!(drawn(source, Mode::Plain), source);
 }
 
 #[test]
 fn preview_mode_still_conceals() {
     let source = "# Heading\n\nSome **bold** text.\n";
-    let previewed = drawn(source, Mode::Preview, source.len());
+    let previewed = drawn(source, Mode::Preview);
 
     assert!(
         !previewed.contains("**"),
@@ -88,7 +87,6 @@ fn plain_mode_uses_one_size_and_weight_throughout() {
 
     let runs = build_runs_in(
         &doc,
-        Selection::caret(ByteOffset::ZERO),
         Decoration {
             theme: &theme,
             mode: Mode::Plain,
@@ -130,7 +128,6 @@ fn preview_mode_still_sizes_a_heading() {
 
     let runs = build_runs_in(
         &doc,
-        Selection::caret(ByteOffset::new(source.len())),
         Decoration {
             theme: &theme,
             mode: Mode::Preview,

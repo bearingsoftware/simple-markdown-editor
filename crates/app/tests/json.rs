@@ -89,7 +89,7 @@ fn nothing_in_a_json_file_is_ever_concealed() {
         document
             .segments()
             .iter()
-            .all(|segment| document.is_revealed(segment, document.selection())),
+            .all(|segment| document.is_revealed(segment)),
         "every segment has to be drawn, whatever the caret is near"
     );
 
@@ -192,7 +192,7 @@ fn a_yaml_file_opens_highlighted_and_never_concealed() {
         document
             .segments()
             .iter()
-            .all(|segment| document.is_revealed(segment, document.selection())),
+            .all(|segment| document.is_revealed(segment)),
         "every byte of a YAML file is on screen"
     );
 
