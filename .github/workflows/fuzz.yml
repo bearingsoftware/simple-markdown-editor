@@ -41,9 +41,15 @@ jobs:
     # defect that is neither ours nor reachable in the shipped editor. Blocking every pull request on
     # somebody else's unwrap is worse than not running it.
     #
+    # **`continue-on-error` alone did not do that**, which took three pull requests to notice: it
+    # keeps the workflow green and still publishes a *failing check*, and a failing check makes the
+    # pull request unmergeable. It found the panic on some runs and not others, so what it produced
+    # was an intermittently unmergeable branch. The swallow is in the Fuzz step below; this stays
+    # because it is the honest description of the job either way.
+    #
     # The cost is that a genuine marker-locator crash would also only report, which is why the
     # containment has a unit test of its own (`a_document_that_panics_the_parser_comes_back_as_content`)
-    # and why this line comes back the moment upstream lands a fix.
+    # and why both come back the moment upstream lands a fix.
     continue-on-error: ${{ matrix.target == 'markers_segment' }}
     strategy:
       # One failing target must not cancel the other three: which inputs the others found is the
@@ -84,15 +90,36 @@ jobs:
       # linked libc"), before the target is even installed. ASan is half the reason this job exists,
       # so the target that supports it is the one to build for.
       - name: Fuzz
+        id: fuzz
+        # **`markers_segment` reports as an annotation, not as a red check.** `continue-on-error`
+        # keeps the *workflow* green but still publishes a failing check, and a failing check makes
+        # the pull request unmergeable — which is the thing it was set to avoid. So that one target
+        # swallows its exit status here and writes a warning instead; every other target fails
+        # normally. See the job comment for why this one cannot be trusted to fail for our reasons.
+        #
+        # It is not silent: the artifact upload below is keyed off this rather than off `failure()`,
+        # so the crashing input is kept either way.
         run: |
+          set +e
           cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
             -max_total_time=${{ github.event_name == 'schedule' && 1800 || 300 }} \
             -max_len=16384
+          status=$?
+          set -e
+          echo "crashed=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ] && [ "${{ matrix.target }}" = "markers_segment" ]; then
+            echo "::warning title=markers_segment crashed::Almost certainly MDEDIT-114 — \
+              pulldown-cmark#1129, contained in the editor and invisible to libFuzzer. \
+              The input is in this run's artifacts; check it before assuming."
+            exit 0
+          fi
+          exit "$status"
 
       # A crash is worth more than the run that found it: without the input, the next person has a
-      # stack trace and no way to reproduce it.
+      # stack trace and no way to reproduce it. Keyed off the exit status rather than `failure()`,
+      # because `markers_segment` above deliberately does not fail.
       - name: Keep whatever crashed it
-        if: failure()
+        if: always() && steps.fuzz.outputs.crashed != '0'
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifacts-${{ matrix.target }}
