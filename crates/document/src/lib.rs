@@ -1058,77 +1058,58 @@ impl Selection {
 }
 
 impl Document {
-    /// Whether a segment's syntax should be shown, given where the caret is.
+    /// Whether a segment's syntax should be shown.
     ///
-    /// This predicate is the whole live-preview illusion: markers are concealed until the caret is
-    /// near them, then revealed so they can be edited. Content is always visible.
+    /// **In a language that conceals, a marker is never shown.** Content always is.
     ///
-    /// Two rules, because Typora has two and conflating them is the usual mistake:
+    /// # This used to depend on the caret, and MDEDIT-118 took that out
     ///
-    /// - **Inline** markers reveal when the selection meets the marker's own span. A *caret* has no
-    ///   width, so adjacency counts: resting immediately either side of `**` reveals it, and you can
-    ///   delete a delimiter you have just typed past. A *range* selection must genuinely overlap —
-    ///   selecting the word inside `**bold**` should not light up delimiters it does not contain.
-    /// - **Block** markers reveal when the selection is on any line the marker's block occupies, so
-    ///   `## ` stays visible while you edit the heading text rather than vanishing under the cursor.
+    /// It was reveal-on-caret, modelled on Typora: markers concealed until the selection was near
+    /// them, then shown dimmed so they could be edited in place. Two rules, one for inline markers
+    /// and one for block markers, and the doc comment here called the pair "the whole live-preview
+    /// illusion".
     ///
-    /// Total: out-of-range selections are clamped rather than rejected, because a stale caret should
-    /// not be able to crash a render.
+    /// The illusion is better without it. A heading is large text, and what says *which* heading is
+    /// the caret's own height — it already takes that from the laid-out row, so the cue costs
+    /// nothing. Syntax that appears when you approach it and vanishes when you leave is a fourth
+    /// thing on screen that moves on its own.
     ///
-    /// # Known approximation
+    /// **What it cost is that markers stopped being editable in place**, which is why that ticket is
+    /// three changes and not one: [`Document::concealed_at`] exists so the caret can step over what
+    /// it cannot see, and Backspace against a concealed marker takes the whole of it.
     ///
-    /// [`mdedit_markers`] reports marker spans but not block extents, so "the block" is approximated
-    /// by "the line". That is exact for headings, block quotes and list items, whose markers sit on
-    /// every line they affect. It is wrong for a multi-line fenced code block: its fences reveal only
-    /// when the caret is on a fence line, where Typora would show them from anywhere inside.
+    /// A language that never conceals reveals everything, always. That is the whole of the
+    /// colour-only rendering model: JSON's braces and quotes *are* the document, and YAML's
+    /// indentation is load-bearing, so hiding either produces something that cannot be edited back
+    /// into itself.
     #[must_use]
-    pub fn is_revealed(&self, segment: &Segment, selection: Selection) -> bool {
-        // A language that never conceals reveals everything, always. That is the whole of the
-        // colour-only rendering model: JSON's braces and quotes *are* the document, and YAML's
-        // indentation is load-bearing, so hiding either produces something that cannot be edited
-        // back into itself.
-        if !self.language.conceals() {
-            return true;
-        }
-
-        let SegmentKind::Marker(marker) = segment.kind() else {
-            return true;
-        };
-
-        let seg = segment.span();
-        let sel = selection.span();
-
-        if marker.is_block() {
-            // A fence is the one block marker that does not repeat on the lines it governs: ``` at
-            // the top, ``` at the bottom, and nothing in between. So its reveal extent is the whole
-            // block, which is what MDEDIT-12 added block extents for.
-            //
-            // Every other block marker — `>`, a bullet, an indent — is written on each line it
-            // affects, so the line is already the exact extent. Widening those to the block would
-            // reveal twenty `>` because the caret is on the first line, which is worse than the
-            // approximation it replaced.
-            if let Some(block) = self.code_block_at(seg.start()) {
-                return sel.touches(block.span());
-            }
-            let marker_lines = self.line_span(seg);
-            let caret_lines = self.line_span(sel);
-            marker_lines.start <= caret_lines.end && caret_lines.start <= marker_lines.end
-        } else if selection.is_collapsed() {
-            // Inclusive, so a caret touching either edge counts as inside.
-            sel.touches(seg)
-        } else {
-            sel.overlaps(seg)
-        }
+    pub fn is_revealed(&self, segment: &Segment) -> bool {
+        !self.language.conceals() || !matches!(segment.kind(), SegmentKind::Marker(_))
     }
 
-    /// The inclusive range of line indices a byte span covers.
+    /// The concealed marker span covering `offset`, if the caret is standing in one.
     ///
-    /// A `Range<LineIndex>` needs no span type of its own: nothing is ever indexed by a line range,
-    /// so the orphan-rule problem that [`ByteSpan`] exists to solve does not arise.
-    fn line_span(&self, span: ByteSpan) -> Range<LineIndex> {
-        let len = self.len_bytes();
-        let start = self.text.byte_to_line(span.start().get().min(len));
-        let end = self.text.byte_to_line(span.end().get().min(len));
-        LineIndex::new(start)..LineIndex::new(end)
+    /// Half-open on purpose — `start <= offset < end` — so the position *after* a marker is not in
+    /// it. That is the position the caret is meant to rest at, and the one Backspace acts from.
+    ///
+    /// # Why the caret needs this at all
+    ///
+    /// With nothing revealed, the bytes of `# ` draw nowhere and offsets 0, 1 and 2 are all the same
+    /// x. Left and Right through them look like a key that does nothing, twice. So the caret treats
+    /// a concealed marker as a single crossing rather than as its bytes, and this is what it asks.
+    ///
+    /// Binary search over the segments, which tile the buffer in order, because this is asked on
+    /// every arrow key and every Backspace.
+    #[must_use]
+    pub fn concealed_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        if !self.language.conceals() {
+            return None;
+        }
+        let after = self
+            .segments
+            .partition_point(|segment| segment.span().start() <= offset);
+        let segment = self.segments[..after].last()?;
+        let span = segment.span();
+        (matches!(segment.kind(), SegmentKind::Marker(_)) && offset < span.end()).then_some(span)
     }
 }

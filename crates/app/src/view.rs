@@ -20,7 +20,7 @@
 //! own rules pair delimiters within a line, so the state resets at every newline; without that an
 //! unterminated `**` would embolden the rest of the file.
 
-use mdedit_document::{Document, Selection};
+use mdedit_document::Document;
 use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{StyledRun, TextStyle};
@@ -451,23 +451,24 @@ impl DecorState {
     }
 }
 
-/// Builds the runs to draw for `doc` with the caret at `selection`.
+/// Builds the runs to draw for `doc`.
 ///
 /// Concealed markers are absent from the output entirely — not empty runs, not spaces. That is what
 /// makes the rendered text read as prose rather than as source.
+///
+/// **This does not depend on where the caret is**, and used to. MDEDIT-118 took reveal-on-caret out,
+/// so what is drawn is now a function of the document and the mode alone. The `Selection` parameter
+/// went with it rather than being left unread, because a parameter nothing looks at reads as a
+/// dependency that is not there — and this one has a consequence: a chunk holding the caret no
+/// longer draws differently from the same chunk without it.
 #[must_use]
-pub fn build_runs<'t>(
-    doc: &Document,
-    selection: Selection,
-    theme: &Theme,
-    text: &'t str,
-) -> Vec<ViewRun<'t>> {
+pub fn build_runs<'t>(doc: &Document, theme: &Theme, text: &'t str) -> Vec<ViewRun<'t>> {
     let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(doc.len_bytes()));
     let decoration = Decoration {
         theme,
         mode: Mode::Preview,
     };
-    build_runs_in(doc, selection, decoration, whole, text)
+    build_runs_in(doc, decoration, whole, text)
 }
 
 /// The runs to draw for the part of `doc` covered by `within`.
@@ -481,7 +482,6 @@ pub fn build_runs<'t>(
 #[must_use]
 pub fn build_runs_in<'t>(
     doc: &Document,
-    selection: Selection,
     decoration: Decoration<'_>,
     within: ByteSpan,
     text: &'t str,
@@ -510,10 +510,10 @@ pub fn build_runs_in<'t>(
             continue;
         };
         let piece = span.slice(text);
-        // Asked of the real selection, not a chunk-local one: whether a marker is revealed is a
-        // property of the document, and a caret just outside this chunk can still reveal one in it.
-        // In plain mode nothing is concealed, so there is nothing to ask.
-        let revealed = decoration.mode == Mode::Plain || doc.is_revealed(segment, selection);
+        // In plain mode nothing is concealed, so there is nothing to ask. In preview the answer no
+        // longer depends on the caret at all (MDEDIT-118) — it is the language's, not the
+        // selection's.
+        let revealed = decoration.mode == Mode::Plain || doc.is_revealed(segment);
 
         match segment.kind() {
             SegmentKind::Marker(marker) => {

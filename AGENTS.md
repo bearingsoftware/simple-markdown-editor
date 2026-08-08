@@ -64,7 +64,7 @@ crates/yaml/          # The same for YAML, hand-written — read its crate docs 
                       #   parser crate
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
-crates/document/      # Rope buffer, selection, reveal predicate, heading trail, word and line
+crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line
                       #   extents, undo transactions, many-site replace, inline formatting toggles
 crates/text/          # The text-layout trait. No platform types cross it
 crates/text-dwrite/   # DirectWrite backend. Windows-only; one of three crates allowed `unsafe`
@@ -194,8 +194,12 @@ benchmarks and why each job runs where it does.
 - Make the **renderer** incremental, not the parser. Diff the block list, patch changed blocks.
 - **The layout cache is keyed by content, never by position.** `BlockId` is an index into one
   analysis, so a cache keyed on it would serve the wrong layout for everything below an edit. The key
-  is a hash of the block's bytes plus its kind and the wrapping width. A block holding the caret is
-  laid out fresh and never cached.
+  is a hash of the block's bytes plus its kind and the wrapping width. The block holding the caret is
+  cached like any other — it was not until MDEDIT-118, because reveal-on-caret made what it drew
+  depend on a caret the key does not carry.
+- **Preview draws no Markdown syntax at all, including under the caret** (MDEDIT-118). So a marker is
+  not editable in place, and the caret steps over a concealed one rather than through its bytes.
+  `Ctrl+/` is the escape hatch and the only mode that draws a marker.
 - **All chrome draws after the document**, and there is no depth buffer or scissor — painter's order
   is the whole of the answer. See [`docs/decisions/chrome.md`](docs/decisions/chrome.md), which also
   holds the z-order rules for the panels that are hit-tested.

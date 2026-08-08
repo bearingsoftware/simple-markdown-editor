@@ -2797,54 +2797,14 @@ impl<T: TextLayout> Editor<T> {
             return self.close_find() || dismissed;
         }
 
-        let caret = self.document().selection().head();
         // Shift with a motion key drags the selection along instead of collapsing it.
         let extend = self.modifiers.shift_key();
 
         match &event.logical_key {
-            Key::Named(NamedKey::Backspace) => {
-                // With something selected, Backspace removes the selection rather than the character
-                // before it — which is also what makes it one edit and one undo step.
-                if self.delete_selection() {
-                    return true;
-                }
-                if caret == ByteOffset::ZERO {
-                    return false;
-                }
-                let previous = self.previous_boundary(caret);
-                if self
-                    .document_mut()
-                    .delete(ByteSpan::new(previous, caret))
-                    .is_err()
-                {
-                    return false;
-                }
-                // `delete` already leaves the caret at the start of what it removed.
-                true
-            }
-            Key::Named(NamedKey::Delete) if self.delete_selection() => true,
-            Key::Named(NamedKey::Delete) => {
-                let next = self.next_boundary(caret);
-                if next == caret
-                    || self
-                        .document_mut()
-                        .delete(ByteSpan::new(caret, next))
-                        .is_err()
-                {
-                    return false;
-                }
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                let target = self.previous_boundary(caret);
-                self.select(target, extend);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                let target = self.next_boundary(caret);
-                self.select(target, extend);
-                true
-            }
+            Key::Named(NamedKey::Backspace) => self.press_backspace(),
+            Key::Named(NamedKey::Delete) => self.press_delete(),
+            Key::Named(NamedKey::ArrowLeft) => self.press_left(extend),
+            Key::Named(NamedKey::ArrowRight) => self.press_right(extend),
             Key::Named(NamedKey::ArrowUp) => self.move_vertically(false, extend),
             Key::Named(NamedKey::ArrowDown) => self.move_vertically(true, extend),
             Key::Named(NamedKey::Home) => {
@@ -3141,6 +3101,140 @@ impl<T: TextLayout> Editor<T> {
                 return ByteOffset::new(index);
             }
         }
+    }
+
+    /// Backspace against the document.
+    ///
+    /// **A concealed marker goes whole.** With nothing revealed (MDEDIT-118) the bytes of `## ` are
+    /// not on screen, so removing one of them is a keystroke with no visible effect and then, two
+    /// presses later, a heading that suddenly is not one. The only meaning Backspace has against
+    /// bytes nobody can see is "this is not a heading any more" — one `delete`, so one Ctrl+Z puts
+    /// every byte back.
+    ///
+    /// Split out of the key handler to be callable by a test, for the reason [`Self::apply_chord`]
+    /// gives: a winit `KeyEvent` carries a private platform field and cannot be constructed. Without
+    /// this the whole of MDEDIT-118's editing half would be unreachable from a test.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn press_backspace(&mut self) -> bool {
+        // With something selected, Backspace removes the selection rather than the character before
+        // it — which is also what makes it one edit and one undo step.
+        if self.delete_selection() {
+            return true;
+        }
+        let caret = self.document().selection().head();
+        if caret == ByteOffset::ZERO {
+            return false;
+        }
+        let span = self
+            .concealed_before(caret)
+            .unwrap_or_else(|| ByteSpan::new(self.previous_boundary(caret), caret));
+        // `delete` already leaves the caret at the start of what it removed.
+        self.document_mut().delete(span).is_ok()
+    }
+
+    /// Forward delete, whole concealed markers included.
+    ///
+    /// The same rule as [`Self::press_backspace`] and for the same reason: half of an invisible `**`
+    /// left behind becomes two asterisks that appear from nowhere.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn press_delete(&mut self) -> bool {
+        if self.delete_selection() {
+            return true;
+        }
+        let caret = self.document().selection().head();
+        let span = self
+            .concealed_after(caret)
+            .unwrap_or_else(|| ByteSpan::new(caret, self.next_boundary(caret)));
+        !span.is_empty() && self.document_mut().delete(span).is_ok()
+    }
+
+    /// Left arrow, with `extend` for Shift.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn press_left(&mut self, extend: bool) -> bool {
+        let target = self.caret_before(self.document().selection().head());
+        self.select(target, extend);
+        true
+    }
+
+    /// Right arrow, with `extend` for Shift.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn press_right(&mut self, extend: bool) -> bool {
+        let target = self.caret_after(self.document().selection().head());
+        self.select(target, extend);
+        true
+    }
+
+    /// `offset`, moved past any concealed marker it is standing in.
+    ///
+    /// # The invariant the caret keeps
+    ///
+    /// With nothing revealed (MDEDIT-118) the bytes of `# ` draw nowhere, so offsets 0, 1 and 2 in
+    /// `# Title` are all the same x. **A position inside a concealed marker is therefore not a place
+    /// the caret may be**, and every motion normalises through here before and after it steps —
+    /// otherwise Right from the line's start would land on the marker's far edge, which is the same
+    /// pixel it started at, and read as a key that did nothing.
+    ///
+    /// The loop is a loop because two markers can abut with no content between them: `> ` and the
+    /// backtick in ``> `code` `` are separate segments.
+    fn past_concealed(&self, offset: ByteOffset) -> ByteOffset {
+        let mut at = offset;
+        while let Some(span) = self.document().concealed_at(at) {
+            at = span.end();
+        }
+        at
+    }
+
+    /// Where the caret goes from `offset` on Right.
+    fn caret_after(&self, offset: ByteOffset) -> ByteOffset {
+        let from = self.past_concealed(offset);
+        self.past_concealed(self.next_boundary(from))
+    }
+
+    /// Where the caret goes from `offset` on Left.
+    ///
+    /// The mirror of [`Self::caret_after`], with one asymmetry worth stating: a marker's *start* is
+    /// as unreachable as its middle, because it draws at the same x as its end. Going left from the
+    /// first letter of `# Title` therefore lands **at the end of the previous line**, not at byte 0,
+    /// which is what a reader means by pressing Left at the start of a heading.
+    ///
+    /// When there is no previous line — the marker starts the document — there is nowhere further
+    /// left to go, so Left is a no-op. That is the answer Left gives at the start of any document;
+    /// it just arrives at it two bytes early.
+    fn caret_before(&self, offset: ByteOffset) -> ByteOffset {
+        let from = self.past_concealed(offset);
+        let mut at = self.previous_boundary(from);
+        while let Some(span) = self.document().concealed_at(at) {
+            if span.start() == ByteOffset::ZERO {
+                return from;
+            }
+            at = self.previous_boundary(span.start());
+        }
+        at
+    }
+
+    /// The concealed marker the caret is standing immediately after, if any.
+    ///
+    /// What Backspace deletes instead of one character. Its whole span, in one edit and one undo
+    /// step, because the bytes are invisible and taking them off one at a time would be a key that
+    /// does nothing until it suddenly does something.
+    fn concealed_before(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        if offset == ByteOffset::ZERO {
+            return None;
+        }
+        self.document().concealed_at(self.previous_boundary(offset))
+    }
+
+    /// The concealed marker the caret is standing immediately before, if any.
+    ///
+    /// Delete's counterpart to [`Self::concealed_before`], and it is here for the same reason: a
+    /// forward delete that took one byte of an invisible `**` would leave the other one behind as
+    /// text, which is a worse answer than either taking all of it or none.
+    fn concealed_after(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        self.document().concealed_at(offset)
     }
 
     /// Moves the view by whole pages, against whatever the last frame measured.
@@ -6629,13 +6723,8 @@ impl<T: TextLayout> Editor<T> {
 
             // Runs are rebuilt rather than stored with the layout: they are cheap for one chunk, and
             // keeping them would mean holding a `String` per run for every chunk ever measured.
-            let runs = view::build_runs_in(
-                self.document(),
-                frame.selection,
-                self.decoration(),
-                chunk.span,
-                &frame.text,
-            );
+            let runs =
+                view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
             let chunk_top = frame.tops[index];
             let drawn = cached.drawn_lines();
             quads.reserve(
@@ -7712,30 +7801,28 @@ impl<T: TextLayout> Editor<T> {
 
     /// Lays a chunk out, from the cache when it is there and from the text engine when it is not.
     ///
-    /// A chunk holding the caret is laid out fresh and not stored: what it draws depends on where in
-    /// it the caret sits, which is not in the key, so caching it would serve the wrong glyphs to the
-    /// next keystroke.
+    /// # The caret's own chunk is cached like any other, and used not to be
+    ///
+    /// It was laid out fresh every frame because what it drew depended on where in it the caret sat
+    /// — reveal-on-caret put the marker bytes back into the text — and the caret is not in the key,
+    /// so a cached entry would have served the wrong glyphs to the next keystroke.
+    ///
+    /// MDEDIT-118 removed that dependency: what is drawn is now a function of the bytes, the kind
+    /// and the width, which is exactly what the key already is. So the chunk being typed in — the
+    /// one chunk that is laid out on every single keystroke — is the one this now stops re-laying
+    /// out.
     fn lay_out(&mut self, index: usize, frame: &Frame) -> Option<Rc<Cached>> {
         if let Some(cached) = frame.fresh_at(index) {
             return Some(cached);
         }
         let chunk = frame.chunks[index];
         let key = frame.keys[index];
-        let revealed = touches(chunk.span, frame.selection.span());
-        if !revealed {
-            if let Some(cached) = self.layouts.get(&key) {
-                return Some(Rc::clone(cached));
-            }
+        if let Some(cached) = self.layouts.get(&key) {
+            return Some(Rc::clone(cached));
         }
 
         let body = chunk.span.slice(&frame.text);
-        let runs = view::build_runs_in(
-            self.document(),
-            frame.selection,
-            self.decoration(),
-            chunk.span,
-            &frame.text,
-        );
+        let runs = view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
         let styled = view::as_styled(&runs);
         let mut layout = self.text.layout(&styled, frame.width).ok()?;
         // **An empty document is a document with one empty line**, and a text engine handed nothing
@@ -7763,16 +7850,14 @@ impl<T: TextLayout> Editor<T> {
         // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
         // along with the caches whose answers it was derived from.
         self.widest = self.widest.max(cached.width);
-        if !revealed {
-            // Layouts are the memory-hungry half — a glyph apiece — so they are capped and the
-            // whole lot dropped when the cap is hit. Heights are a float each and worth keeping:
-            // they are what stops the document's length jumping around as it is scrolled.
-            if self.layouts.len() >= MAX_CACHED_LAYOUTS {
-                self.layouts.clear();
-            }
-            self.layouts.insert(key, Rc::clone(&cached));
-            self.heights.insert(key, cached.height);
+        // Layouts are the memory-hungry half — a glyph apiece — so they are capped and the whole lot
+        // dropped when the cap is hit. Heights are a float each and worth keeping: they are what
+        // stops the document's length jumping around as it is scrolled.
+        if self.layouts.len() >= MAX_CACHED_LAYOUTS {
+            self.layouts.clear();
         }
+        self.layouts.insert(key, Rc::clone(&cached));
+        self.heights.insert(key, cached.height);
         Some(cached)
     }
 

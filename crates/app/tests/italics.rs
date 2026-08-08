@@ -9,8 +9,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use mdedit_app::view::{Decoration, Mode, Theme, build_runs, build_runs_in};
-use mdedit_document::{Document, Selection};
+use mdedit_app::view::{Decoration, Mode, Theme, build_runs_in};
+use mdedit_document::Document;
 use mdedit_language::Language;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 
@@ -27,8 +27,6 @@ fn slanted(source: &str, needle: &str, language: &'static dyn Language, mode: Mo
     };
     let runs = build_runs_in(
         &doc,
-        // Parked past the end, so nothing is revealed by proximity.
-        Selection::caret(ByteOffset::new(source.len())),
         decoration,
         ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
         source,
@@ -77,22 +75,27 @@ fn a_nested_quote_is_italic_and_what_follows_it_is_not() {
     assert!(!italic(source, "after"));
 }
 
-/// A revealed `>` is syntax, and syntax that slants reads as prose.
+/// A drawn `>` is syntax, and syntax that slants reads as prose.
+///
+/// **In plain markup**, which since MDEDIT-118 is the only place a marker is drawn at all. The claim
+/// is unchanged — it is where it can be asserted that moved.
 #[test]
 fn the_quote_marker_itself_is_not_italic() {
     let source = "> quoted\n";
     let doc = Document::from(source);
-    // Caret on the marker, which is what reveals it.
-    let runs = build_runs(
+    let runs = build_runs_in(
         &doc,
-        Selection::caret(ByteOffset::ZERO),
-        &Theme::default(),
+        Decoration {
+            theme: &Theme::default(),
+            mode: Mode::Plain,
+        },
+        ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
         source,
     );
     let marker = runs
         .iter()
         .find(|run| run.text.starts_with('>'))
-        .expect("the marker is revealed with the caret on it");
+        .expect("plain markup draws the marker");
     assert!(!marker.style.italic);
 }
 
