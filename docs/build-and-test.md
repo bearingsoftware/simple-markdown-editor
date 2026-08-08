@@ -117,3 +117,14 @@ behind it, and three of those were cases where the headless test stub *itself* w
 
 `crates/app/tests/icons.rs` is the one file that asks the real font stack rather than the stub, and it
 exists because measurement needs no window. Whether *rendering* needs one is MDEDIT-123.
+
+## One CI wrinkle worth knowing
+
+The mutants job installs `cargo-mutants` **only when it is not already on the runner**. `cache-bin`
+restores `~/.cargo/bin` between runs, and `cargo install` refuses to overwrite a binary it finds
+there — `binary 'cargo-mutants' already exists in destination`, exit 101. That put a red X on every
+pull request for a job whose whole point is to report rather than block, which is exactly the way to
+teach people to ignore it.
+
+`--force` would also fix it, by rebuilding from source every run. That is the cost the cache exists
+to avoid.
