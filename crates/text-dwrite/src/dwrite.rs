@@ -19,7 +19,7 @@ use std::rc::Rc;
 use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
 use mdedit_text::{
     FontFamily, FontId, FontSize, FontWeight, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine,
-    PositionedGlyph, StyledRun, TextError, TextLayout, TextStyle, Underline,
+    PositionedGlyph, Rule, RuleKind, StyledRun, TextError, TextLayout, TextStyle,
 };
 
 use windows::Win32::Foundation::E_INVALIDARG;
@@ -284,11 +284,12 @@ struct CollectedRun {
     right_to_left: bool,
 }
 
-/// One underline handed back by DirectWrite during `Draw`.
+/// One rule handed back by DirectWrite during `Draw`, under the text or through it.
 ///
-/// Wrapping is already applied: an underlined run crossing a row boundary arrives as one of these
-/// per row, which is what makes the rule follow the text rather than the run.
-struct CollectedUnderline {
+/// Wrapping is already applied: a ruled run crossing a row boundary arrives as one of these per
+/// row, which is what makes the rule follow the text rather than the run.
+struct CollectedRule {
+    kind: RuleKind,
     baseline_x: f32,
     baseline_y: f32,
     width: f32,
@@ -309,8 +310,8 @@ struct RunCollector {
     /// Shared with the caller rather than recovered by casting the COM object back afterwards —
     /// one `Rc` is cheaper to read than a downcast, and cannot fail.
     runs: Rc<RefCell<Vec<CollectedRun>>>,
-    /// The rules under whatever was asked for underlined, in the same way.
-    underlines: Rc<RefCell<Vec<CollectedUnderline>>>,
+    /// The rules under and through whatever was asked for them, in the same way.
+    rules: Rc<RefCell<Vec<CollectedRule>>>,
 }
 
 impl IDWritePixelSnapping_Impl for RunCollector_Impl {
@@ -439,7 +440,8 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
         // duration of the callback. Only the geometry fields are read, and none of them borrows.
         let rule = unsafe { &*underline };
 
-        self.this.underlines.borrow_mut().push(CollectedUnderline {
+        self.this.rules.borrow_mut().push(CollectedRule {
+            kind: RuleKind::Under,
             baseline_x,
             baseline_y,
             width: rule.width,
@@ -456,13 +458,37 @@ impl IDWriteTextRenderer_Impl for RunCollector_Impl {
     fn DrawStrikethrough(
         &self,
         _context: *const core::ffi::c_void,
-        _baseline_x: f32,
-        _baseline_y: f32,
-        _strikethrough: *const DWRITE_STRIKETHROUGH,
+        baseline_x: f32,
+        baseline_y: f32,
+        strikethrough: *const DWRITE_STRIKETHROUGH,
         _effect: Ref<'_, IUnknown>,
     ) -> windows_core::Result<()> {
-        // `~~struck~~` is decorated by the renderer from the marker spans, not by DirectWrite:
-        // the editor already knows exactly which bytes are struck.
+        // This was a no-op until MDEDIT-91, with a comment saying the renderer would decorate
+        // `~~struck~~` itself from the marker spans. It could have — but *where* the line sits and
+        // how thick it is are the font's answers, not the marker's, and the same argument that put
+        // `DrawUnderline` here applies unchanged. Doing it twice in two ways would have been the
+        // only difference.
+        if strikethrough.is_null() {
+            return Ok(());
+        }
+
+        // SAFETY: non-null checked, and DirectWrite guarantees the structure is valid for the
+        // duration of the callback. Only the geometry fields are read, and none of them borrows.
+        let rule = unsafe { &*strikethrough };
+
+        self.this.rules.borrow_mut().push(CollectedRule {
+            kind: RuleKind::Through,
+            baseline_x,
+            baseline_y,
+            width: rule.width,
+            thickness: rule.thickness,
+            // **Negative, where an underline's is positive.** Both are measured from the baseline
+            // downwards, and a strikethrough sits above it — so the arithmetic that places the two
+            // is the same and nothing here has to know which way it went.
+            offset: rule.offset,
+            right_to_left: rule.readingDirection == DWRITE_READING_DIRECTION_RIGHT_TO_LEFT,
+        });
+
         Ok(())
     }
 
@@ -557,6 +583,11 @@ impl TextLayout for DirectWriteText {
                         .SetUnderline(true, range)
                         .map_err(|e| platform_err("SetUnderline", &e))?;
                 }
+                if run.style.strikethrough {
+                    layout
+                        .SetStrikethrough(true, range)
+                        .map_err(|e| platform_err("SetStrikethrough", &e))?;
+                }
             }
 
             unit_cursor = unit_cursor.saturating_add(units);
@@ -566,7 +597,7 @@ impl TextLayout for DirectWriteText {
         let rules = Rc::new(RefCell::new(Vec::new()));
         let renderer: IDWriteTextRenderer = RunCollector {
             runs: Rc::clone(&collected),
-            underlines: Rc::clone(&rules),
+            rules: Rc::clone(&rules),
         }
         .into();
 
@@ -733,7 +764,7 @@ fn line_metrics(layout: &IDWriteTextLayout) -> Result<Vec<DWRITE_LINE_METRICS>, 
 /// Turns collected runs into lines of positioned glyphs.
 fn assemble(
     runs: Vec<CollectedRun>,
-    underlines: Vec<CollectedUnderline>,
+    rules: Vec<CollectedRule>,
     line_metrics: &[DWRITE_LINE_METRICS],
     source_map: &SourceMap,
     text: &mut DirectWriteText,
@@ -753,7 +784,7 @@ fn assemble(
             baseline: top + metrics.baseline,
             height: metrics.height,
             glyphs: Vec::new(),
-            underlines: Vec::new(),
+            rules: Vec::new(),
         });
         top += metrics.height;
     }
@@ -810,7 +841,7 @@ fn assemble(
     }
 
     // After the sort, because each rule is matched to the text under it by position.
-    for rule in underlines {
+    for rule in rules {
         let x = if rule.right_to_left {
             rule.baseline_x - rule.width
         } else {
@@ -826,7 +857,8 @@ fn assemble(
         let Some(source) = source_under(line, x, rule.width) else {
             continue;
         };
-        line.underlines.push(Underline {
+        line.rules.push(Rule {
+            kind: rule.kind,
             x,
             top: rule.baseline_y + rule.offset,
             width: rule.width,

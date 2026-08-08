@@ -160,6 +160,6 @@ fn new_line(row: usize) -> LayoutLine {
         baseline: row * LINE_HEIGHT + ASCENT,
         height: LINE_HEIGHT,
         glyphs: Vec::new(),
-        underlines: Vec::new(),
+        rules: Vec::new(),
     }
 }
