@@ -52,9 +52,8 @@ pub fn width_of(text_width: f32) -> f32 {
 /// about to click, and the pointer is on its way somewhere.
 ///
 /// Centred on the button and then clamped, so the rightmost button's panel does not hang off the
-/// window. `max` is applied last for the same reason [`crate::toolbar::place`] applies it last: in a
-/// window narrower than the panel the left edge wins, because text clipped at the right is readable
-/// from its start and text clipped at the left is not.
+/// window. `max` is applied last on purpose: in a window narrower than the panel the left edge wins,
+/// because text clipped at the right is readable from its start and text clipped at the left is not.
 #[must_use]
 pub fn place(width: f32, centre: f32, below: f32, right_edge: f32) -> (f32, f32) {
     let x = (centre - width / 2.0).min(right_edge - width).max(0.0);

@@ -9,14 +9,15 @@
 //! The right-click context menu is native, through muda. This is not, for three reasons. muda items
 //! cannot show the icons these rows need. A native popup cannot be driven by a test, and where a
 //! click lands is exactly the half of this worth asserting. And every other affordance the bar owns
-//! — the floating selection bar, MDEDIT-85's tooltip — is drawn by the editor, so a second *native*
-//! mechanism inside a component whose whole design is testable geometry would be the odd one out.
+//! — MDEDIT-85's tooltip, and the selection bar MDEDIT-119 removed — is drawn by the editor, so a
+//! second *native* mechanism inside a component whose design is testable geometry would be the odd
+//! one out.
 //!
 //! # It is a third z-order, and that is the risk
 //!
-//! The floating bar is drawn last and hit-tested **first**. The tooltip is drawn last and hit-tested
-//! **never**. A list is drawn after both and asked before both, and `Editor::click`'s order is the
-//! whole of that in either direction. Getting it wrong is a control nobody can press.
+//! The tooltip is drawn last and hit-tested **never**. A list is drawn after it and asked before
+//! everything, and `Editor::click`'s order is the whole of that in either direction. Getting it
+//! wrong is a control nobody can press — which it was, once.
 
 use crate::toolbar::Action;
 
@@ -68,9 +69,9 @@ pub fn width_of(widest_text: f32) -> f32 {
 /// rather than diagonally. The tooltip centres because it is a label about a thing; this is a
 /// continuation of it.
 ///
-/// Clamped so it never leaves the window, and `max` is applied last for the reason
-/// [`crate::toolbar::place`] gives: in a window narrower than the panel, the left edge wins, because
-/// text clipped at the right is readable from its start and text clipped at the left is not.
+/// Clamped so it never leaves the window, and `max` is applied last on purpose: in a window
+/// narrower than the panel the left edge wins, because text clipped at the right is readable from
+/// its start and text clipped at the left is not.
 #[must_use]
 pub fn place(width: f32, button_x: f32, below: f32, right_edge: f32) -> (f32, f32) {
     let x = button_x.min(right_edge - width).max(0.0);

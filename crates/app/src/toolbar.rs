@@ -105,8 +105,7 @@ pub enum Action {
     /// A heading of this level.
     ///
     /// On the *bar* this is [`Headings`](Self::Headings) — one button opening a list. This variant
-    /// is what that list's rows are, and what the floating selection bar and the chords still use
-    /// directly.
+    /// is what that list's rows are, and what the chords still use directly.
     Heading(u8),
     /// Opens the list of heading levels. **Not an edit.**
     ///
@@ -344,7 +343,7 @@ impl Action {
     ///
     /// [`Bold`](Self::Bold) is in the list because it is the first of the language's set, and the
     /// gap before it is the one that says where the standard set ends. [`layout`] suppresses a gap
-    /// before the *first* button, so the floating bar — which starts at Bold — is unaffected.
+    /// before the *first* button, so a set that begins at Bold is unaffected.
     #[must_use]
     fn starts_a_group(self) -> bool {
         matches!(
@@ -462,30 +461,6 @@ pub const MARKDOWN: &[Action] = &[
     Action::Link,
 ];
 
-/// The buttons the bar that follows a selection gets.
-///
-/// The inline set plus three heading levels — what somebody who has just selected a run of text
-/// plausibly wants done *to that text*. The list and block actions are on the fixed bar: they act on
-/// whole lines rather than on a selection, so offering them here would be a different operation
-/// wearing the same clothes. A selection bar full of document-level buttons is a category error, and
-/// the whole reason the two sets are separate constants rather than one.
-///
-/// [`STANDARD`] is not here either, and for a stronger version of the same argument: New and Save
-/// have no business floating over a paragraph the user has just highlighted.
-pub const SELECTION: &[Action] = &[
-    Action::Bold,
-    Action::Italic,
-    Action::Strikethrough,
-    Action::Code,
-    Action::Link,
-    Action::Heading(1),
-    Action::Heading(2),
-    Action::Heading(3),
-];
-
-/// Gap between the selection and the bar that floats over it.
-pub const FLOAT_GAP: f32 = 6.0;
-
 /// Where one button sits.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonRect {
@@ -552,7 +527,7 @@ pub struct Row {
 /// Lays the buttons out, and puts the ones that do not fit behind an overflow button.
 ///
 /// MDEDIT-116, and the difference from [`layout`] is the whole ticket: that one **stops at the
-/// edge**, which is correct for the floating bar and was silently losing controls on the fixed one.
+/// edge**, which was silently losing controls off the right-hand end.
 /// A window narrow enough to displace Link used to just not have Link.
 ///
 /// # Two things this has to get right
@@ -603,60 +578,6 @@ pub fn width_of(buttons: &[ButtonRect]) -> f32 {
     buttons
         .last()
         .map_or(0.0, |button| button.right() + PADDING)
-}
-
-/// The same buttons, moved right by `dx`.
-///
-/// [`layout`] measures from the bar's own left edge, which for the fixed bar is the window's. The
-/// floating one sits wherever the selection is, and shifting the rects once here is what lets
-/// [`hit_test`] stay a plain comparison against window coordinates rather than learn about origins.
-#[must_use]
-pub fn shifted(buttons: &[ButtonRect], dx: f32) -> Vec<ButtonRect> {
-    buttons
-        .iter()
-        .map(|button| ButtonRect {
-            x: button.x + dx,
-            ..*button
-        })
-        .collect()
-}
-
-/// The first row of a selection, in window coordinates.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Anchor {
-    /// Left edge of the selected run on that row.
-    pub x: f32,
-    /// Top of the row.
-    pub y: f32,
-    /// Width of the selected run on that row.
-    pub width: f32,
-    /// The row's height.
-    pub height: f32,
-}
-
-/// Where a bar `bar_width` wide goes, given the selection it belongs to and the room available.
-///
-/// Above the selection's **first row**, centred on it. Not on the bounding box of the whole
-/// selection: the centre of a tall selection is over the middle of the document and the bar would
-/// appear nowhere near what the user just dragged over.
-///
-/// Flipped below when there is no room above, so it never leaves the content rect at the top; and
-/// clamped horizontally, so it never leaves it at either side. It must never cover the selection it
-/// acts on, which is why the flip is below the row rather than over it.
-#[must_use]
-pub fn place(bar_width: f32, anchor: Anchor, left: f32, right: f32, top: f32) -> (f32, f32) {
-    let centred = anchor.x + anchor.width / 2.0 - bar_width / 2.0;
-    // `max` last: in a window too narrow for the bar the left edge wins, because a bar clipped at
-    // the right is readable from its start and one clipped at the left is not.
-    let x = centred.min(right - bar_width).max(left);
-
-    let above = anchor.y - HEIGHT - FLOAT_GAP;
-    let y = if above < top {
-        anchor.y + anchor.height + FLOAT_GAP
-    } else {
-        above
-    };
-    (x, y)
 }
 
 /// Which button a click at `(x, y)` landed on, if any.

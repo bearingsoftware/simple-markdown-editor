@@ -290,50 +290,6 @@ fn a_match_off_screen_is_scrolled_into_view() {
     );
 }
 
-/// Found by eye rather than by a test, which is why it has one now: every match landed on is a
-/// settled selection by `settle_selection`'s own rule, so the floating formatting bar appeared over
-/// the prose on every press of Enter.
-#[test]
-fn navigating_does_not_raise_the_floating_bar() {
-    let mut editor = editor("alpha beta alpha\n");
-    caret_at(&mut editor, 0);
-    search(&mut editor, "alpha");
-    editor.apply_find_key(&Key::Next, false);
-    editor.on_idle();
-    frame(&mut editor);
-    assert!(!editor.floating_shown());
-    assert!(editor.floating_at().is_none());
-}
-
-/// The same defect one gesture later, and the reason the rule is about where the selection came from
-/// rather than about whether the bar is open: Esc leaves the match selected, so a bar raised by the
-/// idle timer afterwards is chrome arriving from the gesture that dismisses chrome.
-#[test]
-fn escape_does_not_leave_a_floating_bar_behind() {
-    let mut editor = editor("alpha beta alpha\n");
-    caret_at(&mut editor, 0);
-    search(&mut editor, "alpha");
-    editor.apply_find_key(&Key::Next, false);
-    editor.apply_find_key(&Key::Close, false);
-    editor.on_idle();
-    frame(&mut editor);
-    assert!(!editor.floating_shown());
-}
-
-/// And the rule must not go too far the other way: a selection the user makes is still one to hang a
-/// bar on, whether or not the find bar happens to be open.
-#[test]
-fn a_selection_made_after_a_search_still_gets_its_bar() {
-    let mut editor = editor("alpha beta alpha\n");
-    search(&mut editor, "alpha");
-    editor.apply_find_key(&Key::Next, false);
-    assert!(!editor.settle_selection(), "the match is not the user's");
-
-    // Ctrl+A is a selection the user made, and it clears the flag on its way through.
-    editor.select_all();
-    assert!(editor.settle_selection());
-}
-
 // ---- the count ----
 
 #[test]
