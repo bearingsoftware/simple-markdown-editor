@@ -62,45 +62,47 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
             continue;
         };
         let text = seg.span().slice(source);
-        // **An inline construct spanning a soft break leaves a whitespace-only marker**, and that is
-        // a known defect rather than a rule of the format: `pulldown-cmark` strips the continuation
-        // line's indent from the text event, so the gap the locator subtracts falls to the enclosing
-        // construct and `_a\n b_` reports an `Emphasis` marker holding a space. Found the moment
-        // this assertion was pointed at generated input (MDEDIT-110) and filed rather than fixed
-        // here as MDEDIT-112 — the locator is the highest-risk component in the project and its own
-        // gate is the tiling property, which this does not weaken.
+        // **The tolerance that used to be here is gone**, and MDEDIT-112 is why it could go.
         //
-        // Whitespace is **ignored** in the four inline arms rather than accepted wholesale: the gap
-        // is sometimes its own segment (`" "`) and sometimes merged with the delimiter beside it
-        // (`" *"`), because adjacent markers of one kind are coalesced. Both are the same defect.
-        // Every other character still has to be the construct's syntax, so a span that has swallowed
-        // a content letter is caught exactly as before.
-        let inline: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        let plausible = text.chars().all(char::is_whitespace) && !text.is_empty()
-            || match marker {
-                Marker::Emphasis | Marker::Strong => inline.chars().all(|c| c == '*' || c == '_'),
-                Marker::Strikethrough => inline.chars().all(|c| c == '~'),
-                Marker::CodeSpan => inline.chars().all(|c| c == '`'),
-                Marker::ThematicBreak => text.chars().all(|c| "*-_ \t".contains(c)),
-                Marker::Escape => text == "\\",
-                Marker::HardBreak => text.chars().all(|c| c == ' ' || c == '\\'),
-                // `### ###` is an empty heading and entirely syntax, and CommonMark strips a heading's
-                // trailing whitespace — so a run may be all spaces. Constrain the characters, not the
-                // shape; that still catches a span that has swallowed a content letter.
-                Marker::Heading => text.chars().all(|c| "#=-".contains(c) || c.is_whitespace()),
-                // Continuation lines carry only the indent that keeps content inside the block, so a
-                // whitespace-only marker is legitimate for both of these.
-                Marker::BlockQuote => text.contains('>') || text.trim().is_empty(),
-                Marker::ListItem => {
-                    text.trim().is_empty()
-                        || text.contains(|c: char| "*-+".contains(c) || c.is_ascii_digit())
-                }
-                // Link syntax spans `[`, `](dest "title")` and `)`; the destination is arbitrary.
-                Marker::Link | Marker::Image => text.contains(|c: char| "[]()!<>".contains(c)),
-                // A fence carries an arbitrary info string, an indented block's marker is whitespace,
-                // and an unlisted kind is unconstrained by design.
-                Marker::CodeBlock | _ => true,
-            };
+        // An inline construct spanning a soft break used to leave a whitespace-only marker:
+        // `pulldown-cmark` strips the continuation line's indent from the text event, so the gap the
+        // locator subtracts fell to the enclosing construct and `_a\n b_` reported an `Emphasis`
+        // marker holding a space. This assertion tolerated it — whitespace ignored in the four
+        // delimiter arms, every other character still constrained — because the defect was found the
+        // moment the assertion was first pointed at generated input (MDEDIT-110) and the locator is
+        // the highest-risk component in the project.
+        //
+        // `normalise_line_syntax` now gives that whitespace back to content, so a delimiter run is
+        // **only** its delimiters and this asks for exactly that.
+        let plausible = match marker {
+            Marker::Emphasis | Marker::Strong => text.chars().all(|c| c == '*' || c == '_'),
+            Marker::Strikethrough => text.chars().all(|c| c == '~'),
+            Marker::CodeSpan => text.chars().all(|c| c == '`'),
+            Marker::ThematicBreak => text.chars().all(|c| "*-_ \t".contains(c)),
+            Marker::Escape => text == "\\",
+            // Two spaces or a backslash is the *written* form, but the reported range covers
+            // whatever trailing whitespace preceded the newline — a tab, a vertical tab. Only
+            // visible once MDEDIT-112 removed the blanket whitespace tolerance above; it is the
+            // format being loose rather than the locator being wrong, and a swallowed content
+            // character is still caught.
+            Marker::HardBreak => text.chars().all(|c| c.is_whitespace() || c == '\\'),
+            // `### ###` is an empty heading and entirely syntax, and CommonMark strips a heading's
+            // trailing whitespace — so a run may be all spaces. Constrain the characters, not the
+            // shape; that still catches a span that has swallowed a content letter.
+            Marker::Heading => text.chars().all(|c| "#=-".contains(c) || c.is_whitespace()),
+            // Continuation lines carry only the indent that keeps content inside the block, so a
+            // whitespace-only marker is legitimate for both of these.
+            Marker::BlockQuote => text.contains('>') || text.trim().is_empty(),
+            Marker::ListItem => {
+                text.trim().is_empty()
+                    || text.contains(|c: char| "*-+".contains(c) || c.is_ascii_digit())
+            }
+            // Link syntax spans `[`, `](dest "title")` and `)`; the destination is arbitrary.
+            Marker::Link | Marker::Image => text.contains(|c: char| "[]()!<>".contains(c)),
+            // A fence carries an arbitrary info string, an indented block's marker is whitespace,
+            // and an unlisted kind is unconstrained by design.
+            Marker::CodeBlock | _ => true,
+        };
         assert!(
             plausible,
             "{context}: {marker:?} marker holds {text:?}, which is not that construct's syntax"
@@ -258,4 +260,68 @@ fn the_fallback_tiles_the_awkward_lengths_too() {
     for source in ["", "\0", "+\t[\0]:d\n\u{b}", "ordinary prose"] {
         assert_partitions(source, "fallback");
     }
+}
+
+/// **MDEDIT-112's own repro.** An inline construct spanning a soft break used to hand the
+/// continuation line's indent to the enclosing construct as its marker.
+///
+/// The ticket's input is underscore, star, newline, space, backtick, underscore, tilde — and the
+/// space at offset 3 came back as [`Marker::Emphasis`]. It never mis-*covered*, so the tiling gate
+/// held and nothing caught it; but a marker is concealed in preview, so that space vanished from the
+/// rendered line.
+#[test]
+fn a_soft_breaks_indent_is_content_not_emphasis() {
+    let source = "_*\n `_~";
+    let segments = assert_partitions(source, "MDEDIT-112");
+
+    // By offset rather than by looking for a `" "` segment: now that the space is content it
+    // coalesces with the content either side of it, which is the outcome rather than a complication.
+    let indent = ByteOffset::new(3);
+    let owner = segments
+        .iter()
+        .find(|seg| seg.span().start() <= indent && indent < seg.span().end())
+        .expect("every byte belongs to a segment");
+    assert!(
+        matches!(owner.kind(), SegmentKind::Content),
+        "the continuation indent is content, not syntax: {:?} holding {:?}",
+        owner.kind(),
+        owner.span().slice(source)
+    );
+}
+
+/// The other side of the same break, which the first fix missed and the property test found in
+/// seconds: `pulldown-cmark` strips the whitespace *before* a soft break too.
+#[test]
+fn a_soft_breaks_trailing_whitespace_is_content_too() {
+    let source = "AA*x\t\n y*";
+    let segments = assert_partitions(source, "MDEDIT-112 trailing");
+
+    for seg in &segments {
+        if let SegmentKind::Marker(Marker::Emphasis) = seg.kind() {
+            let text = seg.span().slice(source);
+            assert!(
+                text.chars().all(|c| c == '*' || c == '_'),
+                "an emphasis marker holds {text:?}, which is not a delimiter run"
+            );
+        }
+    }
+}
+
+/// A **link's** marker legitimately spans a newline and the indent after it — the whitespace sits
+/// inside the parentheses, between the destination and the title. The fix must not reach it, and
+/// CommonMark spec example 510 is what said so when an earlier attempt did.
+#[test]
+fn a_links_marker_may_still_span_a_break() {
+    let source = "[a](/url\n  \"title\")\n";
+    let segments = assert_partitions(source, "MDEDIT-112 links");
+
+    let concealed: String = segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::Link)))
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert!(
+        concealed.contains("\"title\""),
+        "the title is part of the link's syntax and must stay concealed: {concealed:?}"
+    );
 }

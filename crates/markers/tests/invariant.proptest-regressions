@@ -7,3 +7,6 @@
 cc 88fb7a061b3cff249564c95d2fe062c91899704fc7b5dba3adf4a7b05f0b8f58 # shrinks to indices = [1, 0, 14, 15, 2, 1, 3]
 cc 0e8d5f3d1e6f1137ab50713040ff4675114ed56f5b8c8c0aa4cdfcd84e5ed1b1 # shrinks to source = "AA*〡\t\n¡*"
 cc 997f4b7ff7ea20e9924a4da0e13c53ed13d083485f45ceee4f1e1c21f4538ac2 # shrinks to indices = [1, 2, 14, 15, 0, 3, 0, 3, 1]
+cc 7674430774f0e3a28111cd926f51e5d076d6192900d6394cd551e281445d2a00 # shrinks to indices = [22, 0, 15, 14, 6, 22, 0]
+cc ba6ab135a2af657c736aad9b0e09a0728cc97831f38f33bb82cd8d8a7d6affd7 # shrinks to source = "AA¡AA\t\u{b}\n¡"
+cc 4676741cc2826aa0dc5d967fe779439b71246fcea1e69329b4c9c3add44b91b5 # shrinks to source = "*A\u{b}\n!*:"

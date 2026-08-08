@@ -242,6 +242,33 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
             marks[i] = Some(Marker::BlockQuote);
         }
 
+        // **A delimiter run is never whitespace** (MDEDIT-112).
+        //
+        // `pulldown-cmark` strips a soft break's surrounding whitespace from the `Text` events, so
+        // the gap between two children falls through the subtraction above and is emitted as the
+        // *enclosing* construct's marker. In `_*\n `_~` the space opening the second line came back
+        // as `Marker::Emphasis`, which is not emphasis syntax by any reading.
+        //
+        // It never mis-*covered* — the tiling gate held throughout, which is why it went unseen —
+        // but a marker is **concealed** in preview, so the space vanished from the rendered line.
+        // Systematic for any inline construct spanning a soft break, not something about emphasis.
+        //
+        // **Both sides of the break, not just the indent.** The first fix here only cleared a line's
+        // leading whitespace, and the property test found `AA*〡\t\n¡*` in seconds: the tab is
+        // *trailing*, stripped from the text event at the other end of the same soft break.
+        //
+        // Unconditional rather than confined to a line's edges, because a delimiter run is `*`, `_`,
+        // `~` or a backtick and nothing else — whitespace carrying one is always this artefact. That
+        // is why the test is `is_delimiter_run` and not "is inline": a **link's** closing marker
+        // legitimately spans a newline and its indent between the destination and the title, and a
+        // block marker's whitespace is real syntax.
+        if is_markdown_space(byte) && is_delimiter_run(marks[i]) {
+            marks[i] = None;
+            in_prefix = false;
+            content_started = true;
+            continue;
+        }
+
         if matches!(marks[i], Some(Marker::BlockQuote | Marker::ListItem)) {
             // Subtracting content from a construct's range assumes the parser reports content for
             // everything that is not syntax — but it emits no events at all for a link reference
@@ -336,4 +363,32 @@ fn coalesce(source: &str, marks: &[Option<Marker>]) -> Vec<Segment> {
     }
 
     out
+}
+
+/// Whether a marker is a **delimiter run** — syntax made only of repeated punctuation.
+///
+/// The distinction matters exactly once, in [`normalise_line_syntax`], and the line is *not*
+/// inline-versus-block. A block marker's whitespace is real syntax: a list indent, the space after
+/// `>`, the space in `# `. So is a **link's**, which is why `Link` and `Image` are absent here —
+/// `[a](/url\n  "title")` puts a line's opening whitespace *inside* the closing marker, between the
+/// destination and the title, and concealing it is correct. CommonMark spec example 510 says so, and
+/// said so by failing when this list was drawn around "inline" instead.
+///
+/// What is left is the constructs whose markers are `*`, `_`, `~` and a backtick and nothing else. A
+/// whitespace byte carrying one of those is never syntax. See MDEDIT-112.
+fn is_delimiter_run(marker: Option<Marker>) -> bool {
+    matches!(
+        marker,
+        Some(Marker::Emphasis | Marker::Strong | Marker::Strikethrough | Marker::CodeSpan)
+    )
+}
+
+/// CommonMark's whitespace set, which is not Rust's.
+///
+/// `u8::is_ascii_whitespace` covers space, tab, newline, form feed and carriage return — but **not**
+/// the vertical tab, which CommonMark counts and which `pulldown-cmark` therefore strips around a
+/// soft break. The property test found `*A\u{b}\n!*:` within seconds of the first attempt at
+/// MDEDIT-112 using the Rust predicate.
+fn is_markdown_space(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r')
 }
