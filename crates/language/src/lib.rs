@@ -159,6 +159,12 @@ pub enum Marker {
     Escape,
     /// The trailing spaces or backslash forming a hard line break.
     HardBreak,
+    /// The `[ ]` or `[x]` of a task-list item, after its bullet.
+    ///
+    /// Separate from [`ListItem`](Self::ListItem) because it is a different thing on screen: the
+    /// bullet is scaffolding and the box is **state**, which is why the pack gives it the constant
+    /// colour rather than the key one. The bullet's own marker is unchanged and still precedes it.
+    TaskMarker,
 }
 
 impl Marker {
@@ -179,6 +185,7 @@ impl Marker {
                 | Self::BlockQuote
                 | Self::ListItem
                 | Self::ThematicBreak
+                | Self::TaskMarker
         )
     }
 }
