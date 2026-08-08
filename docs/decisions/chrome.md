@@ -268,10 +268,26 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   *not modified*, carrying its own text as its record of disk, because a reference document asking to
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
   it can be regenerated, and a stale copy of a reference is worse than none.
-- **A pane row truncates its name; it does not ellipsise it, and there is no hover.** MDEDIT-28's
-  plan asked for eliding with the full path on hover. Truncation is what the tab strip already does
-  and what this matches; an ellipsis needs its own measurement pass, and a tooltip needs a hover
-  affordance that does not exist yet.
+- **A pane row truncates its name; it does not ellipsise it. It does now say the whole of it on
+  hover.** MDEDIT-28's plan asked for eliding with the full name on hover, and got half: truncation
+  is what the tab strip already does and what this matches, an ellipsis needs its own measurement
+  pass, and a tooltip needed a hover affordance that did not exist. MDEDIT-85 built that affordance
+  and **MDEDIT-121 is the other half**, for tabs as well as rows.
+
+  **The rule that makes it different from the bar's tooltips**: a name that *fits* says nothing. Item
+  1 of MDEDIT-85 was "explain a control", which is true of a button whatever its width; this is "show
+  what did not fit", so whether to offer a panel depends on a measurement rather than on what is
+  under the pointer. A panel repeating a name already fully on screen is noise.
+
+  **That measurement is recorded as the frame draws, not computed when asked.** Whether a name fits
+  depends on the width the strip gave that tab and on the glyphs the engine produced for it, neither
+  of which exists before a frame — so `draw_label` returns whether it clipped, and the two loops keep
+  a list. An editor that has not drawn a frame knows of no truncated tab, which is what
+  `nothing_is_truncated_until_a_frame_has_drawn` pins.
+
+  `Hovered` replaced the bare `Action` the hover state used to be: a button, a tab or a row. A tab's
+  panel hangs below the strip and a row's below **that row** — a pane is as tall as the window, so a
+  panel below the pane would point at nothing.
 - **The pane lists what is open, not what is on disk.** A file *tree* is a different feature with
   filesystem-watching decisions attached, and deliberately not this one.
 - **The status bar's word count lags, deliberately.** It is recomputed on the same idle timer that

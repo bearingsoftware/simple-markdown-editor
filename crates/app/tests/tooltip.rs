@@ -21,7 +21,7 @@
     clippy::float_cmp
 )]
 
-use mdedit_app::editor::Editor;
+use mdedit_app::editor::{Editor, Hovered};
 use mdedit_app::toolbar::{self, Action};
 use mdedit_app::tooltip;
 use mdedit_app::view::{Appearance, Rgba, Theme};
@@ -72,7 +72,7 @@ fn resting_on_a_button_shows_its_tooltip() {
     assert_eq!(editor.tooltip(), None, "not before the dwell has elapsed");
 
     assert!(editor.on_dwell(), "and the panel is a redraw");
-    assert_eq!(editor.tooltip(), Some(Action::Bold));
+    assert_eq!(editor.tooltip(), Some(Hovered::Button(Action::Bold)));
 }
 
 /// The panel says what the button does *and* the chord that does the same. Both halves, because a
@@ -278,7 +278,7 @@ fn a_dimmed_button_still_gets_a_tooltip() {
     assert!(!editor.is_enabled(Action::Cut), "the precondition");
 
     rest_on(&mut editor, Action::Cut);
-    assert_eq!(editor.tooltip(), Some(Action::Cut));
+    assert_eq!(editor.tooltip(), Some(Hovered::Button(Action::Cut)));
 
     let (x, y) = centre_of(&editor, Action::Cut);
     editor.click(x, y);
