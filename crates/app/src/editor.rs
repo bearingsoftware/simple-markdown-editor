@@ -7949,7 +7949,14 @@ impl<T: TextLayout> Editor<T> {
         // fills it sits exactly centred, and a shorter one is right-aligned within that column —
         // which keeps the ones digits in line as the document passes ten and a hundred. Centring
         // each number on its own would break that.
-        let right = self.gutter_width() - GUTTER_PADDING;
+        //
+        // **Measured from the pane's right edge, not the window's** (MDEDIT-117). The gutter is the
+        // second thing on the left when the file pane is showing — `insets.left` is
+        // `pane_width() + gutter_width()` — and this used to start at zero regardless, which put
+        // every number inside the pane's own band. They were drawn and then painted over, because
+        // `draw_pane` runs after `draw_chunks`; the give-away was the empty gutter-width strip
+        // between the pane and the text, reserved and holding nothing.
+        let right = self.pane_width() + self.gutter_width() - GUTTER_PADDING;
         #[allow(
             clippy::cast_precision_loss,
             reason = "a line number with more digits than an f32 can count is not reachable"
