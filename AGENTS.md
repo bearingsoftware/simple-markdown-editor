@@ -296,7 +296,38 @@ Known gaps, so nobody assumes they are done:
   eight**, because at eight the row came to 930 logical pixels against a 900-pixel default window and
   `toolbar::layout` silently dropped Fence, Rule and Link on a fresh install. Every stub test passed
   through that, which is why `all_of_the_buttons_fit_a_default_window` measures real advances.
-  MDEDIT-87's Image and Table buttons will need this conversation again.
+  MDEDIT-87's Image and Table buttons would have needed this conversation again — MDEDIT-116 is
+  where it was had.
+- **The bar never silently loses a button, and the headings are one button with six levels.**
+  MDEDIT-116, which overturns MDEDIT-92's "no overflow menu" out-of-scope line on purpose. A window
+  too narrow for everything ends with a `…` and the displaced buttons are behind it;
+  `toolbar::overflowing` reserves room for that button **only when it is needed**, so a wide window
+  is not one control short for the sake of an overflow that never appears.
+
+  **What the bar drops and what the list offers come from one call**, because they are two halves of
+  one partition and deriving them separately is how an action ends up in neither.
+  `every_button_is_either_drawn_or_in_the_overflow` sweeps the widths and rejoins them.
+
+  **Three heading buttons became one, and that is what paid for MDEDIT-87.** 844px → 776, and Image
+  and Table land at 858 against a 900px window — measured in `icons.rs` rather than hoped for, so if
+  it stops being true that ticket hears about it first. H4 to H6 stop being chord-only as a result.
+  The button reads `H1` by default and the caret's own level when it is in one; `Action::letters`
+  separates a letterform that is one **on purpose** (set near the icon size) from the words a machine
+  with no icon font falls back to (set small, because "Paste" at that size would not fit).
+
+  **A list is a third z-order** — drawn after even the tooltip, hit-tested before the floating bar —
+  and `Editor::click`'s order is the whole of it in both directions. **That is the bug this shipped
+  with once:** `click` dismissed the tooltip first, and dismissal closed the menu with it, so every
+  click on a row found nothing open and fell through to the document. `dismiss_tooltip` and
+  `dismiss_panels` are separate functions now precisely so the click path cannot reach the wrong one.
+
+  **A click anywhere while a list is open belongs to the list** — a row acts, anything else closes and
+  is swallowed, including a tab. A click that both dismissed and landed is how closing a menu moves
+  your caret.
+
+  Two things found by their own tests rather than by eye: `popup::hit_test` gave the panel's top
+  margin to row zero, because the subtraction went negative and the cast to `usize` saturated; and
+  the icon column has to clear `PADDING` plus the icon or the words start on top of the picture.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it

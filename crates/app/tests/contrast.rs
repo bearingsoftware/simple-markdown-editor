@@ -345,6 +345,34 @@ fn text_stays_legible_through_the_caret_line_and_a_selection_on_top_of_it() {
     }
 }
 
+/// A list row's two grounds, and the one where they stack.
+///
+/// MDEDIT-116 puts a menu on `panel` and gives a row up to two tints: `tab_active` when it is the
+/// level the caret is already in, and the translucent `selection` when the pointer is on it. Both
+/// can be true at once — hovering the row you are already in is the commonest thing to do in that
+/// list — so the stacked case is the one that has to clear the floor, and it is the one the design
+/// pack does not model.
+#[test]
+fn a_list_row_stays_legible_under_both_of_its_grounds() {
+    for (mode, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        let hovered = over(theme.selection, theme.panel);
+        let lit = theme.tab_active;
+        let both = over(theme.selection, lit);
+
+        for (what, ground) in [
+            ("a hovered row", hovered),
+            ("the row it is already in", lit),
+            ("hovering that row", both),
+        ] {
+            let measured = ratio(theme.text, ground);
+            assert!(
+                measured >= FLOOR,
+                "{mode} text on {what} is {measured:.2}:1, under {FLOOR}"
+            );
+        }
+    }
+}
+
 /// The find highlight is told from the selection by hue, not by brightness.
 ///
 /// Both are tints over the page, so they are compared blended. A ratio near 1.0 is the *intent*:

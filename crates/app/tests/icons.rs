@@ -23,6 +23,9 @@ const DEFAULT_WIDTH: f32 = 900.0;
 /// What `Editor::draw_toolbar` asks for: the body size times `TOOLBAR_ICON`.
 const ICON_SIZE: f32 = 16.0 * 1.375;
 
+/// What a deliberate letterform is set at — the heading buttons. `TOOLBAR_LETTERS`.
+const LETTERS_SIZE: f32 = 16.0 * 1.25;
+
 fn engine() -> DirectWriteText {
     DirectWriteText::new().expect("DirectWrite is available on any supported Windows")
 }
@@ -112,7 +115,7 @@ fn the_heading_buttons_have_no_icon_and_letter_instead() {
         assert_eq!(action.icon(), None, "{action:?} should have no code point");
 
         for character in action.label().chars() {
-            let advances = shape(&mut text, character, FontFamily::Ui, 16.0 * 0.62);
+            let advances = shape(&mut text, character, FontFamily::Ui, LETTERS_SIZE);
             assert!(
                 advances.iter().all(|advance| *advance >= 0.0),
                 "{action:?} letters as {:?}, and {character:?} is not in the text font",
@@ -139,33 +142,71 @@ fn all_of_the_buttons_fit_a_default_window() {
     let widths: Vec<f32> = [toolbar::STANDARD, toolbar::MARKDOWN]
         .concat()
         .iter()
-        .map(|action| match action.icon() {
-            Some(icon) => shape(&mut text, icon, FontFamily::Icon, ICON_SIZE)
-                .iter()
-                .sum(),
-            // A lettered button measures the whole word, not one character of it.
-            None => action
-                .label()
-                .chars()
-                .map(|c| {
-                    shape(&mut text, c, FontFamily::Ui, 16.0 * 0.62)
-                        .iter()
-                        .sum::<f32>()
-                })
-                .sum(),
-        })
+        .map(|action| measure(&mut text, *action))
         .collect();
 
     let all = [toolbar::STANDARD, toolbar::MARKDOWN].concat();
-    let placed = toolbar::layout(&all, &widths, DEFAULT_WIDTH);
+    let row = toolbar::overflowing(&all, &widths, DEFAULT_WIDTH);
 
-    assert_eq!(
-        placed.len(),
-        all.len(),
-        "only {} of {} buttons fit {DEFAULT_WIDTH}px — the row is {:.0}px wide and the ones cut are \
-         at the far end, which is where Link lives",
-        placed.len(),
+    assert!(
+        row.dropped.is_empty(),
+        "{} of {} buttons did not fit {DEFAULT_WIDTH}px — the row is {:.0}px wide. Nothing is lost \
+         now that MDEDIT-116 has an overflow button, but the default window having one at all is a \
+         decision rather than an accident",
+        row.dropped.len(),
         all.len(),
         toolbar::width_of(&toolbar::layout(&all, &widths, f32::MAX))
     );
+}
+
+/// **Room for MDEDIT-87, measured rather than hoped for.**
+///
+/// Collapsing three heading buttons into one is what paid for Image and Table, and the arithmetic
+/// that justified MDEDIT-116 said they would land at 858 against a 900-pixel window. That number was
+/// the argument for doing it this way instead of shaving the padding, so it is worth holding up —
+/// and if it stops being true, that ticket needs the conversation again before it starts rather than
+/// after.
+#[test]
+fn there_is_room_for_the_two_buttons_mdedit_87_adds() {
+    let mut text = engine();
+    let all = [toolbar::STANDARD, toolbar::MARKDOWN].concat();
+
+    let mut widths: Vec<f32> = all
+        .iter()
+        .map(|action| measure(&mut text, *action))
+        .collect();
+    let row = toolbar::width_of(&toolbar::layout(&all, &widths, f32::MAX));
+
+    // Image and Table are two more icons in a group of their own, which is a gap as well.
+    let icon: f32 = shape(&mut text, '\u{EB9F}', FontFamily::Icon, ICON_SIZE)
+        .iter()
+        .sum();
+    let mut with_them = all.clone();
+    with_them.push(Action::Link);
+    with_them.push(Action::Link);
+    widths.push(icon);
+    widths.push(icon);
+    let grown = toolbar::width_of(&toolbar::layout(&with_them, &widths, f32::MAX));
+
+    assert!(
+        grown <= DEFAULT_WIDTH,
+        "the row is {row:.0}px today and would be {grown:.0}px with Image and Table, against a \
+         {DEFAULT_WIDTH}px default window — MDEDIT-87 needs a decision about what gives"
+    );
+}
+
+/// One button's face, measured as the bar measures it.
+fn measure(text: &mut DirectWriteText, action: Action) -> f32 {
+    match action.icon() {
+        Some(icon) => shape(text, icon, FontFamily::Icon, ICON_SIZE).iter().sum(),
+        None => action
+            .label()
+            .chars()
+            .map(|c| {
+                shape(text, c, FontFamily::Ui, LETTERS_SIZE)
+                    .iter()
+                    .sum::<f32>()
+            })
+            .sum(),
+    }
 }
