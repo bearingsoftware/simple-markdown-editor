@@ -97,3 +97,30 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   the renderer asks it once per styled run: 4,001 blocks times thirty-six runs times twenty visible
   chunks is 2.9 million comparisons a frame for a 357 KB JSON. Fixing it took `build_runs_in` on one
   JSON chunk from 0.064 ms to 0.005.
+
+- **A delimiter run is never whitespace, and it used to be.** MDEDIT-112. `pulldown-cmark` strips a
+  soft break's surrounding whitespace from its `Text` events, so the gap between two children fell
+  through the locator's subtraction and was emitted as the *enclosing* construct's marker: an inline
+  construct spanning a soft break reported an `Emphasis` marker holding a space.
+
+  **It never mis-covered.** The tiling gate held throughout, which is exactly why it survived — the
+  property that guards this crate is that the segments reproduce the source, and a mis-*labelled*
+  span does that perfectly. What it did was mis-colour, and worse, **conceal**: a marker is hidden in
+  preview, so the space vanished from the rendered line.
+
+  The rule is now unconditional in `normalise_line_syntax`: a whitespace byte carrying `Emphasis`,
+  `Strong`, `Strikethrough` or `CodeSpan` becomes content. Those four are the constructs whose
+  markers are `*`, `_`, `~` and a backtick and nothing else.
+
+  **Three things narrowed it, each found by a test rather than by thinking.** `Link` and `Image` are
+  *not* in that set — `[a](/url\n  "title")` puts a line's opening whitespace **inside** the closing
+  marker, between the destination and the title, and concealing it is right; CommonMark spec example
+  510 failed when the rule was drawn around "inline" instead. The first fix only cleared a line's
+  *leading* whitespace and the property test found a trailing tab in seconds, because the strip
+  happens at both ends of the break. And `u8::is_ascii_whitespace` **excludes the vertical tab**,
+  which CommonMark counts — so `is_markdown_space` spells the set out.
+
+  `assert_marker_shapes` lost the tolerance it carried for this, which is the real test that the fix
+  landed. Removing it surfaced one more thing: a `HardBreak`'s reported range covers whatever
+  trailing whitespace preceded the newline, not just the two spaces or backslash that were written.
+  That is the format being loose rather than the locator being wrong.
