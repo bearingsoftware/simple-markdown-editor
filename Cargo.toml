@@ -74,5 +74,10 @@ lossy_float_literal = "deny"
 
 # Overflow wraps silently in release by default, so the panic that catches a bad offset in tests
 # would be absent in production. standards/rust.md requires turning it back on.
+#
+# **Do not set `panic = "abort"` here.** `mdedit-markers` contains a `pulldown-cmark` panic with
+# `catch_unwind` so that a document upstream cannot parse opens as plain text instead of killing the
+# editor (MDEDIT-114). Aborting turns that back into a crash on file open, and nothing would fail:
+# the test that covers it runs under the test profile, not this one.
 [profile.release]
 overflow-checks = true
