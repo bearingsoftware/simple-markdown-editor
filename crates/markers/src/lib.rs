@@ -97,6 +97,20 @@ impl Language for Markdown {
 ///
 /// It is not free and it is not on the keystroke path for a large document: `catch_unwind` costs
 /// nothing when nothing unwinds, and `analyze_region` is what a keystroke reaches.
+///
+/// # It stays when upstream fixes it
+///
+/// Reported as [pulldown-cmark#1129]. Two things were worth establishing before filing and are worth
+/// keeping here: **only `into_offset_iter()` panics** — plain iteration over the same document is
+/// fine, which is why nothing but this crate sees it — and **no options are required**, so it is not
+/// something a configuration change avoids.
+///
+/// When it is fixed, this containment does not come out. It is not a workaround for one defect; it
+/// is what a third-party parser at a trust boundary gets, and the next panic will not announce
+/// itself either. **It depends on unwinding**: a `panic = "abort"` profile turns the crash back on
+/// silently, which is why `Cargo.toml` says so beside the release profile.
+///
+/// [pulldown-cmark#1129]: https://github.com/pulldown-cmark/pulldown-cmark/issues/1129
 #[must_use]
 pub fn analyze(source: &str) -> Analysis {
     contained(source)
