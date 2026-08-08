@@ -311,3 +311,21 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **A line number counts source lines, not rows.** A wrapped paragraph is numbered once, at its first
   row, which is what every editor does. The gutter is sized for the largest number the document can
   show, with a two-digit floor, so it does not visibly resize as you pass line 9.
+
+- **A line number clears the file pane, and did not.** MDEDIT-117. `draw_line_number` right-aligns
+  its digits against the gutter's edge, and measured that from **window x = 0** — right while the
+  gutter was the only thing on the left, wrong with the pane showing. `insets.left` is
+  `pane_width() + gutter_width()`, so the document moved right by both and the numbers moved not at
+  all, landing inside the pane's own band. `draw_pane` runs after `draw_chunks` — the painter-order
+  rule, since there is no depth buffer — so they were **drawn and then painted over**.
+
+  The give-away was the empty gutter-width strip between the pane and the text: the space was
+  reserved and nothing was in it. Found by eye; no test could have caught it, because the quads are
+  emitted either way and only their x is wrong.
+
+  **The regression test asserts a gap, not a coordinate**: wherever the text starts, the number ends
+  just before it, and that distance is the same with the strip as with the pane. A coordinate would
+  have been a restatement of the fix. Getting there needed a narrower filter than `is_gutter` — with
+  the pane showing, "left of the text and between the two bars" also describes the pane's
+  background, its active row, and every glyph of the file name on it, and the first attempt failed
+  against the *fixed* code for that reason.
