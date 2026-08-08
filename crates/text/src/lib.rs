@@ -144,8 +144,14 @@ pub struct TextStyle {
     /// Whether the run carries a rule under it.
     ///
     /// The implementation decides where the rule sits and how thick it is, from the font's own
-    /// metrics — which is why this is a `bool` here and a [`Underline`] on the way back.
+    /// metrics — which is why this is a `bool` here and a [`Rule`] on the way back.
     pub underline: bool,
+    /// Whether the run carries a rule through it.
+    ///
+    /// The same bargain as [`underline`](Self::underline), and the font answers the same two
+    /// questions about it. Kept separate rather than folded into one enum because a run can
+    /// legitimately be both — a struck-through link is `~~[a](/url)~~`.
+    pub strikethrough: bool,
 }
 
 impl TextStyle {
@@ -158,6 +164,7 @@ impl TextStyle {
             weight: FontWeight::Regular,
             italic: false,
             underline: false,
+            strikethrough: false,
         }
     }
 
@@ -179,6 +186,13 @@ impl TextStyle {
     #[must_use]
     pub fn underline(mut self) -> Self {
         self.underline = true;
+        self
+    }
+
+    /// This style struck through.
+    #[must_use]
+    pub fn strikethrough(mut self) -> Self {
+        self.strikethrough = true;
         self
     }
 
@@ -294,13 +308,29 @@ pub struct PositionedGlyph {
     pub source: ByteSpan,
 }
 
-/// A rule under a run, placed by the implementation.
+/// Which of the two rules this is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleKind {
+    /// Under the text, from [`TextStyle::underline`].
+    Under,
+    /// Through it, from [`TextStyle::strikethrough`].
+    Through,
+}
+
+/// A rule under or through a run, placed by the implementation.
 ///
-/// A rectangle rather than a flag on the run, because where an underline sits and how thick it is
-/// come from the font's own metrics — which only the implementation has — and because a wrapped run
-/// needs one of these per row rather than one for the run.
+/// A rectangle rather than a flag on the run, because where a rule sits and how thick it is come
+/// from the font's own metrics — which only the implementation has — and because a wrapped run needs
+/// one of these per row rather than one for the run.
+///
+/// **One type for both, distinguished by [`kind`](Self::kind)**, because everything about them is
+/// the same: the font decides the offset and the thickness, wrapping splits them per row, and the
+/// caller draws a quad. MDEDIT-91 added the second, and the only thing it had to add was the field
+/// saying which.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Underline {
+pub struct Rule {
+    /// Under the text or through it.
+    pub kind: RuleKind,
     /// Left edge, in the same space as [`PositionedGlyph::pos`].
     pub x: f32,
     /// Top edge of the rule, measured from the top of the block like a baseline is.
@@ -309,7 +339,7 @@ pub struct Underline {
     pub width: f32,
     /// How thick it is, from the font.
     pub thickness: f32,
-    /// A byte the underlined text came from, so the caller can colour the rule like the run.
+    /// A byte the ruled text came from, so the caller can colour the rule like the run.
     pub source: ByteOffset,
 }
 
@@ -322,8 +352,8 @@ pub struct LayoutLine {
     pub height: f32,
     /// The glyphs on this line, in visual order.
     pub glyphs: Vec<PositionedGlyph>,
-    /// The rules under this line's underlined runs. Empty for almost every line.
-    pub underlines: Vec<Underline>,
+    /// The rules under and through this line's runs. Empty for almost every line.
+    pub rules: Vec<Rule>,
 }
 
 /// The result of laying out a sequence of styled runs.

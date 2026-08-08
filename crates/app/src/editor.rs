@@ -6819,7 +6819,7 @@ impl<T: TextLayout> Editor<T> {
                     self.draw_marks(quads, here, baseline, at);
                 }
 
-                self.draw_underlines(quads, &runs, here, at);
+                self.draw_rules(quads, &runs, here, at);
                 self.draw_glyphs(quads, &runs, here, at);
 
                 // **After the glyphs, deliberately.** Everything else drawn under a row is a ground
@@ -6956,19 +6956,23 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Draws the rules under one visual row's underlined runs (MDEDIT-73).
+    /// Draws the rules under and through one visual row's runs (MDEDIT-73, MDEDIT-91).
     ///
     /// Where each rule sits and how thick it is came from the font, through the text layer — the
     /// renderer turns the rectangle into a quad and decides nothing about it but the colour, which
-    /// is the run's own so a rule cannot disagree with the text above it.
-    fn draw_underlines(
+    /// is the run's own so a rule cannot disagree with the text it belongs to.
+    ///
+    /// **A strikethrough needs no arm of its own here.** It arrives as the same rectangle with a
+    /// different `top`, because DirectWrite measures both offsets from the baseline — which is why
+    /// MDEDIT-91 added a field to `Rule` and not a branch to this loop.
+    fn draw_rules(
         &mut self,
         quads: &mut Vec<QuadInstance>,
         runs: &[view::ViewRun<'_>],
         row: Row<'_>,
         at: Placement,
     ) {
-        for rule in &row.cached.layout.lines[row.index].underlines {
+        for rule in &row.cached.layout.lines[row.index].rules {
             let colour = view::colour_at(
                 runs,
                 row.cached.rebase_offset(rule.source, row.chunk.span),
@@ -7840,7 +7844,7 @@ impl<T: TextLayout> Editor<T> {
                 baseline: height,
                 height,
                 glyphs: Vec::new(),
-                underlines: Vec::new(),
+                rules: Vec::new(),
             });
         }
 

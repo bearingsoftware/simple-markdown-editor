@@ -310,8 +310,8 @@ fn an_underlined_run_gets_a_rule_from_the_font() {
         .unwrap();
 
     let line = &layout.lines[0];
-    assert_eq!(line.underlines.len(), 1, "one run, one row, one rule");
-    let rule = line.underlines[0];
+    assert_eq!(line.rules.len(), 1, "one run, one row, one rule");
+    let rule = line.rules[0];
 
     assert!(rule.thickness > 0.0, "a rule with no thickness is no rule");
     assert!(
@@ -336,6 +336,95 @@ fn an_underlined_run_gets_a_rule_from_the_font() {
     );
 }
 
+/// MDEDIT-91, and the same claim as the underline above it: the font decides.
+///
+/// **The two are told apart by which side of the baseline they land on.** DirectWrite measures both
+/// offsets downwards from it, so a strikethrough's is negative and an underline's is positive — which
+/// is why `Rule` needed a `kind` field and the renderer needed no branch.
+#[test]
+fn a_struck_run_gets_a_rule_through_it_from_the_font() {
+    let mut text = engine();
+    let source = "struck";
+    let layout = text
+        .layout(
+            &[run(source, TextStyle::body(16.0).strikethrough())],
+            1000.0,
+        )
+        .unwrap();
+
+    let line = &layout.lines[0];
+    assert_eq!(line.rules.len(), 1, "one run, one row, one rule");
+    let rule = line.rules[0];
+
+    assert_eq!(rule.kind, mdedit_text::RuleKind::Through);
+    assert!(rule.thickness > 0.0, "a rule with no thickness is no rule");
+    assert!(
+        rule.top < line.baseline,
+        "a strikethrough sits above the baseline: {} against {}",
+        rule.top,
+        line.baseline
+    );
+    let ends = layout
+        .glyphs()
+        .map(|g| g.pos.x + g.advance)
+        .fold(0.0_f32, f32::max);
+    assert!(
+        rule.width > 0.0 && rule.width <= ends + 1.0,
+        "the rule ({}) should run through the text ({ends}) and no further",
+        rule.width
+    );
+    assert!(
+        rule.source.get() < source.len(),
+        "the rule should name a byte of the text it strikes, got {}",
+        rule.source.get()
+    );
+}
+
+/// A run can be both, which is why the two flags are separate rather than one enum: `~~[a](/url)~~`
+/// is a struck-through link, and the destination is underlined either way.
+#[test]
+fn a_run_can_be_underlined_and_struck_at_once() {
+    let mut text = engine();
+    let layout = text
+        .layout(
+            &[run(
+                "both",
+                TextStyle::body(16.0).underline().strikethrough(),
+            )],
+            1000.0,
+        )
+        .unwrap();
+
+    let kinds: Vec<_> = layout.lines[0].rules.iter().map(|rule| rule.kind).collect();
+    assert_eq!(kinds.len(), 2, "one of each, got {kinds:?}");
+    assert!(kinds.contains(&mdedit_text::RuleKind::Under));
+    assert!(kinds.contains(&mdedit_text::RuleKind::Through));
+}
+
+/// Wrapping splits a strikethrough per row, as it does an underline — the rule follows the text
+/// rather than the run, which is the whole reason `Rule` is a rectangle and not a flag.
+#[test]
+fn a_wrapped_struck_run_gets_one_rule_per_row() {
+    let mut text = engine();
+    let layout = text
+        .layout(
+            &[run(
+                "a struck sentence long enough to need more than one row of it",
+                TextStyle::body(16.0).strikethrough(),
+            )],
+            120.0,
+        )
+        .unwrap();
+
+    assert!(layout.lines.len() > 1, "the fixture has to wrap");
+    for (index, line) in layout.lines.iter().enumerate() {
+        assert!(
+            !line.rules.is_empty(),
+            "row {index} has text and no rule through it"
+        );
+    }
+}
+
 #[test]
 fn a_run_that_asked_for_no_underline_gets_none() {
     let mut text = engine();
@@ -343,7 +432,7 @@ fn a_run_that_asked_for_no_underline_gets_none() {
         .layout(&[run("plain", TextStyle::body(16.0))], 1000.0)
         .unwrap();
 
-    assert!(layout.lines.iter().all(|line| line.underlines.is_empty()));
+    assert!(layout.lines.iter().all(|line| line.rules.is_empty()));
 }
 
 /// The rule follows the text through wrapping rather than being one rectangle per run.
@@ -366,7 +455,7 @@ fn a_wrapped_underlined_run_is_underlined_on_every_row() {
             continue;
         }
         assert!(
-            !line.underlines.is_empty(),
+            !line.rules.is_empty(),
             "row {row} has text and no rule under it"
         );
     }
@@ -397,7 +486,7 @@ fn only_the_underlined_run_carries_a_rule() {
     let rules: Vec<_> = layout
         .lines
         .iter()
-        .flat_map(|line| line.underlines.iter())
+        .flat_map(|line| line.rules.iter())
         .collect();
     assert_eq!(rules.len(), 1);
     assert!(
@@ -422,7 +511,7 @@ fn a_rule_grows_with_the_style() {
         .layout(&[run("text", TextStyle::body(48.0).underline())], 1000.0)
         .unwrap();
 
-    let rule = |layout: &mdedit_text::Layout| layout.lines[0].underlines[0];
+    let rule = |layout: &mdedit_text::Layout| layout.lines[0].rules[0];
     let drop = |layout: &mdedit_text::Layout| rule(layout).top - layout.lines[0].baseline;
 
     assert!(

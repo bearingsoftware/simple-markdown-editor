@@ -431,6 +431,9 @@ struct DecorState {
     bold: bool,
     italic: bool,
     code_span: bool,
+    /// Whether the walk is between a `~~` pair. MDEDIT-91: strikethrough is inline and pairs within
+    /// a line, so it belongs here beside `bold` rather than in the block list.
+    struck: bool,
     /// Whether the walk is between a link's `[` and its `](`, so its text can take the `key` colour.
     ///
     /// Here rather than derived from the block list, unlike MDEDIT-74's quote: a link is *inline*, so
@@ -612,6 +615,7 @@ impl<'t> Builder<'_, 't> {
             Marker::Strong => self.state.bold = !self.state.bold,
             Marker::Emphasis => self.state.italic = !self.state.italic,
             Marker::CodeSpan => self.state.code_span = !self.state.code_span,
+            Marker::Strikethrough => self.state.struck = !self.state.struck,
             _ => {}
         }
     }
@@ -682,6 +686,11 @@ impl<'t> Builder<'_, 't> {
         // destination is never colour alone.
         if role == Role::Destination {
             style = style.underline();
+        }
+        // MDEDIT-91. Only content: a struck-through run's own `~~` is concealed, and in plain markup
+        // the markers are the point and striking them would hide what is being read.
+        if self.state.struck && role == Role::Content {
+            style = style.strikethrough();
         }
         (style, colour)
     }
