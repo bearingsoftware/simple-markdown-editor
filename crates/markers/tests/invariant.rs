@@ -57,6 +57,11 @@ fn assert_partitions(source: &str, context: &str) -> Vec<Segment> {
 /// The partition invariant alone cannot catch a misaligned span — an off-by-one that swallows a
 /// content character still tiles perfectly. This is the assertion that notices.
 fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
+    // Set by the first Link or Image marker that holds a bracket. See that arm below: a link's
+    // destination is arbitrary text, so a *continuation* of one can hold anything, and the only
+    // thing worth asserting about it is that a link was opened at all.
+    let mut link_opened = false;
+
     for seg in segments {
         let SegmentKind::Marker(marker) = seg.kind() else {
             continue;
@@ -97,8 +102,23 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
                 text.trim().is_empty()
                     || text.contains(|c: char| "*-+".contains(c) || c.is_ascii_digit())
             }
-            // Link syntax spans `[`, `](dest "title")` and `)`; the destination is arbitrary.
-            Marker::Link | Marker::Image => text.contains(|c: char| "[]()!<>".contains(c)),
+            // Link syntax spans `[`, `](dest "title")` and `)`.
+            //
+            // **A destination and a title are arbitrary text**, so a soft break inside the
+            // parentheses leaves a middle segment that can hold literally anything:
+            // `"[](  \n**\\  \n)"` reports three Link markers and the middle one is `**\  `. There
+            // is nothing to check per-segment there that is not simply false — which the property
+            // test demonstrated twice at 60,000 cases while MDEDIT-125 was being verified, first
+            // against "must contain a bracket" and then against "whitespace and backslashes".
+            //
+            // What is still true, and is what this now says: **a link marker cannot appear before a
+            // link has been opened.** A stray character labelled `Link` out of nowhere — the failure
+            // this arm exists to catch — has no bracketed marker before it and still fails.
+            Marker::Link | Marker::Image => {
+                let opens = text.contains(|c: char| "[]()!<>".contains(c));
+                link_opened |= opens;
+                opens || link_opened
+            }
             // A fence carries an arbitrary info string, an indented block's marker is whitespace,
             // and an unlisted kind is unconstrained by design.
             Marker::CodeBlock | _ => true,
@@ -305,6 +325,33 @@ fn a_soft_breaks_trailing_whitespace_is_content_too() {
             );
         }
     }
+}
+
+/// **A continuation line's indent is still that line's prefix**, and clearing the whitespace must not
+/// say otherwise.
+///
+/// MDEDIT-125. The first version of MDEDIT-112's rule set `content_started` as it cleared the space,
+/// which stopped the `>` immediately after it from being recognised as the quote's own syntax — so
+/// this input came back with a `Marker::Strikethrough` holding `>`. CommonMark allows three spaces of
+/// indent before a block marker, so a space is exactly the thing that does *not* end a prefix.
+///
+/// Found by the property test on CI rather than here, and the seed is in
+/// `invariant.proptest-regressions` so it is re-run every time regardless of the case count.
+#[test]
+fn an_indented_quote_marker_after_a_break_is_still_the_quotes() {
+    let source = ">~~*\n >**~~#";
+    let segments = assert_partitions(source, "MDEDIT-125");
+
+    let quotes: Vec<_> = segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::BlockQuote)))
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(
+        quotes,
+        vec![">", ">"],
+        "both `>` belong to the quote; the second is the one that used to be strikethrough"
+    );
 }
 
 /// A **link's** marker legitimately spans a newline and the indent after it — the whitespace sits

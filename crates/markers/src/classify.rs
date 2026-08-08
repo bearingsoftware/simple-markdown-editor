@@ -262,10 +262,14 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
         // is why the test is `is_delimiter_run` and not "is inline": a **link's** closing marker
         // legitimately spans a newline and its indent between the destination and the title, and a
         // block marker's whitespace is real syntax.
+        // **It leaves `in_prefix` and `content_started` alone**, and the first version of this did
+        // not. A continuation line's indent is still that line's *prefix* — CommonMark allows three
+        // spaces before a block marker — so declaring content started at it stopped the `>` after it
+        // from being recognised as the quote's own syntax, and `">~~*\n >**~~#"` came back with a
+        // `Marker::Strikethrough` holding `>`. Trailing whitespace does not care either way: content
+        // preceded it, so both flags already say so.
         if is_markdown_space(byte) && is_delimiter_run(marks[i]) {
             marks[i] = None;
-            in_prefix = false;
-            content_started = true;
             continue;
         }
 
