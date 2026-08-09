@@ -6747,6 +6747,7 @@ impl<T: TextLayout> Editor<T> {
         let selection = self.document().selection();
         let chunks = blocks::split(self.document(), &text);
         let last = chunks.len().saturating_sub(1);
+        let language = self.document().language().name();
         let keys: Vec<ChunkKey> = chunks
             .iter()
             .enumerate()
@@ -6757,6 +6758,7 @@ impl<T: TextLayout> Editor<T> {
                     index == last,
                     width,
                     self.mode,
+                    language,
                 )
             })
             .collect();
@@ -8504,10 +8506,37 @@ struct ChunkKey {
 }
 
 impl ChunkKey {
-    fn of(chunk: &blocks::Chunk, body: &str, last: bool, width: f32, mode: view::Mode) -> Self {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a cache key is the sum of what it identifies"
+    )]
+    fn of(
+        chunk: &blocks::Chunk,
+        body: &str,
+        last: bool,
+        width: f32,
+        mode: view::Mode,
+        language: &'static str,
+    ) -> Self {
         let mut hasher = DefaultHasher::new();
         chunk.kind.hash(&mut hasher);
         body.hash(&mut hasher);
+        // **The same bytes lay out differently in two languages**, so the language is part of what
+        // identifies a layout — for the reason the mode above is, and following it rather than
+        // clearing the cache when a document is re-languaged (MDEDIT-93). Saving an untitled buffer
+        // as `data.json` changes no byte and every colour, and the alternative is a clear at each of
+        // the paths that could re-language a tab, which is a list somebody forgets to add to.
+        //
+        // **No pair of today's languages can actually collide here**, and that is worth saying
+        // rather than implying: `chunk.kind` is above, a plain document has no blocks at all, and
+        // every other language produces some — so the hash already differs. Removing this line
+        // breaks no test. It is here because "the key identifies what was laid out" is the property,
+        // and relying on a second field to happen to differ is relying on an accident.
+        //
+        // The name rather than the pointer: `&'static dyn Language` is a fat pointer whose vtable
+        // address is not guaranteed unique, and a language's name is already required to identify it
+        // to a status bar.
+        language.hash(&mut hasher);
         Self {
             content: hasher.finish(),
             width: width.to_bits(),

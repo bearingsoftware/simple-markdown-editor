@@ -183,6 +183,32 @@ impl Document {
         self.language
     }
 
+    /// Reads this buffer as a different language from now on, and re-analyses it.
+    ///
+    /// Saving an untitled buffer as `data.json` is the case (MDEDIT-93): the bytes do not change and
+    /// everything derived from them does. Nothing else re-languages a document — a file's language is
+    /// settled when it is opened.
+    ///
+    /// **The revision goes up even though no byte moved.** It is what every cache downstream is keyed
+    /// on, and all of them are now wrong: the segments, the block list, the colours, the diagnostics
+    /// and the word count. A re-languaged tab drawing its old spans looks like a rendering bug and is
+    /// a staleness bug, which is the trap this ticket's plan named.
+    ///
+    /// Returns whether the language actually changed, so a caller can skip the invalidation when a
+    /// `.md` file is saved as another `.md`.
+    pub fn set_language(&mut self, language: &'static dyn Language) -> bool {
+        if std::ptr::eq(
+            std::ptr::from_ref::<dyn Language>(self.language).cast::<()>(),
+            std::ptr::from_ref::<dyn Language>(language).cast::<()>(),
+        ) {
+            return false;
+        }
+        self.language = language;
+        self.resegment();
+        self.revision = self.revision.saturating_add(1);
+        true
+    }
+
     /// Length of the buffer in bytes.
     #[must_use]
     pub fn len_bytes(&self) -> usize {
