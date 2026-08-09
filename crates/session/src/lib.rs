@@ -425,7 +425,10 @@ impl Workspace {
             snapshot_id,
             caret: ByteOffset::ZERO,
             open: Some(OpenTab {
-                document: Document::new(),
+                // **Plain, not Markdown** (MDEDIT-93). A new buffer has no name, and the name is the
+                // only thing this editor will read to decide what a file is. It becomes Markdown at
+                // the moment it is saved as `.md`, through `bind_to_path`.
+                document: Document::in_language(&mdedit_language::PLAIN),
                 file: None,
             }),
         });
@@ -475,13 +478,24 @@ impl Workspace {
         path: PathBuf,
         file: LoadedFile,
     ) -> Result<(), SessionError> {
+        // Read before the tab is borrowed, as `activate` does and for the same reason.
+        let resolver = self.language_for;
         let tab = self
             .tabs
             .get_mut(index)
             .ok_or(SessionError::NoSuchTab(index))?;
+        let language = resolver.map(|resolve| resolve(&path));
         tab.origin = Origin::File(path);
         if let Some(open) = tab.open.as_mut() {
             open.file = Some(file);
+            // **The language comes from the new name** (MDEDIT-93). This used to set the origin and
+            // the file and leave the document alone, so an untitled buffer saved as `data.json`
+            // stayed Markdown until the tab was closed and reopened. That was a defect on its own;
+            // it is also the thing that makes "plain until you save it as something" work at all,
+            // because otherwise the answer would only arrive on the next session.
+            if let Some(language) = language {
+                open.document.set_language(language);
+            }
         }
         Ok(())
     }

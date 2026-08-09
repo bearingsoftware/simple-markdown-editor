@@ -103,8 +103,37 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   changes on a great many paths, and a list of call sites is a list somebody forgets to add to — the
   same lesson as `counted_for` and `floating_for`, in push form, with `tools_state` holding what the
   menu was last told so the native call happens only when the answer changes.
+- **An unknown extension is plain text, and that reverses a written-down decision.** MDEDIT-93.
+  `detect.rs` said, deliberately, that an unknown extension or none is Markdown — *"this is a
+  Markdown editor; that is the right default and not an admission of defeat"*.
+
+  The reversal is that **guessing Markdown means styling a file that is not Markdown**, and
+  concealment makes a wrong guess worse than a wrong colour: a `notes.txt` of shell commands gets its
+  `#` comments drawn as headings and *loses the asterisks* in `*.log`. So the cue that a file is
+  Markdown is the same cue that makes it Markdown when you save it — its name. `.md` is now spelled
+  out like every other extension rather than being what is left over.
+
+  **`Plain` is the trait's identity element rather than a parser**: one content span, no markers, no
+  blocks, conceals false, no validation, no formatting. It still tiles, because tiling is not
+  optional for any language.
+
+  **It also fixed a defect found while planning it.** `Workspace::bind_to_path` set the origin and
+  the file and left the document's language alone, so an untitled buffer saved as `data.json` stayed
+  Markdown until the tab was closed and reopened. "Plain until you save it as something" cannot work
+  without that, and it was worth having either way.
+
+  **A language change is a cache change**, which the plan named as the thing to get wrong. The layout
+  cache is keyed by content, and its key now carries the language — following the precedent the
+  drawing mode set, in the key rather than clearing on a change, so switching back is free. Worth
+  knowing: **no pair of today's languages can actually collide on the rest of that key**, because a
+  plain document has no blocks and every other language produces some, so removing the language from
+  it breaks no test. It is there because relying on a second field to happen to differ is relying on
+  an accident, and that is said in the comment rather than dressed up as a tested property.
+
+  Release note: anything without a recognised extension stops being Markdown, so a `notes.txt` full
+  of Markdown will look different.
 - **`.json` files open highlighted and never concealed**, by extension only — a JSON file named
-  `data.txt` opens as Markdown, deliberately. Content sniffing is the trust boundary the 2023
+  `data.txt` is plain text, deliberately. Content sniffing is the trust boundary the 2023
   Notepad++ CVEs were all in, so nothing reads a byte of a file to decide what it is. The fix when
   somebody wants one is a language picker, which is a UI decision rather than a sniffing one.
 - **`.yaml` and `.yml` open highlighted too, from a hand-written lexer — and the parser decision is

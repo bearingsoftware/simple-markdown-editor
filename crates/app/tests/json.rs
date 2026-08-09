@@ -43,19 +43,34 @@ fn the_extension_decides_and_nothing_else_does() {
     assert_eq!(language_for(Path::new("notes.md")).name(), "Markdown");
     // Case-insensitively, because Windows filesystems are.
     assert_eq!(language_for(Path::new("DATA.JSON")).name(), "JSON");
-    // No extension, an unknown one, and a dotfile all fall back rather than guessing.
-    assert_eq!(language_for(Path::new("README")).name(), "Markdown");
-    assert_eq!(language_for(Path::new("notes.txt")).name(), "Markdown");
-    assert_eq!(language_for(Path::new(".gitignore")).name(), "Markdown");
 }
 
-/// The deliberate cost of not sniffing: a JSON file under the wrong name opens as Markdown. Better
+/// **The fallback is plain text, and it used to be Markdown** (MDEDIT-93).
+///
+/// `detect.rs` said, deliberately, that an unknown extension is Markdown — "this is a Markdown
+/// editor; that is the right default and not an admission of defeat". The reversal is that guessing
+/// Markdown means *styling a file that is not Markdown*, and concealment makes a wrong guess worse
+/// than a wrong colour: a `notes.txt` of shell commands loses the asterisks in `*.log`.
+///
+/// So `.md` is spelled out like every other extension rather than being what is left over.
+#[test]
+fn an_unknown_extension_is_plain_text() {
+    for name in ["README", "notes.txt", ".gitignore", "Makefile", "a.rs"] {
+        assert_eq!(
+            language_for(Path::new(name)).name(),
+            "Plain Text",
+            "{name} has no extension this editor knows"
+        );
+    }
+}
+
+/// The deliberate cost of not sniffing: a JSON file under the wrong name is not read as JSON. Better
 /// than a parser reachable by a crafted file, and fixed by a language picker when someone wants one.
 #[test]
 fn a_json_file_named_txt_is_not_json() {
     assert_eq!(
         language_for(Path::new("actually-json.txt")).name(),
-        "Markdown"
+        "Plain Text"
     );
 }
 

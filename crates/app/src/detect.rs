@@ -11,8 +11,20 @@
 //! smaller problem than a parser reached by a crafted file, and the fix when someone wants it is a
 //! language picker — a UI decision, not a sniffing one.
 //!
-//! An unknown extension, or none, is Markdown. This is a Markdown editor; that is the right default
-//! and not an admission of defeat.
+//! # An unknown extension is plain text, and that reverses a decision
+//!
+//! This file used to say: *"An unknown extension, or none, is Markdown. This is a Markdown editor;
+//! that is the right default and not an admission of defeat."* MDEDIT-93 reverses it, and the
+//! reversal deserves to be as explicit as the original.
+//!
+//! **Guessing Markdown means styling a file that is not Markdown.** A `notes.txt` of shell commands
+//! gets its `#` comments drawn as headings and its `*` globs as emphasis, and the concealment model
+//! makes that worse than a wrong colour: `*.log` loses its asterisks. Defaulting to Markdown is a
+//! confident answer to a question nobody asked.
+//!
+//! So the cue that a file *is* Markdown is the same cue that makes it Markdown when you save it —
+//! its name. A new buffer is plain until then, and `.md` is spelled out here like every other
+//! extension rather than being what is left over.
 
 use std::path::Path;
 
@@ -22,14 +34,16 @@ use mdedit_language::Language;
 #[must_use]
 pub fn language_for(path: &Path) -> &'static dyn Language {
     let Some(extension) = path.extension().and_then(|ext| ext.to_str()) else {
-        return &mdedit_markers::MARKDOWN;
+        return &mdedit_language::PLAIN;
     };
 
     // Lowercased because Windows filesystems are case-insensitive and `DATA.JSON` is a JSON file.
     match extension.to_ascii_lowercase().as_str() {
+        // Both spellings, and `.markdown` because it is the one the format's own site uses.
+        "md" | "markdown" => &mdedit_markers::MARKDOWN,
         "json" => &mdedit_json::JSON,
-        // Both spellings. `.yml` is the older one and still the commoner in the wild.
+        // `.yml` is the older spelling and still the commoner in the wild.
         "yaml" | "yml" => &mdedit_yaml::YAML,
-        _ => &mdedit_markers::MARKDOWN,
+        _ => &mdedit_language::PLAIN,
     }
 }

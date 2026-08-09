@@ -457,3 +457,70 @@ pub trait Language: std::fmt::Debug + Send + Sync {
     /// and for YAML, whose indentation is load-bearing.
     fn conceals(&self) -> bool;
 }
+
+/// Text with no syntax at all.
+///
+/// **The trait's identity element rather than a parser** (MDEDIT-93). One content span covering the
+/// whole source, no markers, no tokens, no blocks; nothing concealed, nothing validated, nothing
+/// reformatted. Every byte is drawn once in the body colour, which is what a file the editor has no
+/// opinion about should look like.
+///
+/// # Why it exists
+///
+/// A new buffer, and a file whose extension the editor does not recognise. `detect.rs` used to say —
+/// and it was a deliberate decision, not a gap — that an unknown extension is Markdown, "this is a
+/// Markdown editor; that is the right default and not an admission of defeat". MDEDIT-93 reverses it
+/// as explicitly as it was made: **guessing Markdown means styling a file that is not Markdown**,
+/// and the cue that something is Markdown should be the same cue that makes it Markdown when you
+/// save it.
+///
+/// It still tiles, because tiling is not optional for any language and an empty document produces no
+/// segment at all rather than an empty one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Plain;
+
+/// The one plain text there is, for a caller holding a `&'static dyn Language`.
+pub static PLAIN: Plain = Plain;
+
+impl Language for Plain {
+    fn name(&self) -> &'static str {
+        "Plain Text"
+    }
+
+    fn analyze(&self, source: &str) -> Analysis {
+        let segments = if source.is_empty() {
+            Vec::new()
+        } else {
+            vec![Segment::new(
+                ByteSpan::new(
+                    mdedit_offsets::ByteOffset::ZERO,
+                    mdedit_offsets::ByteOffset::new(source.len()),
+                ),
+                SegmentKind::Content,
+            )]
+        };
+        Analysis {
+            segments,
+            blocks: Vec::new(),
+        }
+    }
+
+    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
+        // Any offset is a safe restart when there is no state to recover, so this answers for the
+        // region rather than sending the caller back to a whole-document parse it does not need.
+        let _ = source;
+        let segments = if region.is_empty() {
+            Vec::new()
+        } else {
+            vec![Segment::new(region, SegmentKind::Content)]
+        };
+        Some(Analysis {
+            segments,
+            blocks: Vec::new(),
+        })
+    }
+
+    fn conceals(&self) -> bool {
+        false
+    }
+}
