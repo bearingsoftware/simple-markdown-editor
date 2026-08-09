@@ -159,6 +159,13 @@ pub enum Marker {
     Escape,
     /// The trailing spaces or backslash forming a hard line break.
     HardBreak,
+    /// A footnote's `[^id]` reference, or the `[^id]: ` opening its definition.
+    ///
+    /// One variant for both, because they are the same construct seen from either end and the
+    /// renderer treats them alike: neither is prose, and both are the label rather than the note.
+    Footnote,
+    /// The `: ` opening a definition-list definition.
+    DefinitionList,
     /// The `[ ]` or `[x]` of a task-list item, after its bullet.
     ///
     /// Separate from [`ListItem`](Self::ListItem) because it is a different thing on screen: the
@@ -186,6 +193,7 @@ impl Marker {
                 | Self::ListItem
                 | Self::ThematicBreak
                 | Self::TaskMarker
+                | Self::DefinitionList
         )
     }
 }
