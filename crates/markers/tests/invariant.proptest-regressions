@@ -12,3 +12,10 @@ cc ba6ab135a2af657c736aad9b0e09a0728cc97831f38f33bb82cd8d8a7d6affd7 # shrinks to
 cc 4676741cc2826aa0dc5d967fe779439b71246fcea1e69329b4c9c3add44b91b5 # shrinks to source = "*A\u{b}\n!*:"
 cc a7e9de717e905101b300f88e7db37f54aff39538a24a1ea12a6b11f403aa2d50 # shrinks to indices = [5, 22, 0, 14, 15, 5, 0, 0, 22, 4], ">~~*\n >**~~#"
 cc 36a4adbcc1e116c2fb147b787b03991c11c18ecf5d763a833c3a88b8d76d8a08 # shrinks to indices = [8, 9, 10, 23, 13, 23, 11]
+cc f2b704a730e746ebaffea82e96e32f06c4840ac07b5ba0c320d2cad628ba9018 # shrinks to indices = [0, 14, 24, 5, 25]
+cc a2ba579e2b29885bc8b3c0b7ddb9fb30eecf66f9d7145d836902abaae88ece72 # shrinks to indices = [24, 0, 25, 8, 23, 4]
+cc 21c157f16cb1b3eeb96be9e0782ec188c56ac152c82ca8b866bf6573ae2dca92 # shrinks to indices = [5, 24, 5, 25]
+cc 674b545c0a172b506d9529a2c2fe9736bdbf7645073849c7c947a4a3dbbf1da9 # shrinks to source = "#\u{b}\r$"
+cc 3848cc68598fbcc5880dd77ebb3c93b5b91b1655e59406ef0f609d5c7417bed0 # shrinks to indices = [16, 23, 28, 8, 0, 25, 0]
+cc ebfa3b93da8abc57a63504d7e6c2a8f0c815912a1a9cf3b218bbadaa20c33223 # shrinks to indices = [5, 8, 14, 11, 25, 0]
+cc 27319d43c46813ec1cac697824e5039e3124984eed5ee9b2619cca2c89c8d159 # shrinks to indices = [0, 23, 24, 0, 25, 8, 16, 25, 14, 8]

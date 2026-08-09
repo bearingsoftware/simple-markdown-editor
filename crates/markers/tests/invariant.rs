@@ -94,7 +94,17 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
             // `### ###` is an empty heading and entirely syntax, and CommonMark strips a heading's
             // trailing whitespace — so a run may be all spaces. Constrain the characters, not the
             // shape; that still catches a span that has swallowed a content letter.
+            //
             Marker::Heading => text.chars().all(|c| "#=-".contains(c) || c.is_whitespace()),
+            // `[^id]` as a reference, or `[^id]: ` opening a definition. The identifier is arbitrary,
+            // so the brackets are what there is to check.
+            // Or the indent of a continuation line, which is the definition's syntax in the same way a
+            // list item's indent is: it is what keeps the next line inside the note.
+            Marker::Footnote => {
+                text.trim().is_empty() || (text.starts_with("[^") && text.contains(']'))
+            }
+            // `: ` and the whitespace around it.
+            Marker::DefinitionList => text.chars().all(|c| c == ':' || c.is_whitespace()),
             // Continuation lines carry only the indent that keeps content inside the block, so a
             // whitespace-only marker is legitimate for both of these.
             Marker::BlockQuote => text.contains('>') || text.trim().is_empty(),
@@ -286,6 +296,10 @@ fn brackets_elsewhere_are_not_a_checkbox() {
 const FRAGMENTS: &[&str] = &[
     "*", "_", "`", "~", "#", ">", "-", "+", "[", "]", "(", ")", "!", "\\", "\n", " ", "a", "é",
     "🎉", "1.", "```", "**", "~~", "  \n",
+    // MDEDIT-90, so the generator can reach the three extensions turned on there. Without these the
+    // property test runs over an alphabet that cannot spell a footnote, and the flags would be
+    // covered by fixtures alone — which is where a misaligned span is least likely to be.
+    "[^", "]:", "{#", "}", ":", "^",
 ];
 
 proptest::proptest! {
@@ -439,5 +453,99 @@ fn a_links_marker_may_still_span_a_break() {
     assert!(
         concealed.contains("\"title\""),
         "the title is part of the link's syntax and must stay concealed: {concealed:?}"
+    );
+}
+
+/// **A footnote's `[^1]` is syntax at both ends** (MDEDIT-90) — the reference in the sentence and the
+/// label opening the definition.
+///
+/// The definition's marker is its **label only**. The tag's range covers the note's body as well,
+/// and the parser reports no content event for a body that is itself a link reference definition, so
+/// subtracting content left the whole rest of the document concealed. `label_end` measures it
+/// directly instead, as `Event::Code`'s backtick run is measured and for the same reason.
+#[test]
+fn a_footnote_is_syntax_at_both_ends() {
+    let source = "text [^1].\n\n[^1]: the note\n";
+    let segments = assert_partitions(source, "MDEDIT-90 footnotes");
+
+    let markers: Vec<_> = segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::Footnote)))
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(markers, vec!["[^1]", "[^1]: "]);
+
+    let content: Vec<_> = segments
+        .iter()
+        .filter(|seg| seg.kind() == SegmentKind::Content)
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(
+        content,
+        vec!["text ", ".\n\n", "the note\n"],
+        "the note's text is the reader's, not the label's"
+    );
+}
+
+/// The case the label measurement exists for: a body the parser emits nothing at all for.
+#[test]
+fn a_footnote_whose_body_is_a_reference_definition_does_not_swallow_it() {
+    let source = "[^a]: [ref]: /url\n";
+    let segments = assert_partitions(source, "MDEDIT-90 footnote body");
+
+    let concealed: String = segments
+        .iter()
+        .filter(|seg| seg.is_marker())
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(
+        concealed, "[^a]: ",
+        "everything past the label is the note, however little the parser says about it"
+    );
+}
+
+/// **A definition list's `: ` is syntax** (MDEDIT-90), and the term above it is not.
+#[test]
+fn a_definition_lists_colon_is_syntax() {
+    let source = "term\n: meaning\n";
+    let segments = assert_partitions(source, "MDEDIT-90 definition lists");
+
+    let markers: Vec<_> = segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::DefinitionList)))
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(markers, vec![": "]);
+}
+
+/// A colon that is not opening a definition stays content, which is the risk of every extension:
+/// what it claims that it should not.
+#[test]
+fn a_colon_elsewhere_is_not_a_definition() {
+    for source in ["a: b\n", "see: this\n", "- a: b\n"] {
+        let segments = assert_partitions(source, source);
+        assert!(
+            !segments
+                .iter()
+                .any(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::DefinitionList))),
+            "{source:?} is not a definition list"
+        );
+    }
+}
+
+/// **A document using none of them is classified exactly as before**, which is the other half of
+/// turning extensions on: the flags must not change what ordinary Markdown means.
+#[test]
+fn ordinary_markdown_is_unchanged_by_the_extensions() {
+    let source = "# Heading\n\nProse with **strong**, *emphasis*, `code`, [a link](/url) and \
+                  ~~struck~~ text.\n\n- a bullet\n- another\n\n> a quote\n\n```rust\nfn x() {}\n```\n";
+    let segments = assert_partitions(source, "MDEDIT-90 control");
+
+    assert!(
+        !segments.iter().any(|seg| matches!(
+            seg.kind(),
+            SegmentKind::Marker(Marker::Footnote | Marker::DefinitionList | Marker::TaskMarker)
+        )),
+        "no extension construct is in this document, so none should be reported"
     );
 }

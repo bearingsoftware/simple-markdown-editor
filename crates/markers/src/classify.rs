@@ -15,15 +15,56 @@ use crate::{Analysis, Block, BlockKind, Marker, Segment, SegmentKind};
 // by them directly. Typing them would add conversions at every index without separating anything.
 // The boundary is `coalesce`, where offsets become the `ByteSpan`s the crate hands out.
 
-/// Extensions we classify. GFM tables and footnotes are deliberately absent — they are out of scope
-/// until the renderer handles them, and degrade to content.
+/// Extensions we classify.
 ///
 /// **Task lists are on because the editor's own button writes them** (MDEDIT-88). The formatting bar
 /// has inserted `- [ ] ` since MDEDIT-52 while this line said the parser should not read it, so the
 /// write path and the read path disagreed about the language and the editor rendered its own output
 /// as a bullet followed by a literal pair of brackets.
+///
+/// Footnotes and definition lists are MDEDIT-90: each is a construct people write by hand and want
+/// to see *recognised*, and colouring one costs a flag and a marker where rendering it would cost a
+/// widget. **Colour only, no authoring** — nothing writes either of them.
+///
+/// # What is deliberately off, having been measured rather than assumed
+///
+/// - **`ENABLE_HEADING_ATTRIBUTES`**, which MDEDIT-90 set out to take and which **loses a line**.
+///   It mishandles a lone `\r` as a terminator, so a heading followed by a CR-terminated line
+///   swallows that line:
+///
+///   ```text
+///   "# a\r$"   off: Heading 0..4, then a paragraph "$"
+///              on:  Heading 0..5, its text event "a\r$" — the next line is inside the heading
+///   "#\u{b}\r$" on:  Heading 0..4 with no text event at all, so `$` is *marker* and is concealed
+///   ```
+///
+///   `\n` and `\r\n` are unaffected; only a bare CR. That is not a corner this editor can wave
+///   away — it draws lone CRs (MDEDIT-46) and converts them only when asked (MDEDIT-59), precisely
+///   because files arrive with them. A flag that makes a character vanish from the rendered line is
+///   the MDEDIT-112 class, and this one is worse: it takes the whole line.
+///
+///   Found by the property test at 200,000 cases, minimised to five characters. Reported as
+///   [pulldown-cmark#1132](https://github.com/pulldown-cmark/pulldown-cmark/issues/1132).
+/// - **GFM tables**, until there is a block widget to put one in. Its ticket is MDEDIT-89.
+/// - **`ENABLE_GFM`**, which is *not* what its name suggests and not what MDEDIT-90 expected: in
+///   0.13 it enables blockquote alert tags (`> [!NOTE]`) and nothing else — **no bare-URL
+///   autolinks**. This editor does not render a callout, and turning it on changes no classification
+///   at all: with it off, `[!NOTE]` is the quote's content; with it on, it lands inside the quote's
+///   marker range and `normalise_line_syntax` hands it straight back to content. A flag that costs
+///   parse time and changes nothing is not worth taking.
+/// - **`ENABLE_SUBSCRIPT`**, because it **reinterprets documents that already exist**: with it on,
+///   `~single~` is a subscript where today it is strikethrough. Silently changing what a file means
+///   is not a highlighting feature.
+/// - **`ENABLE_SUPERSCRIPT`**, which produced no event at all on `x^2^` — whatever it wants, it is
+///   not the syntax anybody writes.
+/// - **Smart punctuation**, which rewrites `--` and `"` in the *parser's* output. Nothing here reads
+///   the text of an event, so it would change nothing — but it is exactly the kind of flag that
+///   would one day quietly break byte preservation, and it is named here so nobody adds it casually.
 fn options() -> Options {
-    Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
+    Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_DEFINITION_LIST
 }
 
 pub(crate) fn analyze(source: &str) -> Analysis {
@@ -88,6 +129,11 @@ fn block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
         Tag::Item => BlockKind::ListItem,
         Tag::HtmlBlock => BlockKind::Html,
         Tag::FootnoteDefinition(_) | Tag::Table(_) => BlockKind::Other,
+        // MDEDIT-90. `Other` rather than reusing `List`: nothing acts on the distinction, and
+        // `BlockKind` grows a variant when a renderer needs a case rather than before.
+        Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {
+            BlockKind::Other
+        }
         // Everything else is inline and opens no block.
         _ => return None,
     })
@@ -106,6 +152,9 @@ fn closes_block(tag: TagEnd) -> bool {
             | TagEnd::HtmlBlock
             | TagEnd::FootnoteDefinition
             | TagEnd::Table
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
     )
 }
 
@@ -138,7 +187,15 @@ fn walk(source: &str) -> Walk {
                     ));
                     depth = depth.saturating_add(1);
                 }
-                if let Some(marker) = marker_for(&tag) {
+                // **A footnote definition's marker is its label, not the whole note** (MDEDIT-90).
+                // The tag's range covers the note's body too, and the parser reports no content
+                // event for a body that is itself a link reference definition — so subtracting
+                // content left `[^*]:[a]:\n[` as one marker, the whole rest of the document
+                // concealed. Measured directly, as `Event::Code`'s backtick run is and for the same
+                // reason: the range covers delimiters and content with no child event between them.
+                if matches!(tag, Tag::FootnoteDefinition(_)) {
+                    constructs.push((range.start..label_end(source, &range), Marker::Footnote));
+                } else if let Some(marker) = marker_for(&tag) {
                     constructs.push((range, marker));
                 }
             }
@@ -178,11 +235,12 @@ fn walk(source: &str) -> Walk {
             // drawn as prose, and concealed by nothing.
             Event::TaskListMarker(_) => constructs.push((range, Marker::TaskMarker)),
 
+            // `[^1]` in the middle of a sentence, and it is a leaf event like the checkbox above —
+            // so without this the reference reads as prose (MDEDIT-90).
+            Event::FootnoteReference(_) => constructs.push((range, Marker::Footnote)),
+
             // Everything else contributes neither syntax nor content of its own.
-            Event::End(_)
-            | Event::InlineMath(_)
-            | Event::DisplayMath(_)
-            | Event::FootnoteReference(_) => {}
+            Event::End(_) | Event::InlineMath(_) | Event::DisplayMath(_) => {}
         }
     }
 
@@ -205,8 +263,44 @@ fn marker_for(tag: &Tag<'_>) -> Option<Marker> {
         Tag::CodeBlock(CodeBlockKind::Fenced(_) | CodeBlockKind::Indented) => Marker::CodeBlock,
         Tag::Link { .. } => Marker::Link,
         Tag::Image { .. } => Marker::Image,
+        // MDEDIT-90. The definition's range covers its `: ` and the title's covers nothing but the
+        // line's terminator, which `normalise_line_syntax` gives back to content — so this is one
+        // marker in practice even though two tags carry it.
+        Tag::DefinitionListTitle | Tag::DefinitionListDefinition => Marker::DefinitionList,
         _ => return None,
     })
+}
+
+/// Whether a byte could be part of a line's block prefix.
+///
+/// The characters a quote or list marker is ever drawn from. Deliberately the same set the
+/// quote-and-list plausibility check in `normalise_line_syntax` uses, because they are answering the
+/// same question from opposite ends: that one asks "could this be block syntax", and this asks "is
+/// the block syntax still going".
+fn is_block_prefix(byte: u8) -> bool {
+    byte == b'>'
+        || byte.is_ascii_whitespace()
+        || byte.is_ascii_digit()
+        || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')')
+}
+
+/// Where a footnote definition's `[^label]:` ends, given the tag's whole range.
+///
+/// The first `]` after the opening `[^`, plus the `:` that must follow it and any spaces after that
+/// — the indent belongs to the label in the same way a list item's does. A range that does not have
+/// that shape gets nothing, which leaves every byte of it content: the safe end, because a marker is
+/// concealed and content is not.
+fn label_end(source: &str, range: &Range<usize>) -> usize {
+    let text = &source[range.clone()];
+    let Some(bracket) = text.find(']') else {
+        return range.start;
+    };
+    let after = &text[bracket + 1..];
+    if !after.starts_with(':') {
+        return range.start;
+    }
+    let spaces = after[1..].len() - after[1..].trim_start_matches(' ').len();
+    range.start + bracket + 2 + spaces
 }
 
 /// Number of leading backticks in an inline code span.
@@ -221,8 +315,11 @@ fn backtick_run(text: &str) -> usize {
 /// gives identical results for a third of the memory traffic.
 fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
     let bytes = source.as_bytes();
-    let mut in_prefix = true;
     let mut content_started = false;
+    // Whether the walk is still in the run of bytes that could be this line's block prefix. Cleared
+    // by the first byte that could not be part of one — **including a content byte**, which is why
+    // it is updated before the content branch below rather than after it.
+    let mut in_block_prefix = true;
 
     for i in 0..bytes.len() {
         let byte = bytes[i];
@@ -230,25 +327,38 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
         // A newline is never syntax to conceal — concealing one would join two lines.
         if byte == b'\n' || byte == b'\r' {
             marks[i] = None;
-            in_prefix = true;
             content_started = false;
+            in_block_prefix = true;
             continue;
         }
 
+        if !is_block_prefix(byte) {
+            in_block_prefix = false;
+        }
+
         if marks[i].is_none() {
-            in_prefix = false;
             content_started = true;
             continue;
         }
 
-        // A `>` in a line's opening syntax run is always block-quote syntax. Range containment
-        // cannot express this: a list item legitimately spans the continuation lines of a quote
-        // nested inside it, so in `> > 1. one\n>>\n>>   two` the item's range covers the `>>`
-        // prefixes and, starting later, is filled last and wins bytes that are the quote's.
+        // A `>` in a line's **block prefix** is block-quote syntax. Range containment cannot express
+        // that: a list item legitimately spans the continuation lines of a quote nested inside it,
+        // so in `> > 1. one\n>>\n>>   two` the item's range covers the `>>` prefixes and, starting
+        // later, is filled last and wins bytes that are the quote's.
         //
-        // Confined to the prefix so it cannot touch the `>` closing an autolink — content precedes
-        // that one, and `in_prefix` is already false.
-        if in_prefix && byte == b'>' {
+        // **The prefix is stricter than "no content yet on this line"**, and MDEDIT-90 is what made
+        // the difference reachable: a footnote's label may be a `>`, so in `>[^>]:` the second `>`
+        // has no content before it and is not a prefix either. Relabelling it split one construct
+        // into three — `Footnote`, `BlockQuote`, `Footnote`. The prefix ends at the first byte that
+        // could not be block-prefix material, which is the same set the quote-and-list plausibility
+        // check below uses, and `[` is not in it.
+        //
+        // Confined to the prefix so it also cannot touch the `>` closing an autolink — content
+        // precedes that one.
+        if !is_block_prefix(byte) {
+            in_block_prefix = false;
+        }
+        if in_block_prefix && byte == b'>' {
             marks[i] = Some(Marker::BlockQuote);
         }
 
@@ -283,23 +393,44 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
             continue;
         }
 
-        if matches!(marks[i], Some(Marker::BlockQuote | Marker::ListItem)) {
+        if let Some(marker @ (Marker::BlockQuote | Marker::ListItem | Marker::DefinitionList)) =
+            marks[i]
+        {
             // Subtracting content from a construct's range assumes the parser reports content for
             // everything that is not syntax — but it emits no events at all for a link reference
             // definition, so `- item\n\n  [ref]: /url` leaves the definition inside the item's range
             // and unclaimed, and it would be concealed as list syntax.
             //
-            // A quote or list marker is only ever drawn from `>`, a bullet, digits and whitespace,
-            // and only ever appears before the line's content — the space in `[ref]: /url` is not a
-            // list indent. Anything else degrades to content with its bytes intact.
-            let plausible = byte == b'>'
-                || byte.is_ascii_whitespace()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')');
+            // These markers are only ever drawn from a small set of characters, and only ever appear
+            // before the line's content — the space in `[ref]: /url` is not a list indent. Anything
+            // else degrades to content with its bytes intact.
+            //
+            // Subtracting content from a construct's range assumes the parser reports content for
+            // everything that is not syntax, and it does not: it emits no events at all for a link
+            // reference definition, so `- item\n\n  [ref]: /url` leaves the definition inside the
+            // item's range and unclaimed, and it would be concealed as list syntax.
+            //
+            // **A definition list is here for the same reason** (MDEDIT-90), and the property test
+            // found the same shape within a second: in `a  \n:[*]:*` the definition's range is
+            // `:[*]:*` with no content event inside it, because what it holds is — again — a link
+            // reference definition.
+            //
+            // **The set is per marker, and that is not tidiness.** It was one union, and a `)` is
+            // list material that a quote's marker can never contain: in `>[\n)]:*` the quote's range
+            // covers the lazy continuation line, so its `)` passed a shared check and came back as a
+            // `BlockQuote` marker holding `)`. Pre-existing, and surfaced by MDEDIT-90 only because
+            // its alphabet learned to spell `]:`.
+            let plausible = byte.is_ascii_whitespace()
+                || match marker {
+                    Marker::BlockQuote => byte == b'>',
+                    Marker::ListItem => {
+                        byte.is_ascii_digit() || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')')
+                    }
+                    _ => byte == b':',
+                };
 
             if content_started || !plausible {
                 marks[i] = None;
-                in_prefix = false;
                 content_started = true;
             }
         }

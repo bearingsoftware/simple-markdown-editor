@@ -708,8 +708,12 @@ impl<'t> Builder<'_, 't> {
             // bullet: `[x]` says something about the item where `- ` says only that there is one.
             // `token_literal` is the pack's constant role, which is where `true` and `false` go.
             Role::Marker(Marker::TaskMarker) => self.theme.token_literal,
+            // **A footnote's label is a landmark, not scaffolding** (MDEDIT-90). `[^1]` is the thing
+            // a reader's eye goes to and the thing they follow, which is what `link` means here —
+            // the same argument the pack makes for a destination, and the same one that sends a list
+            // bullet to `key` rather than leaving every marker one green.
+            Role::Marker(Marker::Footnote) | Role::Destination => self.theme.link,
             Role::Marker(_) => self.theme.marker,
-            Role::Destination => self.theme.link,
             // A link's *text* is content — `pulldown-cmark` subtracts it from the construct — so it
             // is told from surrounding prose by where the walk is rather than by what it says.
             Role::Content if self.state.link_text => self.theme.token_key,
