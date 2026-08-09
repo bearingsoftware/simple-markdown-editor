@@ -5,9 +5,9 @@ The language trait and its three implementations, what each of them conceals, va
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
 
-- **Two parser extensions are on, and the second is on because the editor's own button writes it.**
-  Strikethrough since day one; **task lists** from MDEDIT-88. GFM tables and footnotes remain off and
-  degrade to content, which is the right answer until a renderer handles them.
+- **Four parser extensions are on, and each one is on for a stated reason.** Strikethrough since day
+  one; **task lists** from MDEDIT-88; **footnotes** and **definition lists** from MDEDIT-90. GFM
+  tables remain off and degrade to content, which is the right answer until a renderer handles them.
 
   The formatting bar has inserted `- [ ] ` since MDEDIT-52 while `ENABLE_TASKLISTS` was off in the
   locator, so **the write path and the read path disagreed about the language**: the editor rendered
@@ -31,6 +31,27 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Faster on the documents that use it because `[ ]` read as literal text costs *more* events than one
   `TaskListMarker` — the bracket opens a link scan that goes nowhere. `criterion` could not see any
   of this: the runner's run-to-run spread is ±25% at 310 KiB, which is twenty times the effect.
+
+  **Footnotes and definition lists cost +0.7% on a document that has neither and +4% on one that has
+  both** (MDEDIT-90, same method). A footnote's `[^1]` is `link`-coloured, because it is a landmark
+  a reader follows rather than scaffolding — the same argument that sends a destination to `link`.
+
+  **Three of MDEDIT-90's four candidates were rejected on measurement, and one of them was rejected
+  for losing a line.** The ticket assumed `ENABLE_GFM` gives bare-URL autolinks; in 0.13 it gives
+  blockquote alert tags and nothing else, which this editor does not render and which changes no
+  classification at all. `ENABLE_SUBSCRIPT` reinterprets `~x~` from strikethrough to subscript, which
+  silently changes what existing files mean. And **`ENABLE_HEADING_ATTRIBUTES` makes an ATX heading
+  swallow the following line when the heading ends with a lone `\r`** — reported as
+  [pulldown-cmark#1132](https://github.com/pulldown-cmark/pulldown-cmark/issues/1132), minimised to
+  `"# a\r$"`, and disqualifying here because this editor preserves lone CRs on purpose.
+
+  **The property test's alphabet grew with the flags**, which is the part worth copying: `[^`, `]:`,
+  `{#`, `}`, `:` and `^` were added so the generator could spell the new constructs. It found four
+  defects in the first minute — the heading one above, and three in this crate. Two of those three
+  were *pre-existing* and simply unreachable before: a `>` inside a footnote label being relabelled
+  as a quote prefix, and a `)` on a quote's lazy continuation line passing a plausibility check that
+  was shared between quotes and lists. **An extension that adds no fixture but widens the generator
+  is still earning its keep.**
 - **A document can be told it is wrong, and that is a second strict pass rather than a stricter
   lexer.** MDEDIT-47. `Language::validate` returns `Diagnostic`s — a `ByteSpan` and a `&'static str`
   — and defaults to none, so **Markdown opts out by existing**: there is no such thing as invalid

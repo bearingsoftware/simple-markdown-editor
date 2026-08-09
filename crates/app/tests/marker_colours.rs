@@ -219,3 +219,38 @@ fn a_task_checkbox_is_concealed_in_preview() {
         "a literal pair of brackets in the rendered line is the defect this fixed"
     );
 }
+
+/// **A footnote's label is a landmark, not scaffolding** (MDEDIT-90) — the same argument that sends
+/// a link's destination to `link` and a list bullet to `key` rather than leaving every marker one
+/// colour. `[^1]` is the thing a reader's eye goes to and the thing they follow.
+#[test]
+fn a_footnote_label_is_link_coloured() {
+    let theme = Theme::default();
+    let runs = drawn("text [^1].\n\n[^1]: the note\n");
+
+    assert_eq!(run_of(&runs, "[^1]").colour, theme.link, "the reference");
+    assert_eq!(run_of(&runs, "[^1]: ").colour, theme.link, "the definition");
+    assert_eq!(
+        run_of(&runs, "the note\n").colour,
+        theme.text,
+        "and the note itself is prose"
+    );
+}
+
+/// A definition list's `: ` is ordinary syntax, and the pack has nothing louder to say about it.
+#[test]
+fn a_definition_lists_colon_is_marker_coloured() {
+    let theme = Theme::default();
+    let runs = drawn("term\n: meaning\n");
+    assert_eq!(run_of(&runs, ": ").colour, theme.marker);
+}
+
+/// And in preview both vanish, like every other marker.
+#[test]
+fn the_new_markers_are_concealed_in_preview() {
+    let text: String = drawn_in("text [^1].\n\n[^1]: the note\n", Mode::Preview)
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(text, "text .\n\nthe note\n");
+}
