@@ -703,6 +703,11 @@ impl<'t> Builder<'_, 't> {
     fn colour(&self, role: Role, in_code: bool) -> Rgba {
         match role {
             Role::Marker(Marker::ListItem) => self.theme.token_key,
+            // **State, not scaffolding**, which is the pack's own distinction and the reason
+            // MDEDIT-88 gave the checkbox a marker of its own rather than folding it into the
+            // bullet: `[x]` says something about the item where `- ` says only that there is one.
+            // `token_literal` is the pack's constant role, which is where `true` and `false` go.
+            Role::Marker(Marker::TaskMarker) => self.theme.token_literal,
             Role::Marker(_) => self.theme.marker,
             Role::Destination => self.theme.link,
             // A link's *text* is content — `pulldown-cmark` subtracts it from the construct — so it

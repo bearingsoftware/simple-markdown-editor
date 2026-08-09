@@ -119,6 +119,10 @@ fn assert_marker_shapes(source: &str, segments: &[Segment], context: &str) {
                 link_opened |= opens;
                 opens || link_opened
             }
+            // Exactly three characters, and only two spellings of the middle one. MDEDIT-88 turned
+            // the extension on, so this is a shape worth stating rather than leaving to the
+            // catch-all below.
+            Marker::TaskMarker => matches!(text, "[ ]" | "[x]" | "[X]"),
             // A fence carries an arbitrary info string, an indented block's marker is whitespace,
             // and an unlisted kind is unconstrained by design.
             Marker::CodeBlock | _ => true,
@@ -209,6 +213,71 @@ fn out_of_scope_constructs_degrade_to_content_not_panic() {
     for source in ["<div>x</div>", "&amp; &#35;", "| a |\n| - |", "[^fn]: note"] {
         let segments = assert_partitions(source, source);
         assert!(!segments.is_empty());
+    }
+}
+
+/// **A task-list checkbox is syntax** (MDEDIT-88), and the bullet before it is still the bullet's.
+///
+/// The editor's own formatting bar has written `- [ ] ` since MDEDIT-52 while `ENABLE_TASKLISTS` was
+/// off here, so the write path and the read path disagreed about the language: the box came back as
+/// *content* and was drawn as a literal pair of brackets after a bullet.
+///
+/// Three spans per item, and the shape is the assertion — a single `ListItem` marker swallowing the
+/// box would tile perfectly and be exactly the old behaviour.
+#[test]
+fn a_task_list_checkbox_is_its_own_marker() {
+    let source = "- [ ] todo\n- [x] done\n";
+    let segments = assert_partitions(source, "MDEDIT-88");
+
+    let boxes: Vec<_> = segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::TaskMarker)))
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(
+        boxes,
+        vec!["[ ]", "[x]"],
+        "both boxes, unchecked and checked"
+    );
+
+    let content: Vec<_> = segments
+        .iter()
+        .filter(|seg| seg.kind() == SegmentKind::Content)
+        .map(|seg| seg.span().slice(source))
+        .collect();
+    assert_eq!(
+        content,
+        vec!["todo\n", "done\n"],
+        "the text of each item, and nothing of its syntax"
+    );
+}
+
+/// A bullet without a box is untouched, which is what says the extension did not change lists.
+#[test]
+fn an_ordinary_list_item_gains_no_checkbox() {
+    let source = "- plain\n";
+    let segments = assert_partitions(source, "MDEDIT-88");
+
+    assert!(
+        !segments
+            .iter()
+            .any(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::TaskMarker))),
+        "there is no box here to find"
+    );
+}
+
+/// **Brackets that are not a checkbox stay content**, which is the risk of turning an extension on:
+/// `[ ]` is only a task marker at the start of a list item.
+#[test]
+fn brackets_elsewhere_are_not_a_checkbox() {
+    for source in ["a [ ] b\n", "- a [ ] b\n", "> [ ] quoted\n"] {
+        let segments = assert_partitions(source, source);
+        assert!(
+            !segments
+                .iter()
+                .any(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::TaskMarker))),
+            "{source:?} has no task item in it"
+        );
     }
 }
 

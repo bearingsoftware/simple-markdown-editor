@@ -5,6 +5,32 @@ The language trait and its three implementations, what each of them conceals, va
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
 
+- **Two parser extensions are on, and the second is on because the editor's own button writes it.**
+  Strikethrough since day one; **task lists** from MDEDIT-88. GFM tables and footnotes remain off and
+  degrade to content, which is the right answer until a renderer handles them.
+
+  The formatting bar has inserted `- [ ] ` since MDEDIT-52 while `ENABLE_TASKLISTS` was off in the
+  locator, so **the write path and the read path disagreed about the language**: the editor rendered
+  its own output as a bullet followed by a literal pair of brackets. Found by auditing the editor
+  against the Markdown Guide's extended syntax rather than by using it.
+
+  **The checkbox gets a `Marker` of its own**, not the bullet's. `Tag::Item` covers the bullet; the
+  box arrives as a leaf `Event::TaskListMarker` with its own range and would otherwise fall to the
+  item's content by subtraction. And they are different things on screen: a bullet is *scaffolding*
+  and a box is **state**, which is why it takes the pack's constant colour where the bullet takes
+  key. `- [x] done` is four spans — bullet, box, the item's space, then the text.
+
+  **The extension is free, and on a document that uses it, cheaper.** Interleaved A/B in one process
+  over the same source, `parse-only`:
+
+  | Document | Off | On | |
+  | --- | --- | --- | --- |
+  | no task lists, 6 / 60 / 310 KiB | 75.0 µs / 778 µs / 4.86 ms | 75.6 µs / 782 µs / 4.91 ms | **+0.5 to +1.0%** |
+  | task lists, 6 / 60 / 310 KiB | 89.4 µs / 1.18 ms / 8.34 ms | 77.1 µs / 1.02 ms / 7.35 ms | **−12 to −14%** |
+
+  Faster on the documents that use it because `[ ]` read as literal text costs *more* events than one
+  `TaskListMarker` — the bracket opens a link scan that goes nowhere. `criterion` could not see any
+  of this: the runner's run-to-run spread is ±25% at 310 KiB, which is twenty times the effect.
 - **A document can be told it is wrong, and that is a second strict pass rather than a stricter
   lexer.** MDEDIT-47. `Language::validate` returns `Diagnostic`s — a `ByteSpan` and a `&'static str`
   — and defaults to none, so **Markdown opts out by existing**: there is no such thing as invalid

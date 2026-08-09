@@ -181,3 +181,41 @@ fn plain_markup_still_shows_everything() {
         .collect();
     assert_eq!(text, source);
 }
+
+/// **A task-list checkbox is syntax, and it is not the bullet's colour** (MDEDIT-88).
+///
+/// The bar has written `- [ ] ` since MDEDIT-52 while the parser was told not to read task lists, so
+/// the box came back as *content* — drawn as a literal pair of brackets after a bullet, in prose
+/// colour, and concealed by nothing.
+///
+/// `token_literal` rather than the bullet's `token_key`, because the two say different things: a
+/// bullet is scaffolding and a box is **state**. It is the pack's constant role, which is where
+/// `true` and `false` go, and a checkbox is the same kind of fact.
+#[test]
+fn a_task_checkbox_is_syntax_and_not_the_bullets_colour() {
+    let theme = Theme::default();
+    let runs = drawn("- [x] done\n");
+
+    let checkbox = run_of(&runs, "[x]");
+    assert_eq!(checkbox.colour, theme.token_literal);
+
+    let bullet = run_of(&runs, "- ");
+    assert_eq!(bullet.colour, theme.token_key, "the bullet is unchanged");
+    assert_ne!(
+        checkbox.colour, bullet.colour,
+        "state and scaffolding are told apart, which is the whole reason it has a marker of its own"
+    );
+}
+
+/// And in preview it is not drawn at all, like every other marker.
+#[test]
+fn a_task_checkbox_is_concealed_in_preview() {
+    let text: String = drawn_in("- [x] done\n", Mode::Preview)
+        .iter()
+        .map(|run| run.text.as_str())
+        .collect();
+    assert_eq!(
+        text, "done\n",
+        "a literal pair of brackets in the rendered line is the defect this fixed"
+    );
+}

@@ -15,10 +15,15 @@ use crate::{Analysis, Block, BlockKind, Marker, Segment, SegmentKind};
 // by them directly. Typing them would add conversions at every index without separating anything.
 // The boundary is `coalesce`, where offsets become the `ByteSpan`s the crate hands out.
 
-/// Extensions we classify. GFM tables, footnotes and task lists are deliberately absent — they are
-/// out of scope until the renderer handles them, and degrade to content.
+/// Extensions we classify. GFM tables and footnotes are deliberately absent — they are out of scope
+/// until the renderer handles them, and degrade to content.
+///
+/// **Task lists are on because the editor's own button writes them** (MDEDIT-88). The formatting bar
+/// has inserted `- [ ] ` since MDEDIT-52 while this line said the parser should not read it, so the
+/// write path and the read path disagreed about the language and the editor rendered its own output
+/// as a bullet followed by a literal pair of brackets.
 fn options() -> Options {
-    Options::ENABLE_STRIKETHROUGH
+    Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS
 }
 
 pub(crate) fn analyze(source: &str) -> Analysis {
@@ -167,12 +172,17 @@ fn walk(source: &str) -> Walk {
                 contents.push(range);
             }
 
+            // **The checkbox is syntax, and the whole reason it needs saying is that it is not a
+            // tag.** `Tag::Item` covers the bullet; the `[ ]` after it arrives as this leaf event
+            // with its own range and would otherwise fall to the item's content by subtraction —
+            // drawn as prose, and concealed by nothing.
+            Event::TaskListMarker(_) => constructs.push((range, Marker::TaskMarker)),
+
             // Everything else contributes neither syntax nor content of its own.
             Event::End(_)
             | Event::InlineMath(_)
             | Event::DisplayMath(_)
-            | Event::FootnoteReference(_)
-            | Event::TaskListMarker(_) => {}
+            | Event::FootnoteReference(_) => {}
         }
     }
 
