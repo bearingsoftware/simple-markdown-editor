@@ -72,8 +72,17 @@ jobs:
       # The Windows-only crates are absent from this list because they do not build here at all —
       # `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and their
       # tests are the ones that need a real system stack anyway.
+      # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
+      # *workflow* green and still publishes a failing check, and a failing check makes the pull
+      # request unmergeable — which is precisely what a job described as "it reports; it does not
+      # block" must not do. The fuzz workflow learned the same thing the same way.
+      #
+      # A surviving mutant becomes a warning annotation, and the full report is uploaded below
+      # either way. cargo-mutants exits 2 for "mutants missed" and 1 for "something went wrong", and
+      # the two are told apart so a broken job is still a broken job.
       - name: Mutate
         run: |
+          set +e
           cargo mutants --in-diff /tmp/pr.diff \
             --test-tool nextest \
             --package mdedit-offsets \
@@ -86,6 +95,16 @@ jobs:
             --package mdedit-session \
             --timeout-multiplier 4 \
             --no-shuffle
+          status=$?
+          set -e
+          if [ "$status" -eq 2 ]; then
+            echo "::warning title=Mutants survived::Some mutants were not caught by any test. \
+              Read the mutants-report artifact — and check the survivor is not *equivalent* before \
+              writing a test for it: on MDEDIT-88 the sole survivor was \`|\` to \`^\` between two \
+              disjoint bitflags, which no test can tell apart."
+            exit 0
+          fi
+          exit "$status"
 
       # The report is the whole output of the job, so it survives the run being tidied away.
       - name: Keep the report
