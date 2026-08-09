@@ -159,39 +159,42 @@ fn all_of_the_buttons_fit_a_default_window() {
     );
 }
 
-/// **Room for MDEDIT-87, measured rather than hoped for.**
+/// **The room MDEDIT-116 made, and MDEDIT-87 is spending.**
 ///
-/// Collapsing three heading buttons into one is what paid for Image and Table, and the arithmetic
-/// that justified MDEDIT-116 said they would land at 858 against a 900-pixel window. That number was
-/// the argument for doing it this way instead of shaving the padding, so it is worth holding up —
-/// and if it stops being true, that ticket needs the conversation again before it starts rather than
-/// after.
+/// This used to guard a future: collapsing three heading buttons into one is what paid for Image and
+/// Table, and it asserted that adding two more buttons would still fit. MDEDIT-87 has added the
+/// first, so it now asserts the arithmetic that argued for doing it that way instead of shaving the
+/// padding again — the bar fits, and by how much.
+///
+/// The headroom is the interesting number rather than the pass. **Table is still to come**, and it
+/// has to come out of what is left here.
 #[test]
-fn there_is_room_for_the_two_buttons_mdedit_87_adds() {
+fn the_bar_still_fits_with_image_added() {
     let mut text = engine();
     let all = [toolbar::STANDARD, toolbar::MARKDOWN].concat();
+    assert!(
+        all.contains(&Action::Image),
+        "this is the test that says it fits, so it has to be looking at a bar that has it"
+    );
 
-    let mut widths: Vec<f32> = all
+    let widths: Vec<f32> = all
         .iter()
         .map(|action| measure(&mut text, *action))
         .collect();
     let row = toolbar::width_of(&toolbar::layout(&all, &widths, f32::MAX));
 
-    // Image and Table are two more icons in a group of their own, which is a gap as well.
-    let icon: f32 = shape(&mut text, '\u{EB9F}', FontFamily::Icon, ICON_SIZE)
-        .iter()
-        .sum();
-    let mut with_them = all.clone();
-    with_them.push(Action::Link);
-    with_them.push(Action::Link);
-    widths.push(icon);
-    widths.push(icon);
-    let grown = toolbar::width_of(&toolbar::layout(&with_them, &widths, f32::MAX));
-
     assert!(
-        grown <= DEFAULT_WIDTH,
-        "the row is {row:.0}px today and would be {grown:.0}px with Image and Table, against a \
-         {DEFAULT_WIDTH}px default window — MDEDIT-87 needs a decision about what gives"
+        row <= DEFAULT_WIDTH,
+        "the row is {row:.0}px against a {DEFAULT_WIDTH}px default window, so a fresh install opens \
+         with an overflow button — which is a decision rather than an accident"
+    );
+    // Not a hard floor, and deliberately generous: what it catches is the row creeping up to the
+    // edge unnoticed, at which point the *next* button is the conversation.
+    let headroom = DEFAULT_WIDTH - row;
+    assert!(
+        headroom >= 20.0,
+        "only {headroom:.0}px of headroom left at {DEFAULT_WIDTH}px — the bar is one button from \
+         overflowing on a default window, and that is worth deciding rather than discovering"
     );
 }
 

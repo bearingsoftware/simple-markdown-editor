@@ -60,6 +60,42 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   inactive tab's quad, and a dimmed label's `gutter`. Without that, moving the drawing and not the
   clicks (or the reverse) passes every other test in the file, and so does leaving the tab *labels*
   at their old baseline while their backgrounds move.
+- **Link and Image ask for their parts, and that reverses "no dialog at all".** MDEDIT-87 added the
+  Image button — the only element of the Markdown Guide's basic syntax with no way in but typing —
+  and MDEDIT-129 made both of them ask before they write.
+
+  Two decisions were reversed, both deliberate and both written down. `make_link` called the
+  clipboard case *"the case that needs no dialog at all"*; `insert_image` called caret-parking *"the
+  whole of why there is no dialog"*. What they missed is that **a link has two parts and an image has
+  three**: a skeleton to fill in only helps when you already know the shape, and it offers no way to
+  see what is about to be written and no way out except undo.
+
+  **The fast path survives as one keystroke.** The clipboard's URL and the selection both pre-fill,
+  so copy-select-Ctrl+K becomes copy-select-Ctrl+K-Enter. The caret starts in the first *empty*
+  field, so with both filled it sits on the URL — the one you would correct if the guess was wrong.
+  Rejected: a dialog only when the clipboard has no URL (one key, two behaviours, invisible state),
+  and button-opens-dialog-while-the-chord-stays-fast, which breaks the bar's own rule that it is *a
+  second door, never a second implementation*.
+
+  **The dim is the modality**, not decoration. This editor's only other keyboard-taking surface is
+  the find bar, which announces itself by taking a strip of the window; a panel floating over
+  unchanged text announces nothing. `dialog_key` is checked above F3 and above the find bar, and a
+  chord that is not the field's own is *dropped* rather than performed — Ctrl+S with a dialog up
+  should not save.
+
+  **A click inside the panel is swallowed even where there is no control**, which is the other half
+  of modal: letting one through would move the caret out from under the text about to be replaced. A
+  click outside closes it, as every other panel here does.
+
+  **The escaping is the part that is easy to get wrong.** A space ends a destination as far as the
+  parser is concerned, so `](my chart.png)` is a *broken* link rather than a link to a file with a
+  space in it — and a path with a space is the commonest thing anybody will paste in. The destination
+  takes angle brackets when it needs them, a title's quotes are escaped, and the test **round-trips
+  the result through the parser** rather than only comparing the string.
+
+  An image gets a title field and a link does not: a link's title is a browser tooltip and is almost
+  never written, and a third field nobody fills in on the dialog reached most often is worse than the
+  inconsistency.
 - **Resting on a toolbar button says what it does, and the panel is the least of it.** MDEDIT-85.
   `toolbar.rs` said there were no tooltips "because there is no hover affordance in this editor to
   hang one on", and that sentence was the ticket. The editor had always tracked the pointer and used

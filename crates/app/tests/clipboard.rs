@@ -343,23 +343,36 @@ fn the_system_clipboard_round_trips() {
 
 // ---- links from the clipboard (MDEDIT-50) ----
 
-/// Copy a link, select some words, press Ctrl+K — done, with no dialog at all. The case the whole
-/// clipboard-URL path exists for.
+/// **Copy a link, select some words, press Ctrl+K, press Enter.** The case the whole clipboard-URL
+/// path exists for, and MDEDIT-129 moved it one keystroke: the dialog opens pre-filled from both,
+/// so what used to happen invisibly now happens where you can see it before it is written.
 #[test]
-fn ctrl_k_uses_a_url_from_the_clipboard() {
+fn ctrl_k_prefills_the_dialog_from_the_clipboard_and_the_selection() {
     let clipboard = Fake::holding("https://example.com");
     let mut editor = editor_with("see the docs here\n", &clipboard);
     select(&mut editor, 4, 12);
 
     assert!(editor.link());
+    let open = editor.dialog().expect("Ctrl+K opens the dialog");
+    assert_eq!(open.fields()[0].text(), "https://example.com");
+    assert_eq!(open.fields()[1].text(), "the docs");
+    assert_eq!(
+        editor.document().to_string(),
+        "see the docs here\n",
+        "and nothing is written until it is accepted"
+    );
+
+    assert!(editor.accept_dialog());
     assert_eq!(
         editor.document().to_string(),
         "see [the docs](https://example.com) here\n"
     );
+    assert!(editor.dialog().is_none(), "and it closed behind itself");
 }
 
 /// With something that is not a URL on the clipboard, the destination is left empty rather than
-/// being filled with whatever happened to be copied.
+/// filled with whatever happened to be copied — and the caret starts there, because that is the
+/// field with something to type in.
 #[test]
 fn ctrl_k_ignores_a_clipboard_that_is_not_a_url() {
     let clipboard = Fake::holding("some copied prose");
@@ -367,7 +380,27 @@ fn ctrl_k_ignores_a_clipboard_that_is_not_a_url() {
     select(&mut editor, 0, 5);
 
     editor.link();
-    assert_eq!(editor.document().to_string(), "[hello]() world\n");
+    let open = editor.dialog().expect("the dialog is open");
+    assert_eq!(open.fields()[0].text(), "", "not a URL, so not offered");
+    assert_eq!(open.fields()[1].text(), "hello");
+    assert_eq!(open.focused(), 0, "the caret starts where there is work");
+}
+
+/// **Escape leaves the document exactly as it was**, which is the half of a dialog that a skeleton
+/// insertion never had: backing out used to mean an undo.
+#[test]
+fn escaping_the_dialog_writes_nothing() {
+    let clipboard = Fake::holding("https://example.com");
+    let mut editor = editor_with("see the docs here\n", &clipboard);
+    select(&mut editor, 4, 12);
+
+    editor.link();
+    assert!(editor.cancel_dialog());
+    assert_eq!(editor.document().to_string(), "see the docs here\n");
+    assert!(
+        !editor.document().can_undo(),
+        "and there is nothing to undo"
+    );
 }
 
 /// Pasting a URL over a selection links it. What every chat client and note app does, so its
