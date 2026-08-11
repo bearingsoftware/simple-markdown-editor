@@ -184,6 +184,30 @@ impl Document {
         true
     }
 
+    /// The text a link or image dialog should start with, and the span its result replaces.
+    ///
+    /// MDEDIT-129. The same answer [`target_span`](Self::target_span) has always given the toggles —
+    /// the selection, or the word at the caret, or nothing — surfaced so a dialog can pre-fill its
+    /// text field from it and then write over exactly what it showed you.
+    #[must_use]
+    pub fn dialog_target(&self) -> ByteSpan {
+        self.target_span()
+    }
+
+    /// Replaces [`dialog_target`](Self::dialog_target) with `markdown`, in one edit.
+    ///
+    /// The caret lands after it, because a dialog has already asked for every part — there is
+    /// nothing left to type into, which is the difference from the skeleton this replaced.
+    pub fn replace_target(&mut self, markdown: &str) -> bool {
+        let target = self.dialog_target();
+        let after = target.start().get() + markdown.len();
+        self.transact(|doc| {
+            let _ = doc.replace(target, markdown);
+            doc.set_selection(Selection::caret(ByteOffset::new(after)));
+        });
+        true
+    }
+
     /// The span a toggle should act on when there is no construct to remove.
     fn target_span(&self) -> ByteSpan {
         if !self.selection().is_collapsed() {

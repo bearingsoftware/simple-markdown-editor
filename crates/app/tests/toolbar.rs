@@ -232,6 +232,21 @@ fn every_markdown_button_does_something() {
             continue;
         }
 
+        // MDEDIT-129's two, for the same reason one step along: a button that opens a *dialog* has
+        // done something, and asking for a link's parts is what doing it means now.
+        if matches!(action, Action::Link | Action::Image) {
+            assert_eq!(
+                editor.document().to_string(),
+                before,
+                "{action:?} asks before it writes, so nothing may change yet"
+            );
+            assert!(
+                editor.dialog().is_some(),
+                "{action:?} should have opened its dialog"
+            );
+            continue;
+        }
+
         assert_ne!(
             editor.document().to_string(),
             before,
@@ -1128,4 +1143,49 @@ fn the_selection_survives_a_press_on_the_bar() {
         0,
         "and cover something, so a second press is one click rather than a re-selection"
     );
+}
+
+// ---- the insert group (MDEDIT-87) ----
+
+/// **Image is the gap this closes.** It was the only element of the Markdown Guide's basic syntax
+/// with no way in but typing — parsed, coloured, its destination underlined, and no button, no chord
+/// and no menu item.
+#[test]
+fn the_bar_offers_an_image() {
+    assert!(toolbar::MARKDOWN.contains(&Action::Image));
+}
+
+/// Link and Image are the last two, in that order: the insert group, which Table joins when there
+/// is a table feature for it to open.
+#[test]
+fn link_and_image_are_the_last_two_in_that_order() {
+    let markdown = toolbar::MARKDOWN;
+    assert_eq!(
+        &markdown[markdown.len() - 2..],
+        &[Action::Link, Action::Image]
+    );
+}
+
+/// **Neither has a chord**, which is a decision rather than an omission: the bar is the only door,
+/// and a chord is worth spending on something reached often enough to remember.
+#[test]
+fn image_takes_no_chord() {
+    assert_eq!(Action::Image.chord(), None);
+}
+
+/// Neither lights, because neither is a state — there is no "inside a table" for a button to
+/// reflect, any more than there is an inside of a horizontal rule.
+#[test]
+fn image_is_not_a_state() {
+    let editor = editor(
+        "prose
+",
+    );
+    assert!(!editor.is_lit(Action::Image));
+}
+
+/// Both have a tooltip, because every button does and MDEDIT-85's test would have caught it anyway.
+#[test]
+fn image_says_what_it_does() {
+    assert_eq!(Action::Image.tooltip(), "Image");
 }

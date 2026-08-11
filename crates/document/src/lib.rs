@@ -58,7 +58,7 @@ mod history;
 pub mod outline;
 
 use history::History;
-use mdedit_language::{Block, BlockKind, Language, Segment, SegmentKind};
+use mdedit_language::{Block, BlockKind, Language, Marker, Segment, SegmentKind};
 use mdedit_offsets::{BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
 use outline::Heading;
 use ropey::Rope;
@@ -1111,6 +1111,84 @@ impl Document {
     #[must_use]
     pub fn is_revealed(&self, segment: &Segment) -> bool {
         !self.language.conceals() || !matches!(segment.kind(), SegmentKind::Marker(_))
+    }
+
+    /// The other half of the construct `marker` opens or closes, if it has one.
+    ///
+    /// # Why deleting one marker has to delete both
+    ///
+    /// MDEDIT-118 made Backspace take a concealed marker whole, on the argument that removing one
+    /// byte of something invisible is a keystroke with no visible effect. It missed that **the other
+    /// half is invisible too**, and stranding it is worse than either:
+    ///
+    /// ```text
+    /// see [the docs](https://example.com) here     shows as: see the docs here
+    ///
+    /// Backspace before "the"   ->  see the docs](https://example.com) here
+    /// Backspace after "docs"   ->  see [the docs here
+    /// ```
+    ///
+    /// In both the stranded marker stops being a marker and **becomes visible text**. The first is
+    /// the bad one: a URL nobody could see appears in the middle of a sentence, from a keystroke that
+    /// looked like it should have deleted a letter.
+    ///
+    /// # Links and images only, and the direction is decided from the bytes
+    ///
+    /// A link's markers are `[` and `](url)`, so which end a marker is can be read off its own text:
+    /// one that ends with `[` opens. That is the same rule the renderer's `note_link` uses, and it is
+    /// what makes the search directional — an opening marker pairs with the *next* same-kind marker
+    /// and a closing one with the *previous*.
+    ///
+    /// **Direction is not optional here.** Without it, `[a](u) and [b](v)` pairs the first link's
+    /// closing marker with the second link's opening one, and Backspace deletes the words between two
+    /// different links.
+    ///
+    /// **The delimiter runs are deliberately not included.** `**`, `*`, `~~` and a backtick look
+    /// identical at both ends, so nothing in the bytes says which is which, and `**a** and **b**`
+    /// would mis-pair the same way. They also do not have the failure this fixes: deleting one `**`
+    /// leaves `bold**`, which is ugly and is still the characters that were there — where a stranded
+    /// `](url)` is a URL nobody could see appearing mid-sentence. `Document::enclosing` pairs them
+    /// properly with a stack when a toggle needs it.
+    ///
+    /// **A construct nested inside one of a different kind gets `None`**, and the caller deletes the
+    /// single marker as before. `[![alt](img)](url)` is the case: scanning out from the link's `[`
+    /// reaches the image's `![` first. That is a rarer shape than the one this fixes, and `None` is
+    /// the safe end — it is the behaviour that already shipped rather than a new way to be wrong.
+    #[must_use]
+    pub fn paired_marker(&self, marker: ByteSpan) -> Option<ByteSpan> {
+        let index = self
+            .segments
+            .iter()
+            .position(|segment| segment.span() == marker)?;
+        let SegmentKind::Marker(kind @ (Marker::Link | Marker::Image)) =
+            self.segments[index].kind()
+        else {
+            return None;
+        };
+
+        // The marker's own last byte, sliced out of the rope rather than read out of a copy of the
+        // whole document: this runs on a Backspace, where the budget is the keystroke's.
+        let opens = self
+            .text
+            .byte_slice(marker.start().get()..marker.end().get())
+            .chars()
+            .last()
+            == Some('[');
+
+        let matching = |segment: &Segment| match segment.kind() {
+            SegmentKind::Content => None,
+            SegmentKind::Marker(other) if other == kind => Some(Some(segment.span())),
+            // A token or a marker of another kind: the constructs interleave, and this does not
+            // guess which belongs to which.
+            _ => Some(None),
+        };
+
+        if opens {
+            self.segments[index + 1..].iter().find_map(matching)
+        } else {
+            self.segments[..index].iter().rev().find_map(matching)
+        }
+        .flatten()
     }
 
     /// The concealed marker span covering `offset`, if the caret is standing in one.

@@ -276,12 +276,22 @@ fn choosing_from_the_overflow_performs_it() {
     let (x, y) = row_centre(&editor, index);
     editor.click(x, y);
 
-    assert_ne!(
+    // **Link's effect is a dialog since MDEDIT-129**, not an edit. That is still the row performing
+    // its action — what this test is about is that a row reached through the overflow does exactly
+    // what the button would have done, and the button opens a dialog too.
+    assert!(
+        editor.dialog().is_some(),
+        "Link should have run, and running it opens the dialog"
+    );
+    assert_eq!(
         editor.document().to_string(),
         before,
-        "Link should have run"
+        "and a dialog writes nothing until it is accepted"
     );
-    assert_eq!(editor.menu_rows(), None);
+    assert_eq!(editor.menu_rows(), None, "the overflow closed behind it");
+
+    // The whole way through, so the row is not merely opening something that cannot finish.
+    assert!(editor.accept_dialog() || editor.dialog().is_some());
 }
 
 /// Widening the window while the overflow list is open closes it. Leaving it would offer actions

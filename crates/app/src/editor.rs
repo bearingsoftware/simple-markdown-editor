@@ -35,6 +35,7 @@ use crate::blocks;
 use crate::clipboard::{Clipboard, HoldNothing};
 use crate::config::Config;
 use crate::content::{ContentRect, Insets, Offset};
+use crate::dialog;
 use crate::field;
 use crate::find;
 use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
@@ -842,6 +843,12 @@ pub struct Editor<T: TextLayout> {
     /// depend on how narrow the window was when it opened, and re-deriving them on the click would
     /// be the second computation the ticket's own risk section warns about.
     open_menu: Option<OpenMenu>,
+    /// The modal dialog that is asking for a link's or an image's parts, if one is.
+    ///
+    /// MDEDIT-129. **The only surface in the editor that takes the keyboard away from both the
+    /// document and the find bar**, which is why it is checked before either of them in
+    /// `window_event` and why the document dims behind it.
+    dialog: Option<dialog::Dialog>,
     /// What the bar could not fit last frame, which is exactly what `More` opens.
     ///
     /// Kept rather than recomputed on the click: it and `toolbar_buttons` are two halves of one
@@ -849,6 +856,8 @@ pub struct Editor<T: TextLayout> {
     dropped: Vec<toolbar::Action>,
     /// The window's logical width last frame, so a list can be clamped inside it.
     window_width: f32,
+    /// And its height, so a modal dialog can be centred in it (MDEDIT-129).
+    window_height: f32,
     /// What the pointer is over, if anything with something to say. Hovering, not yet dwelling.
     hovered: Option<Hovered>,
     /// Which row of the open list the pointer is over. Separate from `hovered` because a row is
@@ -1142,9 +1151,11 @@ impl<T: TextLayout> Editor<T> {
             toolbar_buttons: Vec::new(),
             toolbar_labels: HashMap::new(),
             open_menu: None,
+            dialog: None,
             hovered_row: None,
             dropped: Vec::new(),
             window_width: 0.0,
+            window_height: 0.0,
             hovered: None,
             tooltip: None,
             truncated_tabs: Vec::new(),
@@ -2780,6 +2791,15 @@ impl<T: TextLayout> Editor<T> {
         // the keyboard rather than at the mouse.
         let tooltip_gone = self.dismiss_panels();
 
+        // **The dialog takes every key, before anything else looks at one** (MDEDIT-129). It is the
+        // only modal surface in the editor: the find bar shares the keyboard with the document and
+        // says so by taking a strip of the window, and this takes it outright and says so by dimming
+        // what is behind it. Above F3 as well, because a modal panel that let a find shortcut
+        // through would be a panel the document could scroll out from under.
+        if self.dialog.is_some() {
+            return self.dialog_key(event) || tooltip_gone;
+        }
+
         // A key press should leave the caret on screen — but only a press that can move it.
         //
         // This used to arm unconditionally, and MDEDIT-109 is the two things that cost. Typing into
@@ -2863,6 +2883,75 @@ impl<T: TextLayout> Editor<T> {
             Key::Named(NamedKey::Space) => self.insert(" "),
             Key::Character(text) => self.insert(text),
             _ => false,
+        }
+    }
+
+    /// A key, while the dialog is up.
+    ///
+    /// **Everything is swallowed**, whether it did something or not — that is what modal means, and
+    /// a key falling through to the document while a panel covers it is the failure this shape
+    /// exists to prevent. A chord that is not one of the field's own is dropped rather than
+    /// performed: Ctrl+S while a dialog is open should not save.
+    fn dialog_key(&mut self, event: &KeyEvent) -> bool {
+        let shift = self.modifiers.shift_key();
+
+        // The same gate the find field uses, and for the same reason: a URL box that could not be
+        // pasted into would be useless, and one that could not be typed `@` into would be
+        // MDEDIT-102 with a smaller blast radius.
+        if is_chord(self.modifiers.control_key(), self.modifiers.alt_key()) {
+            let Key::Character(character) = &event.logical_key else {
+                return true;
+            };
+            return match character.as_str() {
+                "a" | "A" => self.press_dialog(&field::Press::SelectAll, false),
+                "v" | "V" => {
+                    let Some(text) = self.clipboard.read() else {
+                        return true;
+                    };
+                    // One line only. A multi-line paste into a URL box is a paste of something that
+                    // is not a URL, and putting its newlines in would write a construct that spans
+                    // lines and parses as neither.
+                    let line = text.lines().next().unwrap_or_default().to_owned();
+                    self.press_dialog(&field::Press::Text(line), false)
+                }
+                _ => true,
+            };
+        }
+
+        match &event.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.cancel_dialog();
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
+                // A refusal leaves it open, which is the whole of the validation: there is nothing
+                // to write without a destination, and closing on a press that did nothing would
+                // look like the construct went in somewhere.
+                self.accept_dialog();
+                true
+            }
+            Key::Named(NamedKey::Tab) => self.tab_dialog(!shift),
+            Key::Named(NamedKey::Backspace) => self.press_dialog(&field::Press::Backspace, shift),
+            Key::Named(NamedKey::Delete) => self.press_dialog(&field::Press::Delete, shift),
+            Key::Named(NamedKey::ArrowLeft) => self.press_dialog(&field::Press::Left, shift),
+            Key::Named(NamedKey::ArrowRight) => self.press_dialog(&field::Press::Right, shift),
+            Key::Named(NamedKey::Home) => self.press_dialog(&field::Press::Home, shift),
+            Key::Named(NamedKey::End) => self.press_dialog(&field::Press::End, shift),
+            // Up and Down move between fields as well as Tab, because a form is a column and that
+            // is what a column invites.
+            Key::Named(NamedKey::ArrowUp) => self.tab_dialog(false),
+            Key::Named(NamedKey::ArrowDown) => self.tab_dialog(true),
+            // **Space is a *named* key in winit, not a character**, so without this arm the catch-all
+            // below swallowed it and a URL box could not hold a space — which is exactly the input
+            // the angle-bracket escaping exists for. `find_key` has the same arm for the same reason.
+            Key::Named(NamedKey::Space) => {
+                self.press_dialog(&field::Press::Text(" ".to_owned()), false)
+            }
+            Key::Character(character) => {
+                self.press_dialog(&field::Press::Text(character.to_string()), false)
+            }
+            // A modifier on its own, a function key, anything else: swallowed and ignored.
+            _ => true,
         }
     }
 
@@ -3028,18 +3117,123 @@ impl<T: TextLayout> Editor<T> {
         self.insert(&text)
     }
 
-    /// Makes a link of the selection, or of the word at the caret.
+    /// Opens the link dialog, pre-filled from the clipboard and the selection.
     ///
-    /// Uses the clipboard when it holds something URL-shaped, which is the case that needs no
-    /// dialog at all — copy a link, select some words, press Ctrl+K, done. Otherwise the destination
-    /// is left empty with the caret in it, ready to type into.
+    /// # This used to write the link without asking
+    ///
+    /// It used the clipboard when it held something URL-shaped and left the destination empty
+    /// otherwise, and its docs called that "the case that needs no dialog at all — copy a link,
+    /// select some words, press Ctrl+K, done". MDEDIT-129 reverses that: a link has **two** parts,
+    /// and inserting a skeleton for you to fill in only helps when you already know the shape.
+    ///
+    /// **The fast path survives as one extra keystroke.** The clipboard's URL and the selection are
+    /// both pre-filled, so copy-select-Ctrl+K becomes copy-select-Ctrl+K-Enter — and you see what it
+    /// is about to write before it writes it.
     pub fn link(&mut self) -> bool {
-        let url = self
-            .clipboard
-            .read()
-            .filter(|text| format::looks_like_url(text));
+        self.open_dialog(dialog::Kind::Link)
+    }
+
+    /// Opens the image dialog, pre-filled from the selection.
+    ///
+    /// No clipboard read, which is where it differs from [`link`](Self::link) and always has: a URL
+    /// on the clipboard is very often the link you meant, and a *path* on the clipboard is very
+    /// often not the image you meant.
+    pub fn image(&mut self) -> bool {
+        self.open_dialog(dialog::Kind::Image)
+    }
+
+    /// Opens `kind`, pre-filled from what the document and the clipboard already know.
+    fn open_dialog(&mut self, kind: dialog::Kind) -> bool {
+        let mut open = dialog::Dialog::new(kind);
+
+        // The text the construct will wrap: the selection, or the word at the caret. Taken from the
+        // document rather than from the selection directly, so the dialog shows exactly the span its
+        // result will replace.
+        let target = self.document().dialog_target();
+        let text = self.document().to_string();
+        let existing = target.slice(&text).to_owned();
+        if !existing.trim().is_empty() {
+            open.prefill(kind.text(), &existing);
+        }
+
+        if kind == dialog::Kind::Link {
+            if let Some(url) = self
+                .clipboard
+                .read()
+                .filter(|text| format::looks_like_url(text))
+            {
+                open.prefill(kind.destination(), url.trim());
+            }
+        }
+
+        // The first empty field, so the caret starts where there is something to type. With a URL
+        // and a selection both present that is neither, and it stays on the destination — which is
+        // the field you would correct if the guess was wrong.
+        let first_empty = open
+            .fields()
+            .iter()
+            .position(crate::field::Field::is_empty)
+            .unwrap_or(kind.destination());
+        open.focus(first_empty);
+
+        self.dialog = Some(open);
+        true
+    }
+
+    /// The dialog that is open, for a test to look at.
+    #[must_use]
+    pub fn dialog(&self) -> Option<&dialog::Dialog> {
+        self.dialog.as_ref()
+    }
+
+    /// Writes what the open dialog describes, and closes it.
+    ///
+    /// **A dialog with an empty destination refuses**, which is the whole of the validation: a link
+    /// with no URL says nothing. It stays open rather than closing on a press that did nothing.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn accept_dialog(&mut self) -> bool {
+        let Some(open) = self.dialog.as_ref() else {
+            return false;
+        };
+        let Some(markdown) = open.markdown() else {
+            return false;
+        };
+        self.dialog = None;
         self.follow_caret = true;
-        self.document_mut().make_link(url.as_deref().map(str::trim))
+        self.document_mut().replace_target(&markdown)
+    }
+
+    /// Closes the dialog without touching the document.
+    ///
+    /// Returns whether there was one to close.
+    pub fn cancel_dialog(&mut self) -> bool {
+        self.dialog.take().is_some()
+    }
+
+    /// A key, while the dialog has the keyboard.
+    ///
+    /// Split out to be callable by a test, for the reason [`apply_chord`](Self::apply_chord) gives:
+    /// a winit `KeyEvent` carries a private platform field and cannot be constructed.
+    ///
+    /// Returns whether the frame needs redrawing.
+    pub fn press_dialog(&mut self, press: &field::Press, shift: bool) -> bool {
+        let Some(open) = self.dialog.as_mut() else {
+            return false;
+        };
+        open.focused_field().apply(press, shift);
+        true
+    }
+
+    /// Tab, or Shift+Tab, while the dialog has the keyboard.
+    ///
+    /// Returns whether there was a dialog to move within.
+    pub fn tab_dialog(&mut self, forwards: bool) -> bool {
+        let Some(open) = self.dialog.as_mut() else {
+            return false;
+        };
+        open.focus_next(forwards);
+        true
     }
 
     /// Selects the whole buffer.
@@ -3157,10 +3351,11 @@ impl<T: TextLayout> Editor<T> {
         if caret == ByteOffset::ZERO {
             return false;
         }
-        let span = self
-            .concealed_before(caret)
-            .unwrap_or_else(|| ByteSpan::new(self.previous_boundary(caret), caret));
+        if let Some(marker) = self.concealed_before(caret) {
+            return self.delete_marker(marker);
+        }
         // `delete` already leaves the caret at the start of what it removed.
+        let span = ByteSpan::new(self.previous_boundary(caret), caret);
         self.document_mut().delete(span).is_ok()
     }
 
@@ -3175,9 +3370,10 @@ impl<T: TextLayout> Editor<T> {
             return true;
         }
         let caret = self.document().selection().head();
-        let span = self
-            .concealed_after(caret)
-            .unwrap_or_else(|| ByteSpan::new(caret, self.next_boundary(caret)));
+        if let Some(marker) = self.concealed_after(caret) {
+            return self.delete_marker(marker);
+        }
+        let span = ByteSpan::new(caret, self.next_boundary(caret));
         !span.is_empty() && self.document_mut().delete(span).is_ok()
     }
 
@@ -3247,6 +3443,35 @@ impl<T: TextLayout> Editor<T> {
         at
     }
 
+    /// Removes a concealed marker, **and the other half of its construct** if it has one.
+    ///
+    /// MDEDIT-118 took a marker whole, on the argument that removing one byte of something invisible
+    /// is a keystroke with no visible effect. It missed that the other half is invisible too:
+    /// deleting a link's `[` left `](https://example.com)` behind, and a stranded marker stops being
+    /// a marker and **becomes visible text** — a URL nobody could see, appearing mid-sentence, from a
+    /// keystroke that looked like it should have taken a letter.
+    ///
+    /// Both spans in one transaction, so one Ctrl+Z restores the link rather than half of it. The
+    /// later span goes first, because removing the earlier one would shift it.
+    ///
+    /// See `Document::paired_marker` for which constructs pair and why the delimiter runs do not.
+    fn delete_marker(&mut self, marker: ByteSpan) -> bool {
+        let Some(pair) = self.document().paired_marker(marker) else {
+            return self.document_mut().delete(marker).is_ok();
+        };
+        let (first, second) = if marker.start() < pair.start() {
+            (marker, pair)
+        } else {
+            (pair, marker)
+        };
+        let mut removed = false;
+        self.document_mut().transact(|doc| {
+            removed = doc.delete(second).is_ok() && doc.delete(first).is_ok();
+            doc.set_selection(Selection::caret(first.start()));
+        });
+        removed
+    }
+
     /// The concealed marker the caret is standing immediately after, if any.
     ///
     /// What Backspace deletes instead of one character. Its whole span, in one edit and one undo
@@ -3305,6 +3530,7 @@ impl<T: TextLayout> Editor<T> {
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = Vec::new();
         // Everything the chrome has not taken. One place decides it; see `crate::content`.
+        self.window_height = height / scale;
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
         let content = self.content;
         let visible = content.height();
@@ -3446,11 +3672,308 @@ impl<T: TextLayout> Editor<T> {
         // After even the tooltip. A list is the only thing that can be open *and* hit-tested, so it
         // is the top of the z-order in both directions — see `Editor::click`.
         self.draw_menu(&mut quads, scale);
+        // And after even that: the dialog is modal, so nothing may be drawn over it (MDEDIT-129).
+        self.draw_dialog(&mut quads, width, height, scale);
 
         // Kept for the next click and the next Up or Down: both need to know where the lines
         // ended up, and this is the only place that knows.
         self.last_frame = Some(frame);
         quads
+    }
+
+    /// Draws the modal dialog, and the dim over everything behind it (MDEDIT-129).
+    ///
+    /// **The dim is the modality**, not decoration. It is the only thing on screen saying that the
+    /// document is not taking keys — the find bar announces itself by taking a strip of the window,
+    /// and a panel floating over unchanged text does not announce anything.
+    ///
+    /// Drawn after every other piece of chrome including the tooltip, which is what makes it the
+    /// topmost thing; `click` asks about it first, which is the same z-order read the other way.
+    fn draw_dialog(&mut self, quads: &mut Vec<QuadInstance>, width: f32, height: f32, scale: f32) {
+        let Some(open) = self.dialog.clone() else {
+            return;
+        };
+        let kind = open.kind();
+        let labels = kind.labels();
+        let (x, y) = self.dialog_at();
+        let panel_height = dialog::height_of(labels.len());
+
+        // The dim, over the whole window. `selection` is the only translucent colour in the palette
+        // and is far too blue for this, so it is the page colour at a third — which darkens a dark
+        // theme and lightens nothing, and reads as "behind glass" in both.
+        quads.push(Self::solid(
+            [0.0, 0.0, width, height],
+            view::Rgba {
+                a: 0.55,
+                ..self.theme.background
+            },
+        ));
+
+        // A hairline edge under the ground, as the tooltip and the menus have.
+        quads.push(Self::solid(
+            [
+                (x - 1.0) * scale,
+                (y - 1.0) * scale,
+                (dialog::WIDTH + 2.0) * scale,
+                (panel_height + 2.0) * scale,
+            ],
+            self.theme.line,
+        ));
+        quads.push(Self::solid(
+            [
+                x * scale,
+                y * scale,
+                dialog::WIDTH * scale,
+                panel_height * scale,
+            ],
+            self.theme.panel,
+        ));
+
+        let style = TextStyle::body(self.theme.body_size);
+        let drop = self.theme.body_size * 0.35;
+        let baseline = move |top: f32, box_height: f32| top + box_height / 2.0 + drop;
+
+        self.draw_label(
+            quads,
+            kind.title(),
+            style,
+            x + dialog::PADDING,
+            y + dialog::PADDING + baseline(0.0, dialog::TITLE_HEIGHT),
+            self.theme.text,
+            scale,
+            dialog::WIDTH - dialog::PADDING * 2.0,
+        );
+
+        for (index, label) in labels.iter().enumerate() {
+            self.draw_dialog_field(quads, &open, index, label, (x, y), style, scale);
+        }
+
+        self.draw_dialog_buttons(quads, &open, (x, y), style, scale);
+    }
+
+    /// One labelled field: its name, its box, its text and its caret.
+    ///
+    /// Split out of `draw_dialog` only because that crossed a hundred lines, which is a real limit
+    /// here. The seam is the natural one — everything below is about one row.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_dialog_field(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        open: &dialog::Dialog,
+        index: usize,
+        label: &str,
+        at: (f32, f32),
+        style: TextStyle,
+        scale: f32,
+    ) {
+        let (x, y) = at;
+        let drop = self.theme.body_size * 0.35;
+        let baseline = move |top: f32, box_height: f32| top + box_height / 2.0 + drop;
+        let (box_x, box_y, box_width, box_height) = dialog::field_rect(index, (x, y));
+
+        self.draw_label(
+            quads,
+            label,
+            style,
+            x + dialog::PADDING,
+            baseline(box_y, box_height),
+            self.theme.marker,
+            scale,
+            dialog::LABEL_WIDTH - 8.0,
+        );
+
+        // The focused box takes the raised surface and a brighter edge, which is the same two
+        // signals a lit toolbar button uses. Colour alone would fail the pack's contract.
+        let focused = open.focused() == index;
+        quads.push(Self::solid(
+            [
+                (box_x - 1.0) * scale,
+                (box_y - 1.0) * scale,
+                (box_width + 2.0) * scale,
+                (box_height + 2.0) * scale,
+            ],
+            if focused {
+                self.theme.caret
+            } else {
+                self.theme.line
+            },
+        ));
+        quads.push(Self::solid(
+            [
+                box_x * scale,
+                box_y * scale,
+                box_width * scale,
+                box_height * scale,
+            ],
+            self.theme.background,
+        ));
+
+        self.draw_dialog_text(
+            quads,
+            &open.fields()[index],
+            (box_x, box_y, box_width, box_height),
+            style,
+            (focused, baseline(box_y, box_height)),
+            scale,
+        );
+    }
+
+    /// What is inside one box: the selection behind, the glyphs, the caret in front.
+    ///
+    /// Split out of [`Self::draw_dialog_field`] only because the two together are past the line
+    /// limit; the seam is the box's chrome against its contents.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_dialog_text(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        field: &field::Field,
+        box_rect: (f32, f32, f32, f32),
+        style: TextStyle,
+        focus: (bool, f32),
+        scale: f32,
+    ) {
+        let (box_x, box_y, box_width, box_height) = box_rect;
+        let (focused, baseline) = focus;
+        {
+            let text = field.text().to_owned();
+            let caret_at = field.caret();
+            let (from, to) = field.selection();
+
+            let label = (!text.is_empty())
+                .then(|| self.lay_out_label(&text, style))
+                .flatten();
+
+            // Where a byte sits along the laid-out text: the glyph that starts at or after it, or
+            // past the last one. **The same rule the find field uses**, and it has to be the same
+            // one — a caret placed by measuring a prefix instead sits half a glyph away from the
+            // highlight, which is what this drew before.
+            let x_of = |offset: usize| -> f32 {
+                label.as_ref().map_or(0.0, |label| {
+                    label
+                        .glyphs
+                        .iter()
+                        .find(|glyph| glyph.source.start().get() >= offset)
+                        .map_or_else(
+                            || {
+                                label
+                                    .glyphs
+                                    .last()
+                                    .map_or(0.0, |glyph| glyph.pos.x + glyph.advance)
+                            },
+                            |glyph| glyph.pos.x,
+                        )
+                })
+            };
+
+            // **The box scrolls to keep the caret in it**, which the find field does not need to and
+            // this does: a URL is longer than the box far more often than a search term is, and a
+            // field you cannot see what you are typing into is not a field.
+            let inner = box_width - 12.0;
+            let caret_x = x_of(caret_at);
+            let scroll = (caret_x - inner + CARET_WIDTH).max(0.0);
+            let left = box_x + 6.0 - scroll;
+
+            if from < to && focused {
+                let (start, end) = (x_of(from), x_of(to));
+                // Clamped to the box, so a selection running off either edge stops at it rather
+                // than painting over the label column or the panel's border.
+                let start = (left + start).max(box_x + 6.0);
+                let end = (left + end).min(box_x + box_width - 6.0);
+                if end > start {
+                    quads.push(Self::solid(
+                        [
+                            start * scale,
+                            (box_y + 4.0) * scale,
+                            (end - start) * scale,
+                            (box_height - 8.0) * scale,
+                        ],
+                        self.theme.selection,
+                    ));
+                }
+            }
+
+            if let Some(label) = &label {
+                // Clipped at both edges, because scrolling means glyphs can now fall off the left.
+                let glyphs: Vec<_> = label
+                    .glyphs
+                    .iter()
+                    .filter(|glyph| {
+                        let at = left + glyph.pos.x;
+                        at + glyph.advance > box_x + 6.0 && at < box_x + box_width - 6.0
+                    })
+                    .copied()
+                    .collect();
+                let where_ = LabelAt {
+                    x: left,
+                    baseline,
+                    scale,
+                    colour: self.theme.text,
+                };
+                self.draw_label_glyphs(quads, &glyphs, where_);
+            }
+
+            if focused {
+                quads.push(Self::solid(
+                    [
+                        (left + caret_x) * scale,
+                        (box_y + 4.0) * scale,
+                        CARET_WIDTH * scale,
+                        (box_height - 8.0) * scale,
+                    ],
+                    self.theme.caret,
+                ));
+            }
+        }
+    }
+
+    /// Cancel and Insert, at the foot of the panel.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_dialog_buttons(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        open: &dialog::Dialog,
+        at: (f32, f32),
+        style: TextStyle,
+        scale: f32,
+    ) {
+        let drop = self.theme.body_size * 0.35;
+        let baseline = move |top: f32, box_height: f32| top + box_height / 2.0 + drop;
+
+        let [cancel, accept] = dialog::button_rects(open.fields().len(), at);
+        // Accept is dimmed when there is nothing to write, which is the validation made visible
+        // rather than only felt when Enter does nothing.
+        let can_accept = open.markdown().is_some();
+        for (rect, text, lit) in [(cancel, "Cancel", false), (accept, "Insert", can_accept)] {
+            quads.push(Self::solid(
+                [
+                    rect.0 * scale,
+                    rect.1 * scale,
+                    rect.2 * scale,
+                    rect.3 * scale,
+                ],
+                if lit {
+                    self.theme.tab_active
+                } else {
+                    self.theme.tab_inactive
+                },
+            ));
+            let colour = if lit || text == "Cancel" {
+                self.theme.text
+            } else {
+                self.theme.gutter
+            };
+            let width_of = self.measure_label(text, style);
+            self.draw_label(
+                quads,
+                text,
+                style,
+                rect.0 + (rect.2 - width_of) / 2.0,
+                baseline(rect.1, rect.3),
+                colour,
+                scale,
+                rect.2,
+            );
+        }
     }
 
     /// Draws the list a toolbar button opened, if one is open.
@@ -3826,6 +4349,9 @@ impl<T: TextLayout> Editor<T> {
             toolbar::Action::More
             | toolbar::Action::Rule
             | toolbar::Action::Link
+            // Nor is MDEDIT-87's. An image is something you insert; there is no "inside an image"
+            // the caret can be in that this button would light up for.
+            | toolbar::Action::Image
             | toolbar::Action::New
             | toolbar::Action::Open
             | toolbar::Action::Save
@@ -4200,6 +4726,16 @@ impl<T: TextLayout> Editor<T> {
             self.theme.body_size * 0.3
         };
         toolbar::HEIGHT / 2.0 + size
+    }
+
+    /// How wide `text` is in `style`, without keeping the glyphs.
+    ///
+    /// For the dialog's caret and its centred button captions (MDEDIT-129). Measured rather than
+    /// counted, because a proportional face makes a character count the wrong answer — the same
+    /// reason the find field measures its own caret.
+    fn measure_label(&mut self, text: &str, style: TextStyle) -> f32 {
+        self.lay_out_label(text, style)
+            .map_or(0.0, |label| label.width)
     }
 
     fn lay_out_label(&mut self, text: &str, style: TextStyle) -> Option<Label> {
@@ -5103,8 +5639,18 @@ impl<T: TextLayout> Editor<T> {
         // only a tooltip" ends in a control nobody can press.
         let dismissed = self.dismiss_tooltip();
 
-        // **An open list is above everything**, and so is asked first. This function's order is the
-        // whole of the z-order, in both directions: drawn last, asked first.
+        // **The dialog is above everything, and swallows a click even where it has no control**
+        // (MDEDIT-129). That last part is what makes it modal rather than merely topmost: a click on
+        // its own background reaching the document would move the caret out from under the text the
+        // dialog is about to replace. A click *outside* it falls through deliberately — dismissing
+        // on an outside click is what every other panel here does, and a dialog that trapped the
+        // pointer as well as the keyboard would need a reason.
+        if let Some(acted) = self.click_dialog(x, y) {
+            return acted || dismissed;
+        }
+
+        // **An open list is above everything else**, and so is asked next. This function's order is
+        // the whole of the z-order, in both directions: drawn last, asked first.
         if let Some(acted) = self.click_menu(x, y) {
             return acted || dismissed;
         }
@@ -5479,6 +6025,44 @@ impl<T: TextLayout> Editor<T> {
         self.open_menu.take().is_some()
     }
 
+    /// Resolves a click while the dialog is up.
+    ///
+    /// `None` when there is no dialog, or when the click was outside it — an outside click closes
+    /// it and is **not** swallowed, which is what every other panel here does. Inside it, everything
+    /// is the dialog's, including a click on its own background: that is what makes it modal, and
+    /// letting one through would move the caret out from under the text it is about to replace.
+    fn click_dialog(&mut self, x: f32, y: f32) -> Option<bool> {
+        let open = self.dialog.as_ref()?;
+        let fields = open.fields().len();
+        let at = self.dialog_at();
+
+        if !dialog::contains(fields, x, y, at) {
+            self.cancel_dialog();
+            return Some(true);
+        }
+
+        match dialog::hit_test(fields, x, y, at) {
+            Some(dialog::Hit::Field(index)) => {
+                self.dialog.as_mut()?.focus(index);
+                Some(true)
+            }
+            Some(dialog::Hit::Accept) => Some(self.accept_dialog()),
+            Some(dialog::Hit::Cancel) => Some(self.cancel_dialog()),
+            // Inside the panel but on nothing. Swallowed, and nothing changed.
+            None => Some(false),
+        }
+    }
+
+    /// Where the dialog's top-left corner is, in the window the last frame measured.
+    fn dialog_at(&self) -> (f32, f32) {
+        let fields = self.dialog.as_ref().map_or(0, |open| open.fields().len());
+        dialog::place(
+            self.window_width,
+            self.window_height,
+            dialog::height_of(fields),
+        )
+    }
+
     /// Resolves a click while a list is open.
     ///
     /// **Asked before everything else in [`click`](Self::click)**, because it is drawn after
@@ -5815,6 +6399,8 @@ impl<T: TextLayout> Editor<T> {
             toolbar::Action::Fence => self.document_mut().toggle_fence(),
             toolbar::Action::Rule => self.document_mut().insert_rule(),
             toolbar::Action::Link => self.link(),
+            // MDEDIT-87 added the button; MDEDIT-129 made both of them ask before they write.
+            toolbar::Action::Image => self.image(),
         }
     }
 

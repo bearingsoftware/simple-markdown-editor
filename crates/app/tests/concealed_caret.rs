@@ -246,3 +246,77 @@ fn a_selection_is_what_gets_deleted() {
 // A language that conceals nothing has nothing here to test: `concealed_at` answers `None` for every
 // offset in it, which `crates/document/tests/reveal.rs` sweeps, and every path below then reduces to
 // the plain boundary it always was.
+
+// ---- deleting one marker must not strand the other (MDEDIT-129) ----
+
+/// **The defect MDEDIT-118 shipped and MDEDIT-129 found.** Taking a concealed marker whole was
+/// right; taking *half a construct* whole was not.
+///
+/// `see [the docs](https://example.com) here` shows as `see the docs here`. Backspace just before
+/// the link text deleted the `[` alone — and the stranded `](https://example.com)` stopped being a
+/// marker and became **visible text**. A URL nobody could see, appearing mid-sentence, from a
+/// keystroke that looked like it should have taken a letter.
+#[test]
+fn backspace_before_a_links_text_removes_the_whole_link() {
+    let mut editor = editor("see [the docs](https://example.com) here\n", 5);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "see the docs here\n");
+}
+
+/// And from the other end, where the stranded half was an orphan `[`.
+#[test]
+fn backspace_after_a_links_text_removes_the_whole_link() {
+    let mut editor = editor("see [the docs](https://example.com) here\n", 14);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "see the docs here\n");
+}
+
+/// Forward delete has the same hole and the same fix.
+#[test]
+fn delete_at_a_links_opening_removes_the_whole_link() {
+    let mut editor = editor("see [the docs](https://example.com) here\n", 4);
+    assert!(editor.press_delete());
+    assert_eq!(editor.document().to_string(), "see the docs here\n");
+}
+
+/// **One transaction**, so one Ctrl+Z puts the link back rather than half of it.
+#[test]
+fn one_undo_restores_a_deleted_link() {
+    let source = "see [the docs](https://example.com) here\n";
+    let mut editor = editor(source, 5);
+    editor.press_backspace();
+    assert!(editor.document_mut().undo());
+    assert_eq!(editor.document().to_string(), source);
+    assert!(
+        !editor.document().can_undo(),
+        "removing both markers must be one transaction"
+    );
+}
+
+/// **The case that made the direction matter.** Pairing by "the nearest marker of the same kind"
+/// alone matches the *next link's* opening bracket from this one's closing marker, and deleting both
+/// takes the words between two different links with it.
+#[test]
+fn deleting_one_link_leaves_the_next_one_alone() {
+    let mut editor = editor("[a](u) and [b](v)\n", 4);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "a and [b](v)\n");
+}
+
+#[test]
+fn an_images_markers_go_together_too() {
+    let mut editor = editor("![alt](pic.png)\n", 2);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "alt\n");
+}
+
+/// **A delimiter run is deliberately not paired**, and this is what says so rather than leaving it
+/// to be discovered. `**` looks identical at both ends, so nothing in the bytes says which is which
+/// and `**a** and **b**` would mis-pair exactly as two links would. It also lacks the failure that
+/// motivated this: `bold**` is ugly, and it is still the characters that were already there.
+#[test]
+fn a_delimiter_run_still_goes_one_marker_at_a_time() {
+    let mut editor = editor("**bold** text\n", 2);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "bold** text\n");
+}

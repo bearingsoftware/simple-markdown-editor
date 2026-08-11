@@ -132,6 +132,12 @@ pub enum Action {
     Rule,
     /// A link, using a URL from the clipboard if there is one.
     Link,
+    /// An image: `![alt](path)`.
+    ///
+    /// MDEDIT-87. The **only** element of the Markdown Guide's basic syntax with no way in but
+    /// typing — the marker was parsed and coloured and its destination underlined, and there was no
+    /// button, no chord and no menu item.
+    Image,
 }
 
 impl Action {
@@ -175,6 +181,11 @@ impl Action {
             Self::Fence => '\u{F0E3}',
             Self::Rule => '\u{E738}',
             Self::Link => '\u{E71B}',
+            // MDEDIT-87, **chosen by rasterising the candidates and looking**, as Fence and Rule
+            // were: a chart is not evidence that a glyph is in the installed font, and
+            // `every_icon_the_bar_asks_for_exists` is what turns that into a failing test rather
+            // than a blank square on the bar.
+            Self::Image => '\u{EB9F}',
             // Fluent's "More" — a horizontal ellipsis, which is the convention for an overflow.
             Self::More => '\u{E712}',
             // The documented exception. See above.
@@ -234,6 +245,9 @@ impl Action {
             Self::Fence => "```".to_owned(),
             Self::Rule => "—".to_owned(),
             Self::Link => "[]()".to_owned(),
+            // The Markdown it writes, which is its own kind of legend — and it does not resolve to
+            // the emoji font, which is what ruled out 🖼.
+            Self::Image => "![]".to_owned(),
         }
     }
 
@@ -280,6 +294,7 @@ impl Action {
             Self::Fence => "Code block".to_owned(),
             Self::Rule => "Horizontal rule".to_owned(),
             Self::Link => "Link".to_owned(),
+            Self::Image => "Image".to_owned(),
         }
     }
 
@@ -317,6 +332,9 @@ impl Action {
             | Self::Quote
             | Self::Fence
             | Self::Rule
+            // MDEDIT-87 gave it no chord: the bar is the only door, and a chord is worth spending
+            // on something you reach for often enough to remember.
+            | Self::Image
             | Self::Headings
             | Self::More => {
                 return None;
@@ -355,6 +373,8 @@ impl Action {
                 | Self::Headings
                 | Self::Bullet
                 | Self::Quote
+                // MDEDIT-87. Link opens the insert group rather than closing the block one.
+                | Self::Link
                 | Self::More
         )
     }
@@ -458,7 +478,11 @@ pub const MARKDOWN: &[Action] = &[
     Action::Quote,
     Action::Fence,
     Action::Rule,
+    // The insert group (MDEDIT-87): what you put *into* a document rather than mark up text you
+    // already have. `Link` moves here from the end of the formatting run to join it, and Table
+    // joins them when there is a table feature for the button to open.
     Action::Link,
+    Action::Image,
 ];
 
 /// Where one button sits.

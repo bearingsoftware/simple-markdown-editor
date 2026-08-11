@@ -18,6 +18,7 @@ pub mod clipboard;
 pub mod config;
 pub mod content;
 pub mod detect;
+pub mod dialog;
 pub mod editor;
 pub mod field;
 pub mod find;
