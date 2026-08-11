@@ -181,12 +181,10 @@ impl Action {
             Self::Fence => '\u{F0E3}',
             Self::Rule => '\u{E738}',
             Self::Link => '\u{E71B}',
-            // MDEDIT-87, and the second was **chosen by rasterising the candidates and looking**,
-            // as Fence and Rule were. `U+ED86` was the obvious guess from a chart and is not in the
-            // installed font at all — `every_icon_the_bar_asks_for_exists` caught it, which is what
-            // that test is for. Of the ones that are present, `U+E80A` is the only one that reads
-            // as a *table* rather than as tiles: a bordered grid with a header row and two column
-            // dividers. `U+F0E2` and `U+ECA5` are four separate boxes.
+            // MDEDIT-87, **chosen by rasterising the candidates and looking**, as Fence and Rule
+            // were: a chart is not evidence that a glyph is in the installed font, and
+            // `every_icon_the_bar_asks_for_exists` is what turns that into a failing test rather
+            // than a blank square on the bar.
             Self::Image => '\u{EB9F}',
             // Fluent's "More" — a horizontal ellipsis, which is the convention for an overflow.
             Self::More => '\u{E712}',
@@ -247,8 +245,8 @@ impl Action {
             Self::Fence => "```".to_owned(),
             Self::Rule => "—".to_owned(),
             Self::Link => "[]()".to_owned(),
-            // The Markdown each one writes, which is its own kind of legend — and neither resolves
-            // to the emoji font, which is what ruled out 🖼 and ▦.
+            // The Markdown it writes, which is its own kind of legend — and it does not resolve to
+            // the emoji font, which is what ruled out 🖼.
             Self::Image => "![]".to_owned(),
         }
     }
@@ -334,8 +332,8 @@ impl Action {
             | Self::Quote
             | Self::Fence
             | Self::Rule
-            // MDEDIT-87 gave neither a chord: the bar is the only door, and a chord is worth
-            // spending on something you reach for often enough to remember.
+            // MDEDIT-87 gave it no chord: the bar is the only door, and a chord is worth spending
+            // on something you reach for often enough to remember.
             | Self::Image
             | Self::Headings
             | Self::More => {

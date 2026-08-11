@@ -2886,11 +2886,6 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Routes one key press to the find field.
-    ///
-    /// Chords are **not** swallowed. Ctrl+S saves the document while the caret is in the search box,
-    /// which is what anyone would expect; only the three that mean something to a text field —
-    /// select all, copy, paste and cut — are taken here, and the rest go where they always went.
     /// A key, while the dialog is up.
     ///
     /// **Everything is swallowed**, whether it did something or not — that is what modal means, and
@@ -2960,6 +2955,11 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Routes one key press to the find field.
+    ///
+    /// Chords are **not** swallowed. Ctrl+S saves the document while the caret is in the search box,
+    /// which is what anyone would expect; only the three that mean something to a text field —
+    /// select all, copy, paste and cut — are taken here, and the rest go where they always went.
     fn find_key(&mut self, event: &KeyEvent) -> bool {
         let shift = self.modifiers.shift_key();
         // The same gate as the document's, and for the same reason: a search box that could not be
@@ -3443,11 +3443,6 @@ impl<T: TextLayout> Editor<T> {
         at
     }
 
-    /// The concealed marker the caret is standing immediately after, if any.
-    ///
-    /// What Backspace deletes instead of one character. Its whole span, in one edit and one undo
-    /// step, because the bytes are invisible and taking them off one at a time would be a key that
-    /// does nothing until it suddenly does something.
     /// Removes a concealed marker, **and the other half of its construct** if it has one.
     ///
     /// MDEDIT-118 took a marker whole, on the argument that removing one byte of something invisible
@@ -3477,6 +3472,11 @@ impl<T: TextLayout> Editor<T> {
         removed
     }
 
+    /// The concealed marker the caret is standing immediately after, if any.
+    ///
+    /// What Backspace deletes instead of one character. Its whole span, in one edit and one undo
+    /// step, because the bytes are invisible and taking them off one at a time would be a key that
+    /// does nothing until it suddenly does something.
     fn concealed_before(&self, offset: ByteOffset) -> Option<ByteSpan> {
         if offset == ByteOffset::ZERO {
             return None;
@@ -3681,15 +3681,6 @@ impl<T: TextLayout> Editor<T> {
         quads
     }
 
-    /// Draws the list a toolbar button opened, if one is open.
-    ///
-    /// A row is its icon in a fixed column and then its words, so the words line up down the list
-    /// whether or not each row's icon resolved. Both come out of `toolbar_labels`, which by now
-    /// holds the button faces, the tooltips and these — one cache of laid-out chrome text, cleared
-    /// by `set_zoom` in one place.
-    ///
-    /// The lit row is the one the caret is already in, which for the heading list is the level being
-    /// shown on the button. It uses `tab_active`, as a lit button on the bar does.
     /// Draws the modal dialog, and the dim over everything behind it (MDEDIT-129).
     ///
     /// **The dim is the modality**, not decoration. It is the only thing on screen saying that the
@@ -3985,6 +3976,15 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Draws the list a toolbar button opened, if one is open.
+    ///
+    /// A row is its icon in a fixed column and then its words, so the words line up down the list
+    /// whether or not each row's icon resolved. Both come out of `toolbar_labels`, which by now
+    /// holds the button faces, the tooltips and these — one cache of laid-out chrome text, cleared
+    /// by `set_zoom` in one place.
+    ///
+    /// The lit row is the one the caret is already in, which for the heading list is the level being
+    /// shown on the button. It uses `tab_active`, as a lit button on the bar does.
     fn draw_menu(&mut self, quads: &mut Vec<QuadInstance>, scale: f32) {
         let Some(menu) = self.open_menu.clone() else {
             return;
@@ -4349,8 +4349,8 @@ impl<T: TextLayout> Editor<T> {
             toolbar::Action::More
             | toolbar::Action::Rule
             | toolbar::Action::Link
-            // Nor is either of MDEDIT-87's. An image and a table are things you insert; there is no
-            // "inside a table" the caret can be in that this button would mean.
+            // Nor is MDEDIT-87's. An image is something you insert; there is no "inside an image"
+            // the caret can be in that this button would light up for.
             | toolbar::Action::Image
             | toolbar::Action::New
             | toolbar::Action::Open

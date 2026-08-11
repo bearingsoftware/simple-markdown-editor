@@ -1166,8 +1166,14 @@ impl Document {
             return None;
         };
 
-        let text = self.to_string();
-        let opens = marker.slice(&text).ends_with('[');
+        // The marker's own last byte, sliced out of the rope rather than read out of a copy of the
+        // whole document: this runs on a Backspace, where the budget is the keystroke's.
+        let opens = self
+            .text
+            .byte_slice(marker.start().get()..marker.end().get())
+            .chars()
+            .last()
+            == Some('[');
 
         let matching = |segment: &Segment| match segment.kind() {
             SegmentKind::Content => None,
