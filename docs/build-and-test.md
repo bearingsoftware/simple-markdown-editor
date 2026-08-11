@@ -90,6 +90,16 @@ After CI passes on `main`, `.github/workflows/project-status.yml` measures unit 
 The figure is the **Linux** one — the Windows-gated code has no regions to measure there, which is
 worth knowing before concluding the platform layer is untested.
 
+**The floors are what make the number a signal** (MDEDIT-130). `scripts/coverage-floors.json` is a
+committed constant, never computed from the run being measured — a derived floor equals the actual
+and can never be breached. The board turns *actual < floor* into a red dot; the script says the same
+thing on stderr, so a local run does not have to wait for one. Raising a floor after coverage
+improves is the ratchet, and lowering one is meant to be visible in a diff.
+
+`menu-win` and `shell-win` carry no floor: on a Linux runner nearly all of both is `cfg`'d out, so
+their percentages describe the Linux slice rather than the crate, and either would move on a `cfg`
+change with no test touched. A floor whose crate produced no regions is inert, not a false breach.
+
 ## Benchmarks and perf assertions
 
 ```bash
