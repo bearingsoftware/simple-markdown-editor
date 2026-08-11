@@ -159,22 +159,28 @@ fn all_of_the_buttons_fit_a_default_window() {
     );
 }
 
-/// **The room MDEDIT-116 made, and MDEDIT-87 is spending.**
+/// **The room MDEDIT-116 made, now spent.**
 ///
 /// This used to guard a future: collapsing three heading buttons into one is what paid for Image and
-/// Table, and it asserted that adding two more buttons would still fit. MDEDIT-87 has added the
-/// first, so it now asserts the arithmetic that argued for doing it that way instead of shaving the
-/// padding again — the bar fits, and by how much.
+/// Table, and it asserted that adding two more buttons would still fit. Both have landed — Image on
+/// MDEDIT-87, Table on MDEDIT-127 — so it now asserts the arithmetic that argued for doing it that
+/// way instead of shaving the padding again.
 ///
-/// The headroom is the interesting number rather than the pass. **Table is still to come**, and it
-/// has to come out of what is left here.
+/// **The numbers, measured on this machine rather than taken from the plan.** Twenty-one buttons is
+/// 827px; Table's own button is 34px; twenty-two is 861px of a 900px default window, leaving 39px.
+/// MDEDIT-127's plan quoted 861px as the figure *without* Table, which it was not — that measurement
+/// was taken on MDEDIT-87's branch while Table was still on it. The correction is in this direction:
+/// there is one more button's room than the plan thought, not one less.
+///
+/// The headroom is the interesting number rather than the pass. One 34px button still fits inside
+/// 39px; the one after it does not, and is the conversation.
 #[test]
-fn the_bar_still_fits_with_image_added() {
+fn the_bar_still_fits_with_the_table_button() {
     let mut text = engine();
     let all = [toolbar::STANDARD, toolbar::MARKDOWN].concat();
     assert!(
-        all.contains(&Action::Image),
-        "this is the test that says it fits, so it has to be looking at a bar that has it"
+        all.contains(&Action::Image) && all.contains(&Action::Table),
+        "this is the test that says they fit, so it has to be looking at a bar that has them"
     );
 
     let widths: Vec<f32> = all

@@ -1155,26 +1155,30 @@ fn the_bar_offers_an_image() {
     assert!(toolbar::MARKDOWN.contains(&Action::Image));
 }
 
-/// Link and Image are the last two, in that order: the insert group, which Table joins when there
-/// is a table feature for it to open.
+/// Link, Image and Table are the last three, in that order: the insert group, which MDEDIT-127
+/// closed once the Table button had a size picker to open.
 #[test]
-fn link_and_image_are_the_last_two_in_that_order() {
+fn the_insert_group_is_link_image_table_in_that_order() {
     let markdown = toolbar::MARKDOWN;
     assert_eq!(
-        &markdown[markdown.len() - 2..],
-        &[Action::Link, Action::Image]
+        &markdown[markdown.len() - 3..],
+        &[Action::Link, Action::Image, Action::Table]
     );
 }
 
 /// **Neither has a chord**, which is a decision rather than an omission: the bar is the only door,
-/// and a chord is worth spending on something reached often enough to remember.
+/// and a chord is worth spending on something reached often enough to remember. Table could not have
+/// one at all — a chord that opened a picker would be a chord that does nothing on its own.
 #[test]
 fn image_takes_no_chord() {
     assert_eq!(Action::Image.chord(), None);
+    assert_eq!(Action::Table.chord(), None);
 }
 
-/// Neither lights, because neither is a state — there is no "inside a table" for a button to
-/// reflect, any more than there is an inside of a horizontal rule.
+/// Neither lights. An image is something you insert, and there is no "inside an image" to reflect;
+/// "inside a table" *is* a state, but nothing can answer it until MDEDIT-89 parses one — and the
+/// buttons that should light for it are MDEDIT-128's controls over the table you are in, not this
+/// picker for inserting a new one.
 #[test]
 fn image_is_not_a_state() {
     let editor = editor(
@@ -1182,10 +1186,12 @@ fn image_is_not_a_state() {
 ",
     );
     assert!(!editor.is_lit(Action::Image));
+    assert!(!editor.is_lit(Action::Table));
 }
 
 /// Both have a tooltip, because every button does and MDEDIT-85's test would have caught it anyway.
 #[test]
 fn image_says_what_it_does() {
     assert_eq!(Action::Image.tooltip(), "Image");
+    assert_eq!(Action::Table.tooltip(), "Table");
 }

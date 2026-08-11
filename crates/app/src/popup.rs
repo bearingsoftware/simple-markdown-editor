@@ -151,3 +151,122 @@ pub fn text_for(action: Action) -> Option<String> {
 pub fn any_text(rows: &[Action]) -> bool {
     rows.iter().any(|action| text_for(*action).is_some())
 }
+
+/// The size picker: a panel of cells rather than a panel of rows (MDEDIT-127).
+///
+/// Everything above lays out a list, and a list is one-dimensional — [`hit_test`] divides by
+/// [`ROW_HEIGHT`] and is done. Sizing a table is a gesture across two axes, so this is a second
+/// geometry beside the first rather than a parameter on it.
+///
+/// **Every pixel of the grid belongs to a cell.** The gap between two squares is drawn, not
+/// hit-tested: a cell owns its whole pitch, gap included. MDEDIT-116's row version had its one bug
+/// at exactly this seam — a click in the top margin fell through to row zero — and dead pixels
+/// between cells would be the same defect with a hundred more places to hide.
+pub mod grid {
+    /// Space between one cell's edge and the next one's.
+    const GAP: f32 = 2.0;
+
+    /// A drawn cell's side.
+    pub const CELL: f32 = 18.0;
+
+    /// One cell's share of the grid: its square and the gap after it.
+    pub const PITCH: f32 = CELL + GAP;
+
+    /// The room below the grid for the line saying what is about to be inserted.
+    pub const CAPTION: f32 = 22.0;
+
+    /// How many rows the picker offers.
+    ///
+    /// **Word's grid, less the drag-to-extend.** Eight by ten is what Word and Google Docs both show
+    /// before they start growing, and a Markdown table wider than ten columns is one somebody is
+    /// generating rather than drawing. There is no extension here: past the grid, the way to add a
+    /// row is MDEDIT-128's control or a newline.
+    pub const ROWS: usize = 8;
+
+    /// How many columns the picker offers. See [`ROWS`].
+    pub const COLUMNS: usize = 10;
+
+    /// How wide the picker's panel is.
+    #[must_use]
+    pub fn width() -> f32 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "COLUMNS is a small constant, exactly representable"
+        )]
+        let columns = COLUMNS as f32;
+        columns.mul_add(PITCH, super::MARGIN * 2.0)
+    }
+
+    /// How tall it is, caption included.
+    #[must_use]
+    pub fn height() -> f32 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "ROWS is a small constant, exactly representable"
+        )]
+        let rows = ROWS as f32;
+        rows.mul_add(PITCH, super::MARGIN * 2.0 + CAPTION)
+    }
+
+    /// Where a cell's square sits, measured from the panel's own corner.
+    #[must_use]
+    pub fn cell_at(row: usize, column: usize) -> (f32, f32) {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "bounded by ROWS and COLUMNS, both small constants"
+        )]
+        let (row, column) = (row as f32, column as f32);
+        (
+            column.mul_add(PITCH, super::MARGIN),
+            row.mul_add(PITCH, super::MARGIN),
+        )
+    }
+
+    /// The middle of the caption strip, measured from the panel's own corner.
+    ///
+    /// The strip sits under the grid and above the bottom margin, so this is not
+    /// `height() - CAPTION / 2` — that lands in the margin.
+    #[must_use]
+    pub fn caption_middle() -> f32 {
+        height() - super::MARGIN - CAPTION / 2.0
+    }
+
+    /// Which cell `(x, y)` is over, as a zero-based `(row, column)`.
+    ///
+    /// `None` for the margins and the caption strip, which are on the panel and on no cell — and a
+    /// caller swallows the click anyway, for the reason [`super::hit_test`] gives.
+    #[must_use]
+    pub fn hit_test(x: f32, y: f32, panel: (f32, f32)) -> Option<(usize, usize)> {
+        let (panel_x, panel_y) = panel;
+        let (into_x, into_y) = (x - panel_x - super::MARGIN, y - panel_y - super::MARGIN);
+        // The margin is *above* row zero and *left* of column zero, not part of either. Without this
+        // the cast saturates to 0 and hands the margin to the first cell.
+        if into_x < 0.0 || into_y < 0.0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "checked non-negative above, and bounded against ROWS and COLUMNS below"
+        )]
+        let (row, column) = ((into_y / PITCH) as usize, (into_x / PITCH) as usize);
+        (row < ROWS && column < COLUMNS).then_some((row, column))
+    }
+
+    /// Whether `(x, y)` is anywhere on the picker, caption and margins included.
+    #[must_use]
+    pub fn contains(x: f32, y: f32, panel: (f32, f32)) -> bool {
+        let (panel_x, panel_y) = panel;
+        (panel_x..panel_x + width()).contains(&x) && (panel_y..panel_y + height()).contains(&y)
+    }
+
+    /// The line under the grid, naming the table the current cell would insert.
+    ///
+    /// **`rows` counts the header**, as [`mdedit_document::Document::insert_table`] does — the
+    /// caption describes the squares that are lit, and a caption that said "2 × 4" over three lit
+    /// squares would be the picker disagreeing with itself.
+    #[must_use]
+    pub fn caption(rows: usize, columns: usize) -> String {
+        format!("{rows} × {columns} table")
+    }
+}

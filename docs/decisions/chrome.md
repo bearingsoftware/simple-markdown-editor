@@ -185,8 +185,11 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   `every_button_is_either_drawn_or_in_the_overflow` sweeps the widths and rejoins them.
 
   **Three heading buttons became one, and that is what paid for MDEDIT-87.** 844px → 776, and Image
-  and Table land at 858 against a 900px window — measured in `icons.rs` rather than hoped for, so if
-  it stops being true that ticket hears about it first. H4 to H6 stop being chord-only as a result.
+  and Table land at 861 against a 900px window — measured in `icons.rs` rather than hoped for, so if
+  it stops being true that ticket hears about it first. (861, not the 858 estimated here in advance
+  and not the 861-without-Table that MDEDIT-127's plan quoted: the bar is 827px with twenty-one
+  buttons, Table's own is 34, and 39px of headroom is left. That is room for one more button and no
+  further.) H4 to H6 stop being chord-only as a result.
   The button reads `H1` by default and the caret's own level when it is in one; `Action::letters`
   separates a letterform that is one **on purpose** (set near the icon size) from the words a machine
   with no icon font falls back to (set small, because "Paste" at that size would not fit).
@@ -204,6 +207,30 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Two things found by their own tests rather than by eye: `popup::hit_test` gave the panel's top
   margin to row zero, because the subtraction went negative and the cast to `usize` saturated; and
   the icon column has to clear `PADDING` plus the icon or the words start on top of the picture.
+- **The Table button opens a grid, and a grid is the one panel here that is not a list.** MDEDIT-127.
+  MDEDIT-87 shipped that button writing a fixed 2×2 skeleton and it was rejected on sight — a button
+  that always writes the same shape is barely better than typing the pipes — so the button came back
+  pointing at a rows × columns picker, hover to size and click to insert, as Word and Google Docs do.
+
+  Everything above lays out one dimension: `popup::hit_test` divides by `ROW_HEIGHT` and is done.
+  `popup::grid` is a second geometry beside it rather than a parameter on it, and `toolbar::Menu`
+  gained a third variant so the two places that differ — the click and the hover — say which they
+  are by matching rather than by a panel that is secretly two things.
+
+  **Every pixel of the grid belongs to a cell.** The gap between two squares is drawn, not
+  hit-tested: a cell owns its whole pitch. The row version's one bug was at exactly this seam, and
+  dead pixels between eighty cells would be the same defect with a hundred more places to hide —
+  `every_part_of_every_cell_answers_with_that_cell` sweeps each cell's pitch rather than sampling its
+  middle.
+
+  **The lit block is the table.** Every cell up to and including the hovered one fills, so the shape
+  is read rather than counted; the caption underneath names it ("3 × 4 table") and reads "Table size"
+  when nothing is hovered, because the strip's height is reserved either way and an empty strip along
+  the bottom of a panel looks like something that failed to draw.
+
+  **`rows` counts the header**, in the picker, in the caption and in `Document::insert_table`. Three
+  lit squares mean three rows of table, one of which is the header the delimiter sits under — a
+  picker whose smallest offer is two rows lies about its own top-left square.
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it
