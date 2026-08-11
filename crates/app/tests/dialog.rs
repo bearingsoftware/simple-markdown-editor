@@ -21,9 +21,12 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::config::Config;
 use mdedit_app::dialog::{self, Kind};
 use mdedit_app::editor::Editor;
 use mdedit_app::field::Press;
+use mdedit_app::gpu::QuadInstance;
+use mdedit_app::view::{Rgba, Theme, ThemeChoice};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
@@ -350,4 +353,106 @@ fn both_dialogs_use_the_same_label_column() {
     assert_eq!(dialog::field_rect(0, at).0, dialog::field_rect(1, at).0);
     assert_eq!(Kind::Link.labels().len(), 2);
     assert_eq!(Kind::Image.labels().len(), 3);
+}
+
+// ---- what the boxes draw (MDEDIT-129) ----
+
+fn quads_of(editor: &mut Editor<Grid>) -> Vec<QuadInstance> {
+    editor.build_frame(WIDTH, HEIGHT, 1.0)
+}
+
+fn matching(quads: &[QuadInstance], colour: Rgba) -> Vec<QuadInstance> {
+    let wanted = [colour.r, colour.g, colour.b, colour.a];
+    quads
+        .iter()
+        .filter(|quad| quad.colour == wanted)
+        .copied()
+        .collect()
+}
+
+fn dark(text: &str) -> Editor<Grid> {
+    let mut editor = Editor::new(text, Grid::new());
+    // Pinned for the reason `caret_line.rs` gives: `system` resolves against the runner's machine,
+    // and these assertions name colours out of `Theme::dark`.
+    editor.with_config(Config {
+        theme: ThemeChoice::Dark,
+        ..Config::default()
+    });
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    editor
+}
+
+/// **Selecting text in the box drew nothing.** The field tracked a selection — Ctrl+A set one, and
+/// typing replaced it — but the box painted only glyphs and a caret, so the state existed and was
+/// invisible. Select-all then type looked like a keystroke that ate the field at random.
+#[test]
+fn a_selection_in_a_field_is_painted() {
+    let mut editor = dark("");
+    editor.link();
+    editor.press_dialog(&Press::Text("https://example.com".to_owned()), false);
+
+    let before = matching(&quads_of(&mut editor), Theme::dark().selection).len();
+    editor.press_dialog(&Press::SelectAll, false);
+    let after = matching(&quads_of(&mut editor), Theme::dark().selection);
+
+    assert_eq!(before, 0, "nothing selected, nothing painted");
+    assert_eq!(after.len(), 1, "the selected run wants exactly one quad");
+    assert!(after[0].rect[2] > 0.0, "and it must have width");
+}
+
+/// The highlight belongs to the box it is in. A quad wider than the box painted over the label
+/// column to its left and the panel's edge to its right — which is what "the text overflows past
+/// the box" looked like once a long URL was selected.
+#[test]
+fn the_highlight_stays_inside_its_box() {
+    let mut editor = dark("");
+    editor.link();
+    editor.press_dialog(
+        &Press::Text("https://example.com/a/very/long/path/that/will/not/fit".to_owned()),
+        false,
+    );
+    editor.press_dialog(&Press::SelectAll, false);
+
+    let open = editor.dialog().expect("the dialog is open").clone();
+    let at = dialog::place(WIDTH, HEIGHT, dialog::height_of(open.fields().len()));
+    let (box_x, _, box_width, _) = dialog::field_rect(0, at);
+
+    let quads = quads_of(&mut editor);
+    let quad = matching(&quads, Theme::dark().selection);
+    let quad = quad.first().expect("a selection is painted");
+    assert!(
+        quad.rect[0] >= box_x && quad.rect[0] + quad.rect[2] <= box_x + box_width,
+        "the highlight left the box it belongs to"
+    );
+}
+
+/// **A field you cannot see what you are typing into is not a field.** Text longer than the box
+/// scrolls so the caret stays in view; without it, everything past the right edge was typed blind.
+#[test]
+fn a_long_value_scrolls_to_keep_the_caret_in_view() {
+    let mut editor = dark("");
+    editor.link();
+    editor.press_dialog(
+        &Press::Text("https://example.com/a/very/long/path/that/will/not/fit".to_owned()),
+        false,
+    );
+
+    let open = editor.dialog().expect("the dialog is open").clone();
+    let at = dialog::place(WIDTH, HEIGHT, dialog::height_of(open.fields().len()));
+    let (box_x, box_y, box_width, box_height) = dialog::field_rect(0, at);
+
+    let quads = quads_of(&mut editor);
+    let caret = matching(&quads, Theme::dark().caret);
+    // Narrow, because the focus ring is this colour too — and on the field's row, because **so is
+    // the document's own caret**, which is drawn first and would otherwise be the one found.
+    let caret = caret
+        .iter()
+        .find(|quad| {
+            quad.rect[2] <= 4.0 && quad.rect[1] >= box_y && quad.rect[1] < box_y + box_height
+        })
+        .expect("the focused field draws a caret");
+    assert!(
+        caret.rect[0] >= box_x && caret.rect[0] + caret.rect[2] <= box_x + box_width,
+        "the caret is off the end of the box, so the text is being typed blind"
+    );
 }

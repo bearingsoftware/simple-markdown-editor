@@ -2946,6 +2946,12 @@ impl<T: TextLayout> Editor<T> {
             // is what a column invites.
             Key::Named(NamedKey::ArrowUp) => self.tab_dialog(false),
             Key::Named(NamedKey::ArrowDown) => self.tab_dialog(true),
+            // **Space is a *named* key in winit, not a character**, so without this arm the catch-all
+            // below swallowed it and a URL box could not hold a space — which is exactly the input
+            // the angle-bracket escaping exists for. `find_key` has the same arm for the same reason.
+            Key::Named(NamedKey::Space) => {
+                self.press_dialog(&field::Press::Text(" ".to_owned()), false)
+            }
             Key::Character(character) => {
                 self.press_dialog(&field::Press::Text(character.to_string()), false)
             }
@@ -3345,10 +3351,11 @@ impl<T: TextLayout> Editor<T> {
         if caret == ByteOffset::ZERO {
             return false;
         }
-        let span = self
-            .concealed_before(caret)
-            .unwrap_or_else(|| ByteSpan::new(self.previous_boundary(caret), caret));
+        if let Some(marker) = self.concealed_before(caret) {
+            return self.delete_marker(marker);
+        }
         // `delete` already leaves the caret at the start of what it removed.
+        let span = ByteSpan::new(self.previous_boundary(caret), caret);
         self.document_mut().delete(span).is_ok()
     }
 
@@ -3363,9 +3370,10 @@ impl<T: TextLayout> Editor<T> {
             return true;
         }
         let caret = self.document().selection().head();
-        let span = self
-            .concealed_after(caret)
-            .unwrap_or_else(|| ByteSpan::new(caret, self.next_boundary(caret)));
+        if let Some(marker) = self.concealed_after(caret) {
+            return self.delete_marker(marker);
+        }
+        let span = ByteSpan::new(caret, self.next_boundary(caret));
         !span.is_empty() && self.document_mut().delete(span).is_ok()
     }
 
@@ -3440,6 +3448,35 @@ impl<T: TextLayout> Editor<T> {
     /// What Backspace deletes instead of one character. Its whole span, in one edit and one undo
     /// step, because the bytes are invisible and taking them off one at a time would be a key that
     /// does nothing until it suddenly does something.
+    /// Removes a concealed marker, **and the other half of its construct** if it has one.
+    ///
+    /// MDEDIT-118 took a marker whole, on the argument that removing one byte of something invisible
+    /// is a keystroke with no visible effect. It missed that the other half is invisible too:
+    /// deleting a link's `[` left `](https://example.com)` behind, and a stranded marker stops being
+    /// a marker and **becomes visible text** — a URL nobody could see, appearing mid-sentence, from a
+    /// keystroke that looked like it should have taken a letter.
+    ///
+    /// Both spans in one transaction, so one Ctrl+Z restores the link rather than half of it. The
+    /// later span goes first, because removing the earlier one would shift it.
+    ///
+    /// See `Document::paired_marker` for which constructs pair and why the delimiter runs do not.
+    fn delete_marker(&mut self, marker: ByteSpan) -> bool {
+        let Some(pair) = self.document().paired_marker(marker) else {
+            return self.document_mut().delete(marker).is_ok();
+        };
+        let (first, second) = if marker.start() < pair.start() {
+            (marker, pair)
+        } else {
+            (pair, marker)
+        };
+        let mut removed = false;
+        self.document_mut().transact(|doc| {
+            removed = doc.delete(second).is_ok() && doc.delete(first).is_ok();
+            doc.set_selection(Selection::caret(first.start()));
+        });
+        removed
+    }
+
     fn concealed_before(&self, offset: ByteOffset) -> Option<ByteSpan> {
         if offset == ByteOffset::ZERO {
             return None;
@@ -3741,69 +3778,156 @@ impl<T: TextLayout> Editor<T> {
         let (x, y) = at;
         let drop = self.theme.body_size * 0.35;
         let baseline = move |top: f32, box_height: f32| top + box_height / 2.0 + drop;
+        let (box_x, box_y, box_width, box_height) = dialog::field_rect(index, (x, y));
+
+        self.draw_label(
+            quads,
+            label,
+            style,
+            x + dialog::PADDING,
+            baseline(box_y, box_height),
+            self.theme.marker,
+            scale,
+            dialog::LABEL_WIDTH - 8.0,
+        );
+
+        // The focused box takes the raised surface and a brighter edge, which is the same two
+        // signals a lit toolbar button uses. Colour alone would fail the pack's contract.
+        let focused = open.focused() == index;
+        quads.push(Self::solid(
+            [
+                (box_x - 1.0) * scale,
+                (box_y - 1.0) * scale,
+                (box_width + 2.0) * scale,
+                (box_height + 2.0) * scale,
+            ],
+            if focused {
+                self.theme.caret
+            } else {
+                self.theme.line
+            },
+        ));
+        quads.push(Self::solid(
+            [
+                box_x * scale,
+                box_y * scale,
+                box_width * scale,
+                box_height * scale,
+            ],
+            self.theme.background,
+        ));
+
+        self.draw_dialog_text(
+            quads,
+            &open.fields()[index],
+            (box_x, box_y, box_width, box_height),
+            style,
+            (focused, baseline(box_y, box_height)),
+            scale,
+        );
+    }
+
+    /// What is inside one box: the selection behind, the glyphs, the caret in front.
+    ///
+    /// Split out of [`Self::draw_dialog_field`] only because the two together are past the line
+    /// limit; the seam is the box's chrome against its contents.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_dialog_text(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        field: &field::Field,
+        box_rect: (f32, f32, f32, f32),
+        style: TextStyle,
+        focus: (bool, f32),
+        scale: f32,
+    ) {
+        let (box_x, box_y, box_width, box_height) = box_rect;
+        let (focused, baseline) = focus;
         {
-            let (box_x, box_y, box_width, box_height) = dialog::field_rect(index, (x, y));
+            let text = field.text().to_owned();
+            let caret_at = field.caret();
+            let (from, to) = field.selection();
 
-            self.draw_label(
-                quads,
-                label,
-                style,
-                x + dialog::PADDING,
-                baseline(box_y, box_height),
-                self.theme.marker,
-                scale,
-                dialog::LABEL_WIDTH - 8.0,
-            );
+            let label = (!text.is_empty())
+                .then(|| self.lay_out_label(&text, style))
+                .flatten();
 
-            // The focused box takes the raised surface and a brighter edge, which is the same two
-            // signals a lit toolbar button uses. Colour alone would fail the pack's contract.
-            let focused = open.focused() == index;
-            quads.push(Self::solid(
-                [
-                    (box_x - 1.0) * scale,
-                    (box_y - 1.0) * scale,
-                    (box_width + 2.0) * scale,
-                    (box_height + 2.0) * scale,
-                ],
-                if focused {
-                    self.theme.caret
-                } else {
-                    self.theme.line
-                },
-            ));
-            quads.push(Self::solid(
-                [
-                    box_x * scale,
-                    box_y * scale,
-                    box_width * scale,
-                    box_height * scale,
-                ],
-                self.theme.background,
-            ));
+            // Where a byte sits along the laid-out text: the glyph that starts at or after it, or
+            // past the last one. **The same rule the find field uses**, and it has to be the same
+            // one — a caret placed by measuring a prefix instead sits half a glyph away from the
+            // highlight, which is what this drew before.
+            let x_of = |offset: usize| -> f32 {
+                label.as_ref().map_or(0.0, |label| {
+                    label
+                        .glyphs
+                        .iter()
+                        .find(|glyph| glyph.source.start().get() >= offset)
+                        .map_or_else(
+                            || {
+                                label
+                                    .glyphs
+                                    .last()
+                                    .map_or(0.0, |glyph| glyph.pos.x + glyph.advance)
+                            },
+                            |glyph| glyph.pos.x,
+                        )
+                })
+            };
 
-            let text = open.fields()[index].text().to_owned();
-            self.draw_label(
-                quads,
-                &text,
-                style,
-                box_x + 6.0,
-                baseline(box_y, box_height),
-                self.theme.text,
-                scale,
-                box_width - 12.0,
-            );
+            // **The box scrolls to keep the caret in it**, which the find field does not need to and
+            // this does: a URL is longer than the box far more often than a search term is, and a
+            // field you cannot see what you are typing into is not a field.
+            let inner = box_width - 12.0;
+            let caret_x = x_of(caret_at);
+            let scroll = (caret_x - inner + CARET_WIDTH).max(0.0);
+            let left = box_x + 6.0 - scroll;
+
+            if from < to && focused {
+                let (start, end) = (x_of(from), x_of(to));
+                // Clamped to the box, so a selection running off either edge stops at it rather
+                // than painting over the label column or the panel's border.
+                let start = (left + start).max(box_x + 6.0);
+                let end = (left + end).min(box_x + box_width - 6.0);
+                if end > start {
+                    quads.push(Self::solid(
+                        [
+                            start * scale,
+                            (box_y + 4.0) * scale,
+                            (end - start) * scale,
+                            (box_height - 8.0) * scale,
+                        ],
+                        self.theme.selection,
+                    ));
+                }
+            }
+
+            if let Some(label) = &label {
+                // Clipped at both edges, because scrolling means glyphs can now fall off the left.
+                let glyphs: Vec<_> = label
+                    .glyphs
+                    .iter()
+                    .filter(|glyph| {
+                        let at = left + glyph.pos.x;
+                        at + glyph.advance > box_x + 6.0 && at < box_x + box_width - 6.0
+                    })
+                    .copied()
+                    .collect();
+                let where_ = LabelAt {
+                    x: left,
+                    baseline,
+                    scale,
+                    colour: self.theme.text,
+                };
+                self.draw_label_glyphs(quads, &glyphs, where_);
+            }
 
             if focused {
-                // Measured rather than counted, because a proportional face makes a character count
-                // the wrong answer — the same reason the find field measures its own caret.
-                let upto = &text[..open.fields()[index].caret().min(text.len())];
-                let advance = self.measure_label(upto, style);
                 quads.push(Self::solid(
                     [
-                        (box_x + 6.0 + advance) * scale,
-                        (box_y + 5.0) * scale,
+                        (left + caret_x) * scale,
+                        (box_y + 4.0) * scale,
                         CARET_WIDTH * scale,
-                        (box_height - 10.0) * scale,
+                        (box_height - 8.0) * scale,
                     ],
                     self.theme.caret,
                 ));
