@@ -532,3 +532,221 @@ fn a_heading_row_has_no_words_and_every_other_row_does() {
     assert!(!popup::any_text(toolbar::HEADINGS));
     assert!(popup::any_text(&[Action::Link, Action::Heading(1)]));
 }
+
+// ---- the size picker (MDEDIT-127) ----
+
+/// Where the middle of a picker cell is, in window coordinates.
+fn cell_centre(editor: &Editor<Grid>, row: usize, column: usize) -> (f32, f32) {
+    let (x, y) = editor.menu_at().expect("the picker should be open");
+    let (cell_x, cell_y) = popup::grid::cell_at(row, column);
+    (
+        x + cell_x + popup::grid::CELL / 2.0,
+        y + cell_y + popup::grid::CELL / 2.0,
+    )
+}
+
+/// **MDEDIT-87 shipped this button writing a fixed 2×2 skeleton and it was rejected on sight.** The
+/// button is back because it no longer writes anything on its own — it opens a panel that is not a
+/// list, which is the one thing this bar had never had.
+#[test]
+fn the_table_button_opens_a_picker_rather_than_writing_a_table() {
+    let mut editor = editor("prose\n", WIDE);
+    let before = editor.document().to_string();
+    open(&mut editor, Action::Table);
+
+    assert_eq!(editor.menu_kind(), Some(toolbar::Menu::TableSize));
+    assert_eq!(
+        editor.document().to_string(),
+        before,
+        "opening the picker must not write anything"
+    );
+    assert_eq!(
+        editor.menu_rows(),
+        Some(&[][..]),
+        "a grid has no rows of actions"
+    );
+}
+
+/// The gesture: the pointer sizes the table, the click inserts it.
+#[test]
+fn choosing_a_cell_inserts_that_size_and_closes() {
+    let mut editor = editor("prose\n", WIDE);
+    caret_at(&mut editor, 2);
+    open(&mut editor, Action::Table);
+
+    // Row 2, column 3 — zero-based, so three rows by four columns.
+    let (x, y) = cell_centre(&editor, 2, 3);
+    assert!(editor.click(x, y), "the picker should swallow the click");
+
+    let text = editor.document().to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "prose");
+    assert_eq!(lines[1], "", "the blank line GFM needs above a table");
+    assert_eq!(lines[3], "| --- | --- | --- | --- |");
+    assert_eq!(lines.len(), 6, "prose, a blank line, and four table rows");
+    assert_eq!(editor.menu_kind(), None, "and it closed behind itself");
+}
+
+/// The top-left cell is a table, not a nothing. A picker whose smallest offer is two rows is one
+/// that lies about its own first square.
+#[test]
+fn the_top_left_cell_is_a_one_by_one_table() {
+    let mut editor = editor("", WIDE);
+    open(&mut editor, Action::Table);
+
+    let (x, y) = cell_centre(&editor, 0, 0);
+    editor.click(x, y);
+
+    assert_eq!(editor.document().to_string(), "|     |\n| --- |\n");
+}
+
+/// Hover-to-size, with no dwell — the lit block *is* the table, so its shape is read rather than
+/// counted.
+#[test]
+fn a_cell_lights_under_the_pointer() {
+    let mut editor = editor("prose\n", WIDE);
+    open(&mut editor, Action::Table);
+    assert_eq!(editor.hovered_cell(), None, "nothing hovered yet");
+
+    let (x, y) = cell_centre(&editor, 3, 5);
+    assert!(editor.hover(x, y), "moving onto a cell is a redraw");
+    assert_eq!(editor.hovered_cell(), Some((3, 5)));
+
+    let (x, y) = cell_centre(&editor, 0, 1);
+    editor.hover(x, y);
+    assert_eq!(editor.hovered_cell(), Some((0, 1)));
+    assert_eq!(editor.hovered_row(), None, "a grid lights no rows");
+}
+
+/// Closing the picker forgets the cell, or the next one to open would come up already sized.
+#[test]
+fn closing_the_picker_forgets_the_hovered_cell() {
+    let mut editor = editor("prose\n", WIDE);
+    open(&mut editor, Action::Table);
+    let (x, y) = cell_centre(&editor, 2, 2);
+    editor.hover(x, y);
+    assert_eq!(editor.hovered_cell(), Some((2, 2)));
+
+    editor.insert_text("x");
+    assert_eq!(editor.hovered_cell(), None);
+    assert_eq!(editor.menu_kind(), None);
+}
+
+/// **Where MDEDIT-116's row version had its one bug**, now with two axes to get wrong. Boundaries
+/// are exclusive at the far edge, so two neighbouring cells cannot both claim a pixel.
+#[test]
+fn hit_testing_is_exclusive_at_a_cell_boundary() {
+    let at = (10.0, 50.0);
+    let first_column_ends = 10.0 + popup::MARGIN + popup::grid::PITCH;
+    let first_row_ends = 50.0 + popup::MARGIN + popup::grid::PITCH;
+
+    assert_eq!(
+        popup::grid::hit_test(first_column_ends - 0.5, first_row_ends - 0.5, at),
+        Some((0, 0))
+    );
+    assert_eq!(
+        popup::grid::hit_test(first_column_ends, first_row_ends - 0.5, at),
+        Some((0, 1))
+    );
+    assert_eq!(
+        popup::grid::hit_test(first_column_ends - 0.5, first_row_ends, at),
+        Some((1, 0))
+    );
+}
+
+/// **No dead pixels between two squares.** The gap is drawn, not hit-tested: a cell owns its whole
+/// pitch. A pointer crossing the grid must never find itself over nothing.
+#[test]
+fn the_gap_between_two_cells_belongs_to_a_cell() {
+    let at = (10.0, 50.0);
+    let (cell_x, cell_y) = popup::grid::cell_at(0, 0);
+    // Just past the drawn square's right edge, which is where the gap is.
+    let in_the_gap = 10.0 + cell_x + popup::grid::CELL + 0.5;
+
+    assert_eq!(
+        popup::grid::hit_test(in_the_gap, 50.0 + cell_y + 1.0, at),
+        Some((0, 0)),
+        "the gap after a square is still that square's"
+    );
+}
+
+/// The claim above at **every** cell rather than at the one that happened to be interesting: across
+/// a cell's whole pitch, gap included, the answer is that cell and no other.
+///
+/// The last fraction is the one that matters. At 0.9 of the pitch the pointer is past the drawn
+/// square and in the gap after it, which is the point in the grid a naive hit test loses.
+#[test]
+fn every_part_of_every_cell_answers_with_that_cell() {
+    let at = (10.0, 50.0);
+
+    for row in 0..popup::grid::ROWS {
+        for column in 0..popup::grid::COLUMNS {
+            let (cell_x, cell_y) = popup::grid::cell_at(row, column);
+            for fraction in [0.0_f32, 0.25, 0.5, 0.9] {
+                let (x, y) = (
+                    at.0 + cell_x + popup::grid::PITCH * fraction,
+                    at.1 + cell_y + popup::grid::PITCH * fraction,
+                );
+                assert_eq!(
+                    popup::grid::hit_test(x, y, at),
+                    Some((row, column)),
+                    "{fraction} of the way into cell ({row}, {column}), at ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// The margins and the caption strip are on the panel and on no cell. A click there hits nothing and
+/// is still swallowed, for the reason the row version gives.
+#[test]
+fn the_margin_and_the_caption_are_on_the_picker_but_on_no_cell() {
+    let at = (10.0, 50.0);
+
+    assert_eq!(popup::grid::hit_test(11.0, 60.0, at), None, "left margin");
+    assert_eq!(popup::grid::hit_test(40.0, 51.0, at), None, "top margin");
+    let caption = 50.0 + popup::grid::caption_middle();
+    assert_eq!(popup::grid::hit_test(40.0, caption, at), None, "caption");
+
+    assert!(popup::grid::contains(11.0, 60.0, at));
+    assert!(popup::grid::contains(40.0, caption, at));
+    assert!(!popup::grid::contains(40.0, 49.0, at), "above the panel");
+    assert!(
+        !popup::grid::contains(40.0, 50.0 + popup::grid::height(), at),
+        "below it"
+    );
+}
+
+/// The caption strip sits between the grid and the bottom margin, so it is not
+/// `height() - CAPTION / 2` — that lands in the margin, and the words would sit low in the panel.
+#[test]
+fn the_caption_sits_below_the_grid_and_above_the_bottom_margin() {
+    let last_row = popup::grid::cell_at(popup::grid::ROWS - 1, 0).1 + popup::grid::PITCH;
+    let middle = popup::grid::caption_middle();
+
+    assert!(middle > last_row, "the caption overlaps the last row");
+    assert!(
+        middle < popup::grid::height() - popup::MARGIN,
+        "the caption is in the bottom margin"
+    );
+}
+
+/// **`rows` counts the header**, so the caption describes the squares that are lit rather than the
+/// body rows underneath them.
+#[test]
+fn the_caption_names_the_lit_block() {
+    assert_eq!(popup::grid::caption(3, 4), "3 × 4 table");
+    assert_eq!(popup::grid::caption(1, 1), "1 × 1 table");
+}
+
+#[test]
+fn the_picker_at_the_right_edge_stays_inside_the_window() {
+    let width = popup::grid::width();
+    let (x, _) = popup::place(width, 380.0, toolbar::HEIGHT, 400.0);
+
+    assert!(x >= 0.0);
+    assert!(
+        x + width <= 400.0,
+        "a picker from {x} for {width} runs past 400"
+    );
+}

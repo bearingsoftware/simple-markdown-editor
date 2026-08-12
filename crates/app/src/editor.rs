@@ -863,6 +863,14 @@ pub struct Editor<T: TextLayout> {
     /// Which row of the open list the pointer is over. Separate from `hovered` because a row is
     /// highlighted the instant the pointer reaches it, where a button waits out a dwell.
     hovered_row: Option<usize>,
+    /// Which cell of the open size picker the pointer is over, as a zero-based `(row, column)`.
+    ///
+    /// Separate from [`hovered_row`](Self::hovered_row) rather than a second meaning laid over it:
+    /// only one panel is ever open, so only one of the two is ever `Some`, and a single field
+    /// holding "row 3" or "row 3, column 4" depending on what opened it is the shape a later reader
+    /// misuses. It is also what the picker *shows* — every cell up to and including this one is lit,
+    /// which is the whole of the hover-to-size gesture.
+    hovered_cell: Option<(usize, usize)>,
     /// Which button's tooltip is showing. Set when the dwell elapses, cleared by anything at all.
     ///
     /// Separate from [`hovered`](Self::hovered) because the two answer different questions and the
@@ -1153,6 +1161,7 @@ impl<T: TextLayout> Editor<T> {
             open_menu: None,
             dialog: None,
             hovered_row: None,
+            hovered_cell: None,
             dropped: Vec::new(),
             window_width: 0.0,
             window_height: 0.0,
@@ -3990,7 +3999,11 @@ impl<T: TextLayout> Editor<T> {
             return;
         };
         let (x, y) = menu.at;
-        let height = popup::height_of(menu.rows.len());
+        let height = if menu.kind == toolbar::Menu::TableSize {
+            popup::grid::height()
+        } else {
+            popup::height_of(menu.rows.len())
+        };
 
         quads.push(Self::solid(
             [
@@ -4006,6 +4019,16 @@ impl<T: TextLayout> Editor<T> {
             self.theme.panel,
         ));
 
+        if menu.kind == toolbar::Menu::TableSize {
+            self.draw_size_picker(quads, scale, menu.at);
+        } else {
+            self.draw_menu_rows(quads, scale, &menu);
+        }
+    }
+
+    /// Draws a list panel's rows into the frame `draw_menu` has already put behind them.
+    fn draw_menu_rows(&mut self, quads: &mut Vec<QuadInstance>, scale: f32, menu: &OpenMenu) {
+        let (x, y) = menu.at;
         let icon_style = TextStyle {
             family: mdedit_text::FontFamily::Icon,
             ..TextStyle::body(self.theme.body_size * TOOLBAR_ICON)
@@ -4105,6 +4128,73 @@ impl<T: TextLayout> Editor<T> {
             let glyphs = label.glyphs.clone();
             self.draw_label_glyphs(quads, &glyphs, where_);
         }
+    }
+
+    /// Draws the rows × columns grid the Table button opens, and the line naming what it would
+    /// insert (MDEDIT-127).
+    ///
+    /// **Every cell up to and including the hovered one is filled**, which is the gesture: the lit
+    /// block *is* the table, so its shape is read rather than counted. Lighting only the cell under
+    /// the pointer would make the caption the sole feedback, and a caption is a thing you read where
+    /// this is a thing you see.
+    ///
+    /// Two quads a cell — an outline and its interior — for eighty cells, on a panel that only
+    /// exists while it is open.
+    fn draw_size_picker(&mut self, quads: &mut Vec<QuadInstance>, scale: f32, at: (f32, f32)) {
+        let (x, y) = at;
+        let lit = self.hovered_cell;
+
+        for row in 0..popup::grid::ROWS {
+            for column in 0..popup::grid::COLUMNS {
+                let (cell_x, cell_y) = popup::grid::cell_at(row, column);
+                let (cell_x, cell_y) = (x + cell_x, y + cell_y);
+                let side = popup::grid::CELL;
+                quads.push(Self::solid(
+                    [cell_x * scale, cell_y * scale, side * scale, side * scale],
+                    self.theme.line,
+                ));
+                let inside =
+                    lit.is_some_and(|(hot_row, hot_column)| row <= hot_row && column <= hot_column);
+                quads.push(Self::solid(
+                    [
+                        (cell_x + 1.0) * scale,
+                        (cell_y + 1.0) * scale,
+                        (side - 2.0) * scale,
+                        (side - 2.0) * scale,
+                    ],
+                    if inside {
+                        self.theme.selection
+                    } else {
+                        self.theme.panel
+                    },
+                ));
+            }
+        }
+
+        // **Named rather than blank when nothing is hovered.** The strip's height is reserved either
+        // way so the panel does not change size under the pointer, and an empty strip along the
+        // bottom of a panel reads as something that failed to draw.
+        let caption = lit.map_or_else(
+            || "Table size".to_owned(),
+            |(row, column)| popup::grid::caption(row + 1, column + 1),
+        );
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        if !self.toolbar_labels.contains_key(&caption) {
+            if let Some(label) = self.lay_out_label(&caption, style) {
+                self.toolbar_labels.insert(caption.clone(), label);
+            }
+        }
+        let Some(label) = self.toolbar_labels.get(&caption) else {
+            return;
+        };
+        let where_ = LabelAt {
+            x: x + (popup::grid::width() - label.width) / 2.0,
+            baseline: y + popup::grid::caption_middle() + self.theme.body_size * 0.22,
+            scale,
+            colour: self.theme.text,
+        };
+        let glyphs = label.glyphs.clone();
+        self.draw_label_glyphs(quads, &glyphs, where_);
     }
 
     /// Draws the panel that says what the hovered button does.
@@ -4352,6 +4442,11 @@ impl<T: TextLayout> Editor<T> {
             // Nor is MDEDIT-87's. An image is something you insert; there is no "inside an image"
             // the caret can be in that this button would light up for.
             | toolbar::Action::Image
+            // "Inside a table" *is* a state, unlike the two above — but nothing can answer it until
+            // MDEDIT-89 parses one, and the button it would light is a picker for inserting a *new*
+            // table rather than a control over the one you are in. Those are MDEDIT-128's, and they
+            // are the buttons that should light.
+            | toolbar::Action::Table
             | toolbar::Action::New
             | toolbar::Action::Open
             | toolbar::Action::Save
@@ -5859,14 +5954,23 @@ impl<T: TextLayout> Editor<T> {
         // list is also above everything, so nothing behind it can be hovered while it is open, which
         // is the same rule `click` follows one function along.
         if let Some(menu) = self.open_menu.as_ref() {
-            let row = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
-            let moved = row != self.hovered_row;
-            self.hovered_row = row;
+            let moved = if menu.kind == toolbar::Menu::TableSize {
+                let cell = popup::grid::hit_test(x, y, menu.at);
+                let moved = cell != self.hovered_cell;
+                self.hovered_cell = cell;
+                moved
+            } else {
+                let row = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
+                let moved = row != self.hovered_row;
+                self.hovered_row = row;
+                moved
+            };
             self.hovered = None;
             self.dwell_at = None;
             return moved | self.tooltip.take().is_some();
         }
         self.hovered_row = None;
+        self.hovered_cell = None;
 
         let over = self.hoverable(x, y);
 
@@ -5908,6 +6012,18 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn hovered_row(&self) -> Option<usize> {
         self.hovered_row
+    }
+
+    /// Which cell of the open size picker the pointer is over, as a zero-based `(row, column)`.
+    #[must_use]
+    pub fn hovered_cell(&self) -> Option<(usize, usize)> {
+        self.hovered_cell
+    }
+
+    /// Which panel is open, if one is.
+    #[must_use]
+    pub fn menu_kind(&self) -> Option<toolbar::Menu> {
+        self.open_menu.as_ref().map(|menu| menu.kind)
     }
 
     /// Where the open list's top-left corner is, for a test.
@@ -5977,17 +6093,39 @@ impl<T: TextLayout> Editor<T> {
             // **Whatever the bar dropped, taken from the row it drew** rather than recomputed. The
             // two are one partition and deriving them twice is how an action ends up in neither.
             toolbar::Menu::Overflow => self.dropped.clone(),
+            // MDEDIT-127's grid has no rows of actions — its contents are its geometry — so it is
+            // never empty and the check below does not apply to it.
+            toolbar::Menu::TableSize => Vec::new(),
         };
-        if rows.is_empty() {
+        if kind != toolbar::Menu::TableSize && rows.is_empty() {
             return false;
         }
         if self.open_menu.is_some() {
             return self.close_menu();
         }
 
+        let width = if kind == toolbar::Menu::TableSize {
+            popup::grid::width()
+        } else {
+            self.list_width(&rows)
+        };
+        let at = popup::place(width, button.x, toolbar::HEIGHT, self.window_width);
+        self.open_menu = Some(OpenMenu {
+            kind,
+            rows,
+            at,
+            width,
+        });
+        // A menu and a tooltip about the same button at once is two panels saying different things.
+        self.tooltip = None;
+        true
+    }
+
+    /// How wide a list of rows has to be, laying out any words it needs on the way.
+    fn list_width(&mut self, rows: &[toolbar::Action]) -> f32 {
         let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
         let mut widest = 0.0_f32;
-        for action in &rows {
+        for action in rows {
             let Some(text) = popup::text_for(*action) else {
                 continue;
             };
@@ -6002,26 +6140,17 @@ impl<T: TextLayout> Editor<T> {
         }
 
         // A list of nothing but letterforms is the icon column and its padding, and no more.
-        let width = if popup::any_text(&rows) {
+        if popup::any_text(rows) {
             popup::width_of(widest)
         } else {
             popup::ICON_COLUMN
-        };
-        let at = popup::place(width, button.x, toolbar::HEIGHT, self.window_width);
-        self.open_menu = Some(OpenMenu {
-            kind,
-            rows,
-            at,
-            width,
-        });
-        // A menu and a tooltip about the same button at once is two panels saying different things.
-        self.tooltip = None;
-        true
+        }
     }
 
-    /// Closes whatever list is open.
+    /// Closes whatever panel is open.
     fn close_menu(&mut self) -> bool {
         self.hovered_row = None;
+        self.hovered_cell = None;
         self.open_menu.take().is_some()
     }
 
@@ -6074,6 +6203,16 @@ impl<T: TextLayout> Editor<T> {
     /// closing a menu accidentally moves their caret.
     fn click_menu(&mut self, x: f32, y: f32) -> Option<bool> {
         let menu = self.open_menu.clone()?;
+        if menu.kind == toolbar::Menu::TableSize {
+            let cell = popup::grid::hit_test(x, y, menu.at);
+            self.close_menu();
+            // The cell is zero-based and a table of no rows is not a table: the top-left square is
+            // one row by one column, which is a header and nothing under it.
+            return Some(match cell {
+                Some((row, column)) => self.document_mut().insert_table(row + 1, column + 1),
+                None => true,
+            });
+        }
         let hit = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
         self.close_menu();
         match hit.and_then(|row| menu.rows.get(row).copied()) {
@@ -6379,12 +6518,12 @@ impl<T: TextLayout> Editor<T> {
                 false
             }
             toolbar::Action::Paste => self.paste(),
-            // **The two that are not a second door.** They open a list, and `click_toolbar` deals
+            // **The three that are not a second door.** They open a panel, and `click_toolbar` deals
             // with them before it gets here — a chord never reaches them, because `Action::chord`
             // gives them none. Reaching this arm means somebody called `perform` directly with one,
             // which is a caller bug rather than a user action, so it does nothing rather than
-            // guessing which row was meant.
-            toolbar::Action::Headings | toolbar::Action::More => false,
+            // guessing which row, or which size, was meant.
+            toolbar::Action::Headings | toolbar::Action::More | toolbar::Action::Table => false,
             toolbar::Action::Bold => self.document_mut().toggle_inline(Inline::Bold),
             toolbar::Action::Italic => self.document_mut().toggle_inline(Inline::Italic),
             toolbar::Action::Strikethrough => {

@@ -138,6 +138,12 @@ pub enum Action {
     /// typing — the marker was parsed and coloured and its destination underlined, and there was no
     /// button, no chord and no menu item.
     Image,
+    /// Opens the size picker. **Not an edit**, and that is the whole of why it is back.
+    ///
+    /// MDEDIT-87 shipped this button writing a fixed 2×2 skeleton and it was rejected on sight — a
+    /// button that always writes the same shape is barely better than typing the pipes. MDEDIT-127
+    /// points it at a grid instead, so the click that inserts is the one that also chose the size.
+    Table,
 }
 
 impl Action {
@@ -186,6 +192,10 @@ impl Action {
             // `every_icon_the_bar_asks_for_exists` is what turns that into a failing test rather
             // than a blank square on the bar.
             Self::Image => '\u{EB9F}',
+            // MDEDIT-127, and chosen the same way. `U+ED86` — the one a reference page offers for a
+            // table — is **not in the installed font at all**, and `U+F0E2` and `U+ECA5` both
+            // rasterise as four separate tiles rather than a ruled grid. This one reads as a table.
+            Self::Table => '\u{E80A}',
             // Fluent's "More" — a horizontal ellipsis, which is the convention for an overflow.
             Self::More => '\u{E712}',
             // The documented exception. See above.
@@ -248,6 +258,9 @@ impl Action {
             // The Markdown it writes, which is its own kind of legend — and it does not resolve to
             // the emoji font, which is what ruled out 🖼.
             Self::Image => "![]".to_owned(),
+            // A pipe row, for the same reason: it is the markup, and 🗒 or ▦ would go to a font
+            // this row is not set in.
+            Self::Table => "|--|".to_owned(),
         }
     }
 
@@ -295,6 +308,7 @@ impl Action {
             Self::Rule => "Horizontal rule".to_owned(),
             Self::Link => "Link".to_owned(),
             Self::Image => "Image".to_owned(),
+            Self::Table => "Table".to_owned(),
         }
     }
 
@@ -324,8 +338,8 @@ impl Action {
                 let _ = write!(chord, "{level}");
                 return Some(chord);
             }
-            // The block actions have never had one. Neither menu-opener has one either, and could
-            // not: a chord that opened a list would be a chord that does nothing on its own.
+            // The block actions have never had one. No menu-opener has one either, and could not: a
+            // chord that opened a panel would be a chord that does nothing on its own.
             Self::Bullet
             | Self::Ordered
             | Self::Task
@@ -336,6 +350,7 @@ impl Action {
             // on something you reach for often enough to remember.
             | Self::Image
             | Self::Headings
+            | Self::Table
             | Self::More => {
                 return None;
             }
@@ -394,10 +409,10 @@ impl Action {
 
     /// The list this button opens instead of editing anything, if it opens one.
     ///
-    /// **Two buttons on this bar are not a second door to a chord**, which is the rule every other
-    /// one follows. They open a panel; the panel's rows are the doors. Answering it here rather than
-    /// with two special cases in the click path is what keeps that path one lookup, and what makes
-    /// "did this button perform something?" a question with one answer.
+    /// **Three buttons on this bar are not a second door to a chord**, which is the rule every other
+    /// one follows. They open a panel; what is in the panel are the doors. Answering it here rather
+    /// than with three special cases in the click path is what keeps that path one lookup, and what
+    /// makes "did this button perform something?" a question with one answer.
     ///
     /// `More`'s rows are not known here — they are whatever [`overflowing`] displaced, which depends
     /// on the window — so this returns the *kind* and the caller supplies the contents.
@@ -406,18 +421,26 @@ impl Action {
         match self {
             Self::Headings => Some(Menu::Headings),
             Self::More => Some(Menu::Overflow),
+            Self::Table => Some(Menu::TableSize),
             _ => None,
         }
     }
 }
 
-/// Which list a button opens.
+/// Which panel a button opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Menu {
     /// Every heading level, one to six.
     Headings,
     /// Whatever did not fit on the bar.
     Overflow,
+    /// The rows × columns grid (MDEDIT-127).
+    ///
+    /// **The one that is not a list.** The other two are rows of actions and share every piece of
+    /// [`crate::popup`]'s geometry; this is a grid of cells, and where the difference has to be
+    /// handled it is handled by matching on this variant rather than by a panel that is secretly
+    /// two things.
+    TableSize,
 }
 
 /// The heading levels the list offers.
@@ -479,10 +502,12 @@ pub const MARKDOWN: &[Action] = &[
     Action::Fence,
     Action::Rule,
     // The insert group (MDEDIT-87): what you put *into* a document rather than mark up text you
-    // already have. `Link` moves here from the end of the formatting run to join it, and Table
-    // joins them when there is a table feature for the button to open.
+    // already have. `Link` moves here from the end of the formatting run to join it, and MDEDIT-127
+    // brings Table back to close it — now that the button opens a size picker rather than writing
+    // the same 2×2 skeleton every time.
     Action::Link,
     Action::Image,
+    Action::Table,
 ];
 
 /// Where one button sits.

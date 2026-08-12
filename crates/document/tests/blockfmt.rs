@@ -230,6 +230,116 @@ fn a_rule_gets_the_blank_line_it_needs() {
     );
 }
 
+// ---- table ----
+
+/// GFM will not let a table interrupt a paragraph, so a table written directly under one is not a
+/// table at all — the same trap the rule above documents, arriving by a different route.
+#[test]
+fn a_table_gets_the_blank_line_it_needs() {
+    let mut doc = at("some prose\n", 4);
+    assert!(doc.insert_table(2, 2));
+    assert_eq!(
+        doc.to_string(),
+        "some prose\n\n|     |     |\n| --- | --- |\n|     |     |\n"
+    );
+}
+
+/// And exactly one. A blank line already there is not doubled.
+#[test]
+fn a_table_after_a_blank_line_gets_no_second_one() {
+    let mut doc = at("some prose\n\n", 12);
+    assert!(doc.insert_table(1, 1));
+    assert_eq!(doc.to_string(), "some prose\n\n|     |\n| --- |\n");
+}
+
+/// The blank line *below* only exists when something follows. At the end of the document it would be
+/// litter.
+#[test]
+fn a_table_is_separated_from_what_follows_it() {
+    let mut doc = at("first\n\nsecond\n", 2);
+    assert!(doc.insert_table(1, 1));
+    assert_eq!(doc.to_string(), "first\n\n|     |\n| --- |\n\nsecond\n");
+}
+
+/// **`rows` counts the header**, which is what the picker showed: three lit squares mean three rows
+/// of table, one of which is the header the delimiter sits under.
+#[test]
+fn the_size_asked_for_is_the_size_written() {
+    let mut doc = at("", 0);
+    assert!(doc.insert_table(3, 4));
+
+    let text = doc.to_string();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "three rows and the delimiter: {lines:?}");
+    assert_eq!(lines[1], "| --- | --- | --- | --- |");
+    for line in &lines {
+        assert_eq!(
+            line.matches('|').count(),
+            5,
+            "four columns need five pipes: {line}"
+        );
+    }
+}
+
+/// Every row is written to the width of the `---` under it, so the source is readable in the tools
+/// that are not this editor — and is already in the shape MDEDIT-128's re-pad will keep it in.
+#[test]
+fn the_pipes_line_up_in_the_source() {
+    let mut doc = at("", 0);
+    assert!(doc.insert_table(4, 3));
+
+    let text = doc.to_string();
+    let mut lines = text.lines();
+    let first = lines.next().expect("a table has rows");
+    for line in lines {
+        assert_eq!(
+            line.len(),
+            first.len(),
+            "`{line}` is not the width of `{first}`"
+        );
+    }
+}
+
+/// Straight into the first cell, ready to type. A table you have to click into is a table the picker
+/// only half inserted.
+#[test]
+fn the_caret_lands_in_the_first_cell() {
+    let mut doc = at("some prose\n", 4);
+    assert!(doc.insert_table(2, 2));
+
+    let text = doc.to_string();
+    let caret = doc.selection().head().get();
+    assert_eq!(
+        &text[caret - 2..caret],
+        "| ",
+        "the caret should sit just inside the first cell"
+    );
+    assert!(doc.selection().is_collapsed(), "and select nothing");
+}
+
+/// One transaction, so one Ctrl+Z restores every byte — including the blank line the table forced
+/// above itself.
+#[test]
+fn one_undo_takes_the_whole_table_back() {
+    let source = "some prose\n";
+    let mut doc = at(source, 4);
+    assert!(doc.insert_table(5, 5));
+    assert_ne!(doc.to_string(), source);
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), source);
+}
+
+/// A table of no rows or no columns is not a table, and writing the pipes for one would put
+/// malformed bytes in the buffer rather than refusing.
+#[test]
+fn a_table_with_no_rows_or_no_columns_is_not_written() {
+    let mut doc = at("prose\n", 2);
+    assert!(!doc.insert_table(0, 3));
+    assert!(!doc.insert_table(3, 0));
+    assert_eq!(doc.to_string(), "prose\n");
+}
+
 // ---- undo ----
 
 /// Twenty lines is twenty edits, and one press must undo as one press.

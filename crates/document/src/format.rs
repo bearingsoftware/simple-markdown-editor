@@ -835,6 +835,74 @@ impl Document {
         true
     }
 
+    /// Puts an empty GFM table of `rows` × `columns` below the caret's line.
+    ///
+    /// `rows` **counts the header**, because that is what the picker showed: three highlighted
+    /// squares mean a table with three rows in it, and a picker whose smallest table is two rows is
+    /// a picker that lies about its own top-left cell.
+    ///
+    /// The pipes line up in the source. Every cell is written to the width of the `---` under it, so
+    /// a fresh table is already in the shape MDEDIT-128's re-pad will keep it in — and, more to the
+    /// point, it is readable in the tools that are not this editor.
+    ///
+    /// **The blank line above is not decoration.** GFM will not let a table interrupt a paragraph,
+    /// so a table written directly under one is not a table at all — the same trap `insert_rule`
+    /// documents, where `---` under a paragraph is a setext heading.
+    pub fn insert_table(&mut self, rows: usize, columns: usize) -> bool {
+        if rows == 0 || columns == 0 {
+            return false;
+        }
+
+        let line = self.source_line(self.selection().head());
+        let at = line.end();
+
+        // Read the two bytes before the insertion point out of the rope rather than out of a copy of
+        // the whole document: nothing about deciding a separator needs the other end of the file.
+        let prev = self
+            .rope()
+            .byte_slice(at.get().saturating_sub(2)..at.get())
+            .to_string();
+        let before = if at.get() == 0 || prev.ends_with("\n\n") {
+            ""
+        } else if prev.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        // A blank line *after* only matters when something follows. At the end of the document it
+        // would be litter.
+        let after = if at.get() == self.rope().len_bytes()
+            || self.rope().byte_slice(at.get()..=at.get()) == "\n"
+        {
+            ""
+        } else {
+            "\n"
+        };
+
+        let mut table = String::from(before);
+        // The width of `---`, which is what the delimiter row needs and so what every other row is
+        // padded to.
+        let blank = "|".to_owned() + &"     |".repeat(columns) + "\n";
+        table.push_str(&blank);
+        table.push('|');
+        for _ in 0..columns {
+            table.push_str(" --- |");
+        }
+        table.push('\n');
+        for _ in 1..rows {
+            table.push_str(&blank);
+        }
+        table.push_str(after);
+
+        // Inside the first cell, which is one byte past the pipe and the space that follows it.
+        let caret = ByteOffset::new(at.get() + before.len() + 2);
+        self.transact(|doc| {
+            let _ = doc.replace(ByteSpan::new(at, at), &table);
+            doc.set_selection(Selection::caret(caret));
+        });
+        true
+    }
+
     /// The span of the fenced code block the caret is in, if it is in one.
     fn enclosing_fence(&self) -> Option<ByteSpan> {
         let at = self.selection().head();
