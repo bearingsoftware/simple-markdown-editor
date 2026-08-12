@@ -59,6 +59,70 @@ fn shape(text: &mut DirectWriteText, glyph: char, family: FontFamily, size: f32)
         .collect()
 }
 
+/// How much ink one icon rasterises to, as a fraction of its bitmap. `None` when the glyph has no
+/// ink at all, which is what [`TextLayout::rasterize`] returns for a space.
+fn ink(text: &mut DirectWriteText, glyph: char) -> Option<f32> {
+    let owned = glyph.to_string();
+    let style = TextStyle {
+        family: FontFamily::Icon,
+        ..TextStyle::body(ICON_SIZE)
+    };
+    let layout = text
+        .layout(
+            &[StyledRun {
+                text: &owned,
+                style,
+                source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+            }],
+            1000.0,
+        )
+        .unwrap();
+    let key = layout.glyphs().next()?.key;
+    let image = text.rasterize(key, 1.0).unwrap()?;
+    let lit = image.coverage.iter().filter(|px| **px > 0).count();
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a glyph bitmap is a few hundred pixels"
+    )]
+    let fraction = lit as f32 / image.coverage.len().max(1) as f32;
+    Some(fraction)
+}
+
+/// **Every icon the bar draws has ink, which is not the claim the test below makes.**
+///
+/// `every_icon_the_bar_asks_for_exists` checks the glyph is not `.notdef`. A font can answer a
+/// private-use code point with a *blank* glyph that passes that check, measures a normal advance,
+/// and draws nothing — leaving a button-shaped gap on the bar with no overflow marker to explain it.
+/// Nothing here could have caught that, which is the lesson `AGENTS.md` records about the tooltip
+/// tests: a check that cannot fail for the reason you care about is not a check.
+///
+/// **There is no upper bound, and finding out why is what this test was worth.** The first version
+/// rejected anything over 95% coverage on the reasoning that a solid box is the other way a wrong
+/// code point goes — and `Rule` failed it at 100%. `Rule` is `U+E738`, which is literally a
+/// horizontal line: its bitmap is a few pixels tall and every one of them is ink. A correct icon
+/// can fill its own bounding box, so the only defensible assertion is that there is ink at all.
+#[test]
+fn every_icon_the_bar_draws_has_ink() {
+    let mut text = engine();
+    let mut blank = Vec::new();
+
+    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
+        let Some(icon) = action.icon() else {
+            continue;
+        };
+        if ink(&mut text, icon).is_none_or(|fraction| fraction <= 0.0) {
+            blank.push(format!("{action:?} (U+{:04X})", u32::from(icon)));
+        }
+    }
+
+    assert!(
+        blank.is_empty(),
+        "these code points are in the font, are not .notdef, and rasterise to nothing — so the bar \
+         draws a gap where the button is: {}",
+        blank.join(", ")
+    );
+}
+
 /// Every code point in the table is really in the font on this machine.
 ///
 /// **Taken from the installed font rather than from a reference page.** A private-use code point is
