@@ -7199,7 +7199,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.rows.as_deref(),
+            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
         };
         Some(hit::offset_at(
             &target,
@@ -7226,7 +7226,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.rows.as_deref(),
+            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
         };
         let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         Some((index, row, x))
@@ -7257,7 +7257,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.rows.as_deref(),
+            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
         };
         let row_top = frame.tops[index] + hit::row_top(&target, row);
         let height = cached
@@ -7633,6 +7633,8 @@ impl<T: TextLayout> Editor<T> {
                 .collect();
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
+            self.draw_table(quads, &cached, chunk_top, at);
+
             // `usize::MAX` for "there was no row above", which no line number can collide with.
             let mut previous_line = usize::MAX;
 
@@ -7828,6 +7830,71 @@ impl<T: TextLayout> Editor<T> {
                 cursor += dash;
                 up = !up;
             }
+        }
+    }
+
+    /// Rules a table: its outer border, the line between every row and column, and a wash behind the
+    /// header (MDEDIT-126).
+    ///
+    /// Drawn once per chunk and before any row, so every ground a row draws — the caret line, a
+    /// search match, the selection — lands on top of the wash, and the glyphs on top of those.
+    /// Painter's order is the whole of the answer here as it is for the rest of the chrome.
+    ///
+    /// **`Rule` could not be reused.** That type is horizontal, is measured from a baseline, and
+    /// takes its colour from the run it underlines — three things a table border is not. It carries
+    /// an underline; this carries a box.
+    ///
+    /// The wash and the rules are both [`Theme::line`], the one translucent hairline role, which
+    /// lands correctly on either ground without a second colour to keep in step. `panel` would not:
+    /// it is pure white in light mode, which is the page.
+    fn draw_table(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        cached: &Cached,
+        chunk_top: f32,
+        at: Placement,
+    ) {
+        let Some(grid) = cached.grid.as_ref() else {
+            return;
+        };
+        // The rows the grid covers. The trailing empty line is the blank line *after* the table, so
+        // ruling it would draw a box around nothing.
+        let heights: Vec<f32> = cached
+            .layout
+            .lines
+            .iter()
+            .take(grid.rows.len())
+            .map(|line| line.height)
+            .collect();
+        if heights.is_empty() {
+            return;
+        }
+
+        let width = grid.width();
+        let total: f32 = heights.iter().sum();
+        // A rule that rounds to nothing is a line that is not there, so it is floored at one
+        // physical pixel — the same clamp `draw_rules` puts on an underline from a thin font.
+        let hairline = table::RULE.max(1.0 / at.scale);
+        let mut solid = |x: f32, y: f32, w: f32, h: f32| {
+            let (wx, wy) = at.content.to_window(x, y + chunk_top, at.offset);
+            quads.push(Self::solid(
+                [wx * at.scale, wy * at.scale, w * at.scale, h * at.scale],
+                self.theme.line,
+            ));
+        };
+
+        // The header's ground, first, so a rule drawn over it stays visible.
+        solid(0.0, 0.0, width, heights[0]);
+
+        let mut y = 0.0;
+        for height in &heights {
+            solid(0.0, y, width, hairline);
+            y += height;
+        }
+        solid(0.0, y, width, hairline);
+
+        for x in grid.column_edges() {
+            solid(x, 0.0, hairline, total);
         }
     }
 
@@ -8708,8 +8775,8 @@ impl<T: TextLayout> Editor<T> {
             Some(BlockKind::Table) => self.lay_out_table(chunk, frame),
             _ => None,
         };
-        let (mut layout, rows) = if let Some((grid, rows)) = grid {
-            (grid, Some(rows))
+        let (mut layout, grid) = if let Some((layout, grid)) = grid {
+            (layout, Some(grid))
         } else {
             let runs =
                 view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
@@ -8735,7 +8802,7 @@ impl<T: TextLayout> Editor<T> {
             });
         }
 
-        let cached = Rc::new(Cached::new(layout, rows, &chunk, body, key.last));
+        let cached = Rc::new(Cached::new(layout, grid, &chunk, body, key.last));
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
         // chunk stops being an estimate and becomes a measurement — the same moment its height
         // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
@@ -8770,7 +8837,7 @@ impl<T: TextLayout> Editor<T> {
         &mut self,
         chunk: blocks::Chunk,
         frame: &Frame,
-    ) -> Option<(Layout, Vec<ByteSpan>)> {
+    ) -> Option<(Layout, table::Grid)> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
         }
@@ -8793,7 +8860,7 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let body = chunk.span.slice(&frame.text);
-        Some((table::assemble(&rows, body.ends_with('\n')), spans))
+        Some(table::assemble(&rows, &spans, body.ends_with('\n')))
     }
 
     /// What a chunk's height is before it has been measured.
@@ -8843,7 +8910,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.rows.as_deref(),
+            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
         };
         let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         let line = cached.layout.lines.get(row)?;
@@ -9333,9 +9400,12 @@ impl ChunkKey {
 #[derive(Debug)]
 struct Cached {
     layout: Layout,
-    /// Which bytes each visual row covers, for the one layout where counting newlines cannot say —
-    /// a table drawn as a grid, which drops the delimiter row (MDEDIT-126). `None` everywhere else.
-    rows: Option<Vec<ByteSpan>>,
+    /// The boxes a table is ruled with, and the bytes each of its rows covers (MDEDIT-126).
+    ///
+    /// `None` for every other chunk, and that `None` is what says "this is not a table" to the two
+    /// things that need to know: `hit`, which otherwise finds a row's bytes by counting newlines,
+    /// and `draw_chunks`, which otherwise rules nothing.
+    grid: Option<table::Grid>,
     /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
     /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
     /// added back before a span means anything.
@@ -9354,7 +9424,7 @@ struct Cached {
 impl Cached {
     fn new(
         layout: Layout,
-        rows: Option<Vec<ByteSpan>>,
+        grid: Option<table::Grid>,
         chunk: &blocks::Chunk,
         body: &str,
         is_last: bool,
@@ -9376,7 +9446,7 @@ impl Cached {
             .fold(0.0_f32, f32::max);
         Self {
             layout,
-            rows,
+            grid,
             base: chunk.span.start().get(),
             drops_last,
             height,

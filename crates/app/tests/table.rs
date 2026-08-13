@@ -124,7 +124,7 @@ fn grid_of(source: &str) -> (Vec<Vec<ByteSpan>>, Vec<ByteSpan>, Layout) {
         .iter()
         .map(|row| row.iter().map(|c| cell_from(*c, 40.0)).collect())
         .collect();
-    let grid = table::assemble(&rows, source.ends_with('\n'));
+    let (grid, _) = table::assemble(&rows, &spans, source.ends_with('\n'));
     (cells, spans, grid)
 }
 
@@ -194,12 +194,48 @@ fn clicking_past_the_last_column_lands_at_the_end_of_that_row() {
 #[test]
 fn a_column_is_as_wide_as_its_widest_cell() {
     let rows = vec![vec![cell(30.0), cell(10.0)], vec![cell(80.0), cell(10.0)]];
-    let grid = table::assemble(&rows, false);
+    let (grid, boxes) = table::assemble(&rows, &[], false);
 
-    // Column zero is 80 wide because of the second row, so column one starts past it in *both*.
-    let second = 80.0 + table::COLUMN_GAP;
-    assert_eq!(xs(&grid, 0), vec![0.0, second]);
-    assert_eq!(xs(&grid, 1), vec![0.0, second]);
+    // Column zero's box is the 80-wide cell from the second row, plus a padding either side.
+    assert_eq!(boxes.columns, vec![100.0, 30.0]);
+
+    // So column one's text starts past that box, in *both* rows, and each sits in from its edge.
+    let first = table::PADDING_X;
+    let second = 100.0 + table::PADDING_X;
+    assert_eq!(xs(&grid, 0), vec![first, second]);
+    assert_eq!(xs(&grid, 1), vec![first, second]);
+}
+
+/// The rules a table is drawn with: one edge per column boundary, and the outer two.
+#[test]
+fn a_column_edge_is_where_a_vertical_rule_goes() {
+    let rows = vec![vec![cell(30.0), cell(50.0)]];
+    let (_, boxes) = table::assemble(&rows, &[], false);
+
+    assert_eq!(boxes.columns, vec![50.0, 70.0]);
+    assert_eq!(
+        boxes.column_edges(),
+        vec![0.0, 50.0, 120.0],
+        "two columns have three vertical rules, the outer two included"
+    );
+    assert_eq!(boxes.width(), 120.0);
+}
+
+/// **A cell's text sits inside its box.** Without the padding the border is drawn against the
+/// glyphs, which is the difference between a table and a box round some words.
+#[test]
+fn text_sits_inside_the_cell_rather_than_on_its_border() {
+    let rows = vec![vec![cell_sized(20.0, 16.0, 12.0)]];
+    let (grid, boxes) = table::assemble(&rows, &[], false);
+
+    assert_eq!(xs(&grid, 0), vec![table::PADDING_X]);
+    assert_eq!(boxes.columns, vec![20.0 + table::PADDING_X * 2.0]);
+    assert_eq!(
+        grid.lines[0].height,
+        16.0 + table::PADDING_Y * 2.0,
+        "the row is its text plus a padding above and below"
+    );
+    assert_eq!(grid.lines[0].baseline, table::PADDING_Y + 12.0);
 }
 
 /// Cells of different heights sit on one baseline, or the row reads as a stagger.
@@ -209,13 +245,14 @@ fn a_row_shares_one_baseline() {
         cell_sized(20.0, 16.0, 12.0),
         cell_sized(20.0, 24.0, 19.0),
     ]];
-    let grid = table::assemble(&rows, false);
+    let (grid, _) = table::assemble(&rows, &[], false);
 
     let line = &grid.lines[0];
-    assert_eq!(line.baseline, 19.0, "the tallest cell sets it");
-    assert_eq!(line.height, 24.0);
+    let baseline = table::PADDING_Y + 19.0;
+    assert_eq!(line.baseline, baseline, "the tallest cell sets it");
+    assert_eq!(line.height, 24.0 + table::PADDING_Y * 2.0);
     assert!(
-        line.glyphs.iter().all(|g| g.pos.y == 19.0),
+        line.glyphs.iter().all(|g| g.pos.y == baseline),
         "every glyph in the row sits on the row's baseline"
     );
 }
@@ -232,12 +269,15 @@ fn each_row_sits_below_the_one_before_it() {
         vec![cell_sized(20.0, 24.0, 19.0)],
         vec![cell_sized(20.0, 16.0, 12.0)],
     ];
-    let grid = table::assemble(&rows, false);
+    let (grid, _) = table::assemble(&rows, &[], false);
 
+    // Row boxes are 22, 30 and 22 tall — the text plus a padding either side — so each baseline is
+    // the row's own ascent below everything above it.
+    let pad = table::PADDING_Y;
     let baselines: Vec<f32> = grid.lines.iter().map(|line| line.baseline).collect();
     assert_eq!(
         baselines,
-        vec![12.0, 35.0, 52.0],
+        vec![pad + 12.0, 22.0 + pad + 19.0, 52.0 + pad + 12.0],
         "each row's own ascent, below the heights of the rows above it"
     );
 
@@ -257,7 +297,7 @@ fn each_row_sits_below_the_one_before_it() {
 fn a_table_ending_in_a_newline_keeps_a_line_for_it() {
     let rows = vec![vec![cell(20.0)], vec![cell(20.0)]];
 
-    let with = table::assemble(&rows, true);
+    let (with, _) = table::assemble(&rows, &[], true);
     assert_eq!(
         with.lines.len(),
         3,
@@ -268,7 +308,7 @@ fn a_table_ending_in_a_newline_keeps_a_line_for_it() {
         "the trailing line carries no glyphs"
     );
 
-    let without = table::assemble(&rows, false);
+    let (without, _) = table::assemble(&rows, &[], false);
     assert_eq!(without.lines.len(), 2);
 }
 
@@ -277,7 +317,7 @@ fn a_table_ending_in_a_newline_keeps_a_line_for_it() {
 #[test]
 fn one_row_of_the_table_is_one_visual_line() {
     let rows = vec![vec![cell(20.0), cell(20.0)]; 4];
-    let grid = table::assemble(&rows, false);
+    let (grid, _) = table::assemble(&rows, &[], false);
 
     assert_eq!(grid.lines.len(), 4);
     for line in &grid.lines {
@@ -290,7 +330,7 @@ fn one_row_of_the_table_is_one_visual_line() {
 #[test]
 fn the_last_glyph_on_a_row_is_the_rightmost() {
     let rows = vec![vec![cell(30.0), cell(50.0), cell(10.0)]];
-    let grid = table::assemble(&rows, false);
+    let (grid, _) = table::assemble(&rows, &[], false);
 
     let positions = xs(&grid, 0);
     assert!(
@@ -304,10 +344,10 @@ fn the_last_glyph_on_a_row_is_the_rightmost() {
 #[test]
 fn a_row_with_missing_cells_is_placed_and_not_a_panic() {
     let rows = vec![vec![cell(30.0), cell(30.0)], vec![cell(30.0)]];
-    let grid = table::assemble(&rows, false);
+    let (grid, _) = table::assemble(&rows, &[], false);
 
     assert_eq!(grid.lines.len(), 2);
-    assert_eq!(xs(&grid, 1), vec![0.0]);
+    assert_eq!(xs(&grid, 1), vec![table::PADDING_X]);
 }
 
 #[test]

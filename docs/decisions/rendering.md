@@ -19,6 +19,20 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   `BlockKind::Table`, `TableRow` and `TableCell` come from the parse, not from splitting on pipes —
   and it is what MDEDIT-128 will insert rows and columns against.
 
+  **It is ruled like a table, not gapped like one.** The first slice separated the columns with a
+  plain gap standing in for the pipe; the second gave every cell a box — [`PADDING_X`] and
+  [`PADDING_Y`] inside it, a rule at every row and column boundary, the outer border, and a wash
+  behind the header row. `table::Grid` carries the boxes because the layout only carries glyphs, and
+  `draw_table` rules them once per chunk *before* any row, so the caret line, a search match and the
+  selection all land on top of the wash and the glyphs on top of those — painter's order, as with the
+  rest of the chrome.
+
+  `Rule` could not be reused for this. That type is horizontal, is measured from a baseline, and
+  takes its colour from the run it underlines; a border is none of those. Both the rules and the wash
+  draw in `Theme::line`, the one translucent hairline role, which lands correctly on either ground.
+  `panel` cannot do the wash — it is pure white in light mode, which is the page. **`Ctrl+/` rules
+  nothing**, for the same reason it gets no grid.
+
   **Hit-testing was the one consumer that did not survive untouched**, and the first manual look is
   what found it. `hit.rs` finds a row's bytes by counting newlines, which is sound everywhere else
   because wrapping only ever *adds* visual rows. A grid is the one layout that **drops** a source

@@ -32,11 +32,53 @@ use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteSpan, LayoutPos};
 use mdedit_text::{Layout, LayoutLine};
 
-/// Space between one column's text and the next column's.
+/// Space between a cell's text and its border, left and right.
+pub const PADDING_X: f32 = 10.0;
+
+/// Space between a cell's text and its border, above and below.
+pub const PADDING_Y: f32 = 3.0;
+
+/// How thick a rule is, before the device scale.
 ///
-/// Stands in for the pipe that is no longer drawn. Without it the columns touch and the grid reads
-/// as one run of words again, which is the failure the whole ticket exists to fix.
-pub const COLUMN_GAP: f32 = 20.0;
+/// One device-independent pixel, which the renderer floors at one physical pixel — a rule that
+/// rounds to nothing is a line that is not there, the same reason `draw_rules` clamps.
+pub const RULE: f32 = 1.0;
+
+/// The boxes a table is ruled with (MDEDIT-126).
+///
+/// Everything a grid knows that a run of lines does not. The layout carries the glyphs; this carries
+/// what the glyphs sit inside, which is what the renderer needs to draw a border and what `hit`
+/// needs to find a row's bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grid {
+    /// Which bytes each visual row covers.
+    pub rows: Vec<ByteSpan>,
+    /// The width of each column's box, padding included.
+    pub columns: Vec<f32>,
+}
+
+impl Grid {
+    /// The left edge of each column's box, and one more for the right edge of the last.
+    ///
+    /// `columns.len() + 1` values, which is exactly the number of vertical rules a table has.
+    #[must_use]
+    pub fn column_edges(&self) -> Vec<f32> {
+        let mut edges = Vec::with_capacity(self.columns.len() + 1);
+        let mut x = 0.0;
+        edges.push(x);
+        for width in &self.columns {
+            x += width;
+            edges.push(x);
+        }
+        edges
+    }
+
+    /// How wide the whole table is.
+    #[must_use]
+    pub fn width(&self) -> f32 {
+        self.columns.iter().sum()
+    }
+}
 
 /// The cells of the table at `table`, row by row, in document order.
 ///
@@ -101,37 +143,52 @@ pub fn cell_width(cell: &Layout) -> f32 {
 ///
 /// `rows` holds each cell's own layout, laid out at an unbounded width so nothing wrapped.
 ///
-/// # Two things this has to get right
+/// # Three things this has to get right
 ///
 /// **A column is as wide as its widest cell**, over every row including the header. A ragged column
 /// is the thing a reader's eye cannot follow, and it is the whole difference between this and the
 /// pipe rows it replaces.
 ///
+/// **A cell's text sits inside its box, not on the border.** Every column carries [`PADDING_X`] on
+/// each side and every row [`PADDING_Y`], so the returned [`Grid`] describes boxes the renderer can
+/// rule around without the rule touching a glyph.
+///
 /// **The trailing empty line is not optional.** A chunk whose bytes end in a newline gets one from
 /// the text engine, and `Cached` drops it again through `blocks::drops_last_line` — so a layout
 /// assembled without one has its **last row** dropped instead, silently, from both the height and
 /// the drawing. `ends_with_newline` puts it back, and the assembled layout is then shaped exactly
-/// like a linear one.
+/// like a linear one. It is *not* part of the grid: it is the blank line after the table, and ruling
+/// it would draw a box around nothing.
 #[must_use]
-pub fn assemble(rows: &[Vec<Layout>], ends_with_newline: bool) -> Layout {
-    let columns = column_widths(rows);
+pub fn assemble(
+    rows: &[Vec<Layout>],
+    spans: &[ByteSpan],
+    ends_with_newline: bool,
+) -> (Layout, Grid) {
+    let columns: Vec<f32> = column_widths(rows)
+        .into_iter()
+        .map(|width| width + PADDING_X * 2.0)
+        .collect();
     let mut lines = Vec::with_capacity(rows.len() + usize::from(ends_with_newline));
     let mut top = 0.0_f32;
+    let mut last_text = 0.0_f32;
 
     for row in rows {
-        let height = row.iter().map(cell_height).fold(0.0_f32, f32::max);
-        let baseline = top + row.iter().map(first_baseline).fold(0.0_f32, f32::max);
+        let text = row.iter().map(cell_height).fold(0.0_f32, f32::max);
+        let height = text + PADDING_Y * 2.0;
+        let baseline = top + PADDING_Y + row.iter().map(first_baseline).fold(0.0_f32, f32::max);
 
         // Pushed column by column, so the last glyph on the assembled line is the rightmost one —
         // which is what `Cached::new` assumes when it measures the widest row for the pan clamp.
         let mut glyphs = Vec::new();
-        let mut x = 0.0;
+        let mut edge = 0.0;
         for (index, cell) in row.iter().enumerate() {
+            let left = edge + PADDING_X;
             let first = first_baseline(cell);
             for glyph in cell.lines.iter().flat_map(|line| line.glyphs.iter()) {
                 let mut moved = *glyph;
                 moved.pos = LayoutPos {
-                    x: glyph.pos.x + x,
+                    x: glyph.pos.x + left,
                     // **The row's baseline, not the cell's.** Cells of different heights would
                     // otherwise sit on their own baselines and the row would read as a stagger.
                     // A cell that did break into more lines keeps its own spacing below that.
@@ -139,7 +196,7 @@ pub fn assemble(rows: &[Vec<Layout>], ends_with_newline: bool) -> Layout {
                 };
                 glyphs.push(moved);
             }
-            x += columns.get(index).copied().unwrap_or(0.0) + COLUMN_GAP;
+            edge += columns.get(index).copied().unwrap_or(0.0);
         }
 
         lines.push(LayoutLine {
@@ -149,19 +206,27 @@ pub fn assemble(rows: &[Vec<Layout>], ends_with_newline: bool) -> Layout {
             rules: Vec::new(),
         });
         top += height;
+        last_text = text;
     }
 
     if ends_with_newline {
-        let height = lines.last().map_or(0.0, |line| line.height);
+        // The line *after* the table, so it gets an ordinary line's height rather than a ruled row's
+        // padded one — the padding belongs to a box, and this one has none.
         lines.push(LayoutLine {
-            baseline: top + height,
-            height,
+            baseline: top + last_text,
+            height: last_text,
             glyphs: Vec::new(),
             rules: Vec::new(),
         });
     }
 
-    Layout { lines }
+    (
+        Layout { lines },
+        Grid {
+            rows: spans.to_vec(),
+            columns,
+        },
+    )
 }
 
 /// How tall one laid-out cell is. A cell that did not wrap is one line.
