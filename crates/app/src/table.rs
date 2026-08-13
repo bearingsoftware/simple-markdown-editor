@@ -169,12 +169,6 @@ pub fn assemble(
         .into_iter()
         .map(|width| width + PADDING_X * 2.0)
         .collect();
-    let edges = Grid {
-        rows: Vec::new(),
-        columns: columns.clone(),
-    }
-    .column_edges();
-
     let mut lines = Vec::with_capacity(rows.len() + usize::from(ends_with_newline));
     let mut top = 0.0_f32;
     let mut last_text = 0.0_f32;
@@ -187,8 +181,9 @@ pub fn assemble(
         // Pushed column by column, so the last glyph on the assembled line is the rightmost one —
         // which is what `Cached::new` assumes when it measures the widest row for the pan clamp.
         let mut glyphs = Vec::new();
+        let mut edge = 0.0;
         for (index, cell) in row.iter().enumerate() {
-            let left = edges.get(index).copied().unwrap_or(0.0) + PADDING_X;
+            let left = edge + PADDING_X;
             let first = first_baseline(cell);
             for glyph in cell.lines.iter().flat_map(|line| line.glyphs.iter()) {
                 let mut moved = *glyph;
@@ -201,6 +196,7 @@ pub fn assemble(
                 };
                 glyphs.push(moved);
             }
+            edge += columns.get(index).copied().unwrap_or(0.0);
         }
 
         lines.push(LayoutLine {
