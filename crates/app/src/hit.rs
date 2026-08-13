@@ -46,12 +46,6 @@ impl Chunk<'_> {
         ByteOffset::new(self.start.get() + offset.get().saturating_sub(self.base.get()))
     }
 
-    /// Where visual line `row` starts, as an offset into [`text`](Self::text).
-    ///
-    /// Visual, so a wrapped line has no newline of its own to count. Wrapping only ever *adds*
-    /// rows, so counting newlines finds the right byte for every row up to the number of newlines
-    /// and the end of the text past that — which is what a caller clicking below the last line
-    /// should get anyway.
     /// The bytes of visual line `row` when the layout carries its own mapping, as offsets into
     /// [`text`](Self::text).
     fn row_span(&self, row: usize) -> Option<(usize, usize)> {
@@ -65,6 +59,13 @@ impl Chunk<'_> {
         Some((at(span.start()), at(span.end())))
     }
 
+    /// Where visual line `row` starts, as an offset into [`text`](Self::text).
+    ///
+    /// Visual, so a wrapped line has no newline of its own to count. Wrapping only ever *adds*
+    /// rows, so counting newlines finds the right byte for every row up to the number of newlines
+    /// and the end of the text past that — which is what a caller clicking below the last line
+    /// should get anyway. A layout that *drops* a row instead says so through
+    /// [`rows`](Self::rows), which then answers ahead of the count.
     fn line_start(&self, row: usize) -> usize {
         if let Some((start, _)) = self.row_span(row) {
             return start;
