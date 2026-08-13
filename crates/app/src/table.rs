@@ -29,7 +29,7 @@
 
 use mdedit_document::Document;
 use mdedit_markers::BlockKind;
-use mdedit_offsets::{ByteSpan, LayoutPos};
+use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
 use mdedit_text::{Layout, LayoutLine};
 
 /// Space between a cell's text and its border, left and right.
@@ -53,6 +53,13 @@ pub const RULE: f32 = 1.0;
 pub struct Grid {
     /// Which bytes each visual row covers.
     pub rows: Vec<ByteSpan>,
+    /// Which bytes each cell covers, by row and then column.
+    ///
+    /// **An empty cell has no glyphs, so it has no geometry** — which is what made a new column
+    /// impossible to click into and a new row six pixels tall. Hit-testing a grid therefore resolves
+    /// a column from the boxes and takes the answer from here, rather than looking for a glyph that
+    /// may not exist.
+    pub cells: Vec<Vec<ByteSpan>>,
     /// The width of each column's box, padding included.
     pub columns: Vec<f32>,
 }
@@ -77,6 +84,41 @@ impl Grid {
     #[must_use]
     pub fn width(&self) -> f32 {
         self.columns.iter().sum()
+    }
+
+    /// Which column `x` falls in, measured from the table's left edge.
+    ///
+    /// Every pixel of the table belongs to a column: past the right-hand edge is the last column,
+    /// which is what makes clicking in the space after a short row land somewhere sensible. The same
+    /// rule MDEDIT-127's picker follows for its cells, and for the same reason — a dead pixel
+    /// between two boxes is a click that does nothing.
+    #[must_use]
+    pub fn column_at(&self, x: f32) -> usize {
+        let mut edge = 0.0;
+        for (index, width) in self.columns.iter().enumerate() {
+            edge += width;
+            if x < edge {
+                return index;
+            }
+        }
+        self.columns.len().saturating_sub(1)
+    }
+
+    /// Where the text of column `index` starts, measured from the table's left edge.
+    #[must_use]
+    pub fn text_left(&self, index: usize) -> f32 {
+        self.columns.iter().take(index).sum::<f32>() + PADDING_X
+    }
+
+    /// The cell holding `at`, as a row and column.
+    #[must_use]
+    pub fn cell_of(&self, at: ByteOffset) -> Option<(usize, usize)> {
+        self.cells.iter().enumerate().find_map(|(row, cells)| {
+            cells
+                .iter()
+                .position(|cell| cell.start().get() <= at.get() && at.get() <= cell.end().get())
+                .map(|column| (row, column))
+        })
     }
 }
 
@@ -162,7 +204,7 @@ pub fn cell_width(cell: &Layout) -> f32 {
 #[must_use]
 pub fn assemble(
     rows: &[Vec<Layout>],
-    spans: &[ByteSpan],
+    cells: &[Vec<ByteSpan>],
     ends_with_newline: bool,
 ) -> (Layout, Grid) {
     let columns: Vec<f32> = column_widths(rows)
@@ -223,7 +265,8 @@ pub fn assemble(
     (
         Layout { lines },
         Grid {
-            rows: spans.to_vec(),
+            rows: row_spans(cells),
+            cells: cells.to_vec(),
             columns,
         },
     )

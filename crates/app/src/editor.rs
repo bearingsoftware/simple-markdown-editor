@@ -4443,11 +4443,19 @@ impl<T: TextLayout> Editor<T> {
             // Nor is MDEDIT-87's. An image is something you insert; there is no "inside an image"
             // the caret can be in that this button would light up for.
             | toolbar::Action::Image
-            // "Inside a table" *is* a state, unlike the two above — but nothing can answer it until
-            // MDEDIT-89 parses one, and the button it would light is a picker for inserting a *new*
-            // table rather than a control over the one you are in. Those are MDEDIT-128's, and they
-            // are the buttons that should light.
+            // "Inside a table" *is* a state, unlike the two above, and the button now answers it by
+            // opening a different menu rather than by lighting: what it opens *is* the state. The
+            // rows of that menu are actions on the table, and an action is not a mode to be in.
             | toolbar::Action::Table
+            | toolbar::Action::RowAbove
+            | toolbar::Action::RowBelow
+            | toolbar::Action::ColumnLeft
+            | toolbar::Action::ColumnRight
+            | toolbar::Action::DeleteRow
+            | toolbar::Action::DeleteColumn
+            | toolbar::Action::DeleteTable
+            | toolbar::Action::SelectRow
+            | toolbar::Action::SelectTable
             | toolbar::Action::New
             | toolbar::Action::Open
             | toolbar::Action::Save
@@ -6084,6 +6092,54 @@ impl<T: TextLayout> Editor<T> {
         self.open_menu.as_ref().map(|menu| menu.rows.as_slice())
     }
 
+    /// Which menu a button opens, given where the caret is (MDEDIT-128).
+    ///
+    /// [`toolbar::Action::opens`] answers the structural half — *this button opens a panel* — and
+    /// cannot answer this half, because an `Action` is a button rather than a place in a document.
+    /// One button's answer depends on both: **inside a table, Table opens the edit list instead of
+    /// the size picker.** GFM has no nested table, so the picker has nothing to offer there.
+    ///
+    /// This is why a group of nine controls needed no room on a bar with room for one.
+    fn menu_for(&self, action: toolbar::Action) -> Option<toolbar::Menu> {
+        match action.opens()? {
+            toolbar::Menu::TableSize if self.document().caret_cell().is_some() => {
+                Some(toolbar::Menu::TableEdit)
+            }
+            kind => Some(kind),
+        }
+    }
+
+    /// Selects the caret's table row, from its first cell to its last (MDEDIT-128).
+    ///
+    /// The row's *cells*, not its source line: the pipes are syntax the grid draws for you, and a
+    /// selection that took them in would put the table's scaffolding on the clipboard.
+    fn select_table_row(&mut self) -> bool {
+        let Some((row, _)) = self.document().caret_cell() else {
+            return false;
+        };
+        let head = self.document().selection().head();
+        let Some(table) = self.document().table_at(head) else {
+            return false;
+        };
+        let Some(span) = table.row_span(row) else {
+            return false;
+        };
+        self.document_mut()
+            .set_selection(Selection::new(span.start(), span.end()));
+        true
+    }
+
+    /// Selects the whole table, its trailing newline excluded.
+    fn select_whole_table(&mut self) -> bool {
+        let head = self.document().selection().head();
+        let Some(table) = self.document().table_at(head) else {
+            return false;
+        };
+        self.document_mut()
+            .set_selection(Selection::new(table.span.start(), table.span.end()));
+        true
+    }
+
     /// Opens the list `button` stands for, or closes it if it is already that one.
     ///
     /// **Clicking an open menu's own button closes it**, which is what every menu does and what
@@ -6097,6 +6153,7 @@ impl<T: TextLayout> Editor<T> {
             // MDEDIT-127's grid has no rows of actions — its contents are its geometry — so it is
             // never empty and the check below does not apply to it.
             toolbar::Menu::TableSize => Vec::new(),
+            toolbar::Menu::TableEdit => toolbar::TABLE_EDIT.to_vec(),
         };
         if kind != toolbar::Menu::TableSize && rows.is_empty() {
             return false;
@@ -6478,7 +6535,7 @@ impl<T: TextLayout> Editor<T> {
         if let Some(action) = toolbar::hit_test(&self.toolbar_buttons, x, y - top) {
             // The two buttons that open a list rather than edit anything. One lookup rather than
             // two special cases, so a third menu-opener cannot be forgotten here.
-            if let Some(kind) = action.opens() {
+            if let Some(kind) = self.menu_for(action) {
                 let button = self
                     .toolbar_buttons
                     .iter()
@@ -6525,6 +6582,18 @@ impl<T: TextLayout> Editor<T> {
             // which is a caller bug rather than a user action, so it does nothing rather than
             // guessing which row, or which size, was meant.
             toolbar::Action::Headings | toolbar::Action::More | toolbar::Action::Table => false,
+            // MDEDIT-128. Each answers `false` when the caret is not in a table, or when the edit
+            // would leave something that is not one — the header row, the last column — which is
+            // what `Document` refuses rather than what this decides.
+            toolbar::Action::RowAbove => self.document_mut().insert_table_row(false),
+            toolbar::Action::RowBelow => self.document_mut().insert_table_row(true),
+            toolbar::Action::ColumnLeft => self.document_mut().insert_table_column(false),
+            toolbar::Action::ColumnRight => self.document_mut().insert_table_column(true),
+            toolbar::Action::DeleteRow => self.document_mut().delete_table_row(),
+            toolbar::Action::DeleteColumn => self.document_mut().delete_table_column(),
+            toolbar::Action::DeleteTable => self.document_mut().delete_table(),
+            toolbar::Action::SelectRow => self.select_table_row(),
+            toolbar::Action::SelectTable => self.select_whole_table(),
             toolbar::Action::Bold => self.document_mut().toggle_inline(Inline::Bold),
             toolbar::Action::Italic => self.document_mut().toggle_inline(Inline::Italic),
             toolbar::Action::Strikethrough => {
@@ -7199,7 +7268,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
+            grid: cached.grid.as_ref(),
         };
         Some(hit::offset_at(
             &target,
@@ -7226,7 +7295,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
+            grid: cached.grid.as_ref(),
         };
         let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         Some((index, row, x))
@@ -7257,7 +7326,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
+            grid: cached.grid.as_ref(),
         };
         let row_top = frame.tops[index] + hit::row_top(&target, row);
         let height = cached
@@ -8845,22 +8914,35 @@ impl<T: TextLayout> Editor<T> {
         if cells.is_empty() {
             return None;
         }
-        let spans = table::row_spans(&cells);
+        // **An empty cell still has a line.** A text engine handed nothing returns a layout with no
+        // rows at all — the same answer that made a blank document draw no caret in MDEDIT-81 — and
+        // a row of them came out six pixels tall, which is what a freshly inserted row looked like.
+        // The height a cell contributes cannot depend on whether anyone has typed in it yet.
+        let nominal = (self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0);
 
         let mut rows = Vec::with_capacity(cells.len());
-        for row in cells {
+        for row in &cells {
             let mut laid = Vec::with_capacity(row.len());
             for cell in row {
                 let runs =
-                    view::build_runs_in(self.document(), self.decoration(), cell, &frame.text);
+                    view::build_runs_in(self.document(), self.decoration(), *cell, &frame.text);
                 let styled = view::as_styled(&runs);
-                laid.push(self.text.layout(&styled, f32::MAX).ok()?);
+                let mut layout = self.text.layout(&styled, f32::MAX).ok()?;
+                if layout.lines.is_empty() {
+                    layout.lines.push(mdedit_text::LayoutLine {
+                        baseline: nominal,
+                        height: nominal,
+                        glyphs: Vec::new(),
+                        rules: Vec::new(),
+                    });
+                }
+                laid.push(layout);
             }
             rows.push(laid);
         }
 
         let body = chunk.span.slice(&frame.text);
-        Some(table::assemble(&rows, &spans, body.ends_with('\n')))
+        Some(table::assemble(&rows, &cells, body.ends_with('\n')))
     }
 
     /// What a chunk's height is before it has been measured.
@@ -8910,7 +8992,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
-            rows: cached.grid.as_ref().map(|grid| grid.rows.as_slice()),
+            grid: cached.grid.as_ref(),
         };
         let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         let line = cached.layout.lines.get(row)?;

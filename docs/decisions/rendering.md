@@ -33,6 +33,19 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   `panel` cannot do the wash — it is pure white in light mode, which is the page. **`Ctrl+/` rules
   nothing**, for the same reason it gets no grid.
 
+  **An empty cell has no glyphs, so it has no geometry** — and that turned out to be two defects
+  rather than one, both found by eye on MDEDIT-128 and neither visible to a test that only ever laid
+  out a table someone had already typed into. A text engine handed nothing returns a layout with *no
+  rows*, the same answer that made a blank document draw no caret in MDEDIT-81, so a freshly inserted
+  row came out six pixels tall. And hit-testing walked glyphs, so a freshly inserted column had
+  nothing to land on and a click carried past it into whichever column had text next.
+
+  A cell now lays out to a line whether or not anyone has typed in it, and `table::Grid` carries its
+  **cell** spans as well as its row spans, so a point resolves to a *column box* first and the cell
+  that column names answers. Every pixel across a table belongs to a column — the two-dimensional
+  version of the rule MDEDIT-127's picker already follows, and a rule the caret needs as much as the
+  pointer: `place_of` puts the caret at the cell's own left edge when no glyph in it can say where.
+
   **Hit-testing was the one consumer that did not survive untouched**, and the first manual look is
   what found it. `hit.rs` finds a row's bytes by counting newlines, which is sound everywhere else
   because wrapping only ever *adds* visual rows. A grid is the one layout that **drops** a source

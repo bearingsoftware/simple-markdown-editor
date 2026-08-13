@@ -223,6 +223,26 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   `every_part_of_every_cell_answers_with_that_cell` sweeps each cell's pitch rather than sampling its
   middle.
 
+- **The same button opens a different menu inside a table**, and that is what kept a group of nine
+  controls off a bar with room for one. MDEDIT-128. GFM has no nested table, so the size picker has
+  nothing to offer while the caret is already in one — which leaves the button free to mean *what to
+  do to this table* there, as a list of nine rows.
+
+  The plan had this group either **replacing the formatting buttons** while the caret was in a table
+  or **going to the overflow**, and had measured the bar to decide which: 827px for twenty-one
+  buttons, 861px with Table's own, 39px of headroom in a 900px window. Both options were answers to a
+  width problem, and reusing the button does not have one. It also needs no new geometry — a list is
+  the shape `popup` already lays out, where the picker was the exception.
+
+  **Which menu a button opens is not `Action::opens`'s question.** That is a pure function of the
+  button and this depends on the caret, so `Editor::menu_for` is where the two meet, and it is the
+  only place that knows. One button, two menus, one lookup.
+
+  **The nine rows carry no icon**, which is the second accepted exception after the heading levels
+  and the opposite one: a heading list is letterforms with no words; this is words with no
+  letterform. Neither icon font has a glyph for "insert row above", and arrows assembled to mean one
+  would fall to a font the rest of the row is not set in.
+
   **The lit block is the table.** Every cell up to and including the hovered one fills, so the shape
   is read rather than counted; the caption underneath names it ("3 × 4 table") and reads "Table size"
   when nothing is hovered, because the strip's height is reserved either way and an empty strip along

@@ -56,6 +56,7 @@ use std::ops::Range;
 pub mod format;
 mod history;
 pub mod outline;
+pub mod table;
 
 use history::History;
 use mdedit_language::{Block, BlockKind, Language, Marker, Segment, SegmentKind};
