@@ -172,6 +172,14 @@ pub enum Marker {
     /// bullet is scaffolding and the box is **state**, which is why the pack gives it the constant
     /// colour rather than the key one. The bullet's own marker is unchanged and still precedes it.
     TaskMarker,
+    /// A table's pipes and its delimiter row.
+    ///
+    /// **Scaffolding, and the one marker whose concealment is load-bearing** (MDEDIT-126). Every
+    /// other marker can be hidden and leave prose that still reads; hide a table's pipes over a
+    /// linear layout and the columns merge into a run of words. That is why MDEDIT-89 could not
+    /// colour a table without drawing one, and why this variant arrives with the grid rather than
+    /// before it: the renderer replaces what these bytes said with the shape they described.
+    Table,
 }
 
 impl Marker {
@@ -194,6 +202,7 @@ impl Marker {
                 | Self::ThematicBreak
                 | Self::TaskMarker
                 | Self::DefinitionList
+                | Self::Table
         )
     }
 }
@@ -224,6 +233,20 @@ pub enum BlockKind {
     ThematicBreak,
     /// A raw HTML block.
     Html,
+    /// A GFM pipe table. Contains rows.
+    ///
+    /// MDEDIT-126, and the first kind that exists for a *layout* rather than for a marker rule: the
+    /// renderer draws this one as a grid instead of as a run of lines, so it has to be able to tell
+    /// one from a paragraph before it lays anything out.
+    Table,
+    /// One row of a table, header or body. Contains cells.
+    TableRow,
+    /// One cell. Its span is the cell's text and the space around it, between two pipes.
+    ///
+    /// **The column structure is these,** and they are why the two above exist as blocks rather than
+    /// as one span: a grid needs to know where each cell starts and ends before it can decide how
+    /// wide a column is.
+    TableCell,
     /// Anything not distinguished yet. Its bytes are still covered.
     Other,
 }

@@ -34,6 +34,7 @@ pub mod scroll;
 pub mod scrollbar;
 pub mod shortcuts;
 pub mod status;
+pub mod table;
 pub mod tabs;
 pub mod toolbar;
 pub mod tooltip;

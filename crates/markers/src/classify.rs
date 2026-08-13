@@ -45,7 +45,12 @@ use crate::{Analysis, Block, BlockKind, Marker, Segment, SegmentKind};
 ///
 ///   Found by the property test at 200,000 cases, minimised to five characters. Reported as
 ///   [pulldown-cmark#1132](https://github.com/pulldown-cmark/pulldown-cmark/issues/1132).
-/// - **GFM tables**, until there is a block widget to put one in. Its ticket is MDEDIT-89.
+/// - ~~**GFM tables**, until there is a block widget to put one in.~~ **Taken by MDEDIT-126, which
+///   is that widget.** The line above was right and is worth keeping the reason for: MDEDIT-89
+///   proposed turning the flag on for colour alone, and could not, because MDEDIT-118 made a marker
+///   something that is never drawn — so classifying the pipes as syntax without a grid to replace
+///   them with *erases* the columns rather than colouring them. The flag and the renderer had to
+///   arrive together, and this is where they do.
 /// - **`ENABLE_GFM`**, which is *not* what its name suggests and not what MDEDIT-90 expected: in
 ///   0.13 it enables blockquote alert tags (`> [!NOTE]`) and nothing else — **no bare-URL
 ///   autolinks**. This editor does not render a callout, and turning it on changes no classification
@@ -65,6 +70,7 @@ fn options() -> Options {
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_DEFINITION_LIST
+        | Options::ENABLE_TABLES
 }
 
 pub(crate) fn analyze(source: &str) -> Analysis {
@@ -128,7 +134,13 @@ fn block_kind(tag: &Tag<'_>) -> Option<BlockKind> {
         Tag::List(_) => BlockKind::List,
         Tag::Item => BlockKind::ListItem,
         Tag::HtmlBlock => BlockKind::Html,
-        Tag::FootnoteDefinition(_) | Tag::Table(_) => BlockKind::Other,
+        // MDEDIT-126. Rows and cells are blocks because the grid is built from them: a column's
+        // width is the widest cell in it, which cannot be asked of a single span covering the whole
+        // table. They nest, so the depth counter has to see all three — see `closes_block`.
+        Tag::Table(_) => BlockKind::Table,
+        Tag::TableHead | Tag::TableRow => BlockKind::TableRow,
+        Tag::TableCell => BlockKind::TableCell,
+        Tag::FootnoteDefinition(_) => BlockKind::Other,
         // MDEDIT-90. `Other` rather than reusing `List`: nothing acts on the distinction, and
         // `BlockKind` grows a variant when a renderer needs a case rather than before.
         Tag::DefinitionList | Tag::DefinitionListTitle | Tag::DefinitionListDefinition => {
@@ -152,6 +164,11 @@ fn closes_block(tag: TagEnd) -> bool {
             | TagEnd::HtmlBlock
             | TagEnd::FootnoteDefinition
             | TagEnd::Table
+            // Both opened a block above, so both have to close one or the depth counter drifts and
+            // every block after the table reports as nested inside it.
+            | TagEnd::TableHead
+            | TagEnd::TableRow
+            | TagEnd::TableCell
             | TagEnd::DefinitionList
             | TagEnd::DefinitionListTitle
             | TagEnd::DefinitionListDefinition
@@ -267,6 +284,11 @@ fn marker_for(tag: &Tag<'_>) -> Option<Marker> {
         // line's terminator, which `normalise_line_syntax` gives back to content — so this is one
         // marker in practice even though two tags carry it.
         Tag::DefinitionListTitle | Tag::DefinitionListDefinition => Marker::DefinitionList,
+        // MDEDIT-126. One construct covering the whole table, so everything the cells' text events
+        // do not claim — the pipes, the spaces padding them, the delimiter row and the newlines —
+        // is syntax by subtraction. Marking the *cells* instead would leave the pipes belonging to
+        // nothing, and a byte belonging to nothing is a byte the tiling test catches.
+        Tag::Table(_) => Marker::Table,
         _ => return None,
     })
 }
