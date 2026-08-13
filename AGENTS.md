@@ -204,7 +204,16 @@ benchmarks and why each job runs where it does.
   is the whole of the answer. See [`docs/decisions/chrome.md`](docs/decisions/chrome.md), which also
   holds the z-order rules for the panels that are hit-tested.
 - Tables and code fences are **model-backed block widgets**, not decorations. Pure decoration over a
-  linear character stream cannot do 2D layout.
+  linear character stream cannot do 2D layout — but **`Layout` was never a linear character stream**,
+  and MDEDIT-126 is where that was noticed. It is a `Vec<LayoutLine>` of glyphs each carrying its own
+  position and source span; the linearity is what a *text engine* hands back, not what the type
+  requires. So a table lays its cells out separately and **places** them into one layout whose lines
+  are its rows, and `draw_chunks`, `row_selection` and the layout cache all go on working unchanged.
+  The model is real — `BlockKind::Table`/`TableRow`/`TableCell` come from the parse — and the second
+  draw path and second caret model this rule was bracing for are not. **One thing did give:** `hit.rs`
+  finds a row's bytes by counting newlines, sound only because wrapping *adds* rows, and a grid
+  *drops* one — so a grid hands it the row spans. A mapping, not a second hit test. Read
+  `crates/app/src/table.rs` before proposing one for code fences.
 
 ### Text layer
 

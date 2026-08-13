@@ -13,7 +13,7 @@
 //! No GPU or window types. The caller supplies a laid-out chunk and a point inside it; this decides
 //! which byte that is.
 
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::Layout;
 
 /// A laid-out chunk, and where its text sits in the buffer.
@@ -29,6 +29,15 @@ pub struct Chunk<'a> {
     /// chunk elsewhere in the document reuses the layout, and the glyphs still carry the offsets
     /// they were laid out with.
     pub base: ByteOffset,
+    /// Which bytes each visual row covers, when counting newlines would not find out (MDEDIT-126).
+    ///
+    /// `None` for the ordinary case, where a row is a source line or part of a wrapped one. A table
+    /// laid out as a grid needs this because it is the one layout that *drops* a source line — the
+    /// delimiter row is drawn as nothing — so row 1 is source line 2 and every row below the header
+    /// resolves against the wrong bytes without it.
+    ///
+    /// In the same space as a glyph's `source`, so [`base`](Self::base) rebases it.
+    pub rows: Option<&'a [ByteSpan]>,
 }
 
 impl Chunk<'_> {
@@ -43,7 +52,23 @@ impl Chunk<'_> {
     /// rows, so counting newlines finds the right byte for every row up to the number of newlines
     /// and the end of the text past that — which is what a caller clicking below the last line
     /// should get anyway.
+    /// The bytes of visual line `row` when the layout carries its own mapping, as offsets into
+    /// [`text`](Self::text).
+    fn row_span(&self, row: usize) -> Option<(usize, usize)> {
+        let span = self.rows?.get(row)?;
+        let at = |offset: ByteOffset| {
+            offset
+                .get()
+                .saturating_sub(self.base.get())
+                .min(self.text.len())
+        };
+        Some((at(span.start()), at(span.end())))
+    }
+
     fn line_start(&self, row: usize) -> usize {
+        if let Some((start, _)) = self.row_span(row) {
+            return start;
+        }
         if row == 0 {
             return 0;
         }
@@ -61,6 +86,9 @@ impl Chunk<'_> {
 
     /// Where visual line `row` ends, not counting its newline.
     fn line_end(&self, row: usize) -> usize {
+        if let Some((_, end)) = self.row_span(row) {
+            return end;
+        }
         let from = self.line_start(row);
         self.text[from..]
             .find('\n')

@@ -50,6 +50,7 @@ use crate::prompt::{
 };
 use crate::scroll::{self, Scroll};
 use crate::status;
+use crate::table;
 use crate::tabs;
 use crate::toolbar;
 use crate::tooltip;
@@ -7198,6 +7199,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
+            rows: cached.rows.as_deref(),
         };
         Some(hit::offset_at(
             &target,
@@ -7224,6 +7226,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
+            rows: cached.rows.as_deref(),
         };
         let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         Some((index, row, x))
@@ -7254,6 +7257,7 @@ impl<T: TextLayout> Editor<T> {
             text: chunk.span.slice(&frame.text),
             start: chunk.span.start(),
             base: ByteOffset::new(cached.base),
+            rows: cached.rows.as_deref(),
         };
         let row_top = frame.tops[index] + hit::row_top(&target, row);
         let height = cached
@@ -8697,9 +8701,21 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let body = chunk.span.slice(&frame.text);
-        let runs = view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
-        let styled = view::as_styled(&runs);
-        let mut layout = self.text.layout(&styled, frame.width).ok()?;
+        // MDEDIT-126. A table is the one chunk that is not a run of lines: its cells are laid out
+        // apart and placed into columns. `None` means this block did not parse into cells after all,
+        // and a malformed table is then drawn as the pipe rows it is rather than as an empty grid.
+        let grid = match chunk.kind {
+            Some(BlockKind::Table) => self.lay_out_table(chunk, frame),
+            _ => None,
+        };
+        let (mut layout, rows) = if let Some((grid, rows)) = grid {
+            (grid, Some(rows))
+        } else {
+            let runs =
+                view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
+            let styled = view::as_styled(&runs);
+            (self.text.layout(&styled, frame.width).ok()?, None)
+        };
         // **An empty document is a document with one empty line**, and a text engine handed nothing
         // to shape does not agree: `DirectWriteText::layout` returns `Layout::default()`, with no
         // rows at all. Everything downstream is keyed off rows, so a blank page — File → New, or a
@@ -8719,7 +8735,7 @@ impl<T: TextLayout> Editor<T> {
             });
         }
 
-        let cached = Rc::new(Cached::new(layout, &chunk, body, key.last));
+        let cached = Rc::new(Cached::new(layout, rows, &chunk, body, key.last));
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
         // chunk stops being an estimate and becomes a measurement — the same moment its height
         // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
@@ -8734,6 +8750,50 @@ impl<T: TextLayout> Editor<T> {
         self.layouts.insert(key, Rc::clone(&cached));
         self.heights.insert(key, cached.height);
         Some(cached)
+    }
+
+    /// Lays a table out as a grid: each cell on its own, then placed into columns (MDEDIT-126).
+    ///
+    /// `None` when there is nothing here that parses into cells, and the caller then lays the chunk
+    /// out as ordinary lines. That is the honest answer for a malformed table, and it is also what
+    /// keeps this from being a second renderer with its own idea of what a block is.
+    ///
+    /// **Plain mode never comes here.** `Ctrl+/` exists to show the bytes, and the bytes of a table
+    /// are pipe rows; a grid there would be the mode failing to do the one thing it is for. It is
+    /// also the answer to the widget's fifth question — the grid is a preview-mode thing only.
+    ///
+    /// Cells are laid out at an unbounded width, so nothing inside one wraps and a table wider than
+    /// the window pans rather than reflows. That is a stated limit rather than an oversight: a
+    /// column whose width depends on the viewport would re-lay the whole table on every resize, and
+    /// the cache key does not carry a column width.
+    fn lay_out_table(
+        &mut self,
+        chunk: blocks::Chunk,
+        frame: &Frame,
+    ) -> Option<(Layout, Vec<ByteSpan>)> {
+        if self.decoration().mode == view::Mode::Plain {
+            return None;
+        }
+        let cells = table::cells(self.document(), chunk.span);
+        if cells.is_empty() {
+            return None;
+        }
+        let spans = table::row_spans(&cells);
+
+        let mut rows = Vec::with_capacity(cells.len());
+        for row in cells {
+            let mut laid = Vec::with_capacity(row.len());
+            for cell in row {
+                let runs =
+                    view::build_runs_in(self.document(), self.decoration(), cell, &frame.text);
+                let styled = view::as_styled(&runs);
+                laid.push(self.text.layout(&styled, f32::MAX).ok()?);
+            }
+            rows.push(laid);
+        }
+
+        let body = chunk.span.slice(&frame.text);
+        Some((table::assemble(&rows, body.ends_with('\n')), spans))
     }
 
     /// What a chunk's height is before it has been measured.
@@ -8774,22 +8834,20 @@ impl<T: TextLayout> Editor<T> {
             .fresh_at(index)
             .or_else(|| self.layouts.get(&frame.keys[index]).map(Rc::clone))?;
 
-        let body = chunk.span.slice(&frame.text);
-        let local = caret
-            .get()
-            .saturating_sub(chunk.span.start().get())
-            .min(body.len());
-        let row = body[..local].bytes().filter(|byte| *byte == b'\n').count();
+        // **Where the caret is drawn and where a click lands must be the same answer**, so both come
+        // from `hit`. This counted its own newlines until MDEDIT-126, which was a third copy of the
+        // rule that a visual row is a source line — and a grid is the one layout that breaks it, so
+        // the caret sat on the trailing empty row for every table row below the header.
+        let target = hit::Chunk {
+            layout: &cached.layout,
+            text: chunk.span.slice(&frame.text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(cached.base),
+            rows: cached.rows.as_deref(),
+        };
+        let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
         let line = cached.layout.lines.get(row)?;
-
         let top: f32 = cached.layout.lines[..row].iter().map(|l| l.height).sum();
-        let x = line
-            .glyphs
-            .iter()
-            .find(|glyph| glyph.source.start() >= caret)
-            .map(|glyph| glyph.pos.x)
-            .or_else(|| line.glyphs.last().map(|glyph| glyph.pos.x + glyph.advance))
-            .unwrap_or(0.0);
 
         Some((
             index,
@@ -9275,6 +9333,9 @@ impl ChunkKey {
 #[derive(Debug)]
 struct Cached {
     layout: Layout,
+    /// Which bytes each visual row covers, for the one layout where counting newlines cannot say —
+    /// a table drawn as a grid, which drops the delimiter row (MDEDIT-126). `None` everywhere else.
+    rows: Option<Vec<ByteSpan>>,
     /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
     /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
     /// added back before a span means anything.
@@ -9291,7 +9352,13 @@ struct Cached {
 }
 
 impl Cached {
-    fn new(layout: Layout, chunk: &blocks::Chunk, body: &str, is_last: bool) -> Self {
+    fn new(
+        layout: Layout,
+        rows: Option<Vec<ByteSpan>>,
+        chunk: &blocks::Chunk,
+        body: &str,
+        is_last: bool,
+    ) -> Self {
         let drops_last = blocks::drops_last_line(body, is_last);
         let height = layout.height()
             - if drops_last {
@@ -9309,6 +9376,7 @@ impl Cached {
             .fold(0.0_f32, f32::max);
         Self {
             layout,
+            rows,
             base: chunk.span.start().get(),
             drops_last,
             height,

@@ -5,6 +5,62 @@ The two palettes and the roles in them, how Markdown syntax is concealed and col
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
 
+- **A table is drawn as a grid, and it needed no second architecture to do it.** MDEDIT-126.
+  `AGENTS.md` had promised a *model-backed block widget* since before there was a renderer, on the
+  reasoning that "pure decoration over a linear character stream cannot do 2D layout". The reasoning
+  was sound and the premise was wrong: `mdedit_text::Layout` is a `Vec<LayoutLine>` whose glyphs each
+  carry their own `pos` and `source`, and nothing in it requires those positions to march left to
+  right. **The linearity is a property of what a text engine returns, not of the type.**
+
+  So `crates/app/src/table.rs` lays each cell out on its own, sizes every column to its widest cell,
+  translates the glyphs into place and assembles one layout whose lines are the table's rows.
+  `draw_chunks`, `row_selection` and the layout cache are all untouched, because the glyphs still
+  carry truthful source spans and one table row is still one visual row. The model half is real —
+  `BlockKind::Table`, `TableRow` and `TableCell` come from the parse, not from splitting on pipes —
+  and it is what MDEDIT-128 will insert rows and columns against.
+
+  **Hit-testing was the one consumer that did not survive untouched**, and the first manual look is
+  what found it. `hit.rs` finds a row's bytes by counting newlines, which is sound everywhere else
+  because wrapping only ever *adds* visual rows. A grid is the one layout that **drops** a source
+  line — the delimiter row draws as nothing — so visual row 1 is source line 2, `place_of` matched no
+  row, and the caret could not be placed anywhere below the header. A grid therefore hands `hit` its
+  row spans (`table::row_spans`) and the newline count stays the fallback for everything else. That
+  is a mapping rather than a second hit test: one `offset_in_row` and one `place_of` still answer for
+  both. The delimiter row gets no span, so the caret steps over it as MDEDIT-118 has it step over any
+  concealed syntax.
+
+  **The module takes laid-out cells rather than a text engine**, as `toolbar.rs` and `popup.rs` take
+  geometry rather than a window, and for the same reason: the placement is then testable without one.
+  It is also what the borrow checker wants, since finding the cells needs `&` the document while
+  laying one out needs `&mut` the engine.
+
+  Three things this cost, each a deliberate limit rather than an oversight:
+
+  - **A cell does not wrap.** Cells are laid out at an unbounded width, so a table wider than the
+    window pans rather than reflows. A column width that depended on the viewport would re-lay the
+    whole table on every resize, and the cache key does not carry one.
+  - **A table inside a block quote stays as pipe rows.** `blocks::split` only makes a chunk from a
+    depth-zero block, so a quoted table is part of the quote's chunk and never reaches the grid.
+  - **`Ctrl+/` never gets a grid**, which is the point of the mode rather than a gap: plain markup
+    exists to show the bytes, and the bytes of a table are pipe rows.
+
+  **The trailing empty line is load-bearing and the failure is silent.** A chunk whose bytes end in a
+  newline gets an empty last line from the text engine, and `Cached` drops it again via
+  `blocks::drops_last_line`. An assembled layout without one loses its **last table row** instead —
+  from the height and from the drawing both, with nothing on screen to say so. `assemble` emits it,
+  so its output is shaped exactly like a linear layout, and a test names the trap.
+
+  **`LayoutLine::baseline` is measured from the top of the block, not from the line above** — and a
+  cell is laid out as a block of its own, so its baseline is its own ascent. Reading a row's baseline
+  straight off its cells therefore gives every row the same number and the table draws as one
+  overstruck line. `assemble` carries a running top down the rows. This shipped to the first manual
+  look: nine tests passed over it because each used a single row, where the bug is invisible. A
+  second row in any one of them would have caught it.
+
+  Why this is here and not on MDEDIT-89: that ticket asked for the pipes to be *coloured*, which
+  MDEDIT-118 had already made impossible — a marker is never drawn, so classifying them as syntax
+  erases the columns rather than tinting them. The flag and the grid had to arrive together, and
+  MDEDIT-89 was closed as superseded.
 - **Preview shows no syntax at all, including under the caret.** MDEDIT-118, and it overturns the
   rule the editor was built on. `Document::is_revealed` used to be reveal-on-caret, modelled on
   Typora: a marker concealed until the selection came near it, then shown dimmed so it could be

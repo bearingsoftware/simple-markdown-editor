@@ -326,7 +326,12 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   the menu without anything having to prune it.
 - **Help → Keyboard Shortcuts is a Markdown document in a tab, not a dialog.** The editor showing its
   own help as Markdown is the cheapest demonstration that it renders headings, tables and inline code,
-  and it costs no UI. It is generated from one list in `crates/app/src/shortcuts.rs` so the page and
+  and it costs no UI. **The "tables" in that sentence was false from the day it was written until
+  MDEDIT-126**, because `ENABLE_TABLES` was off and the page's own table came out as literal pipes.
+  The MDEDIT-92 coverage audit caught it and MDEDIT-89 was raised to fix it; what actually fixed it
+  was the grid, because turning the flag on alone would have concealed the pipes and left the columns
+  merged. The claim is now true, which is worth stating precisely because a page that demonstrates
+  the renderer is only useful while somebody checks that it still does. It is generated from one list in `crates/app/src/shortcuts.rs` so the page and
   the bindings cannot drift silently. That needed `Origin::Generated`: a tab that is untitled but
   *not modified*, carrying its own text as its record of disk, because a reference document asking to
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
