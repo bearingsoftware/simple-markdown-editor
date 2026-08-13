@@ -143,7 +143,37 @@ pub enum Action {
     /// MDEDIT-87 shipped this button writing a fixed 2×2 skeleton and it was rejected on sight — a
     /// button that always writes the same shape is barely better than typing the pipes. MDEDIT-127
     /// points it at a grid instead, so the click that inserts is the one that also chose the size.
+    ///
+    /// **Inside a table it opens [`Menu::TableEdit`] instead of the picker** (MDEDIT-128). GFM has
+    /// no nested table, so the picker has nothing to do there and the button is free to mean the
+    /// other thing. Which menu is not decided here — it depends on where the caret is, which an
+    /// `Action` deliberately cannot see.
     Table,
+    /// Insert an empty row above the caret's. **Only ever a row of [`Menu::TableEdit`].**
+    ///
+    /// Above the *header* inserts below it: a row above the header would silently become the
+    /// header. See `Document::insert_table_row`.
+    RowAbove,
+    /// Insert an empty row below the caret's.
+    RowBelow,
+    /// Insert an empty column left of the caret's.
+    ColumnLeft,
+    /// Insert an empty column right of the caret's.
+    ColumnRight,
+    /// Delete the caret's row. Refuses on the header — Delete Table is the one that takes all of it.
+    DeleteRow,
+    /// Delete the caret's column. Refuses on the last one.
+    DeleteColumn,
+    /// Delete the whole table.
+    DeleteTable,
+    /// Select the caret's row.
+    SelectRow,
+    /// Select the whole table.
+    ///
+    /// **There is no Select Column**, and it is not an oversight. A column is one slice per row, and
+    /// a `Selection` is a single anchor and head — so selecting one needs a second selection model
+    /// across the whole editor, and Delete Column already does the job it would be pressed for.
+    SelectTable,
 }
 
 impl Action {
@@ -202,7 +232,21 @@ impl Action {
             //
             // `Headings` letters for a second reason on top of that one: it has to say *which* level
             // the caret is in, and a picture cannot.
-            Self::Heading(_) | Self::Headings => return None,
+            //
+            // The table-edit rows join it from the other side — see [`TABLE_EDIT`]. Headings are
+            // letterforms with no words; those are words with no letterform, and `None` here is what
+            // sends `draw_menu_rows` to their label, which is empty, which leaves the column blank.
+            Self::Heading(_)
+            | Self::Headings
+            | Self::RowAbove
+            | Self::RowBelow
+            | Self::ColumnLeft
+            | Self::ColumnRight
+            | Self::DeleteRow
+            | Self::DeleteColumn
+            | Self::DeleteTable
+            | Self::SelectRow
+            | Self::SelectTable => return None,
         };
         Some(code)
     }
@@ -261,6 +305,18 @@ impl Action {
             // A pipe row, for the same reason: it is the markup, and 🗒 or ▦ would go to a font
             // this row is not set in.
             Self::Table => "|--|".to_owned(),
+            // **Nothing, deliberately** — see [`TABLE_EDIT`]. These are only ever rows of a list,
+            // never buttons, and their words say what an arrow would only approximate. An empty face
+            // leaves the column blank rather than filling it with something a fallback font drew.
+            Self::RowAbove
+            | Self::RowBelow
+            | Self::ColumnLeft
+            | Self::ColumnRight
+            | Self::DeleteRow
+            | Self::DeleteColumn
+            | Self::DeleteTable
+            | Self::SelectRow
+            | Self::SelectTable => String::new(),
         }
     }
 
@@ -309,6 +365,16 @@ impl Action {
             Self::Link => "Link".to_owned(),
             Self::Image => "Image".to_owned(),
             Self::Table => "Table".to_owned(),
+            // The words the list is read by, so they say the direction rather than implying it.
+            Self::RowAbove => "Insert row above".to_owned(),
+            Self::RowBelow => "Insert row below".to_owned(),
+            Self::ColumnLeft => "Insert column left".to_owned(),
+            Self::ColumnRight => "Insert column right".to_owned(),
+            Self::DeleteRow => "Delete row".to_owned(),
+            Self::DeleteColumn => "Delete column".to_owned(),
+            Self::DeleteTable => "Delete table".to_owned(),
+            Self::SelectRow => "Select row".to_owned(),
+            Self::SelectTable => "Select table".to_owned(),
         }
     }
 
@@ -351,6 +417,18 @@ impl Action {
             | Self::Image
             | Self::Headings
             | Self::Table
+            // Nor the table-edit rows. Nine chords for operations reached from a list that is
+            // already one click away, on a bar whose chords are meant to be the ones worth
+            // remembering, is nine chords nobody would.
+            | Self::RowAbove
+            | Self::RowBelow
+            | Self::ColumnLeft
+            | Self::ColumnRight
+            | Self::DeleteRow
+            | Self::DeleteColumn
+            | Self::DeleteTable
+            | Self::SelectRow
+            | Self::SelectTable
             | Self::More => {
                 return None;
             }
@@ -441,7 +519,37 @@ pub enum Menu {
     /// handled it is handled by matching on this variant rather than by a panel that is secretly
     /// two things.
     TableSize,
+    /// What to do to the table the caret is already in (MDEDIT-128).
+    ///
+    /// A list, so it is the geometry that already existed rather than a third one. It comes out of
+    /// the **same button** as [`TableSize`](Self::TableSize) — which is what kept a group of nine
+    /// controls off a bar with room for one. The plan had this group either replacing the formatting
+    /// buttons or going to the overflow, and both were answers to a width problem this does not
+    /// have.
+    TableEdit,
 }
+
+/// What [`Menu::TableEdit`] offers, in the order it offers it (MDEDIT-128).
+///
+/// Insert, then delete, then select — least destructive first, which is the order every table menu
+/// in a word processor uses and the order that puts Delete Table furthest from the pointer.
+///
+/// **These rows carry no icon**, which is the second accepted exception after the heading levels and
+/// the opposite one: a heading list is letterforms with no words, and this is words with no
+/// letterform. Neither icon font has a glyph for "insert a row above", and inventing one out of
+/// arrows would put this row in a fallback font — the words say it exactly, and the column beside
+/// them stays empty rather than carrying something that only approximates them.
+pub const TABLE_EDIT: &[Action] = &[
+    Action::RowAbove,
+    Action::RowBelow,
+    Action::ColumnLeft,
+    Action::ColumnRight,
+    Action::DeleteRow,
+    Action::DeleteColumn,
+    Action::DeleteTable,
+    Action::SelectRow,
+    Action::SelectTable,
+];
 
 /// The heading levels the list offers.
 ///

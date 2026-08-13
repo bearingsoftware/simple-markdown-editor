@@ -13,8 +13,10 @@
 //! No GPU or window types. The caller supplies a laid-out chunk and a point inside it; this decides
 //! which byte that is.
 
-use mdedit_offsets::{ByteOffset, ByteSpan};
+use mdedit_offsets::ByteOffset;
 use mdedit_text::Layout;
+
+use crate::table::Grid;
 
 /// A laid-out chunk, and where its text sits in the buffer.
 #[derive(Debug, Clone, Copy)]
@@ -29,15 +31,18 @@ pub struct Chunk<'a> {
     /// chunk elsewhere in the document reuses the layout, and the glyphs still carry the offsets
     /// they were laid out with.
     pub base: ByteOffset,
-    /// Which bytes each visual row covers, when counting newlines would not find out (MDEDIT-126).
+    /// The boxes this chunk was laid out as, when it is a table (MDEDIT-126, MDEDIT-128).
     ///
-    /// `None` for the ordinary case, where a row is a source line or part of a wrapped one. A table
-    /// laid out as a grid needs this because it is the one layout that *drops* a source line — the
-    /// delimiter row is drawn as nothing — so row 1 is source line 2 and every row below the header
-    /// resolves against the wrong bytes without it.
+    /// `None` for the ordinary case, where a row is a source line or part of a wrapped one, and a
+    /// glyph is the only thing a point can address. A grid needs it twice over:
     ///
-    /// In the same space as a glyph's `source`, so [`base`](Self::base) rebases it.
-    pub rows: Option<&'a [ByteSpan]>,
+    /// - it is the one layout that **drops** a source line — the delimiter row draws as nothing — so
+    ///   row 1 is source line 2 and counting newlines finds the wrong bytes;
+    /// - **an empty cell has no glyphs**, so walking them cannot find it at all. A column comes from
+    ///   the boxes, and the answer comes from the cell that column names.
+    ///
+    /// Spans are in the same space as a glyph's `source`, so [`base`](Self::base) rebases them.
+    pub grid: Option<&'a Grid>,
 }
 
 impl Chunk<'_> {
@@ -49,7 +54,7 @@ impl Chunk<'_> {
     /// The bytes of visual line `row` when the layout carries its own mapping, as offsets into
     /// [`text`](Self::text).
     fn row_span(&self, row: usize) -> Option<(usize, usize)> {
-        let span = self.rows?.get(row)?;
+        let span = self.grid?.rows.get(row)?;
         let at = |offset: ByteOffset| {
             offset
                 .get()
@@ -141,6 +146,30 @@ pub fn offset_in_row(chunk: &Chunk<'_>, row: usize, x: f32) -> ByteOffset {
         return chunk.start;
     };
 
+    // **A grid resolves the column first.** Walking glyphs cannot find an empty cell — it has none —
+    // and would carry a click past it into whichever column has text next. Every pixel of the table
+    // belongs to a column, so the column is what a point addresses and the glyphs within it decide
+    // only where in the cell the caret goes.
+    if let Some(grid) = chunk.grid {
+        if let Some(cell) = grid.cells.get(row).and_then(|cells| {
+            let column = grid.column_at(x);
+            cells.get(column.min(cells.len().saturating_sub(1)))
+        }) {
+            let inside = |glyph: &&mdedit_text::PositionedGlyph| {
+                glyph.source.start().get() >= cell.start().get()
+                    && glyph.source.start().get() < cell.end().get()
+            };
+            for glyph in line.glyphs.iter().filter(inside) {
+                if x < glyph.pos.x + glyph.advance / 2.0 {
+                    return chunk.rebase(glyph.source.start());
+                }
+            }
+            // Past this cell's last glyph, or a cell with none at all — a freshly inserted one. The
+            // caret goes to the end of the cell's own text, which is where typing appends.
+            return chunk.rebase(cell.end());
+        }
+    }
+
     for glyph in &line.glyphs {
         if x < glyph.pos.x + glyph.advance / 2.0 {
             return chunk.rebase(glyph.source.start());
@@ -178,6 +207,23 @@ pub fn place_of(chunk: &Chunk<'_>, drawn: usize, offset: ByteOffset) -> Option<(
                 },
                 |glyph| glyph.pos.x,
             );
+        // **An empty cell has no glyph to hang the caret on**, and the fallbacks above would put it
+        // at the end of the row or against the table's left edge — both of them somewhere the caret
+        // is not. The cell's own box says where it goes.
+        if let Some(grid) = chunk.grid {
+            if let Some((cell_row, column)) = grid.cell_of(ByteOffset::new(
+                chunk.base.get() + offset.get().saturating_sub(chunk.start.get()),
+            )) {
+                let cell = grid.cells[cell_row][column];
+                let empty = !line.glyphs.iter().any(|glyph| {
+                    glyph.source.start().get() >= cell.start().get()
+                        && glyph.source.start().get() < cell.end().get()
+                });
+                if cell_row == row && empty {
+                    return Some((row, grid.text_left(column)));
+                }
+            }
+        }
         return Some((row, x));
     }
     None

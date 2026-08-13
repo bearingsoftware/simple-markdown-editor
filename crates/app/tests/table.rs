@@ -115,30 +115,49 @@ fn cell_from(source: ByteSpan, width: f32) -> Layout {
     layout
 }
 
-/// The grid for `TABLE`, and the row spans that go with it.
-fn grid_of(source: &str) -> (Vec<Vec<ByteSpan>>, Vec<ByteSpan>, Layout) {
+/// The layout and the boxes for `source`, with its cells.
+fn grid_of(source: &str) -> (Vec<Vec<ByteSpan>>, table::Grid, Layout) {
     let doc = Document::from(source);
     let cells = table::cells(&doc, span(0, source.len()));
-    let spans = table::row_spans(&cells);
+    // A cell with no text lays out to a line and no glyphs, which is what a text engine really
+    // returns for one — and the whole reason a grid cannot hit-test by walking glyphs.
     let rows: Vec<Vec<Layout>> = cells
         .iter()
-        .map(|row| row.iter().map(|c| cell_from(*c, 40.0)).collect())
+        .map(|row| {
+            row.iter()
+                .map(|c| {
+                    if c.slice(source).trim().is_empty() {
+                        Layout {
+                            lines: vec![LayoutLine {
+                                baseline: 12.0,
+                                height: 16.0,
+                                glyphs: Vec::new(),
+                                rules: Vec::new(),
+                            }],
+                        }
+                    } else {
+                        cell_from(*c, 40.0)
+                    }
+                })
+                .collect()
+        })
         .collect();
-    let (grid, _) = table::assemble(&rows, &spans, source.ends_with('\n'));
-    (cells, spans, grid)
+    let (layout, boxes) = table::assemble(&rows, &cells, source.ends_with('\n'));
+    (cells, boxes, layout)
 }
 
 /// A row covers its first cell to its last. The delimiter row has no span because it is not a row:
 /// its bytes are syntax, and MDEDIT-118 has the caret step over concealed syntax, not into it.
 #[test]
 fn a_rows_span_runs_from_its_first_cell_to_its_last() {
-    let (cells, spans, _) = grid_of(TABLE);
+    let (cells, boxes, _) = grid_of(TABLE);
 
-    assert_eq!(spans.len(), 2, "the delimiter row is not one of them");
-    assert_eq!(spans[0].start(), cells[0][0].start());
-    assert_eq!(spans[0].end(), cells[0][1].end());
-    assert_eq!(spans[1].start(), cells[1][0].start());
-    assert_eq!(spans[1].end(), cells[1][1].end());
+    assert_eq!(boxes.rows.len(), 2, "the delimiter row is not one of them");
+    assert_eq!(boxes.rows[0].start(), cells[0][0].start());
+    assert_eq!(boxes.rows[0].end(), cells[0][1].end());
+    assert_eq!(boxes.rows[1].start(), cells[1][0].start());
+    assert_eq!(boxes.rows[1].end(), cells[1][1].end());
+    assert_eq!(boxes.cells, cells, "and every cell is carried too");
 }
 
 /// **The second bug the first manual look found.** `hit` finds a row's bytes by counting newlines,
@@ -147,7 +166,7 @@ fn a_rows_span_runs_from_its_first_cell_to_its_last() {
 /// the caret cannot be placed anywhere below the header.
 #[test]
 fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
-    let (cells, spans, grid) = grid_of(TABLE);
+    let (cells, boxes, grid) = grid_of(TABLE);
     let body = cells[1][0].start();
 
     let chunk = hit::Chunk {
@@ -155,14 +174,14 @@ fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
         text: TABLE,
         start: ByteOffset::ZERO,
         base: ByteOffset::ZERO,
-        rows: Some(&spans),
+        grid: Some(&boxes),
     };
     let (row, _) = hit::place_of(&chunk, 2, body).expect("the body row owns its own bytes");
     assert_eq!(row, 1);
 
     // The same chunk without the mapping is the bug, so this test cannot pass vacuously.
     let counted = hit::Chunk {
-        rows: None,
+        grid: None,
         ..chunk
     };
     assert!(
@@ -175,16 +194,69 @@ fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
 /// it at the end of the delimiter row, which is bytes the caret may not occupy.
 #[test]
 fn clicking_past_the_last_column_lands_at_the_end_of_that_row() {
-    let (cells, spans, grid) = grid_of(TABLE);
+    let (cells, boxes, grid) = grid_of(TABLE);
 
     let chunk = hit::Chunk {
         layout: &grid,
         text: TABLE,
         start: ByteOffset::ZERO,
         base: ByteOffset::ZERO,
-        rows: Some(&spans),
+        grid: Some(&boxes),
     };
     assert_eq!(hit::offset_in_row(&chunk, 1, 10_000.0), cells[1][1].end());
+}
+
+/// **The third bug a manual look found, and the one a glyph-walking hit test cannot fix.** An empty
+/// cell has no glyphs, so there is nothing to land on: a click in a freshly inserted column carried
+/// past it to whichever column had text next. A grid resolves the column from its boxes, so a cell
+/// is clickable before anyone has typed in it.
+#[test]
+fn an_empty_cell_can_be_clicked_into() {
+    let source = "| a |  | c |\n| --- | --- | --- |\n| 1 |  | 3 |\n";
+    let (cells, boxes, grid) = grid_of(source);
+
+    let chunk = hit::Chunk {
+        layout: &grid,
+        text: source,
+        start: ByteOffset::ZERO,
+        base: ByteOffset::ZERO,
+        grid: Some(&boxes),
+    };
+
+    // Aimed at the middle column's box, which holds nothing.
+    let middle = boxes.text_left(1);
+    assert_eq!(
+        hit::offset_in_row(&chunk, 0, middle),
+        cells[0][1].end(),
+        "the click lands in the empty cell, not in the one after it"
+    );
+
+    // And the caret it puts there has somewhere to be drawn.
+    let (row, x) = hit::place_of(&chunk, 2, cells[0][1].end()).expect("the empty cell is a place");
+    assert_eq!(row, 0);
+    assert_eq!(x, middle, "at the empty cell's own left edge");
+}
+
+/// Every pixel of the table belongs to a column, so there is no gap between two boxes where a click
+/// does nothing. MDEDIT-116 shipped that bug once in one dimension; this is the two-dimensional one.
+#[test]
+fn every_pixel_across_the_table_belongs_to_a_column() {
+    let rows = vec![vec![cell(30.0), cell(50.0)]];
+    let (_, boxes) = table::assemble(&rows, &[], false);
+
+    let width = boxes.width();
+    for step in 0_u8..64 {
+        let x = width * f32::from(step) / 64.0;
+        assert!(
+            boxes.column_at(x) < 2,
+            "x {x} fell outside both columns of a {width}-wide table"
+        );
+    }
+    assert_eq!(
+        boxes.column_at(width + 100.0),
+        1,
+        "past the end is the last"
+    );
 }
 
 // ---- the placement ----

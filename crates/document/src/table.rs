@@ -107,6 +107,34 @@ impl Table {
         self.rows.iter().map(Vec::len).max().unwrap_or(0)
     }
 
+    /// Which bytes row `row` covers, from its first cell to its last.
+    ///
+    /// The cells, not the source line: the pipes are syntax the grid draws, and a selection that
+    /// took them in would put the table's scaffolding on the clipboard.
+    #[must_use]
+    pub fn row_span(&self, row: usize) -> Option<ByteSpan> {
+        // Rendered rows are one source line each, in order, with the delimiter row after the first.
+        let mut at = self.span.start().get();
+        let widths = self.widths();
+        for (index, cells) in self.rows.iter().enumerate() {
+            let line = Self::write_row(cells, &widths);
+            if index == row {
+                let text = line.trim_end_matches('\n');
+                let first = text.find('|')? + 1;
+                let last = text.rfind('|')?;
+                return Some(ByteSpan::new(
+                    ByteOffset::new(at + first),
+                    ByteOffset::new(at + last),
+                ));
+            }
+            at += line.len();
+            if index == 0 {
+                at += self.write_delimiter(&widths).len();
+            }
+        }
+        None
+    }
+
     /// Writes the table back out with its pipes aligned.
     ///
     /// Widths are counted in **characters, not bytes or display columns**. Bytes would misalign
