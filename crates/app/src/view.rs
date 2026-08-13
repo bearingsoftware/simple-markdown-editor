@@ -181,7 +181,12 @@ pub struct Theme {
     ///
     /// Translucent on purpose — see [`Rgba::translucent`].
     pub caret_line: Rgba,
-    /// A hairline separator. Translucent, for the same reason. Read by nothing yet.
+    /// A hairline separator. Translucent, for the same reason.
+    ///
+    /// A table's rules and the wash behind its header row are both this (MDEDIT-126) — one role used
+    /// twice rather than a second colour to keep in step with it, and translucent means it lands on
+    /// either ground. `panel` could not do the wash: it is pure white in light mode, which is the
+    /// page.
     pub line: Rgba,
     /// A raised surface. The file pane is one, and draws in it since MDEDIT-72; before that it
     /// borrowed the tab strip's colour, because the strip's was the only dark chrome there was.
