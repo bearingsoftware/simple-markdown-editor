@@ -216,3 +216,34 @@ fn floor_boundary(source: &str, at: usize) -> usize {
 pub fn segment(source: &str) -> Vec<Segment> {
     analyze(source).segments
 }
+
+/// The parser options this crate analyses with, and an analysis that takes them (MDEDIT-131).
+///
+/// **Not API. It exists so a benchmark can turn one parser option on and off inside a single
+/// process**, which is the only honest way to compare the two on a machine whose clock speed drifts
+/// between runs — the failure that left MDEDIT-126 unable to report a parse cost at all. Behind a
+/// feature rather than `#[doc(hidden)]` so it cannot be reached by accident from the editor.
+///
+/// **Production has exactly one option set** and [`options`](bench::options) is it. Nothing here
+/// makes the set configurable, and a diff that reads an option from a setting is a different
+/// decision on a different ticket.
+#[cfg(feature = "bench")]
+pub mod bench {
+    use mdedit_language::Analysis;
+    use pulldown_cmark::Options;
+
+    /// What [`crate::analyze`] parses with.
+    #[must_use]
+    pub fn options() -> Options {
+        crate::classify::options()
+    }
+
+    /// [`crate::analyze`], with the parser options given rather than the ones production uses.
+    ///
+    /// Unlike `analyze` this is **not** wrapped against a parser panic: the containment exists for
+    /// documents a user opened, and a benchmark's corpus is one this repo wrote.
+    #[must_use]
+    pub fn analyze_with(source: &str, options: Options) -> Analysis {
+        crate::classify::analyze_with(source, options)
+    }
+}
