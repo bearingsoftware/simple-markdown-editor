@@ -8,7 +8,12 @@
 //! A whitespace display that shifted the text by a pixel would be worse than none, because it would
 //! be lying about the document at exactly the moment somebody switched it on to find out the truth.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
@@ -414,4 +419,131 @@ fn the_ending_mark_is_not_a_column_the_caret_can_reach() {
         "clicking past the end of a marked line must land where it always did"
     );
     assert!(on.document().selection().head() <= ByteOffset::new(5));
+}
+
+// ---- characters the layout never shaped (MDEDIT-124) ----
+
+/// Where each mark-coloured quad sits, left of the text's own edge removed.
+fn marks_at(editor: &mut Editor<Grid>) -> Vec<f32> {
+    let marker = view::Theme::default().marker;
+    let left = editor.content_rect().left_edge();
+    let mut xs: Vec<f32> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| {
+            quad.colour[0] == marker.r
+                && quad.colour[1] == marker.g
+                && quad.colour[2] == marker.b
+                && quad.colour[3] == marker.a
+        })
+        .map(|quad| quad.rect[0] - left)
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    xs
+}
+
+/// Where a row's glyphs sit, so "nothing moved" can be asserted against the marks being on.
+fn glyph_xs(editor: &mut Editor<Grid>) -> Vec<f32> {
+    let text = view::Theme::default().text;
+    let left = editor.content_rect().left_edge();
+    let mut xs: Vec<f32> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| {
+            quad.colour[0] == text.r
+                && quad.colour[1] == text.g
+                && quad.colour[2] == text.b
+                && quad.colour[3] == text.a
+        })
+        .map(|quad| quad.rect[0] - left)
+        .collect();
+    xs.sort_by(f32::total_cmp);
+    xs
+}
+
+/// **The bug this ticket exists for.** A tab is an advance to a stop rather than a glyph, so there
+/// was no cell to stamp a mark into and an interior tab was never marked — while a *trailing* one
+/// was, because the walk past the last glyph reads characters out of the text. The feature's
+/// headline mark was invisible in the case people actually hit.
+#[test]
+fn a_tab_in_the_middle_of_a_line_is_marked() {
+    let mut editor = editor("alpha\tbeta\n");
+    assert!(editor.set_whitespace(true));
+
+    // "alpha" ends at 40; the tab advances to the 64px stop; the arrow is centred in that gap.
+    let gap = (ADVANCE * 5.0, stub::TAB_STOP);
+    let centred = gap.0 + (gap.1 - gap.0 - ADVANCE) / 2.0;
+    assert!(
+        marks_at(&mut editor).contains(&centred),
+        "an arrow belongs between the alpha and the beta, at {centred}: {:?}",
+        marks_at(&mut editor)
+    );
+}
+
+/// The other half of the acceptance criteria, and MDEDIT-46's standing rule: the mark is stamped
+/// into space the layout already decided on, so the text either side of a tab does not move.
+#[test]
+fn marking_a_tab_moves_nothing() {
+    let text = "alpha\tbeta\n";
+    let mut off = editor(text);
+    let mut on = editor(text);
+    assert!(on.set_whitespace(true));
+
+    assert_eq!(glyph_xs(&mut on), glyph_xs(&mut off));
+    assert!(
+        glyph_xs(&mut off).contains(&stub::TAB_STOP),
+        "the beta starts at the tab stop either way"
+    );
+}
+
+/// **A control character is not marked, and that is the decision rather than the bug.** DirectWrite
+/// drops a C0 control and gives it *no advance at all*, so there is no room for a picture: drawing
+/// one would put it over the character beside it. Showing a control needs space the layout never
+/// reserved, which is a different feature from "it draws and changes nothing else".
+#[test]
+fn a_control_character_has_no_room_for_a_mark() {
+    let mut with = editor("ab\u{1}cd\n");
+    let mut without = editor("abcd\n");
+    assert!(with.set_whitespace(true));
+    assert!(without.set_whitespace(true));
+
+    assert_eq!(
+        marks_at(&mut with),
+        marks_at(&mut without),
+        "the control took no advance, so it earned no mark"
+    );
+}
+
+/// A tab at the start of a line has no glyph before it, so the gap starts at the row's left edge.
+#[test]
+fn a_tab_that_starts_a_line_is_marked_from_the_edge() {
+    let mut editor = editor("\tindented\n");
+    assert!(editor.set_whitespace(true));
+
+    let centred = (stub::TAB_STOP - ADVANCE) / 2.0;
+    assert!(
+        marks_at(&mut editor).contains(&centred),
+        "the arrow is centred in the whole first stop: {:?}",
+        marks_at(&mut editor)
+    );
+}
+
+/// Two tabs stack to two stops, and each gets its own arrow.
+#[test]
+fn two_tabs_get_two_arrows() {
+    let mut editor = editor("a\t\tb\n");
+    assert!(editor.set_whitespace(true));
+
+    // Both tabs sit between the same two glyphs, so they share the gap from the `a` to the `b` —
+    // half each. A gap read whole would stack both arrows at its middle.
+    let marks = marks_at(&mut editor);
+    let share = (stub::TAB_STOP * 2.0 - ADVANCE) / 2.0;
+    let first = ADVANCE + (share - ADVANCE) / 2.0;
+    let second = ADVANCE + share + (share - ADVANCE) / 2.0;
+    assert!(marks.contains(&first), "first arrow at {first}: {marks:?}");
+    assert!(
+        marks.contains(&second),
+        "second arrow at {second}: {marks:?}"
+    );
+    assert_ne!(first, second, "and they are not on top of each other");
 }

@@ -8030,31 +8030,7 @@ impl<T: TextLayout> Editor<T> {
         let chunk_top = baseline - row.cached.layout.lines[row.index].baseline;
         let line = &row.cached.layout.lines[row.index];
 
-        // In-cell marks: one per invisible character the layout gave a position to.
-        for glyph in &line.glyphs {
-            let source = row.cached.rebase(glyph, row.chunk.span);
-            let Some(character) = row.text[source.get()..].chars().next() else {
-                continue;
-            };
-            let Some(mark) = view::mark_for(character) else {
-                continue;
-            };
-            // Centred in the cell the character already has. `glyph.advance` is the layout's answer
-            // and is never recomputed from the mark.
-            let Some(drawn) = self.mark(mark) else {
-                continue;
-            };
-            let offset = (glyph.advance - drawn.advance) / 2.0;
-            self.stamp(
-                quads,
-                drawn,
-                MarkAt {
-                    pos: (glyph.pos.x + offset, glyph.pos.y + chunk_top),
-                    colour: self.theme.marker,
-                    at,
-                },
-            );
-        }
+        self.draw_row_marks(quads, row, chunk_top, at);
 
         // The line ending, past the end of the row. An empty line has no glyphs, so its terminator
         // is found from where the row starts rather than from where it ends.
@@ -8127,6 +8103,101 @@ impl<T: TextLayout> Editor<T> {
                 },
             );
             pen += drawn.advance;
+        }
+    }
+
+    /// Marks every invisible character on a row that the layout gave a place to (MDEDIT-124).
+    ///
+    /// **The characters come from the text and their positions from the layout.** Iterating the
+    /// glyphs alone misses everything the layout declined to shape, and on DirectWrite that is an
+    /// interior tab and every C0 control: a tab is an *advance to a stop* rather than a glyph, and a
+    /// control is dropped outright. A character with no glyph has no cell to stamp into — but its
+    /// place is recoverable, because it lies in the gap between the glyph before it and the glyph
+    /// after.
+    ///
+    /// Before this the feature's headline mark was invisible in the case people actually hit: only a
+    /// *trailing* tab was marked, by the walk past the last glyph in [`draw_marks`](Self::draw_marks)
+    /// which reads characters out of the text.
+    ///
+    /// Nothing here re-shapes anything. A mark is stamped into space the layout already decided on,
+    /// so no glyph moves and no click lands anywhere new — MDEDIT-46's standing rule, and the reason
+    /// this could not be fixed by giving the character a glyph.
+    ///
+    /// **Bidi:** the gap is read between neighbours in *source* order, which is their visual order
+    /// only in a left-to-right run. A tab inside a right-to-left run is out of scope, as it was
+    /// before — it was not marked at all then.
+    fn draw_row_marks(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        row: Row<'_>,
+        chunk_top: f32,
+        at: Placement,
+    ) {
+        let line = &row.cached.layout.lines[row.index];
+        let baseline = line.baseline + chunk_top;
+        let mut glyphs = line.glyphs.iter().peekable();
+        let mut pen = 0.0_f32;
+        let mut offset = Self::row_start(row.chunk, row.text, row.index);
+
+        while let Some(character) = row.text.get(offset..).and_then(|rest| rest.chars().next()) {
+            // A glyph may cover several characters — a ligature does — so anything already behind
+            // the walk is not a second cell.
+            while glyphs
+                .peek()
+                .is_some_and(|glyph| row.cached.rebase(glyph, row.chunk.span).get() < offset)
+            {
+                glyphs.next();
+            }
+
+            let Some(next) = glyphs.peek().copied() else {
+                // Past the last glyph. What remains on the row belongs to the trailing walk.
+                break;
+            };
+            let source = row.cached.rebase(next, row.chunk.span).get();
+            let shaped = source == offset;
+            let (x, width) = if shaped {
+                (next.pos.x, next.advance)
+            } else {
+                // The gap this character was given: from where the last glyph ended to where the
+                // next one starts. A tab's stop makes that generous; a control takes no advance at
+                // all and so leaves nothing, which is what the width check below reads.
+                //
+                // **Shared between every unshaped character in the run**, because two tabs in a row
+                // sit between the same two glyphs — and a gap read whole would stack both their
+                // arrows at its middle.
+                let sharing = row
+                    .text
+                    .get(offset..source)
+                    .map_or(1, |run| run.chars().count());
+                let sharing = u16::try_from(sharing).unwrap_or(u16::MAX).max(1);
+                (pen, (next.pos.x - pen) / f32::from(sharing))
+            };
+
+            if let Some(drawn) = view::mark_for(character).and_then(|mark| self.mark(mark)) {
+                // **Only where it fits.** A control has no advance, so drawing its picture would put
+                // it over the character beside it. Showing one needs room the layout never reserved,
+                // which is a different feature from this one — recorded on MDEDIT-124.
+                if drawn.advance <= width {
+                    self.stamp(
+                        quads,
+                        drawn,
+                        MarkAt {
+                            pos: (x + (width - drawn.advance) / 2.0, baseline),
+                            colour: self.theme.marker,
+                            at,
+                        },
+                    );
+                }
+            }
+
+            if shaped {
+                pen = next.pos.x + next.advance;
+                glyphs.next();
+            } else {
+                // Its share of the gap, so the next unshaped character in the run starts after it.
+                pen += width;
+            }
+            offset += character.len_utf8();
         }
     }
 

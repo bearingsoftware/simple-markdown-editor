@@ -22,6 +22,9 @@ use mdedit_text::{
 pub const LINE_HEIGHT: f32 = 20.0;
 pub const ASCENT: f32 = 16.0;
 pub const ADVANCE: f32 = 8.0;
+/// Where a tab advances to. DirectWrite's own default is 64px and this matches it, so a test's
+/// arithmetic is the same arithmetic Windows does.
+pub const TAB_STOP: f32 = 64.0;
 /// Matches `MARGIN` in the editor. A test that hardcodes it would silently pass if it changed.
 pub const MARGIN: f32 = 24.0;
 
@@ -78,6 +81,28 @@ impl TextLayout for Grid {
                     continue;
                 }
                 after_cr = false;
+                // **A tab is an advance to a stop, and a control gets nothing at all** (MDEDIT-124).
+                // Measured on DirectWrite under MDEDIT-113: `"a\tb"` shapes two glyphs with the `b`
+                // at a stop, `"ab\u{1}c"` drops the control and gives it no advance, and a space is
+                // shaped like any other character.
+                //
+                // This stub used to give every character a glyph, which is why no test could see
+                // that Show Whitespace never marked an interior tab: there was always a cell to
+                // assert against. Correcting it here is what makes the marking tests exercise the
+                // path that actually runs on Windows.
+                if character == '\t' {
+                    while lines.len() <= row {
+                        lines.push(new_line(lines.len()));
+                    }
+                    pen_x = ((pen_x / TAB_STOP).floor() + 1.0) * TAB_STOP;
+                    continue;
+                }
+                if character < ' ' || character == '\u{7f}' {
+                    while lines.len() <= row {
+                        lines.push(new_line(lines.len()));
+                    }
+                    continue;
+                }
                 // Wrapping, crudely: at the character rather than at a word boundary, which is
                 // wrong for prose and exactly right for a test — a row break happens at a position
                 // arithmetic can predict. Without it nothing that only happens on a wrapped line
