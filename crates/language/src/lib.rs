@@ -114,6 +114,13 @@ pub enum Token {
     /// The name half of a key/value pair. Distinct from [`Token::String`] because it reads as
     /// structure rather than as data, and every editor colours the two differently.
     Key,
+    /// The name of an element or tag — `config` in `<config>` and in `</config>`.
+    ///
+    /// Distinct from [`Token::Key`] for the same reason `Key` is distinct from `String`, one level
+    /// up: in `<a href="x">` the element name and the attribute name are different things, and
+    /// collapsing both into `Key` draws the landmark and the detail identically. Every highlighter
+    /// makes this distinction. MDEDIT-94 is where it was decided rather than defaulted.
+    Tag,
     /// A quoted string used as a value.
     String,
     /// A numeric literal.

@@ -1,6 +1,6 @@
-# Languages — Markdown, JSON, YAML and the boundary between them
+# Languages — Markdown, JSON, YAML, XML and the boundary between them
 
-The language trait and its three implementations, what each of them conceals, validates and reformats, and how a keystroke re-parses a region rather than a document.
+The language trait and its implementations, what each of them conceals, validates and reformats, and how a keystroke re-parses a region rather than a document.
 
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
@@ -148,6 +148,42 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   their indentation. It approximates a key as text before `:` at end-of-line or `: ` before a
   comment, which is wrong for the explicit `? key` form and for a colon-space inside a flow scalar.
   Both mis-*colour* rather than mis-*cover*, and tiling is property-tested either way.
+- **`.xml` opens highlighted, and its nesting is a counter rather than a stack.** MDEDIT-94. Same
+  hand-written, error-tolerant shape as JSON's and YAML's, for the reason recorded on those: a real
+  parser refuses half-typed input, and `<person id=` is what an attribute looks like a keystroke
+  before it is finished. `quick-xml` and `roxmltree` both stop at the first ill-formed construct and
+  hand back no spans for the bytes after it.
+
+  XML nests without limit, so recursive descent overflows on `<a><a><a>…`. JSON's validator answered
+  that with an explicit heap stack; this goes one step further and keeps **a `usize` counter**,
+  because nothing reads the element names — highlighting `</b>` does not depend on which element it
+  closes, and this crate has no `validate` to say the wrong one was typed. So a depth bomb costs one
+  integer that never grows and needs no cap to be safe. It saturates rather than wrapping, so
+  `overflow-checks` cannot turn a pathological file into a panic. Property-tested at 200,000 levels.
+
+  **It is the first language to answer `analyze_region` with `None`,** which is the case that
+  `Option` was put there for and which nothing had exercised. Every other language recovers its state
+  from a column-zero boundary; XML has none, because a line beginning `</item>` says nothing about
+  how deep it is and depth is the whole of the state — an element at depth one is a block and the
+  same element at depth two is not. So every keystroke re-parses the document, and the measurement
+  below is what that costs.
+
+  **A block is a child of the root**, which is JSON's rule rather than a new one. A whole document is
+  one element, so blocks-per-element at every depth would nest blocks the renderer has no use for and
+  a block per document would defeat the per-block cache entirely.
+
+  **Cost, at the 60 KiB `docs/research/04` states the keystroke budget for**: 0.61 ms p50 for deeply
+  nested elements, 1.15 ms p50 for an attribute-heavy configuration file, against a 3 ms budget —
+  and since there is no region parse, that *is* the keystroke cost rather than a ceiling on it. The
+  doubling ladder in `crates/xml/tests/lex_cost.rs` is linear over 32 KiB → 1 MiB, which is the part
+  worth re-running: MDEDIT-99 was quadratic and every unit fixture was too short to show it. Segment
+  density is 184/KiB nested and 306/KiB attribute-heavy, against the JSON figure MDEDIT-37 is chasing.
+- **An element name is `Token::Tag`, and that variant was added rather than defaulted.** The plan left
+  it open between `Key` and a new variant. In `<a href="x">` the element name and the attribute name
+  are different things and every highlighter colours them differently, so collapsing both into `Key`
+  would draw the landmark and the detail identically. The theme value is **a step up the same
+  lavender ramp** as `token_key` rather than a new hue: the pack's four hue families are unchanged,
+  and rose stays reserved for errors.
 - **JSON and YAML re-parse a region, like Markdown — but a keystroke in them still costs more than
   one in Markdown, and the parse is not why.** MDEDIT-36 made both languages restart at a block
   boundary: JSON is one container deep there and YAML is provably outside every block scalar, and

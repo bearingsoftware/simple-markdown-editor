@@ -97,6 +97,11 @@ const PAIRS: &[Pair] = &[
         ground: |t| t.background,
     },
     Pair {
+        what: "xml tag names",
+        foreground: |t| t.token_tag,
+        ground: |t| t.background,
+    },
+    Pair {
         what: "strings",
         foreground: |t| t.token_string,
         ground: |t| t.background,

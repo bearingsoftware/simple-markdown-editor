@@ -201,6 +201,9 @@ pub struct Theme {
     pub tab_modified: Rgba,
     /// A key in a data language.
     pub token_key: Rgba,
+    /// An element name. A step up the same lavender ramp as `token_key`, not a new hue: a tag name
+    /// and an attribute name are both structure, and the tag is the one the eye looks for.
+    pub token_tag: Rgba,
     /// A quoted string used as a value.
     pub token_string: Rgba,
     /// A numeric literal.
@@ -283,6 +286,7 @@ impl Theme {
             tab_inactive: Rgba::rgb(0x1a, 0x1c, 0x2a),
             tab_modified: Rgba::rgb(0x91, 0x84, 0xd9),
             token_key: Rgba::rgb(0xa9, 0x9c, 0xf0),
+            token_tag: Rgba::rgb(0xc4, 0xb9, 0xff),
             token_string: Rgba::rgb(0xa8, 0xc9, 0xb6),
             token_number: Rgba::rgb(0xd6, 0xb4, 0x8f),
             token_literal: Rgba::rgb(0x8f, 0xb6, 0xd9),
@@ -330,6 +334,7 @@ impl Theme {
             tab_inactive: Rgba::rgb(0xe2, 0xe5, 0xf2),
             tab_modified: Rgba::rgb(0x5d, 0x52, 0x94),
             token_key: Rgba::rgb(0x5d, 0x52, 0x94),
+            token_tag: Rgba::rgb(0x43, 0x36, 0x82),
             token_string: Rgba::rgb(0x3f, 0x6b, 0x52),
             token_number: Rgba::rgb(0x7a, 0x54, 0x26),
             token_literal: Rgba::rgb(0x3a, 0x5f, 0x80),
@@ -728,6 +733,7 @@ impl<'t> Builder<'_, 't> {
             Role::Content => self.theme.text,
             Role::Token(token) => match token {
                 Token::Key => self.theme.token_key,
+                Token::Tag => self.theme.token_tag,
                 Token::String => self.theme.token_string,
                 Token::Number => self.theme.token_number,
                 Token::Literal => self.theme.token_literal,

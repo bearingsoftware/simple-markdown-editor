@@ -62,6 +62,8 @@ crates/language/      # What the editor needs from a language: spans with a role
 crates/json/          # Error-tolerant, span-producing JSON lexer, plus a separate strict check
 crates/yaml/          # The same for YAML, hand-written — read its crate docs before proposing a
                       #   parser crate
+crates/xml/           # The same for XML. Nesting is a counter, not a stack; the one language that
+                      #   answers analyze_region with None
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line

@@ -44,6 +44,9 @@ pub fn language_for(path: &Path) -> &'static dyn Language {
         "json" => &mdedit_json::JSON,
         // `.yml` is the older spelling and still the commoner in the wild.
         "yaml" | "yml" => &mdedit_yaml::YAML,
+        // `.xml` alone, deliberately. `.svg`, `.xsd`, `.csproj` and the rest are XML too, and each
+        // is a line here when somebody wants it rather than a guess made in advance.
+        "xml" => &mdedit_xml::XML,
         _ => &mdedit_language::PLAIN,
     }
 }
