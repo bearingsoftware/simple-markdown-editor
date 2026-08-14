@@ -65,7 +65,8 @@ fn an_xml_file_opens_as_xml() {
 #[test]
 fn nothing_in_an_xml_file_is_ever_concealed() {
     let dir = TempDir::new().unwrap();
-    let source = "<?xml version=\"1.0\"?>\n<config debug=\"true\">\n  <entry>value</entry>\n</config>\n";
+    let source =
+        "<?xml version=\"1.0\"?>\n<config debug=\"true\">\n  <entry>value</entry>\n</config>\n";
     let editor = open(&dir, "config.xml", source);
 
     let document = editor.document();
