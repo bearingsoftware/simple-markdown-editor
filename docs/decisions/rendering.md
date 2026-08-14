@@ -134,8 +134,22 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   where the other two are ordinary. This is the answer to "Mixed" in the status bar, which until now
   said a document had mixed endings without saying which lines.
 
-  **Every mark is stamped into the cell the character already has, at the advance the layout already
-  gave it.** Nothing re-shapes, so no glyph moves, no row re-wraps, and no click lands anywhere new.
+  **Every mark is stamped into space the layout already decided on.** Nothing re-shapes, so no glyph
+  moves, no row re-wraps, and no click lands anywhere new.
+
+  That used to read *"into the cell the character already has"*, and the difference is the whole of
+  MDEDIT-124: **a character the layout never shaped has no cell.** On DirectWrite a tab is an advance
+  to a stop rather than a glyph, and a C0 control is dropped outright — so iterating the glyphs
+  marked neither, and the feature's headline mark was invisible in the case people actually hit. The
+  one place a tab *was* marked is the walk past the last glyph, which reads characters out of the
+  text; that is why a trailing tab worked and an interior one did not.
+
+  So the characters come from the **text** and their positions from the **layout**: an unshaped one
+  sits in the gap between the glyph before it and the glyph after, and consecutive unshaped
+  characters share that gap between them rather than stacking their marks at its middle. A **control
+  is still not marked**, and that is a decision rather than the same bug — it takes no advance at
+  all, so its picture would land on top of the character beside it, and giving it room is a different
+  feature from one that changes nothing else.
   That is why **the toggle clears no layout cache**: MDEDIT-46's plan expected one by analogy with
   zoom, and the analogy does not hold — zoom changes what the text engine is *asked for*, and this
   changes nothing it is asked for. The marks themselves are a sixth cache of laid-out text, so they
@@ -144,10 +158,13 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Per-run and not remembered, like the drawing mode and for the same reason: it is a way of looking
   at a document for a moment rather than a preference.
 
-  **Two of its three defects were only visible in the window, and both came from the same place** —
-  the headless stub shaped text more simply than DirectWrite does. **A test on the stub could not see
-  either**, so both were written from a description of DirectWrite rather than a measurement of it,
-  and the description was wrong in both halves. MDEDIT-110 measured it and MDEDIT-113 acted on it.
+  **Three of its four defects were only visible in the window, and all three came from the same
+  place** — the headless stub shaped text more simply than DirectWrite does, giving every character a
+  glyph. **A test on the stub could not see any of them.** MDEDIT-110 measured what DirectWrite really
+  does, MDEDIT-113 acted on it, and MDEDIT-124 was the third: it corrected the stub to shape neither
+  a tab nor a control, which is what finally put the failing case in front of a test. Correcting the
+  stub had to happen *in the same change* as the fix — on its own it turns the marking tests red with
+  no fix available, which is why it had been left alone.
 
   **What DirectWrite actually does** (Windows 11 26200, installed Segoe UI, pinned in
   `crates/text-dwrite/tests/layout.rs`):
