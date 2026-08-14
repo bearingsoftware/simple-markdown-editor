@@ -14,6 +14,11 @@ mdedit-offsets.workspace = true
 mdedit-language.workspace = true
 pulldown-cmark.workspace = true
 
+[features]
+# The seam MDEDIT-131's benchmark measures a parser option through — see `bench` in lib.rs. Off by
+# default so the editor cannot reach it, and enabled by the bench target below.
+bench = []
+
 [dev-dependencies]
 criterion = "0.7"
 pulldown-cmark.workspace = true
@@ -23,6 +28,11 @@ serde_json = "1"
 [[bench]]
 name = "segment"
 harness = false
+
+[[bench]]
+name = "options"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true

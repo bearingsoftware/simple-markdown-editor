@@ -105,9 +105,37 @@ change with no test touched. A floor whose crate produced no regions is inert, n
 ```bash
 cargo bench -p mdedit-markers     # segmentation cost against the keystroke budget
 cargo bench -p mdedit-document    # what an undo group and a transaction cost against typing
+
+# What one parser option costs (MDEDIT-131). Needs the feature; nothing else does.
+cargo bench -p mdedit-markers --features bench --bench options
 ```
 
 Not CI jobs. Run by hand when touching segmentation.
+
+### Comparing two configurations: measure in pairs, and read the control first
+
+**A criterion baseline cannot compare two builds on a machine that reclocks.** MDEDIT-126 tried and
+failed: `segment/parse-only` constructs a `Parser` with no options and so cannot see any flag — an
+accidental control group — and across six interleaved runs pinned to two CPUs its floor still drifted
+−40% to +21%. Within-run confidence intervals were tight at ±5%, which is exactly what made the bad
+runs look credible. **The drift is between runs, where criterion cannot see it.** That ticket shipped
+with no number rather than a wrong one.
+
+Putting both configurations in one process helps and is not enough on its own — two benches are still
+seconds apart, and measured that way the same comparison read +3% in one run and +76% in the next.
+
+`benches/options.rs` is the shape that works, and it is not a criterion bench:
+
+- the two configurations are timed **microseconds apart, alternating**, and what is reported is the
+  **ratio** — whatever the clock is doing, it does the same thing to both halves of a pair, so drift
+  cancels instead of accumulating;
+- **the control pairs a configuration against itself.** Identical work, so the answer must be 1.00,
+  and anything else is the harness measuring its own noise. If the control is not tight around 1,
+  nothing else in the run means anything.
+
+It works: across two runs whose *absolute* times differed by 3× — 6.27 ms and 2.13 ms for the same
+analysis — the measured ratio moved from ×2.09 to ×1.99. Copy the shape for any future
+this-versus-that measurement rather than reaching for a criterion baseline.
 
 `cargo test --release -- --ignored` is reserved for perf assertions. **None exist yet**, and they will
 not run in CI: GitHub runners are virtualised and on AC power, which

@@ -65,7 +65,7 @@ use crate::{Analysis, Block, BlockKind, Marker, Segment, SegmentKind};
 /// - **Smart punctuation**, which rewrites `--` and `"` in the *parser's* output. Nothing here reads
 ///   the text of an event, so it would change nothing — but it is exactly the kind of flag that
 ///   would one day quietly break byte preservation, and it is named here so nobody adds it casually.
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
@@ -74,6 +74,16 @@ fn options() -> Options {
 }
 
 pub(crate) fn analyze(source: &str) -> Analysis {
+    analyze_with(source, options())
+}
+
+/// [`analyze`], with the parser options given rather than taken from [`options`].
+///
+/// The seam MDEDIT-131 measures a parser option through: a flag can then be turned on and off
+/// **within one process**, which is the only way to compare the two on a machine whose clock speed
+/// drifts between runs. Not public except under the `bench` feature, and not an invitation to make
+/// the option set configurable — production has exactly one answer and [`options`] is it.
+pub(crate) fn analyze_with(source: &str, options: Options) -> Analysis {
     let mut marks: Vec<Option<Marker>> = vec![None; source.len()];
 
     let Walk {
@@ -81,7 +91,7 @@ pub(crate) fn analyze(source: &str) -> Analysis {
         contents,
         verbatim,
         blocks,
-    } = walk(source);
+    } = walk(source, options);
 
     // Outermost first so a nested construct overwrites its parent's classification: in `**a *b* c**`
     // the inner `*` must read as Emphasis, not Strong.
@@ -176,7 +186,7 @@ fn closes_block(tag: TagEnd) -> bool {
 }
 
 /// Collects construct ranges and the content ranges that will be subtracted from them.
-fn walk(source: &str) -> Walk {
+fn walk(source: &str, options: Options) -> Walk {
     // Reserving up front matters more than it looks: on a 310 KiB document these reach five figures,
     // and growth reallocation made overhead scale superlinearly with document size.
     let estimate = source.len() / 24 + 16;
@@ -187,7 +197,7 @@ fn walk(source: &str) -> Walk {
     let mut blocks: Vec<Block> = Vec::new();
     let mut depth: u16 = 0;
 
-    for (event, range) in Parser::new_ext(source, options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
         match event {
             Event::Start(tag) => {
                 if matches!(tag, Tag::CodeBlock(_)) {
