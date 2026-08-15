@@ -190,17 +190,34 @@ miss followed by a full upload that the next manifest change also misses. Across
 that was roughly 920 MB a pull request — `check` 491–546 MB, `status` 394–449 MB, `msrv` 158 MB,
 `mutants` 66–70 MB, `fuzz` 31–40 MB × 5.
 
-So every `Swatinem/rust-cache` step now carries `save-if: ${{ github.ref == 'refs/heads/main' }}`.
-Pull requests restore what `main` last saved and upload nothing. What that gives up is a second push
-to a branch restoring the first push's cache, which is worth much less than sixteen minutes —
+So every `Swatinem/rust-cache` step carries `save-if: ${{ github.ref == 'refs/heads/main' }}`. Pull
+requests restore what `main` last saved and upload nothing. What that gives up is a second push to a
+branch restoring the first push's cache, which is worth much less than sixteen minutes —
 `concurrency` cancels the earlier run, frequently before it reaches the save step at all.
 
-**0.4 MB/s is the backend, not the box.** This is what the GitHub Actions cache measures from these
-runners, so it was true before the runners became ephemeral; the conversion only stopped a warm local
-`target/` from partly masking it. Two further options stay on the table if the restore turns out not
-to be earning its keep either — `cache-targets: false`, which drops the bulk of the payload, and a
-shared `shared-key` so the Linux jobs restore one cache instead of five job-scoped ones. Neither is
-worth stacking on top of this until this one has been measured.
+**That was not the end of it, and turning saving off is what made the rest measurable.** With the
+save gone the restore became the whole job, so the two heaviest jobs also stopped caching `target/`:
+
+| `check` (ubuntu) | restore | work | save | job |
+| --- | --- | --- | --- | --- |
+| before | miss, instant | 3m11s cold | **16m37s**, 515 MB | **19m56s** |
+| `save-if` only | **5m02s**, 695 MB @ 2.3 MB/s | 2m58s | none | **8m00s** |
+| `+ cache-targets: false` | instant | 4m32s cold | none | **4m32s** |
+
+Five minutes to skip three is not a cache. `msrv` went 4m21s → 1m33s the same way, and had least to
+gain in the first place: it runs a bare `cargo check` and was paying 158 MB for a `target/` cache.
+`~/.cargo` is still cached — the registry and git checkouts are small and stay valid across the
+manifest changes that invalidate everything else.
+
+**Note the asymmetry, because it is what makes the arithmetic work**: uploads measure 0.4–0.5 MB/s
+from these runners and downloads 2.3 MB/s, so a save costs roughly five times what restoring the same
+bytes does. Both are the GitHub Actions backend rather than the box, so this was all true before the
+runners became ephemeral; the conversion only stopped a warm local `target/` from partly masking it.
+
+Left caching `target/`: `fuzz` at 31–40 MB a target and `mutants` at 66–70 MB, both small enough that
+the round trip is not what costs them, and `project-status`, which re-runs the whole suite under
+instrumentation on `main` where saving is wanted. A shared `shared-key`, so the Linux jobs restore one
+cache instead of five job-scoped ones, remains untried.
 
 ## One CI wrinkle worth knowing
 
