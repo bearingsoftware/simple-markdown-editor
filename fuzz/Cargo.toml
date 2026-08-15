@@ -23,6 +23,8 @@ libfuzzer-sys = "0.4"
 mdedit-json = { path = "../crates/json" }
 mdedit-language = { path = "../crates/language" }
 mdedit-markers = { path = "../crates/markers" }
+mdedit-offsets = { path = "../crates/offsets" }
+mdedit-toml = { path = "../crates/toml" }
 mdedit-xml = { path = "../crates/xml" }
 mdedit-yaml = { path = "../crates/yaml" }
 
@@ -59,6 +61,13 @@ bench = false
 [[bin]]
 name = "xml_analyze"
 path = "fuzz_targets/xml_analyze.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "toml_analyze"
+path = "fuzz_targets/toml_analyze.rs"
 test = false
 doc = false
 bench = false

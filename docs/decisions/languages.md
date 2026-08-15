@@ -1,4 +1,4 @@
-# Languages — Markdown, JSON, YAML, XML and the boundary between them
+# Languages — Markdown, JSON, YAML, XML, TOML and the boundary between them
 
 The language trait and its implementations, what each of them conceals, validates and reformats, and how a keystroke re-parses a region rather than a document.
 
@@ -184,6 +184,32 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   would draw the landmark and the detail identically. The theme value is **a step up the same
   lavender ramp** as `token_key` rather than a new hue: the pack's four hue families are unchanged,
   and rose stays reserved for errors.
+- **`.toml` opens highlighted, from its own lexer rather than a shared one with INI.** MDEDIT-95. No
+  `toml` crate: it deserializes, and this needs spans and error tolerance, which is the argument that
+  rejected `serde_json` and `saphyr` unchanged.
+
+  **TOML and INI look alike and are not alike**, which is why sharing was rejected up front rather
+  than tried. `key = "value"` is *one token* in INI — everything after the separator is the value,
+  quotes included — and in TOML it is a quoted string with escapes, inside a syntax that also has
+  arrays, inline tables, dates and three other string forms. A shared lexer would have to be told
+  which language it was, which is two lexers wearing one name.
+
+  It understands tables and array tables, bare and dotted and quoted keys, all four string forms
+  including both multi-line ones, integers in four bases, floats, booleans, dates and times, arrays,
+  inline tables and `#` comments. **Anything starting with a digit or a sign is a number**, loosely
+  and on purpose: that makes `1979-05-27` a number and `1.2.3` one too, and the second is what `1.23`
+  looks like a keystroke before it is finished.
+
+  **A table header at column zero is a safe restart point, so it answers `analyze_region`.** The
+  state a TOML lexer cannot recover from a slice is whether it is inside a multi-line string or an
+  unclosed array, and a block here is *defined* as a column-zero line that is inside neither — so the
+  contract and the block list are the same statement. That is checked rather than argued: a property
+  test restarts at **every** block of a generated document and compares against the whole-document
+  parse, and `scoped_data.rs` gained the TOML half of MDEDIT-36's gate.
+
+  **Cost at 60 KiB**: 0.70 ms p50 for a document of small tables at 383 segments/KiB, 0.20 ms for one
+  of long multi-line strings at 61/KiB, against the 3 ms budget — and unlike XML those are ceilings
+  rather than the keystroke cost, because a keystroke re-lexes a region. Linear over 32 KiB → 1 MiB.
 - **JSON and YAML re-parse a region, like Markdown — but a keystroke in them still costs more than
   one in Markdown, and the parse is not why.** MDEDIT-36 made both languages restart at a block
   boundary: JSON is one container deep there and YAML is provably outside every block scalar, and

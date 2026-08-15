@@ -62,6 +62,7 @@ jobs:
           - json_format
           - yaml_analyze
           - xml_analyze
+          - toml_analyze
     steps:
       - uses: actions/checkout@v4
 

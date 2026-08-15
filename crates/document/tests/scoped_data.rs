@@ -1,4 +1,4 @@
-//! The correctness gate for scoped re-parsing of JSON and YAML (MDEDIT-36).
+//! The correctness gate for scoped re-parsing of JSON, YAML and TOML (MDEDIT-36, MDEDIT-95).
 //!
 //! The same gate `scoped_parse.rs` holds for Markdown, and it is the whole of the argument for this
 //! change: a keystroke re-lexes only the region around the edit, which is sound only if the result
@@ -61,6 +61,26 @@ fn buried_yaml(body: &str) -> (String, usize) {
     (text, at)
 }
 
+fn toml_padding(from: usize, count: usize) -> String {
+    let mut text = String::new();
+    for n in from..from + count {
+        writeln!(
+            text,
+            "[key_{n}]\nname = \"value {n}\"\nn = {n}\nok = true\n"
+        )
+        .expect("a String never fails to write");
+    }
+    text
+}
+
+fn buried_toml(body: &str) -> (String, usize) {
+    let mut text = toml_padding(0, PADDING_ENTRIES);
+    let at = text.len();
+    text.push_str(body);
+    text.push_str(&toml_padding(PADDING_ENTRIES, PADDING_ENTRIES));
+    (text, at)
+}
+
 /// Edits `document` at `at`, then compares its analysis with a fresh whole-document one.
 ///
 /// Returns `(scoped, whole)` as comparable strings — the segment and block lists, which is the whole
@@ -68,6 +88,7 @@ fn buried_yaml(body: &str) -> (String, usize) {
 fn after_edit(source: &str, at: usize, insert: &str, name: &str) -> (String, String) {
     let language = match name {
         "json" => &mdedit_json::JSON as &'static dyn mdedit_language::Language,
+        "toml" => &mdedit_toml::TOML,
         _ => &mdedit_yaml::YAML,
     };
 
@@ -137,20 +158,37 @@ fn a_scoped_yaml_lex_agrees_with_a_whole_one() {
     }
 }
 
+/// And for TOML (MDEDIT-95). Its restart point is a column-zero line outside every multi-line
+/// string with no array open, which is what a block is defined as there.
+#[test]
+fn a_scoped_toml_lex_agrees_with_a_whole_one() {
+    for (body, insert) in [
+        ("[target]\nname = \"value\"\n", "x"),
+        ("[target]\nn = 42\n", "9"),
+        ("[target]\nlist = [1, 2]\n", ", 3"),
+        ("[target]\nwhen = 1979-05-27T07:32:00Z\n", "0"),
+        ("[target]\ndoc = \"\"\"\ntext\n\"\"\"\n", "more "),
+    ] {
+        let (source, at) = buried_toml(body);
+        let (scoped, whole) = after_edit(&source, at + body.len() / 2, insert, "toml");
+        assert_eq!(scoped, whole, "inserting {insert:?} into {body:?}");
+    }
+}
+
 /// Tiling still holds after a scoped lex — the invariant every language is judged against, now
 /// applied to a spliced analysis rather than a fresh one.
 #[test]
 fn a_spliced_analysis_still_tiles() {
-    for name in ["json", "yaml"] {
-        let (source, at) = if name == "json" {
-            buried_json("  \"target\": \"value\",\n")
-        } else {
-            buried_yaml("target:\n  name: value\n")
+    for name in ["json", "yaml", "toml"] {
+        let (source, at) = match name {
+            "json" => buried_json("  \"target\": \"value\",\n"),
+            "toml" => buried_toml("[target]\nname = \"value\"\n"),
+            _ => buried_yaml("target:\n  name: value\n"),
         };
-        let language = if name == "json" {
-            &mdedit_json::JSON as &'static dyn mdedit_language::Language
-        } else {
-            &mdedit_yaml::YAML
+        let language = match name {
+            "json" => &mdedit_json::JSON as &'static dyn mdedit_language::Language,
+            "toml" => &mdedit_toml::TOML,
+            _ => &mdedit_yaml::YAML,
         };
 
         let mut document = Document::with_text(&source, language);
@@ -214,6 +252,22 @@ proptest! {
             offset -= 1;
         }
         let (scoped, whole) = after_edit(&source, offset, &insert, "yaml");
+        prop_assert_eq!(scoped, whole);
+    }
+
+    #[test]
+    fn any_toml_edit_agrees_with_a_whole_lex(
+        // No quotes or brackets, for the reason given on the JSON generator: those change the
+        // structure *enclosing* the region, which a region cannot see by definition.
+        insert in "[a-z0-9 =.\\-\\n]{0,8}",
+        position in 0usize..2000,
+    ) {
+        let (source, at) = buried_toml("[target]\nname = \"value\"\n");
+        let mut offset = (at + position).min(source.len());
+        while !source.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let (scoped, whole) = after_edit(&source, offset, &insert, "toml");
         prop_assert_eq!(scoped, whole);
     }
 }

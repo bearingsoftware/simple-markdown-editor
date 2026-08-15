@@ -23,6 +23,7 @@ criterion = "0.7"
 # scoped-lex gate needs concrete languages to hold it against.
 mdedit-json.workspace = true
 mdedit-yaml.workspace = true
+mdedit-toml.workspace = true
 proptest = "1.11.0"
 
 [[bench]]
