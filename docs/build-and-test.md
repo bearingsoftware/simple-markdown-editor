@@ -49,6 +49,13 @@ survive. **TOML's** asserts the restart claim: it is a language whose `analyze_r
 is a safe place to begin, so the target restarts at **every** block and compares against the
 whole-document parse. A generated document is where that claim breaks if it is going to.
 
+That comparison is **per byte, not per segment**, and the fuzzer is what established the difference —
+80 seconds into TOML's first run, on `"\n\u{8}"`. Adjacent runs of one kind coalesce, so a
+whole-document parse can emit one segment *spanning* a block boundary that a region beginning there
+cannot reproduce. Both cover the same bytes with the same kinds, so nothing was wrong; the assertion
+was. `Document::resegment_scope` trims a straddling segment for the same reason, and the language's
+own property test had not reached the case.
+
 ```bash
 cargo +nightly fuzz run markers_segment -- -max_total_time=60
 ```
