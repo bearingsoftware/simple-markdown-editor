@@ -1,4 +1,5 @@
-//! The correctness gate for scoped re-parsing of JSON, YAML and TOML (MDEDIT-36, MDEDIT-95).
+//! The correctness gate for scoped re-parsing of JSON, YAML, TOML and INI (MDEDIT-36, MDEDIT-95,
+//! MDEDIT-96).
 //!
 //! The same gate `scoped_parse.rs` holds for Markdown, and it is the whole of the argument for this
 //! change: a keystroke re-lexes only the region around the edit, which is sound only if the result
@@ -73,11 +74,28 @@ fn toml_padding(from: usize, count: usize) -> String {
     text
 }
 
+fn ini_padding(from: usize, count: usize) -> String {
+    let mut text = String::new();
+    for n in from..from + count {
+        writeln!(text, "[key_{n}]\nname = value {n}\nn = {n}\nok = yes\n")
+            .expect("a String never fails to write");
+    }
+    text
+}
+
 fn buried_toml(body: &str) -> (String, usize) {
     let mut text = toml_padding(0, PADDING_ENTRIES);
     let at = text.len();
     text.push_str(body);
     text.push_str(&toml_padding(PADDING_ENTRIES, PADDING_ENTRIES));
+    (text, at)
+}
+
+fn buried_ini(body: &str) -> (String, usize) {
+    let mut text = ini_padding(0, PADDING_ENTRIES);
+    let at = text.len();
+    text.push_str(body);
+    text.push_str(&ini_padding(PADDING_ENTRIES, PADDING_ENTRIES));
     (text, at)
 }
 
@@ -89,6 +107,7 @@ fn after_edit(source: &str, at: usize, insert: &str, name: &str) -> (String, Str
     let language = match name {
         "json" => &mdedit_json::JSON as &'static dyn mdedit_language::Language,
         "toml" => &mdedit_toml::TOML,
+        "ini" => &mdedit_ini::INI,
         _ => &mdedit_yaml::YAML,
     };
 
@@ -175,19 +194,38 @@ fn a_scoped_toml_lex_agrees_with_a_whole_one() {
     }
 }
 
+/// And for INI (MDEDIT-96). Its restart point is a column-zero line, which carries no state from the
+/// line above — the simplest claim of the four, and still worth holding to the same gate.
+#[test]
+fn a_scoped_ini_lex_agrees_with_a_whole_one() {
+    for (body, insert) in [
+        ("[target]\nname = value\n", "x"),
+        ("[target]\nn = 42\n", "9"),
+        ("[target]\npath = C:\\a;C:\\b\n", ";C:\\c"),
+        ("[target]\nlist =\n    one\n    two\n", "    three\n"),
+        ("[target]\nquoted = \"a value\"\n", " more"),
+    ] {
+        let (source, at) = buried_ini(body);
+        let (scoped, whole) = after_edit(&source, at + body.len() / 2, insert, "ini");
+        assert_eq!(scoped, whole, "inserting {insert:?} into {body:?}");
+    }
+}
+
 /// Tiling still holds after a scoped lex — the invariant every language is judged against, now
 /// applied to a spliced analysis rather than a fresh one.
 #[test]
 fn a_spliced_analysis_still_tiles() {
-    for name in ["json", "yaml", "toml"] {
+    for name in ["json", "yaml", "toml", "ini"] {
         let (source, at) = match name {
             "json" => buried_json("  \"target\": \"value\",\n"),
             "toml" => buried_toml("[target]\nname = \"value\"\n"),
+            "ini" => buried_ini("[target]\nname = value\n"),
             _ => buried_yaml("target:\n  name: value\n"),
         };
         let language = match name {
             "json" => &mdedit_json::JSON as &'static dyn mdedit_language::Language,
             "toml" => &mdedit_toml::TOML,
+            "ini" => &mdedit_ini::INI,
             _ => &mdedit_yaml::YAML,
         };
 
@@ -268,6 +306,20 @@ proptest! {
             offset -= 1;
         }
         let (scoped, whole) = after_edit(&source, offset, &insert, "toml");
+        prop_assert_eq!(scoped, whole);
+    }
+
+    #[test]
+    fn any_ini_edit_agrees_with_a_whole_lex(
+        insert in "[a-z0-9 =:;\\n]{0,8}",
+        position in 0usize..2000,
+    ) {
+        let (source, at) = buried_ini("[target]\nname = value\n");
+        let mut offset = (at + position).min(source.len());
+        while !source.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        let (scoped, whole) = after_edit(&source, offset, &insert, "ini");
         prop_assert_eq!(scoped, whole);
     }
 }

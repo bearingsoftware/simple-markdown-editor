@@ -1,4 +1,4 @@
-# Languages — Markdown, JSON, YAML, XML, TOML and the boundary between them
+# Languages — Markdown, JSON, YAML, XML, TOML, INI and the boundary between them
 
 The language trait and its implementations, what each of them conceals, validates and reformats, and how a keystroke re-parses a region rather than a document.
 
@@ -210,6 +210,30 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **Cost at 60 KiB**: 0.70 ms p50 for a document of small tables at 383 segments/KiB, 0.20 ms for one
   of long multi-line strings at 61/KiB, against the 3 ms budget — and unlike XML those are ceilings
   rather than the keystroke cost, because a keystroke re-lexes a region. Linear over 32 KiB → 1 MiB.
+- **`.ini` and `.cfg` open highlighted, and the crate states its dialect because there is no
+  specification to be right against.** MDEDIT-96. INI is a family of conventions that agree on
+  `[section]` and `key = value` and disagree on nearly everything else, so the four choices are
+  written down in `crates/ini/src/lib.rs` and pinned by name in its tests:
+
+  - **A comment is `;` or `#` at the start of a line, never mid-line** — `configparser`'s default,
+    and the one that matters: `path = C:\a;C:\b` is a value, not a value with a comment after it, and
+    guessing the other way takes bytes off the end of a value on screen.
+  - **`=` or `:` separates, whichever comes first**, so `query = a=b&c=d` has one separator.
+  - **A value is the whole rest of the line, one run**, classified as a unit.
+  - **A line with no separator continues the value above it.** `configparser` decides that by
+    indentation; deciding it by the missing separator reads the same to a person and also copes with
+    the files that indent their keys under a header.
+
+  **`.cfg` is not a format, it is a file extension**, and mapping it here is a guess of the same kind
+  as the `data.txt` note `detect.rs` already carries. Python's `setup.cfg` is INI and plenty of other
+  `.cfg` files are not. It is a better guess than the plain text it would otherwise get and it is
+  still a guess, which is why it is a comment in `detect.rs` and an assertion in `crates/app/tests/ini.rs`
+  rather than one line of code nobody would notice removing.
+
+  A column-zero line carries no state from the line above, so `analyze_region` is the easiest claim
+  of the four languages that make it — held to the same property test and the same fuzz target
+  anyway. **Cost at 60 KiB**: 0.61 ms p50 either shape, at ~225 segments/KiB, and a keystroke pays a
+  region rather than that. Linear over 32 KiB → 1 MiB.
 - **JSON and YAML re-parse a region, like Markdown — but a keystroke in them still costs more than
   one in Markdown, and the parse is not why.** MDEDIT-36 made both languages restart at a block
   boundary: JSON is one container deep there and YAML is provably outside every block scalar, and

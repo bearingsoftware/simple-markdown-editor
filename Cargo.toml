@@ -7,6 +7,7 @@ members = [
     "crates/yaml",
     "crates/xml",
     "crates/toml",
+    "crates/ini",
     "crates/markers",
     "crates/document",
     "crates/text",
@@ -40,6 +41,7 @@ mdedit-json = { path = "crates/json", version = "0.1.0" }
 mdedit-yaml = { path = "crates/yaml", version = "0.1.0" }
 mdedit-xml = { path = "crates/xml", version = "0.1.0" }
 mdedit-toml = { path = "crates/toml", version = "0.1.0" }
+mdedit-ini = { path = "crates/ini", version = "0.1.0" }
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }

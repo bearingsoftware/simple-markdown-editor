@@ -24,6 +24,7 @@ criterion = "0.7"
 mdedit-json.workspace = true
 mdedit-yaml.workspace = true
 mdedit-toml.workspace = true
+mdedit-ini.workspace = true
 proptest = "1.11.0"
 
 [[bench]]
