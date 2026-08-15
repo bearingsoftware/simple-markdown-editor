@@ -35,6 +35,23 @@ fn has(source: &str, token: Token, text: &str) -> bool {
     tokens(source).contains(&(token, text.to_owned()))
 }
 
+/// The kind covering each byte of `source`, which is what a renderer actually reads.
+///
+/// **Compared per byte rather than per segment on purpose.** Adjacent runs of one kind are
+/// coalesced, so a whole-document parse can emit a single segment *spanning* a block boundary that a
+/// region beginning there cannot reproduce — and that says nothing about the lexer, since both cover
+/// the same bytes with the same kinds. `Document::resegment_scope` trims a straddling segment for
+/// exactly the same reason. TOML's fuzz target found this within 80 seconds of its first run.
+fn kinds(analysis: &mdedit_language::Analysis, len: usize) -> Vec<Option<SegmentKind>> {
+    let mut out = vec![None; len];
+    for segment in &analysis.segments {
+        for slot in &mut out[segment.span().start().get()..segment.span().end().get()] {
+            *slot = Some(segment.kind());
+        }
+    }
+    out
+}
+
 fn content(source: &str) -> Vec<String> {
     analyze(source)
         .segments
@@ -182,12 +199,40 @@ fn a_region_starting_at_a_block_agrees_with_the_whole_document() {
         source,
         ByteSpan::new(ByteOffset::new(start), ByteOffset::new(source.len())),
     );
-    let tail: Vec<_> = analyze(source)
-        .segments
-        .into_iter()
-        .filter(|segment| segment.span().start().get() >= start)
-        .collect();
-    assert_eq!(region.segments, tail);
+    assert_eq!(
+        kinds(&region, source.len())[start..],
+        kinds(&analyze(source), source.len())[start..]
+    );
+}
+
+/// **A segment may span a block boundary, and that is not a restart bug.** `"\n\u{8}"` is what
+/// TOML's fuzz target found: adjacent runs of one kind coalesce, so the whole-document parse emits
+/// one `Content` run covering both lines, while a region beginning at the second block can only emit
+/// the half it can see. Both cover the same bytes with the same kind, which is the property that
+/// matters — and it is why the comparison here is per byte rather than per segment.
+#[test]
+fn a_segment_spanning_a_block_boundary_is_not_a_disagreement() {
+    let source = "\n\u{8}";
+    let whole = analyze(source);
+    let start = whole.blocks[0].span().start().get();
+    let region = analyze_region(
+        source,
+        ByteSpan::new(ByteOffset::new(start), ByteOffset::new(source.len())),
+    );
+
+    assert_ne!(
+        region.segments.len(),
+        whole
+            .segments
+            .iter()
+            .filter(|segment| segment.span().start().get() >= start)
+            .count(),
+        "if these matched, this test would be asserting nothing"
+    );
+    assert_eq!(
+        kinds(&region, source.len())[start..],
+        kinds(&whole, source.len())[start..]
+    );
 }
 
 #[test]
@@ -249,19 +294,19 @@ proptest! {
         ).prop_map(|parts| parts.concat())
     ) {
         let whole = analyze(&source);
+        let expected = kinds(&whole, source.len());
         for block in &whole.blocks {
             let start = block.span().start().get();
             let region = analyze_region(
                 &source,
                 ByteSpan::new(ByteOffset::new(start), ByteOffset::new(source.len())),
             );
-            let tail: Vec<_> = whole
-                .segments
-                .iter()
-                .filter(|segment| segment.span().start().get() >= start)
-                .cloned()
-                .collect();
-            prop_assert_eq!(region.segments, tail, "restarting at {}", start);
+            prop_assert_eq!(
+                &kinds(&region, source.len())[start..],
+                &expected[start..],
+                "restarting at {}",
+                start
+            );
         }
     }
 }

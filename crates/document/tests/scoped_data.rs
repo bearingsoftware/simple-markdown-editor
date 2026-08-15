@@ -70,6 +70,10 @@ fn toml_padding(from: usize, count: usize) -> String {
             "[key_{n}]\nname = \"value {n}\"\nn = {n}\nok = true\n"
         )
         .expect("a String never fails to write");
+    }
+    text
+}
+
 fn ini_padding(from: usize, count: usize) -> String {
     let mut text = String::new();
     for n in from..from + count {
@@ -84,6 +88,9 @@ fn buried_toml(body: &str) -> (String, usize) {
     let at = text.len();
     text.push_str(body);
     text.push_str(&toml_padding(PADDING_ENTRIES, PADDING_ENTRIES));
+    (text, at)
+}
+
 fn buried_ini(body: &str) -> (String, usize) {
     let mut text = ini_padding(0, PADDING_ENTRIES);
     let at = text.len();
@@ -183,6 +190,10 @@ fn a_scoped_toml_lex_agrees_with_a_whole_one() {
     ] {
         let (source, at) = buried_toml(body);
         let (scoped, whole) = after_edit(&source, at + body.len() / 2, insert, "toml");
+        assert_eq!(scoped, whole, "inserting {insert:?} into {body:?}");
+    }
+}
+
 /// And for INI (MDEDIT-96). Its restart point is a column-zero line, which carries no state from the
 /// line above — the simplest claim of the four, and still worth holding to the same gate.
 #[test]

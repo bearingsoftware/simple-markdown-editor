@@ -40,7 +40,7 @@ here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both reached C
 
 A separate workflow and a **separate workspace** (MDEDIT-111). `fuzz/` holds a target per
 span-producing lexer: the marker locator against its tiling gate, JSON's validator, JSON's formatter
-against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, the XML one
+against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, the XML one,
 the TOML one and the INI one.
 
 Three of them assert more than tiling. **XML's** input is what a fuzzer is unusually well suited to

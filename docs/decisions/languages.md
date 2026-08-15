@@ -1,6 +1,4 @@
 # Languages — Markdown, JSON, YAML, XML, TOML, INI and the boundary between them
-# Languages — Markdown, JSON, YAML, XML, INI and the boundary between them
-# Languages — Markdown, JSON, YAML, INI and the boundary between them
 
 The language trait and its implementations, what each of them conceals, validates and reformats, and how a keystroke re-parses a region rather than a document.
 
