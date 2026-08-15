@@ -37,30 +37,39 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+      # **This workflow can never have a cache, and that is structural** (MDEDIT-132). It runs on
+      # `pull_request` and `workflow_dispatch` only, so no `main`-scoped cache is ever written for a
+      # pull request to restore — and `save-if` below makes that explicit rather than leaving the job
+      # uploading 66–70 MB per run into a scope nothing reads. Registry downloads are the cost, and
+      # they are the small half.
       - uses: Swatinem/rust-cache@v2
         with:
-          # Keeps `~/.cargo/bin`, so the source build below happens once rather than every run.
-          cache-bin: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # **Built from source, unlike nextest.** The prebuilt `cargo-mutants` is linked against
-      # GLIBC 2.39 and the self-hosted box is older than that, so the downloaded binary dies on
-      # `version 'GLIBC_2.39' not found` before it has done anything. Compiling it costs a few
-      # minutes of a runner that is not billed, and `Swatinem/rust-cache` keeps `~/.cargo/bin`
-      # between runs so it is the first run that pays.
+      # **Built from source, unlike nextest.** The prebuilt `cargo-mutants` was linked against
+      # GLIBC 2.39 and the self-hosted box was older than that, so the downloaded binary died on
+      # `version 'GLIBC_2.39' not found` before it had done anything. Worth re-testing against the
+      # pristine runner image, which may have moved past that — MDEDIT-132 leaves it open rather than
+      # guessing, because a failed install step publishes a failing check on a job that must not
+      # block.
       - name: Install cargo-mutants
-        # **Only when it is not already there**, and that is not an optimisation. `cache-bin: true`
-        # above restores `~/.cargo/bin`, so on every run after the first `cargo install` finds its
-        # own binary already in place and stops with `binary 'cargo-mutants' already exists in
-        # destination` — exit 101, and a red X on every pull request for a job whose whole point is
-        # to report rather than block. `--force` would fix it by rebuilding from source every time,
-        # which is the cost the cache exists to avoid.
+        # **The guard is for a runner that already has the binary, not for a cache.** It used to say
+        # `cache-bin: true` kept `~/.cargo/bin` between runs; the log disproves that. On run
+        # 31839765178 rust-cache reported `No cache found` at 20:51:02 and six seconds later this
+        # step resolved in 26 ms — the binary came off a long-lived runner's disk, not off the GitHub
+        # cache. The general pool is ephemeral now, so this compiles ~250 crates every run.
+        #
+        # It stays because `cargo install` *stops* rather than skips when it finds its own binary in
+        # place — `binary 'cargo-mutants' already exists in destination`, exit 101, and a red X on a
+        # job whose whole point is to report rather than block. `--force` would avoid that by
+        # rebuilding unconditionally, which is what this already effectively does.
         run: |
           if ! command -v cargo-mutants >/dev/null 2>&1; then
             cargo install cargo-mutants --locked
           else
-            echo "cargo-mutants $(cargo mutants --version) restored from cache"
+            echo "cargo-mutants $(cargo mutants --version) already on this runner"
           fi
 
       - name: What this pull request changed
@@ -72,6 +81,12 @@ jobs:
       # The Windows-only crates are absent from this list because they do not build here at all —
       # `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and their
       # tests are the ones that need a real system stack anyway.
+      #
+      # **Everything else has to be added by hand, and three crates were missed.** `mdedit-xml`,
+      # `mdedit-toml` and `mdedit-ini` shipped in MDEDIT-94/95/96 without reaching this list, so a
+      # pull request touching a brand-new lexer was mutating nothing while still reporting green.
+      # An allow-list nobody is reminded to extend is the failure mode; the alternative is excluding
+      # the three Windows crates instead, which `--exclude` supports and which fails loudly.
       # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
       # *workflow* green and still publishes a failing check, and a failing check makes the pull
       # request unmergeable — which is precisely what a job described as "it reports; it does not
@@ -89,6 +104,9 @@ jobs:
             --package mdedit-language \
             --package mdedit-json \
             --package mdedit-yaml \
+            --package mdedit-xml \
+            --package mdedit-toml \
+            --package mdedit-ini \
             --package mdedit-markers \
             --package mdedit-document \
             --package mdedit-file \
