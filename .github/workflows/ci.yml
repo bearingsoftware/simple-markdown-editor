@@ -62,7 +62,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # **A pull request restores this cache and never uploads one** (MDEDIT-132). Saving was costing
+      # more than the whole job it was meant to speed up: on run 31839765178 the real work took 3m11s
+      # and the save that followed took **16m37s**, pushing 515 MB at the 0.4–0.5 MB/s the GitHub
+      # Actions cache backend gives these runners. Across the self-hosted legs that was ~920 MB a
+      # pull request.
+      #
+      # And the restore had already *missed*, structurally rather than by luck: rust-cache's workspace
+      # hash covers `Cargo.lock` and every `crates/*/Cargo.toml`, so any change touching a manifest is
+      # a guaranteed full miss — then a full upload of a cache the next manifest change also misses.
+      #
+      # What this gives up is a second push to the same branch restoring the first push's cache. That
+      # is worth less than 16 minutes: `concurrency` above cancels the earlier run, often before it
+      # reaches the save step at all.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@nextest
 
       # **Skipped on Windows**, and not because it is unimportant: `rustfmt` produces the same answer
@@ -102,7 +117,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.87.0
+      # Saved on `main` only, for the reason on the `check` job above.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --all-features
 
   deny:

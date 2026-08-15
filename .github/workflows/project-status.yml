@@ -38,6 +38,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      # **The one cache that still saves on every run it has** (MDEDIT-132), and deliberately: this
+      # job only ever runs against `main`, so it is already covered by the `save-if` the other
+      # workflows now carry. Its cache is job-scoped, so no pull request restores it — what it speeds
+      # up is the next merge's instrumented re-run, where the manifests usually have not moved.
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-llvm-cov
 

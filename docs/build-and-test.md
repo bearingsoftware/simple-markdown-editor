@@ -170,13 +170,61 @@ behind it, and three of those were cases where the headless test stub *itself* w
 `crates/app/tests/icons.rs` is the one file that asks the real font stack rather than the stub, and it
 exists because measurement needs no window. Whether *rendering* needs one is MDEDIT-123.
 
+## The cache saves on `main` and nowhere else
+
+MDEDIT-132, and the largest single CI win this repository had available. Measured on the `check` job
+of run 31839765178:
+
+```
+20:51:02  Restore Key: v0-rust-check-Linux-x64-b989424d
+20:51:02  No cache found.
+20:53:54  real work finishes                       (3m11s)
+20:53:54  Saving cache …
+21:10:31  done — 515,435,977 bytes at 0.4–0.5 MB/s (16m37s)
+```
+
+**Sixteen and a half minutes of a twenty-minute job spent uploading a cache whose restore had already
+missed**, and the miss is structural rather than unlucky: rust-cache's workspace hash covers
+`Cargo.lock` and every `crates/*/Cargo.toml`, so any change touching a manifest is a guaranteed full
+miss followed by a full upload that the next manifest change also misses. Across the self-hosted legs
+that was roughly 920 MB a pull request — `check` 491–546 MB, `status` 394–449 MB, `msrv` 158 MB,
+`mutants` 66–70 MB, `fuzz` 31–40 MB × 5.
+
+So every `Swatinem/rust-cache` step now carries `save-if: ${{ github.ref == 'refs/heads/main' }}`.
+Pull requests restore what `main` last saved and upload nothing. What that gives up is a second push
+to a branch restoring the first push's cache, which is worth much less than sixteen minutes —
+`concurrency` cancels the earlier run, frequently before it reaches the save step at all.
+
+**0.4 MB/s is the backend, not the box.** This is what the GitHub Actions cache measures from these
+runners, so it was true before the runners became ephemeral; the conversion only stopped a warm local
+`target/` from partly masking it. Two further options stay on the table if the restore turns out not
+to be earning its keep either — `cache-targets: false`, which drops the bulk of the payload, and a
+shared `shared-key` so the Linux jobs restore one cache instead of five job-scoped ones. Neither is
+worth stacking on top of this until this one has been measured.
+
 ## One CI wrinkle worth knowing
 
-The mutants job installs `cargo-mutants` **only when it is not already on the runner**. `cache-bin`
-restores `~/.cargo/bin` between runs, and `cargo install` refuses to overwrite a binary it finds
-there — `binary 'cargo-mutants' already exists in destination`, exit 101. That put a red X on every
-pull request for a job whose whole point is to report rather than block, which is exactly the way to
-teach people to ignore it.
+The mutants job installs `cargo-mutants` **only when it is not already on the runner**, and for years
+the comment beside it said `cache-bin: true` was what kept it there. **That was never what was
+happening.** In run 31839765178 rust-cache logged `No cache found` at 20:51:02 and six seconds later
+the guard reported the binary present, resolving in 26 ms — it came off a long-lived runner's
+`~/.cargo/bin`, not off the GitHub cache. `mutants.yml` runs on `pull_request` only, so no
+`main`-scoped cache could ever have existed for it to restore.
 
-`--force` would also fix it, by rebuilding from source every run. That is the cost the cache exists
-to avoid.
+The guard still earns its place, for the reason it was written: `cargo install` *stops* rather than
+skips when it finds its own binary in place — `binary 'cargo-mutants' already exists in destination`,
+exit 101, a red X on a job whose whole point is to report rather than block. It is now a guard
+against a warm runner rather than against a cache, and the log line says so.
+
+With the pool ephemeral, that job compiles `cargo-mutants` from source every run. The prebuilt
+`taiki-e/install-action` route was rejected because the binary needed GLIBC 2.39 and the box was
+older; **that is worth re-testing against the current image** and is deliberately left open, because
+a failed install step publishes a failing check on a job that must not block.
+
+## An allow-list nobody is reminded to extend
+
+`mutants.yml` names its packages one `--package` at a time, and `mdedit-xml`, `mdedit-toml` and
+`mdedit-ini` shipped in MDEDIT-94/95/96 without reaching the list. So a pull request touching a
+brand-new lexer mutated nothing and still reported green — the quietest way for a check to stop being
+one. Fixed by adding them; worth doing properly with `--exclude` for the three `cfg(windows)` crates
+instead, which fails loudly when a crate appears rather than silently skipping it.

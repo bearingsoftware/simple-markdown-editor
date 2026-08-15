@@ -69,9 +69,12 @@ jobs:
 
       # `cargo fuzz` needs nightly. Nothing else in this repo does, and nothing stable builds here.
       - uses: dtolnay/rust-toolchain@nightly
+      # Saved on `main` only, for the reason in `ci.yml` (MDEDIT-132). The weekly schedule runs
+      # against `main` too, so the long runs still refresh it.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # `with: tool:` rather than the `@cargo-fuzz` tag form. There is no such tag, and the action
       # does not fail when it cannot find one — it warns "no tool specified", installs nothing, and
       # succeeds, so the failure surfaces four lines later as `no such command: fuzz`.
