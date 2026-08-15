@@ -40,9 +40,14 @@ here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both reached C
 
 A separate workflow and a **separate workspace** (MDEDIT-111). `fuzz/` holds a target per
 span-producing lexer: the marker locator against its tiling gate, JSON's validator, JSON's formatter
-against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, and the XML
-one — whose input a fuzzer is unusually well suited to, since an unclosed tag and a stray angle
-bracket are what that lexer exists to survive.
+against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, the XML one
+and the TOML one.
+
+Two of them assert more than tiling. **XML's** input is what a fuzzer is unusually well suited to
+producing — an unclosed tag, a stray angle bracket — which is exactly what that lexer exists to
+survive. **TOML's** asserts the restart claim: it is a language whose `analyze_region` says a block
+is a safe place to begin, so the target restarts at **every** block and compares against the
+whole-document parse. A generated document is where that claim breaks if it is going to.
 
 ```bash
 cargo +nightly fuzz run markers_segment -- -max_total_time=60

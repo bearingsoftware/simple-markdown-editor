@@ -64,6 +64,8 @@ crates/yaml/          # The same for YAML, hand-written — read its crate docs 
                       #   parser crate
 crates/xml/           # The same for XML. Nesting is a counter, not a stack; the one language that
                       #   answers analyze_region with None
+crates/toml/          # The same for TOML. Its own lexer, not INI's; a table header at column zero
+                      #   is a safe restart point
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line

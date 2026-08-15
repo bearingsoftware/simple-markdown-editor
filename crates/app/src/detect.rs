@@ -47,6 +47,7 @@ pub fn language_for(path: &Path) -> &'static dyn Language {
         // `.xml` alone, deliberately. `.svg`, `.xsd`, `.csproj` and the rest are XML too, and each
         // is a line here when somebody wants it rather than a guess made in advance.
         "xml" => &mdedit_xml::XML,
+        "toml" => &mdedit_toml::TOML,
         _ => &mdedit_language::PLAIN,
     }
 }
