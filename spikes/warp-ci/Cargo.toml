@@ -1,0 +1,20 @@
+[package]
+name = "warp-ci-probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.87"
+publish = false
+description = "Spike (MDEDIT-123): can WARP render a frame, and lay one out, without a window?"
+
+[dependencies]
+wgpu = "30"
+pollster = "1"
+bytemuck = { version = "1", features = ["derive"] }
+mdedit-app = { path = "../../crates/app" }
+mdedit-text = { path = "../../crates/text" }
+mdedit-offsets = { path = "../../crates/offsets" }
+
+[target.'cfg(windows)'.dependencies]
+mdedit-text-dwrite = { path = "../../crates/text-dwrite" }
+
+[workspace]

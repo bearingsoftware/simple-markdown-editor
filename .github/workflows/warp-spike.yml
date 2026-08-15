@@ -1,0 +1,50 @@
+name: WARP spike
+
+# **Temporary, and MDEDIT-123 decides whether it survives.** The whole question is whether a
+# GitHub-hosted Windows runner can render one of this editor's frames without a window; the only way
+# to find out is to ask one. Deleted with the branch if the answer is no, replaced by a real test if
+# the answer is yes.
+
+on:
+  pull_request:
+    paths:
+      - "spikes/warp-ci/**"
+      - ".github/workflows/warp-spike.yml"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    name: WARP on a hosted runner
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: What the runner has
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion, AdapterRAM | Format-List
+
+      - name: Build
+        run: cargo build --release --manifest-path spikes/warp-ci/Cargo.toml
+
+      # Twice, because "stable run to run" means across processes. The probe prints a hash of the
+      # frame; the two must match or a golden value could never be asserted here.
+      - name: Probe, twice
+        shell: bash
+        run: |
+          spikes/warp-ci/target/release/warp-ci-probe.exe | tee one.txt
+          echo "================================================"
+          spikes/warp-ci/target/release/warp-ci-probe.exe | tee two.txt
+          a=$(grep -o 'pixel hash: [0-9a-f]*' one.txt || true)
+          b=$(grep -o 'pixel hash: [0-9a-f]*' two.txt || true)
+          echo "run 1: ${a:-none}"
+          echo "run 2: ${b:-none}"
+          if [ -z "$a" ]; then
+            echo "::warning title=No frame::The probe produced no hash — read the log above."
+          elif [ "$a" = "$b" ]; then
+            echo "::notice title=Stable::Two processes agreed on $a"
+          else
+            echo "::warning title=Unstable::$a then $b — a golden value could not be asserted."
+          fi
