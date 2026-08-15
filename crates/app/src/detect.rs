@@ -48,6 +48,11 @@ pub fn language_for(path: &Path) -> &'static dyn Language {
         // is a line here when somebody wants it rather than a guess made in advance.
         "xml" => &mdedit_xml::XML,
         "toml" => &mdedit_toml::TOML,
+        // **`.cfg` is not a format, it is a file extension**, and mapping it here is a guess of the
+        // same kind as the `data.txt` note above — Python's `setup.cfg` is INI and plenty of other
+        // `.cfg` files are not. It is a better guess than plain text and it is still a guess, which
+        // is why it is written down rather than left implied.
+        "ini" | "cfg" => &mdedit_ini::INI,
         _ => &mdedit_language::PLAIN,
     }
 }

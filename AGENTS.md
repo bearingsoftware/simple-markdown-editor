@@ -66,6 +66,8 @@ crates/xml/           # The same for XML. Nesting is a counter, not a stack; the
                       #   answers analyze_region with None
 crates/toml/          # The same for TOML. Its own lexer, not INI's; a table header at column zero
                       #   is a safe restart point
+crates/ini/           # The same for INI and .cfg. There is no INI specification, so its crate docs
+                      #   state the dialect it reads
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line

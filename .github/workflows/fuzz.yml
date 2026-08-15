@@ -63,6 +63,7 @@ jobs:
           - yaml_analyze
           - xml_analyze
           - toml_analyze
+          - ini_analyze
     steps:
       - uses: actions/checkout@v4
 

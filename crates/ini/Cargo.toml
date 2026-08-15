@@ -1,0 +1,20 @@
+[package]
+name = "mdedit-ini"
+version = "0.1.0"
+description = "Error-tolerant, span-producing INI lexer for live syntax highlighting"
+keywords = ["ini", "editor", "syntax", "lexer"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdedit-offsets.workspace = true
+mdedit-language.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true

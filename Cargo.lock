@@ -996,6 +996,7 @@ dependencies = [
  "embed-resource",
  "mdedit-document",
  "mdedit-file",
+ "mdedit-ini",
  "mdedit-json",
  "mdedit-language",
  "mdedit-markers",
@@ -1023,6 +1024,7 @@ name = "mdedit-document"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "mdedit-ini",
  "mdedit-json",
  "mdedit-language",
  "mdedit-markers",
@@ -1043,6 +1045,15 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "mdedit-ini"
+version = "0.1.0"
+dependencies = [
+ "mdedit-language",
+ "mdedit-offsets",
+ "proptest",
 ]
 
 [[package]]
