@@ -62,6 +62,8 @@ crates/language/      # What the editor needs from a language: spans with a role
 crates/json/          # Error-tolerant, span-producing JSON lexer, plus a separate strict check
 crates/yaml/          # The same for YAML, hand-written — read its crate docs before proposing a
                       #   parser crate
+crates/xml/           # The same for XML. Nesting is a counter, not a stack; the one language that
+                      #   answers analyze_region with None
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line
@@ -76,7 +78,8 @@ crates/session/       # Tabs as handles, the session file, crash-recovery snapsh
 crates/app/           # The window: winit + wgpu, glyph atlas, layout cache, chrome, find bar,
                       #   settings, latency harness. Binary: `mdedit`
 assets/icons/         # The app icon and the script that builds `mdedit.ico` without ImageMagick
-fuzz/                 # Four targets, excluded from the workspace on purpose. Linux-only
+fuzz/                 # A target per span-producing lexer, excluded from the workspace on purpose.
+                      #   Linux-only
 spikes/               # MDEDIT-5 font fallback, MDEDIT-19 GPU baseline, MDEDIT-20 startup,
                       #   MDEDIT-67 clipboard threads. Re-runnable probes
 docs/                 # decisions/, research/, build-and-test.md

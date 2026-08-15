@@ -1005,6 +1005,7 @@ dependencies = [
  "mdedit-shell-win",
  "mdedit-text",
  "mdedit-text-dwrite",
+ "mdedit-xml",
  "mdedit-yaml",
  "pollster",
  "rfd",
@@ -1122,6 +1123,15 @@ dependencies = [
  "mdedit-text",
  "windows",
  "windows-core",
+]
+
+[[package]]
+name = "mdedit-xml"
+version = "0.1.0"
+dependencies = [
+ "mdedit-language",
+ "mdedit-offsets",
+ "proptest",
 ]
 
 [[package]]

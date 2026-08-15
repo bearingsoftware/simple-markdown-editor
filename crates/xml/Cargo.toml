@@ -1,0 +1,20 @@
+[package]
+name = "mdedit-xml"
+version = "0.1.0"
+description = "Error-tolerant, span-producing XML lexer for live syntax highlighting"
+keywords = ["xml", "editor", "syntax", "lexer"]
+categories = ["text-processing"]
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mdedit-offsets.workspace = true
+mdedit-language.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+
+[lints]
+workspace = true

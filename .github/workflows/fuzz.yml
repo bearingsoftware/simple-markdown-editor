@@ -61,6 +61,7 @@ jobs:
           - json_validate
           - json_format
           - yaml_analyze
+          - xml_analyze
     steps:
       - uses: actions/checkout@v4
 
