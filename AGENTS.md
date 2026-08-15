@@ -78,7 +78,8 @@ crates/session/       # Tabs as handles, the session file, crash-recovery snapsh
 crates/app/           # The window: winit + wgpu, glyph atlas, layout cache, chrome, find bar,
                       #   settings, latency harness. Binary: `mdedit`
 assets/icons/         # The app icon and the script that builds `mdedit.ico` without ImageMagick
-fuzz/                 # Four targets, excluded from the workspace on purpose. Linux-only
+fuzz/                 # A target per span-producing lexer, excluded from the workspace on purpose.
+                      #   Linux-only
 spikes/               # MDEDIT-5 font fallback, MDEDIT-19 GPU baseline, MDEDIT-20 startup,
                       #   MDEDIT-67 clipboard threads. Re-runnable probes
 docs/                 # decisions/, research/, build-and-test.md

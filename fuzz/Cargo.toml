@@ -23,6 +23,7 @@ libfuzzer-sys = "0.4"
 mdedit-json = { path = "../crates/json" }
 mdedit-language = { path = "../crates/language" }
 mdedit-markers = { path = "../crates/markers" }
+mdedit-xml = { path = "../crates/xml" }
 mdedit-yaml = { path = "../crates/yaml" }
 
 # Every target is a `[[bin]]` with the harness off, which is what `cargo fuzz` expects.
@@ -51,6 +52,13 @@ bench = false
 [[bin]]
 name = "yaml_analyze"
 path = "fuzz_targets/yaml_analyze.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xml_analyze"
+path = "fuzz_targets/xml_analyze.rs"
 test = false
 doc = false
 bench = false

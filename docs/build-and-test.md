@@ -38,16 +38,18 @@ here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both reached C
 
 ## Fuzzing
 
-A separate workflow and a **separate workspace** (MDEDIT-111). `fuzz/` holds four targets: the marker
-locator against its tiling gate, JSON's validator, JSON's formatter against the `meaningful_bytes`
-oracle it shares with the property test, and the YAML lexer.
+A separate workflow and a **separate workspace** (MDEDIT-111). `fuzz/` holds a target per
+span-producing lexer: the marker locator against its tiling gate, JSON's validator, JSON's formatter
+against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, and the XML
+one — whose input a fuzzer is unusually well suited to, since an unclosed tag and a stray angle
+bracket are what that lexer exists to survive.
 
 ```bash
 cargo +nightly fuzz run markers_segment -- -max_total_time=60
 ```
 
 Excluded from the workspace **on purpose**: `libfuzzer-sys` builds a C++ runtime and is Unix-only, so
-a Windows `cargo check` would try to build it and fail. The four crates it covers are
+a Windows `cargo check` would try to build it and fail. The crates it covers are
 platform-agnostic, which makes Linux-only the right home rather than a compromise.
 
 Five minutes a target on a PR, half an hour on the Sunday schedule, corpus cached between runs, the
