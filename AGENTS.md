@@ -29,7 +29,7 @@ from that tag — see [Configs](#configs).
 | Read this | For |
 | --- | --- |
 | [`docs/decisions/`](docs/decisions/README.md) | **Why the editor is the way it is.** One entry per decision, named for its ticket. Read the file for the area you are about to change. |
-| [`docs/research/README.md`](docs/research/README.md) | The seven briefs. **Read before proposing architecture** — the major decisions are made and evidenced. Don't relitigate without new evidence. |
+| [`docs/research/README.md`](docs/research/README.md) | The briefs. **Read before proposing architecture** — the major decisions are made and evidenced. Don't relitigate without new evidence. |
 | [`docs/build-and-test.md`](docs/build-and-test.md) | What is behind the commands below: nextest, fuzzing, mutants, coverage, and what CI cannot see. |
 | Confluence | Per-ticket plans, living documents. Linked from each Jira issue. |
 
@@ -85,7 +85,7 @@ assets/icons/         # The app icon and the script that builds `mdedit.ico` wit
 fuzz/                 # A target per span-producing lexer, excluded from the workspace on purpose.
                       #   Linux-only
 spikes/               # MDEDIT-5 font fallback, MDEDIT-19 GPU baseline, MDEDIT-20 startup,
-                      #   MDEDIT-67 clipboard threads. Re-runnable probes
+                      #   MDEDIT-67 clipboard threads, MDEDIT-123 WARP-in-CI. Re-runnable probes
 docs/                 # decisions/, research/, build-and-test.md
 ```
 
@@ -133,6 +133,12 @@ cargo check --target x86_64-unknown-linux-gnu --all-features  # Windows-only cod
 Both of the last two are easy to skip and expensive to miss. **CI cannot open a window**, so
 rendering and hit-testing are verified by hand on Windows — which is where this project's defects
 actually come from.
+
+**But rendering needs a device, not a window** (MDEDIT-123, measured). A hosted runner lays out a
+real `Editor<DirectWriteText>` frame in 3 ms and renders this project's own shader and atlas on WARP
+in 2.5 ms a frame. Nothing is built on that yet; read
+[`docs/research/07-rendering-in-ci.md`](docs/research/07-rendering-in-ci.md) before assuming the
+sentence above closes the question.
 
 See [`docs/build-and-test.md`](docs/build-and-test.md) for fuzzing, mutation testing, coverage,
 benchmarks and why each job runs where it does.

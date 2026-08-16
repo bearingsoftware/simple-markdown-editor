@@ -168,7 +168,19 @@ where this project's defects come from — five in the toolbar wave alone, every
 behind it, and three of those were cases where the headless test stub *itself* was the lie.
 
 `crates/app/tests/icons.rs` is the one file that asks the real font stack rather than the stub, and it
-exists because measurement needs no window. Whether *rendering* needs one is MDEDIT-123.
+exists because measurement needs no window.
+
+**Whether *rendering* needs one was MDEDIT-123, and the answer is no** — measured on a hosted runner,
+which turns out to offer no hardware adapter at all and does not need to. `Editor` is generic over
+`TextLayout`, so an `Editor<DirectWriteText>` builds a real frame headlessly in 3 ms; and WARP runs
+this project's own shader, atlas and quads offscreen at 550 ms for the first frame (the driver
+compiles the shader on first draw) and 2.5 ms for every one after it.
+
+**Nothing is built on that yet, and the gap above is still real until something is.** The full
+measurement, including the two machines that produced byte-identical pixels and why that is evidence
+rather than a licence to commit a golden hash, is in
+[`docs/research/07-rendering-in-ci.md`](research/07-rendering-in-ci.md) — which also says what to
+build first, and that the cheapest half needs no GPU at all.
 
 ## The cache saves on `main` and nowhere else
 

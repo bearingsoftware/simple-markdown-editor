@@ -95,7 +95,10 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
         let quads = editor.build_frame(WIDTH as f32, HEIGHT as f32, 1.0);
         let elapsed = started.elapsed();
 
-        println!("   {} quads in {elapsed:.2?}, no window involved", quads.len());
+        println!(
+            "   {} quads in {elapsed:.2?}, no window involved",
+            quads.len()
+        );
         if quads.is_empty() {
             println!("   ...which is nothing. Something is wrong before the GPU is reached.");
             return None;
@@ -222,7 +225,10 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
         // **Within a process is not what "run to run" means.** A golden value in a test is compared
         // against a *different* process on a *different* day, so what has to be stable is this —
         // run the probe twice and check the two printed hashes match.
-        println!("   pixel hash: {:016x}   (compare against another run of this binary)", hash(&runs[0].1));
+        println!(
+            "   pixel hash: {:016x}   (compare against another run of this binary)",
+            hash(&runs[0].1)
+        );
         let times: Vec<Duration> = runs.iter().map(|(t, _)| *t).collect();
         println!("   per frame: {times:.2?}");
         println!("   note the first: a driver compiles the shader on the first draw, not at setup");
@@ -252,7 +258,8 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
     /// a clear value goes through a conversion this code should not be trying to predict. The modal
     /// pixel of a mostly-empty frame *is* the background, whatever the pipeline made of it.
     fn ink(pixels: &[u8]) -> (usize, usize) {
-        let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+        let mut counts: std::collections::HashMap<[u8; 3], usize> =
+            std::collections::HashMap::new();
         for pixel in pixels.chunks_exact(4) {
             *counts.entry([pixel[0], pixel[1], pixel[2]]).or_default() += 1;
         }
@@ -329,140 +336,140 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
     }
 
     impl Pipeline {
-    /// Builds the pipeline: shader, atlas upload, bind group, readback buffer.
-    fn new(gpu: &Gpu, atlas: &Atlas) -> Self {
-        let (device, queue) = (&gpu.device, &gpu.queue);
-        let format = wgpu::TextureFormat::Rgba8Unorm;
+        /// Builds the pipeline: shader, atlas upload, bind group, readback buffer.
+        fn new(gpu: &Gpu, atlas: &Atlas) -> Self {
+            let (device, queue) = (&gpu.device, &gpu.queue);
+            let format = wgpu::TextureFormat::Rgba8Unorm;
 
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("target"),
-            size: wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("target"),
+                size: wgpu::Extent3d {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("atlas"),
-            size: wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            atlas_texture.as_image_copy(),
-            atlas.pixels(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(ATLAS_SIZE),
-                rows_per_image: Some(ATLAS_SIZE),
-            },
-            wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-        );
+            let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("atlas"),
+                size: wgpu::Extent3d {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                atlas_texture.as_image_copy(),
+                atlas.pixels(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ATLAS_SIZE),
+                    rows_per_image: Some(ATLAS_SIZE),
+                },
+                wgpu::Extent3d {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
 
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("globals"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(
-            &globals,
-            0,
-            bytemuck::cast_slice(&[
-                WIDTH as f32,
-                HEIGHT as f32,
-                ATLAS_SIZE as f32,
-                ATLAS_SIZE as f32,
-            ]),
-        );
+            let globals = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("globals"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(
+                &globals,
+                0,
+                bytemuck::cast_slice(&[
+                    WIDTH as f32,
+                    HEIGHT as f32,
+                    ATLAS_SIZE as f32,
+                    ATLAS_SIZE as f32,
+                ]),
+            );
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("atlas"),
-            ..Default::default()
-        });
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("atlas"),
+                ..Default::default()
+            });
 
-        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("globals"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+            let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("globals"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals"),
-            layout: &bind_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: globals.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &atlas_texture.create_view(&wgpu::TextureViewDescriptor::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("globals"),
+                layout: &bind_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: globals.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &atlas_texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&sampler),
+                    },
+                ],
+            });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("quads"),
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("quads"),
-            bind_group_layouts: &[Some(&bind_layout)],
-            immediate_size: 0,
-        });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("quads"),
+                source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+            });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("quads"),
+                bind_group_layouts: &[Some(&bind_layout)],
+                immediate_size: 0,
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("quads"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -495,99 +502,101 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
             cache: None,
         });
 
-        // Readback rows must be a multiple of 256 bytes.
-        let row = (WIDTH * 4).div_ceil(256) * 256;
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("readback"),
-            size: u64::from(row * HEIGHT),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-
-        Self {
-            target,
-            view,
-            bind_group,
-            pipeline,
-            readback,
-            row,
-        }
-    }
-
-    /// One offscreen frame, read back as RGBA8 with the row padding removed.
-    fn render(&self, gpu: &Gpu, quads: &[QuadInstance]) -> Vec<u8> {
-        let (device, queue) = (&gpu.device, &gpu.queue);
-        let (row, readback, view) = (self.row, &self.readback, &self.view);
-
-        let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quads"),
-            size: std::mem::size_of_val(quads) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(&instances, 0, bytemuck::cast_slice(quads));
-
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("quads"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.086,
-                            g: 0.094,
-                            b: 0.149,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
+            // Readback rows must be a multiple of 256 bytes.
+            let row = (WIDTH * 4).div_ceil(256) * 256;
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size: u64::from(row * HEIGHT),
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
             });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &self.bind_group, &[]);
-            pass.set_vertex_buffer(0, instances.slice(..));
-            pass.draw(0..4, 0..quads.len() as u32);
+
+            Self {
+                target,
+                view,
+                bind_group,
+                pipeline,
+                readback,
+                row,
+            }
         }
-        encoder.copy_texture_to_buffer(
-            self.target.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: Some(HEIGHT),
+
+        /// One offscreen frame, read back as RGBA8 with the row padding removed.
+        fn render(&self, gpu: &Gpu, quads: &[QuadInstance]) -> Vec<u8> {
+            let (device, queue) = (&gpu.device, &gpu.queue);
+            let (row, readback, view) = (self.row, &self.readback, &self.view);
+
+            let instances = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("quads"),
+                size: std::mem::size_of_val(quads) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&instances, 0, bytemuck::cast_slice(quads));
+
+            let mut encoder =
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("quads"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: 0.086,
+                                g: 0.094,
+                                b: 0.149,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.set_vertex_buffer(0, instances.slice(..));
+                pass.draw(0..4, 0..quads.len() as u32);
+            }
+            encoder.copy_texture_to_buffer(
+                self.target.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(row),
+                        rows_per_image: Some(HEIGHT),
+                    },
                 },
-            },
-            wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
-                depth_or_array_layers: 1,
-            },
-        );
-        queue.submit([encoder.finish()]);
+                wgpu::Extent3d {
+                    width: WIDTH,
+                    height: HEIGHT,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit([encoder.finish()]);
 
-        let slice = readback.slice(..);
-        slice.map_async(wgpu::MapMode::Read, |_| {});
-        device.poll(wgpu::PollType::wait_indefinitely()).expect("the queue drains");
+            let slice = readback.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("the queue drains");
 
-        // Only the pixels, not the row padding, so two runs compare like for like.
-        let mapped = slice.get_mapped_range().expect("the buffer maps");
-        let mut pixels = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-        for y in 0..HEIGHT {
-            let start = (y * row) as usize;
-            pixels.extend_from_slice(&mapped[start..start + (WIDTH * 4) as usize]);
+            // Only the pixels, not the row padding, so two runs compare like for like.
+            let mapped = slice.get_mapped_range().expect("the buffer maps");
+            let mut pixels = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+            for y in 0..HEIGHT {
+                let start = (y * row) as usize;
+                pixels.extend_from_slice(&mapped[start..start + (WIDTH * 4) as usize]);
+            }
+            drop(mapped);
+            readback.unmap();
+            pixels
         }
-        drop(mapped);
-        readback.unmap();
-        pixels
-    }
     }
 }
