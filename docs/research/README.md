@@ -50,6 +50,7 @@ oracle to test parley against.
 | [04 — Parsing benchmarks](04-parsing-benchmarks.md) | Measured: pulldown-cmark vs tree-sitter-md incremental. Why we skip incremental parsing. |
 | [05 — Windows platform](05-windows-platform.md) | Notepad++ analysis, shell integration, code signing, distribution |
 | [06 — Performance targets](06-performance-targets.md) | Measured competitor baselines and the numbers to hit |
+| [07 — Rendering in CI](07-rendering-in-ci.md) | MDEDIT-123, measured 2026-08-15: a hosted runner *can* lay out and render a frame without a window |
 
 ## The three riskiest parts
 
