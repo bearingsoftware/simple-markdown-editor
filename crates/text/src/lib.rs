@@ -214,8 +214,21 @@ impl TextStyle {
 /// A run of text to lay out, with the style it is drawn in.
 ///
 /// `source` is where the run came from in the buffer, carried through so a caller can map a glyph
-/// back to the byte the caret addresses. Runs whose text is not in the buffer — there are none yet,
-/// but a rendered list bullet would be one — pass an empty span.
+/// back to the byte the caret addresses.
+///
+/// # A run whose text is not the buffer's bytes
+///
+/// The rendered list bullet this used to describe as hypothetical is MDEDIT-141, and it arrives as
+/// `• ` standing for a `- ` nobody drew. Such a run is told by [`is_substituted`](Self::is_substituted)
+/// — its text and its source are different lengths — and **every one of its glyphs reports the run's
+/// source start, collapsed**, because there is no character-by-character correspondence to report.
+///
+/// That is the whole contract, and each half of it is load-bearing. Collapsing is what keeps the
+/// caret out of the bytes the substitute stands for: `place_of` looks for the first glyph at or past
+/// an offset, and per-character offsets synthesized from a substitute's own indices would run off the
+/// end of what it replaced and drag the caret with them. Reporting the run's *start* rather than an
+/// empty span elsewhere is what keeps the bullet its colour: the caller recovers a glyph's colour by
+/// asking which run's span contains it, and a span that contains nothing answers nobody.
 #[derive(Debug, Clone, Copy)]
 pub struct StyledRun<'a> {
     /// The text of this run.
@@ -224,6 +237,18 @@ pub struct StyledRun<'a> {
     pub style: TextStyle,
     /// Where it came from in the buffer.
     pub source: ByteSpan,
+}
+
+impl StyledRun<'_> {
+    /// Whether this run's text stands for buffer bytes rather than being them.
+    ///
+    /// Derived rather than declared: a run that came from the buffer is a slice of it, so its text
+    /// and its source are the same length by construction. A flag would be a second source of truth
+    /// for something the two fields already agree on.
+    #[must_use]
+    pub const fn is_substituted(&self) -> bool {
+        self.text.len() != self.source.len()
+    }
 }
 
 /// An implementation's handle for a resolved font.
