@@ -128,6 +128,48 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   points that way and the alternative is a second serializer by the back door. It is the decision
   here most likely to surprise somebody, which is why it is written down.
 
+- **A concealed marker may be *substituted* rather than dropped, and that is the third rendering
+  model.** MDEDIT-141. The other two are conceal-and-style — hide `**`, embolden what it wrapped —
+  and colour-only, where every byte stays and the tint carries the meaning. Neither works for a list:
+  hide `- ` and a bulleted list is pixel-identical to consecutive paragraphs, and an ordered one loses
+  a number that no styling replaces. So `view::substitute` gives the concealed run text of its own —
+  `• ` for `- ` — and `build_runs_in` pushes that instead of pushing nothing.
+
+  **The rule for when this applies** is the one already written on `Marker::Table`, generalised:
+  concealment is safe for scaffolding *whose removal still reads*. Where the marker is the meaning,
+  substitute it.
+
+  **Nesting costs nothing extra, and that is the whole reason this shape was chosen.** `mdedit-markers`
+  counts a list marker's leading whitespace as part of the marker, so `␣␣- ` is concealed indent and
+  all; carrying the whitespace into the substitute makes a deeper item sit further in by construction.
+  The rough ticket had assumed a per-chunk indent instead, which cannot work — `blocks::split` makes a
+  whole list *one* chunk with one origin, so an offset would move every item equally.
+
+  **An ordered marker substitutes to its own bytes**, which is not a no-op: revealing it would draw
+  the same pixels and put those bytes back in the caret's path, which MDEDIT-118 cleared. CommonMark
+  keeps the author's start number, so there is nothing to renumber and nothing to invent.
+
+  **Two things follow for the glyphs, and both are load-bearing** — see `StyledRun::is_substituted`,
+  which is where a backend reads them. Every glyph of a substituted run reports the run's source
+  **start**, collapsed: collapsed, so the caret cannot be dropped into the middle of bytes that are
+  not there; the start rather than an empty span elsewhere, because a glyph's colour is recovered by
+  asking which run's span contains it, and a span containing nothing answers nobody.
+
+  **Not a hanging indent.** Substitution indents an item's *first* row; a wrapped row still begins at
+  the layout's left edge, so a long item wraps back under its own bullet. That needs a concept
+  `TextLayout::layout` does not have — it takes `(&[StyledRun], max_width)` and nothing else — so it
+  crosses `mdedit-text` and both backends. MDEDIT-147, with block quotes and definition lists wanting
+  the same thing.
+
+  Cost, on a 135 KB document of 6000 list items: `build_runs_in` **0.98 ms before, 1.55 ms after** —
+  medians of five pairs run alternately against a worktree of the previous commit, after higher in
+  all five. That is weaker than `benches/options.rs`'s shape, which times both halves microseconds
+  apart in one process and pairs a control against itself; two processes seconds apart cannot do
+  either, so read the direction rather than the figure. The extra is ~0.1 µs an item and it is mostly
+  the 6000 runs that did not exist before rather than the allocation — each one is a `decorate` call,
+  and MDEDIT-37 found `block_at` to be the cost in there. A frame decorates visible chunks only, so a
+  screen of items is a few microseconds. `list_cost.rs`.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage
