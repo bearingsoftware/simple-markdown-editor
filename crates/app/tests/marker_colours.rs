@@ -46,7 +46,7 @@ fn drawn_in(source: &str, mode: Mode) -> Vec<Drawn> {
     )
     .iter()
     .map(|run| Drawn {
-        text: run.text.to_owned(),
+        text: run.text.clone().into_owned(),
         colour: run.colour,
         style: run.style,
     })

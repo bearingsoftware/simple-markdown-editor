@@ -35,7 +35,7 @@ fn struck(source: &str, needle: &str, mode: Mode) -> bool {
     assert!(
         !matching.is_empty(),
         "no run holds {needle:?}; the runs are {:?}",
-        runs.iter().map(|run| run.text).collect::<Vec<_>>()
+        runs.iter().map(|run| run.text.as_ref()).collect::<Vec<_>>()
     );
     matching.iter().all(|run| run.style.strikethrough)
 }

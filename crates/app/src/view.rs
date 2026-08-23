@@ -20,6 +20,8 @@
 //! own rules pair delimiters within a line, so the state resets at every newline; without that an
 //! unterminated `**` would embolden the rest of the file.
 
+use std::borrow::Cow;
+
 use mdedit_document::Document;
 use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -408,15 +410,15 @@ pub struct Decoration<'a> {
 pub struct ViewRun<'a> {
     /// The text of the run.
     ///
-    /// Borrowed from the buffer. Every run is a contiguous slice of it — concealing a marker drops a
-    /// whole run rather than splicing one, so it is only the *concatenation* of runs that is not
-    /// contiguous, which is what the previous comment here had wrong.
+    /// Borrowed from the buffer for all but one case, and that case is why this is a [`Cow`]: a
+    /// concealed list marker is *substituted* rather than dropped (MDEDIT-141), so `• ` has to come
+    /// from somewhere the buffer does not contain.
     ///
-    /// Owning it cost a `String` allocation per run per frame. Removing that turned out **not** to be
-    /// measurable (MDEDIT-37 — `build_runs_in` on a JSON chunk went 0.064 ms to 0.068, which is
-    /// noise); the cost was `Document::block_at`. It stays because it is strictly less work and the
-    /// comment it replaced was wrong, not because it made anything faster.
-    pub text: &'a str,
+    /// Owning every run cost a `String` allocation per run per frame, and removing that turned out
+    /// **not** to be measurable (MDEDIT-37 — `build_runs_in` on a JSON chunk went 0.064 ms to 0.068,
+    /// which is noise). So borrowing stays the default because it is strictly less work, and the one
+    /// run that cannot borrow pays for itself alone.
+    pub text: Cow<'a, str>,
     /// How it is shaped.
     pub style: TextStyle,
     /// Where it came from in the buffer.
@@ -822,7 +824,7 @@ impl<'t> Builder<'_, 't> {
             return;
         }
         self.runs.push(ViewRun {
-            text,
+            text: Cow::Borrowed(text),
             style,
             source: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(start + text.len())),
             colour,
@@ -831,11 +833,14 @@ impl<'t> Builder<'_, 't> {
 }
 
 /// Borrows the runs as [`StyledRun`]s for the layout engine.
+///
+/// The borrow is from the *runs*, not from the buffer they mostly came from: a substituted run owns
+/// its text (MDEDIT-141), and it outlives the `layout` call because the run vector does.
 #[must_use]
-pub fn as_styled<'a>(runs: &[ViewRun<'a>]) -> Vec<StyledRun<'a>> {
+pub fn as_styled<'a>(runs: &'a [ViewRun<'_>]) -> Vec<StyledRun<'a>> {
     runs.iter()
         .map(|run| StyledRun {
-            text: run.text,
+            text: &run.text,
             style: run.style,
             source: run.source,
         })
