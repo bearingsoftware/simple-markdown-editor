@@ -268,6 +268,31 @@ fn the_bar_still_fits_with_the_table_button() {
     );
 }
 
+/// **The bullets a list draws are really in the font this machine has** (MDEDIT-141, risk R2).
+///
+/// A substituted list marker is drawn monospaced, like every marker, so `view::BULLETS` is asked of
+/// the mono family rather than the UI one. A code point that is not there comes back `.notdef` and
+/// the editor draws tofu where the bullet should be — which is MDEDIT-92's failure mode, and the
+/// reason it is asked here rather than assumed against a Unicode chart.
+#[test]
+fn every_bullet_a_list_draws_is_in_the_font() {
+    let mut text = engine();
+    let mut missing = Vec::new();
+
+    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}'] {
+        let advances = shape(&mut text, bullet, FontFamily::Mono, 16.0);
+        if advances.iter().any(|advance| *advance < 0.0) {
+            missing.push(format!("U+{:04X}", u32::from(bullet)));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "the mono font on this machine has no glyph for: {}",
+        missing.join(", ")
+    );
+}
+
 /// One button's face, measured as the bar measures it.
 fn measure(text: &mut DirectWriteText, action: Action) -> f32 {
     match action.icon() {
