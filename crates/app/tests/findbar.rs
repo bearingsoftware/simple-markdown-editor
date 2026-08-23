@@ -21,6 +21,7 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::field::Press;
 use mdedit_app::find::{self, Key};
+use mdedit_app::view::Theme;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
@@ -67,6 +68,21 @@ fn text_y(editor: &Editor<Grid>) -> f32 {
 fn selected(editor: &Editor<Grid>) -> (usize, usize) {
     let span = editor.document().selection().span();
     (span.start().get(), span.end().get())
+}
+
+/// Every caret drawn this frame, by x. The box's caret is one of them and the document's is the
+/// other, which is enough: only one of the two moves when the box's caret does.
+fn caret_xs(editor: &mut Editor<Grid>) -> Vec<u32> {
+    let caret = Theme::default().caret;
+    let wanted = [caret.r, caret.g, caret.b, caret.a];
+    let mut xs: Vec<u32> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == wanted)
+        .map(|quad| quad.rect[0].to_bits())
+        .collect();
+    xs.sort_unstable();
+    xs
 }
 
 fn caret_at(editor: &mut Editor<Grid>, offset: usize) {
@@ -508,4 +524,35 @@ fn closing_a_tab_does_not_leave_its_word_count_on_the_next_one() {
         Some(2),
         "the survivor is showing the closed tab's word count"
     );
+}
+
+/// **The box's caret draws where the caret is, including in the middle of a word.**
+///
+/// Found reviewing MDEDIT-141 rather than by using the editor, which is the uncomfortable part. The
+/// box's caret is placed by finding the first glyph whose *source* offset is at or past it — the same
+/// rule the document uses — and that story briefly had the text layer collapse every glyph of a run
+/// with an empty source onto offset zero. Chrome passes exactly such a run, following what
+/// `StyledRun` told it to pass.
+///
+/// **The middle is the whole point of this test, and the first version of it did not have one.** With
+/// every glyph reporting zero, the caret at the *start* still finds the first glyph and the caret at
+/// the *end* still falls back to the end of the text — both right, by luck. Only a position in
+/// between distinguishes them, so this walks the caret one cell at a time and asks that it move each
+/// time.
+#[test]
+fn the_boxs_caret_draws_where_the_caret_is() {
+    let mut editor = editor("some body text\n");
+    search(&mut editor, "hello");
+    editor.apply_find_key(&Key::Edit(Press::Home), false);
+
+    let mut seen = vec![caret_xs(&mut editor)];
+    for step in 1..="hello".len() {
+        editor.apply_find_key(&Key::Edit(Press::Right), false);
+        let now = caret_xs(&mut editor);
+        assert!(
+            !seen.contains(&now),
+            "after {step} presses of Right the box's caret is back somewhere it has already drawn"
+        );
+        seen.push(now);
+    }
 }

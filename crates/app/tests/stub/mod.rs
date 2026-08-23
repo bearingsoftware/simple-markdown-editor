@@ -116,13 +116,13 @@ impl TextLayout for Grid {
                 }
                 // A substituted run's text is not the buffer's, so its own byte indices address
                 // nothing: every glyph of it reports where the run starts, collapsed. See
-                // `StyledRun::is_substituted`.
-                let start = if run.is_substituted() {
+                // `StyledRun::substituted`.
+                let start = if run.substituted {
                     run.source.start().get()
                 } else {
                     run.source.start().get() + index
                 };
-                let extent = if run.is_substituted() {
+                let extent = if run.substituted {
                     0
                 } else {
                     character.len_utf8()

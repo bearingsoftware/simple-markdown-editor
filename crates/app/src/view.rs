@@ -425,6 +425,9 @@ pub struct ViewRun<'a> {
     pub source: ByteSpan,
     /// What colour to draw it.
     pub colour: Rgba,
+    /// Whether [`text`](Self::text) stands for [`source`](Self::source) rather than being it —
+    /// see [`StyledRun::substituted`], which this is carried through to.
+    pub substituted: bool,
 }
 
 /// Inline styling carried while walking segments.
@@ -872,7 +875,7 @@ impl<'t> Builder<'_, 't> {
     /// The run keeps the **marker's own span**, which is what lets [`colour_at`] recover the bullet's
     /// colour from a glyph — and the glyphs of a run whose text is not its bytes all collapse onto
     /// that span's start, which is what keeps a click on the bullet out of the marker's interior.
-    /// [`StyledRun::is_substituted`] is where that contract is written down.
+    /// [`StyledRun::substituted`] is where that contract is written down.
     fn push_substitute(&mut self, text: Cow<'t, str>, span: ByteSpan, role: Role) {
         if text.is_empty() {
             return;
@@ -883,6 +886,7 @@ impl<'t> Builder<'_, 't> {
             style,
             source: span,
             colour,
+            substituted: true,
         });
     }
 
@@ -893,6 +897,7 @@ impl<'t> Builder<'_, 't> {
         self.runs.push(ViewRun {
             text: Cow::Borrowed(text),
             style,
+            substituted: false,
             source: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(start + text.len())),
             colour,
         });
@@ -910,6 +915,7 @@ pub fn as_styled<'a>(runs: &'a [ViewRun<'_>]) -> Vec<StyledRun<'a>> {
             text: &run.text,
             style: run.style,
             source: run.source,
+            substituted: run.substituted,
         })
         .collect()
 }

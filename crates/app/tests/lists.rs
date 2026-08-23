@@ -142,15 +142,39 @@ fn the_caret_steps_over_the_substituted_marker() {
     );
 }
 
+/// Where a click at character `column` of the first row puts the caret.
+fn click_column(source: &str, column: usize) -> usize {
+    let mut editor = Editor::new(source, Grid::new());
+    editor.build_frame(600.0, 400.0, 1.0);
+    #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
+    editor.click_at(
+        ADVANCE.mul_add(column as f32, MARGIN) + ADVANCE / 2.0,
+        MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT / 2.0,
+    );
+    editor.document().selection().head().get()
+}
+
 /// A click on the bullet is a click on syntax that is not there. It resolves to the line's start
 /// rather than between the `-` and the space after it.
 #[test]
 fn clicking_the_bullet_does_not_land_inside_the_marker() {
-    let mut editor = Editor::new("- alpha\n", Grid::new());
-    editor.build_frame(600.0, 400.0, 1.0);
-    editor.click_at(
-        MARGIN + ADVANCE / 2.0,
-        MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT / 2.0,
-    );
-    assert_eq!(editor.document().selection().head().get(), 0);
+    assert_eq!(click_column("- alpha\n", 0), 0);
+}
+
+/// **The case the bullet's own test cannot reach.** An ordered marker substitutes to its own bytes,
+/// so it is the one substitute whose text and source are identical — and a first version of this
+/// inferred "substituted" from their lengths differing, which made `7. ` the exception that carried
+/// per-character offsets. A click on the `.` then landed at byte 1, inside a concealed marker, which
+/// MDEDIT-118 forbids.
+#[test]
+fn clicking_a_number_does_not_land_inside_the_marker() {
+    //  7  .  ␣  s  e  v  e  n
+    //  0  1  2  3
+    for column in 0..3 {
+        let caret = click_column("7. seven\n", column);
+        assert!(
+            !(1..3).contains(&caret),
+            "a click at column {column} put the caret at {caret}, inside `7. `",
+        );
+    }
 }

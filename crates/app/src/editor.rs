@@ -4653,11 +4653,7 @@ impl<T: TextLayout> Editor<T> {
             }
         }
 
-        let run = StyledRun {
-            text,
-            style,
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        };
+        let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
         let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
             self.status_labels[slot] = None;
             return 0.0;
@@ -4843,11 +4839,7 @@ impl<T: TextLayout> Editor<T> {
     }
 
     fn lay_out_label(&mut self, text: &str, style: TextStyle) -> Option<Label> {
-        let run = StyledRun {
-            text,
-            style,
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        };
+        let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
         let layout = self.text.layout(&[run], f32::MAX).ok()?;
         let glyphs: Vec<_> = layout.glyphs().copied().collect();
         let width = glyphs
@@ -4979,11 +4971,11 @@ impl<T: TextLayout> Editor<T> {
     ) {
         let text = self.composition.text().to_owned();
         let style = TextStyle::body(self.theme.body_size);
-        let run = [StyledRun {
-            text: &text,
+        let run = [StyledRun::from_buffer(
+            &text,
             style,
-            source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(text.len())),
-        }];
+            ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(text.len())),
+        )];
         let Ok(layout) = self.text.layout(&run, f32::MAX) else {
             return;
         };
@@ -5232,11 +5224,8 @@ impl<T: TextLayout> Editor<T> {
             .collect();
         let mut label_widths = Vec::with_capacity(names.len());
         for name in &names {
-            let run = StyledRun {
-                text: name,
-                style: label_style,
-                source: ByteSpan::empty_at(ByteOffset::ZERO),
-            };
+            let run =
+                StyledRun::from_buffer(name, label_style, ByteSpan::empty_at(ByteOffset::ZERO));
             let measured = self.text.layout(&[run], f32::MAX).map_or(60.0, |layout| {
                 layout
                     .glyphs()
@@ -5374,11 +5363,7 @@ impl<T: TextLayout> Editor<T> {
         scale: f32,
         max_width: f32,
     ) -> bool {
-        let run = StyledRun {
-            text,
-            style,
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        };
+        let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
         let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
             return false;
         };
@@ -5576,11 +5561,7 @@ impl<T: TextLayout> Editor<T> {
         let label = if let Some(label) = self.row_labels.remove(text) {
             label
         } else {
-            let run = StyledRun {
-                text,
-                style,
-                source: ByteSpan::empty_at(ByteOffset::ZERO),
-            };
+            let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
             let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
                 return false;
             };
@@ -8243,11 +8224,11 @@ impl<T: TextLayout> Editor<T> {
             return *known;
         }
         let mut text = [0_u8; 4];
-        let run = StyledRun {
-            text: character.encode_utf8(&mut text),
-            style: TextStyle::body(self.theme.body_size),
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        };
+        let run = StyledRun::from_buffer(
+            character.encode_utf8(&mut text),
+            TextStyle::body(self.theme.body_size),
+            ByteSpan::empty_at(ByteOffset::ZERO),
+        );
         let found = self.text.layout(&[run], f32::MAX).ok().and_then(|layout| {
             layout.glyphs().next().map(|glyph| Mark {
                 key: glyph.key,
@@ -8704,11 +8685,11 @@ impl<T: TextLayout> Editor<T> {
             return Some(digits);
         }
         let style = TextStyle::body(self.theme.body_size);
-        let run = [StyledRun {
-            text: "0123456789",
+        let run = [StyledRun::from_buffer(
+            "0123456789",
             style,
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        }];
+            ByteSpan::empty_at(ByteOffset::ZERO),
+        )];
         let layout = self.text.layout(&run, f32::MAX).ok()?;
 
         let measured: Vec<(GlyphKey, f32)> = layout
@@ -8733,11 +8714,11 @@ impl<T: TextLayout> Editor<T> {
             return Some(flagged);
         }
         let style = TextStyle::body(self.theme.body_size).bold();
-        let run = [StyledRun {
-            text: "0123456789!",
+        let run = [StyledRun::from_buffer(
+            "0123456789!",
             style,
-            source: ByteSpan::empty_at(ByteOffset::ZERO),
-        }];
+            ByteSpan::empty_at(ByteOffset::ZERO),
+        )];
         let layout = self.text.layout(&run, f32::MAX).ok()?;
 
         let measured: Vec<(GlyphKey, f32)> = layout

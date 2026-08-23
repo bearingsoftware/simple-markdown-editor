@@ -288,11 +288,11 @@ Some **strong** text, some *emphasis*, a `code span`, and a [link](http://exampl
         let style = TextStyle::body(16.0);
         let layout = text
             .layout(
-                &[StyledRun {
-                    text: body,
+                &[StyledRun::from_buffer(
+                    body,
                     style,
-                    source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(body.len())),
-                }],
+                    ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(body.len())),
+                )],
                 WIDTH as f32 - 40.0,
             )
             .ok()?;

@@ -39,11 +39,11 @@ fn shape(text: &mut DirectWriteText, glyph: char, family: FontFamily, size: f32)
     };
     let layout = text
         .layout(
-            &[StyledRun {
-                text: &owned,
+            &[StyledRun::from_buffer(
+                &owned,
                 style,
-                source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
-            }],
+                ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+            )],
             1000.0,
         )
         .unwrap();
@@ -69,11 +69,11 @@ fn ink(text: &mut DirectWriteText, glyph: char) -> Option<f32> {
     };
     let layout = text
         .layout(
-            &[StyledRun {
-                text: &owned,
+            &[StyledRun::from_buffer(
+                &owned,
                 style,
-                source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
-            }],
+                ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+            )],
             1000.0,
         )
         .unwrap();

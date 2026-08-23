@@ -219,16 +219,22 @@ impl TextStyle {
 /// # A run whose text is not the buffer's bytes
 ///
 /// The rendered list bullet this used to describe as hypothetical is MDEDIT-141, and it arrives as
-/// `• ` standing for a `- ` nobody drew. Such a run is told by [`is_substituted`](Self::is_substituted)
-/// — its text and its source are different lengths — and **every one of its glyphs reports the run's
-/// source start, collapsed**, because there is no character-by-character correspondence to report.
+/// `• ` standing for a `- ` nobody drew. Such a run says so with [`substituted`](Self::substituted),
+/// and **every one of its glyphs reports the run's source start, collapsed**, because there is no
+/// character-by-character correspondence to report.
 ///
-/// That is the whole contract, and each half of it is load-bearing. Collapsing is what keeps the
-/// caret out of the bytes the substitute stands for: `place_of` looks for the first glyph at or past
-/// an offset, and per-character offsets synthesized from a substitute's own indices would run off the
-/// end of what it replaced and drag the caret with them. Reporting the run's *start* rather than an
-/// empty span elsewhere is what keeps the bullet its colour: the caller recovers a glyph's colour by
-/// asking which run's span contains it, and a span that contains nothing answers nobody.
+/// Each half of that is load-bearing. Collapsing is what keeps the caret out of the bytes the
+/// substitute stands for: `place_of` looks for the first glyph at or past an offset, and per-character
+/// offsets synthesized from a substitute's own indices would run off the end of what it replaced and
+/// drag the caret with them. Reporting the run's *start* rather than an empty span elsewhere is what
+/// keeps the bullet its colour: the caller recovers a glyph's colour by asking which run's span
+/// contains it, and a span that contains nothing answers nobody.
+///
+/// **Declared rather than derived, and that was learned the hard way.** The first version of this
+/// inferred it from `text.len() != source.len()`, which is wrong in both directions: chrome passes an
+/// empty span with real text and would have had its glyphs collapsed — putting the find field's caret
+/// at x = 0 for every position — while a substituted *ordered* marker draws its own bytes and so
+/// matches its source exactly, which would have let a click land inside it.
 #[derive(Debug, Clone, Copy)]
 pub struct StyledRun<'a> {
     /// The text of this run.
@@ -237,17 +243,20 @@ pub struct StyledRun<'a> {
     pub style: TextStyle,
     /// Where it came from in the buffer.
     pub source: ByteSpan,
+    /// Whether [`text`](Self::text) stands for [`source`](Self::source) rather than being it.
+    pub substituted: bool,
 }
 
-impl StyledRun<'_> {
-    /// Whether this run's text stands for buffer bytes rather than being them.
-    ///
-    /// Derived rather than declared: a run that came from the buffer is a slice of it, so its text
-    /// and its source are the same length by construction. A flag would be a second source of truth
-    /// for something the two fields already agree on.
+impl<'a> StyledRun<'a> {
+    /// A run of the buffer's own bytes — which is every run but a substituted marker.
     #[must_use]
-    pub const fn is_substituted(&self) -> bool {
-        self.text.len() != self.source.len()
+    pub const fn from_buffer(text: &'a str, style: TextStyle, source: ByteSpan) -> Self {
+        Self {
+            text,
+            style,
+            source,
+            substituted: false,
+        }
     }
 }
 

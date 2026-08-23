@@ -19,11 +19,11 @@ fn engine() -> DirectWriteText {
 }
 
 fn run(text: &str, style: TextStyle) -> StyledRun<'_> {
-    StyledRun {
+    StyledRun::from_buffer(
         text,
         style,
-        source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(text.len())),
-    }
+        ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(text.len())),
+    )
 }
 
 #[test]
@@ -470,14 +470,14 @@ fn only_the_underlined_run_carries_a_rule() {
         .layout(
             &[
                 run(plain, TextStyle::body(16.0)),
-                StyledRun {
-                    text: linked,
-                    style: TextStyle::body(16.0).underline(),
-                    source: ByteSpan::new(
+                StyledRun::from_buffer(
+                    linked,
+                    TextStyle::body(16.0).underline(),
+                    ByteSpan::new(
                         ByteOffset::new(plain.len()),
                         ByteOffset::new(plain.len() + linked.len()),
                     ),
-                },
+                ),
             ],
             1000.0,
         )
