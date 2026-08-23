@@ -166,7 +166,7 @@ fn markers_still_vanish_in_preview() {
         .map(|run| run.text.as_str())
         .collect();
     assert_eq!(
-        text, "A heading\n\nan item\n\nsee the docs here\n",
+        text, "A heading\n\n\u{2022} an item\n\nsee the docs here\n",
         "a marker that stayed visible because it got its own colour would be a different editor"
     );
 }
@@ -207,7 +207,9 @@ fn a_task_checkbox_is_syntax_and_not_the_bullets_colour() {
     );
 }
 
-/// And in preview it is not drawn at all, like every other marker.
+/// And in preview it is not drawn at all. **Not "like every other marker" any more** — MDEDIT-141
+/// substitutes a bullet for the list marker beside it — but the box itself still draws nothing until
+/// MDEDIT-142 gives it something to draw.
 #[test]
 fn a_task_checkbox_is_concealed_in_preview() {
     let text: String = drawn_in("- [x] done\n", Mode::Preview)
@@ -215,7 +217,7 @@ fn a_task_checkbox_is_concealed_in_preview() {
         .map(|run| run.text.as_str())
         .collect();
     assert_eq!(
-        text, "done\n",
+        text, "\u{2022} done\n",
         "a literal pair of brackets in the rendered line is the defect this fixed"
     );
 }
