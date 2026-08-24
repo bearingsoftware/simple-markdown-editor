@@ -263,11 +263,11 @@ fn the_stub_gives_no_terminator_a_glyph() {
     for (source, ending) in [("ab\ncd", 2), ("ab\r\ncd", 2), ("ab\rcd", 2)] {
         let layout = grid
             .layout(
-                &[StyledRun {
-                    text: source,
-                    style: TextStyle::body(16.0),
-                    source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
-                }],
+                &[StyledRun::from_buffer(
+                    source,
+                    TextStyle::body(16.0),
+                    ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
+                )],
                 1000.0,
             )
             .expect("the stub never fails");

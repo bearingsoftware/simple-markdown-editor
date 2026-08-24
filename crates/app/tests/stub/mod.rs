@@ -114,7 +114,19 @@ impl TextLayout for Grid {
                 while lines.len() <= row {
                     lines.push(new_line(lines.len()));
                 }
-                let start = run.source.start().get() + index;
+                // A substituted run's text is not the buffer's, so its own byte indices address
+                // nothing: every glyph of it reports where the run starts, collapsed. See
+                // `StyledRun::substituted`.
+                let start = if run.substituted {
+                    run.source.start().get()
+                } else {
+                    run.source.start().get() + index
+                };
+                let extent = if run.substituted {
+                    0
+                } else {
+                    character.len_utf8()
+                };
                 let baseline = lines[row].baseline;
                 lines[row].glyphs.push(PositionedGlyph {
                     key: GlyphKey {
@@ -134,10 +146,7 @@ impl TextLayout for Grid {
                     },
                     pos: LayoutPos::new(pen_x, baseline),
                     advance: ADVANCE,
-                    source: ByteSpan::new(
-                        ByteOffset::new(start),
-                        ByteOffset::new(start + character.len_utf8()),
-                    ),
+                    source: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(start + extent)),
                 });
                 pen_x += ADVANCE;
             }

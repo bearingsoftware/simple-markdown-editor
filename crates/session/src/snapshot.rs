@@ -259,9 +259,8 @@ impl Store {
             }
 
             let snapshot = self.snapshot_path(entry.id);
-            let readable = std::fs::metadata(&snapshot)
-                .ok()
-                .is_some_and(|data| data.len() <= MAX_SNAPSHOT_BYTES);
+            let readable =
+                std::fs::metadata(&snapshot).is_ok_and(|data| data.len() <= MAX_SNAPSHOT_BYTES);
             if !readable {
                 skipped.push(format!("{} is missing or too large", snapshot.display()));
                 continue;

@@ -17,7 +17,7 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 fn drawn(source: &str) -> String {
     let doc = Document::from(source);
     let runs = build_runs(&doc, &Theme::default(), source);
-    runs.iter().map(|run| run.text).collect()
+    runs.iter().map(|run| run.text.as_ref()).collect()
 }
 
 /// The same, with the document's own caret parked somewhere. **The answer must not change** — that
@@ -27,7 +27,7 @@ fn drawn_with_caret(source: &str, caret: usize) -> String {
     let mut doc = Document::from(source);
     doc.set_selection(Selection::caret(ByteOffset::new(caret)));
     let runs = build_runs(&doc, &Theme::default(), source);
-    runs.iter().map(|run| run.text).collect()
+    runs.iter().map(|run| run.text.as_ref()).collect()
 }
 
 #[test]

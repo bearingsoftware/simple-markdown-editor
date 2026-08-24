@@ -39,11 +39,11 @@ fn shape(text: &mut DirectWriteText, glyph: char, family: FontFamily, size: f32)
     };
     let layout = text
         .layout(
-            &[StyledRun {
-                text: &owned,
+            &[StyledRun::from_buffer(
+                &owned,
                 style,
-                source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
-            }],
+                ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+            )],
             1000.0,
         )
         .unwrap();
@@ -69,11 +69,11 @@ fn ink(text: &mut DirectWriteText, glyph: char) -> Option<f32> {
     };
     let layout = text
         .layout(
-            &[StyledRun {
-                text: &owned,
+            &[StyledRun::from_buffer(
+                &owned,
                 style,
-                source: ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
-            }],
+                ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+            )],
             1000.0,
         )
         .unwrap();
@@ -265,6 +265,31 @@ fn the_bar_still_fits_with_the_table_button() {
         headroom >= 20.0,
         "only {headroom:.0}px of headroom left at {DEFAULT_WIDTH}px — the bar is one button from \
          overflowing on a default window, and that is worth deciding rather than discovering"
+    );
+}
+
+/// **The bullets a list draws are really in the font this machine has** (MDEDIT-141, risk R2).
+///
+/// A substituted list marker is drawn monospaced, like every marker, so `view::BULLETS` is asked of
+/// the mono family rather than the UI one. A code point that is not there comes back `.notdef` and
+/// the editor draws tofu where the bullet should be — which is MDEDIT-92's failure mode, and the
+/// reason it is asked here rather than assumed against a Unicode chart.
+#[test]
+fn every_bullet_a_list_draws_is_in_the_font() {
+    let mut text = engine();
+    let mut missing = Vec::new();
+
+    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}'] {
+        let advances = shape(&mut text, bullet, FontFamily::Mono, 16.0);
+        if advances.iter().any(|advance| *advance < 0.0) {
+            missing.push(format!("U+{:04X}", u32::from(bullet)));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "the mono font on this machine has no glyph for: {}",
+        missing.join(", ")
     );
 }
 

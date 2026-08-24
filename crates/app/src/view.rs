@@ -20,6 +20,8 @@
 //! own rules pair delimiters within a line, so the state resets at every newline; without that an
 //! unterminated `**` would embolden the rest of the file.
 
+use std::borrow::Cow;
+
 use mdedit_document::Document;
 use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -408,21 +410,24 @@ pub struct Decoration<'a> {
 pub struct ViewRun<'a> {
     /// The text of the run.
     ///
-    /// Borrowed from the buffer. Every run is a contiguous slice of it — concealing a marker drops a
-    /// whole run rather than splicing one, so it is only the *concatenation* of runs that is not
-    /// contiguous, which is what the previous comment here had wrong.
+    /// Borrowed from the buffer for all but one case, and that case is why this is a [`Cow`]: a
+    /// concealed list marker is *substituted* rather than dropped (MDEDIT-141), so `• ` has to come
+    /// from somewhere the buffer does not contain.
     ///
-    /// Owning it cost a `String` allocation per run per frame. Removing that turned out **not** to be
-    /// measurable (MDEDIT-37 — `build_runs_in` on a JSON chunk went 0.064 ms to 0.068, which is
-    /// noise); the cost was `Document::block_at`. It stays because it is strictly less work and the
-    /// comment it replaced was wrong, not because it made anything faster.
-    pub text: &'a str,
+    /// Owning every run cost a `String` allocation per run per frame, and removing that turned out
+    /// **not** to be measurable (MDEDIT-37 — `build_runs_in` on a JSON chunk went 0.064 ms to 0.068,
+    /// which is noise). So borrowing stays the default because it is strictly less work, and the one
+    /// run that cannot borrow pays for itself alone.
+    pub text: Cow<'a, str>,
     /// How it is shaped.
     pub style: TextStyle,
     /// Where it came from in the buffer.
     pub source: ByteSpan,
     /// What colour to draw it.
     pub colour: Rgba,
+    /// Whether [`text`](Self::text) stands for [`source`](Self::source) rather than being it —
+    /// see [`StyledRun::substituted`], which this is carried through to.
+    pub substituted: bool,
 }
 
 /// Inline styling carried while walking segments.
@@ -536,6 +541,8 @@ pub fn build_runs_in<'t>(
                 builder.note_link(marker, piece);
                 if revealed {
                     builder.push_split(piece, span, Role::Marker(marker));
+                } else if let Some(drawn) = substitute(marker, piece) {
+                    builder.push_substitute(drawn, span, Role::Marker(marker));
                 }
             }
             // Never concealed, whatever the caret is doing: the whole point of the colour-only
@@ -549,6 +556,50 @@ pub fn build_runs_in<'t>(
 
     builder.runs
 }
+
+/// What a concealed marker draws instead of nothing, or `None` to keep dropping it (MDEDIT-141).
+///
+/// Concealment is safe for scaffolding whose removal still reads — hide `**` and bold text remains.
+/// A list marker is the case where it is not: hide `- ` and a list is pixel-identical to consecutive
+/// paragraphs, with the ordered case worse still, because the number carries information no styling
+/// replaces.
+///
+/// **Substituted rather than revealed.** Revealing an ordered marker draws the right pixels in one
+/// line, and puts its bytes back in the caret's path — which MDEDIT-118 cleared on purpose. A
+/// substitute occupies the same place on screen and no place in the buffer.
+///
+/// **The indent comes free.** `mdedit_markers` counts a list marker's leading whitespace as part of
+/// the marker, so `␣␣- ` is concealed indent and all; carrying that whitespace into the substitute is
+/// the whole of what makes nesting visible. Nothing here computes a depth or an offset.
+fn substitute(marker: Marker, piece: &str) -> Option<Cow<'_, str>> {
+    if marker != Marker::ListItem {
+        return None;
+    }
+
+    let indent = piece.len() - piece.trim_start_matches([' ', '\t']).len();
+    let rest = &piece[indent..];
+    let bullet = rest.chars().next()?;
+    if !matches!(bullet, '-' | '*' | '+') {
+        // An ordered marker is already what it should look like, and CommonMark keeps the author's
+        // number rather than renumbering — so the bytes are the right answer as well as the easy
+        // one. The work here is not discarding them.
+        return Some(Cow::Borrowed(piece));
+    }
+
+    let mut drawn = String::with_capacity(piece.len() + BULLETS[0].len_utf8());
+    drawn.push_str(&piece[..indent]);
+    drawn.push(BULLETS[(indent / 2).min(BULLETS.len() - 1)]);
+    drawn.push_str(&rest[bullet.len_utf8()..]);
+    Some(Cow::Owned(drawn))
+}
+
+/// The bullet drawn at each nesting depth, deepest repeating.
+///
+/// The web's convention, and a *glyph* rather than a colour, so the palette's "never colour alone"
+/// contract holds by construction. Depth is read from the indent in pairs of spaces because that is
+/// what a nested list is written with; a tab-indented list draws every level with the first bullet,
+/// which is wrong-looking rather than broken and has no reported user.
+const BULLETS: [char; 3] = ['•', '◦', '▪'];
 
 /// The part of `span` inside `within`, or `None` if they do not overlap.
 ///
@@ -817,13 +868,36 @@ impl<'t> Builder<'_, 't> {
         }
     }
 
+    /// Pushes text that stands for a concealed marker rather than coming from the buffer.
+    ///
+    /// One run, no splitting at newlines: a list marker is within a line by definition.
+    ///
+    /// The run keeps the **marker's own span**, which is what lets [`colour_at`] recover the bullet's
+    /// colour from a glyph — and the glyphs of a run whose text is not its bytes all collapse onto
+    /// that span's start, which is what keeps a click on the bullet out of the marker's interior.
+    /// [`StyledRun::substituted`] is where that contract is written down.
+    fn push_substitute(&mut self, text: Cow<'t, str>, span: ByteSpan, role: Role) {
+        if text.is_empty() {
+            return;
+        }
+        let (style, colour) = self.decorate(span.start(), role);
+        self.runs.push(ViewRun {
+            text,
+            style,
+            source: span,
+            colour,
+            substituted: true,
+        });
+    }
+
     fn push_one(&mut self, text: &'t str, start: usize, style: TextStyle, colour: Rgba) {
         if text.is_empty() {
             return;
         }
         self.runs.push(ViewRun {
-            text,
+            text: Cow::Borrowed(text),
             style,
+            substituted: false,
             source: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(start + text.len())),
             colour,
         });
@@ -831,13 +905,17 @@ impl<'t> Builder<'_, 't> {
 }
 
 /// Borrows the runs as [`StyledRun`]s for the layout engine.
+///
+/// The borrow is from the *runs*, not from the buffer they mostly came from: a substituted run owns
+/// its text (MDEDIT-141), and it outlives the `layout` call because the run vector does.
 #[must_use]
-pub fn as_styled<'a>(runs: &[ViewRun<'a>]) -> Vec<StyledRun<'a>> {
+pub fn as_styled<'a>(runs: &'a [ViewRun<'_>]) -> Vec<StyledRun<'a>> {
     runs.iter()
         .map(|run| StyledRun {
-            text: run.text,
+            text: &run.text,
             style: run.style,
             source: run.source,
+            substituted: run.substituted,
         })
         .collect()
 }

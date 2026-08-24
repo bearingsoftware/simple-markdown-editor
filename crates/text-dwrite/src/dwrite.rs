@@ -248,8 +248,14 @@ impl SourceMap {
 
         for run in runs {
             let base = run.source.start().get();
+            // A substituted run's text is not the buffer's, so its own byte indices address nothing:
+            // every unit of it reports where the run starts. See `StyledRun::substituted`.
             for (byte_index, ch) in run.text.char_indices() {
-                let offset = ByteOffset::new(base + byte_index);
+                let offset = ByteOffset::new(if run.substituted {
+                    base
+                } else {
+                    base + byte_index
+                });
                 let before = utf16.len();
                 let mut buf = [0u16; 2];
                 utf16.extend_from_slice(ch.encode_utf16(&mut buf));

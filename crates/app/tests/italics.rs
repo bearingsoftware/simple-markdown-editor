@@ -39,7 +39,7 @@ fn slanted(source: &str, needle: &str, language: &'static dyn Language, mode: Mo
     assert!(
         !matching.is_empty(),
         "no run holds {needle:?}; the runs are {:?}",
-        runs.iter().map(|run| run.text).collect::<Vec<_>>()
+        runs.iter().map(|run| run.text.as_ref()).collect::<Vec<_>>()
     );
     matching.iter().all(|run| run.style.italic)
 }

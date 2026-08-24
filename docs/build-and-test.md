@@ -151,7 +151,12 @@ It works: across two runs whose *absolute* times differed by 3× — 6.27 ms and
 analysis — the measured ratio moved from ×2.09 to ×1.99. Copy the shape for any future
 this-versus-that measurement rather than reaching for a criterion baseline.
 
-`cargo test --release -- --ignored` is reserved for perf assertions. **None exist yet**, and they will
+The `*_cost.rs` files in `crates/app/tests` are the other half of this: ignored tests that print a
+number and assert nothing — `json_typing_cost`, `validate_cost`, `wrap_cost`, `find_cost`,
+`list_cost`. Each uses only long-standing API on purpose, so the same file can be copied into a
+worktree of an older commit and the two runs compared.
+
+`cargo test --release -- --ignored` is otherwise reserved for perf assertions. **None exist yet**, and they will
 not run in CI: GitHub runners are virtualised and on AC power, which
 [`docs/research/06-performance-targets.md`](research/06-performance-targets.md) identifies as the least
 informative condition. They belong in a local harness whose numbers go in the PR body.

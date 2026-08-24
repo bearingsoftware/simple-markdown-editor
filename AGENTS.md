@@ -213,6 +213,9 @@ benchmarks and why each job runs where it does.
 - **Preview draws no Markdown syntax at all, including under the caret** (MDEDIT-118). So a marker is
   not editable in place, and the caret steps over a concealed one rather than through its bytes.
   `Ctrl+/` is the escape hatch and the only mode that draws a marker.
+- **A concealed marker is substituted, never revealed** (MDEDIT-141). Where the marker *is* the
+  meaning — a list bullet, a number — `view::substitute` draws a stand-in rather than dropping the
+  run. Read `StyledRun::substituted` before changing what a glyph points at.
 - **All chrome draws after the document**, and there is no depth buffer or scissor — painter's order
   is the whole of the answer. See [`docs/decisions/chrome.md`](docs/decisions/chrome.md), which also
   holds the z-order rules for the panels that are hit-tested.

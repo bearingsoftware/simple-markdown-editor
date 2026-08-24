@@ -50,7 +50,7 @@ fn drawn(editor: &Editor<Grid>) -> String {
         &text,
     )
     .iter()
-    .map(|run| run.text)
+    .map(|run| run.text.as_ref())
     .collect()
 }
 
