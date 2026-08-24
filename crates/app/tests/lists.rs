@@ -178,3 +178,29 @@ fn clicking_a_number_does_not_land_inside_the_marker() {
         );
     }
 }
+
+/// **`push_substitute` pushes one run and does not split at newlines**, on the grounds that a list
+/// marker is within a line by definition. That is an assumption about `mdedit-markers`, so it is
+/// asked rather than asserted in a comment — a marker carrying a `\n` would take the inline styling
+/// state across a line boundary with it, which is the bug `push_split` exists to prevent.
+#[test]
+fn no_substituted_marker_spans_a_line() {
+    for source in [
+        "-\n- two\n",
+        "- \n",
+        "*\n",
+        "1.\n",
+        "  -\n",
+        "- a\n  - b\n",
+        "> - quoted\n",
+    ] {
+        let document = Document::from(source);
+        for run in build_runs(&document, &Theme::default(), source) {
+            assert!(
+                !run.substituted || !run.text.contains('\n'),
+                "{source:?}: the substitute {:?} carries a newline",
+                run.text,
+            );
+        }
+    }
+}
