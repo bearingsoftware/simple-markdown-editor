@@ -149,11 +149,19 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   the same pixels and put those bytes back in the caret's path, which MDEDIT-118 cleared. CommonMark
   keeps the author's start number, so there is nothing to renumber and nothing to invent.
 
-  **Two things follow for the glyphs, and both are load-bearing** — see `StyledRun::is_substituted`,
+  **Two things follow for the glyphs, and both are load-bearing** — see `StyledRun::substituted`,
   which is where a backend reads them. Every glyph of a substituted run reports the run's source
   **start**, collapsed: collapsed, so the caret cannot be dropped into the middle of bytes that are
   not there; the start rather than an empty span elsewhere, because a glyph's colour is recovered by
   asking which run's span contains it, and a span containing nothing answers nobody.
+
+  **The flag is declared, and the first version of it was derived — from `text.len() !=
+  source.len()`, which is wrong in both directions.** Chrome passes an empty span with real text,
+  exactly as `StyledRun` told it to, so the derivation collapsed its glyphs and put the find bar's
+  caret at the end of the box for every position but the start. And a substituted *ordered* marker
+  draws its own bytes, so its lengths match and the derivation missed it — letting a click land at
+  byte 1 of `7. `, inside a concealed marker. Neither is visible from the list side of the change,
+  which is the argument for declaring a thing the caller knows and the callee cannot work out.
 
   **Not a hanging indent.** Substitution indents an item's *first* row; a wrapped row still begins at
   the layout's left edge, so a long item wraps back under its own bullet. That needs a concept
