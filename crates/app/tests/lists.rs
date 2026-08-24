@@ -18,7 +18,7 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::view::{Theme, ViewRun, build_runs};
 use mdedit_document::{Document, Selection};
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{Layout, TextLayout};
 
 mod stub;
@@ -203,4 +203,46 @@ fn no_substituted_marker_spans_a_line() {
             );
         }
     }
+}
+
+// ---- MDEDIT-147: the units a hanging indent is assembled from ----
+
+/// What `list::units` cuts a chunk into, as text, so a wrong boundary reads as a wrong string.
+fn units_of(source: &str) -> Vec<&str> {
+    let document = Document::from(source);
+    let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len()));
+    mdedit_app::list::units(&document, whole, source)
+        .into_iter()
+        .map(|unit| unit.slice(source))
+        .collect()
+}
+
+#[test]
+fn a_flat_list_is_one_unit_per_item() {
+    assert_eq!(units_of("- alpha\n- beta\n"), vec!["- alpha\n", "- beta\n"],);
+}
+
+/// The reason this needs no recursion: a nested item's marker is a marker like any other, so it
+/// opens its own unit and brings its own deeper indent with it.
+#[test]
+fn a_nested_item_is_a_unit_of_its_own() {
+    assert_eq!(
+        units_of("- parent\n  - child\n- sibling\n"),
+        vec!["- parent\n", "  - child\n", "- sibling\n"],
+    );
+}
+
+/// A continuation paragraph belongs to the item above it, which is where its bytes are.
+#[test]
+fn a_continuation_paragraph_stays_with_its_item() {
+    assert_eq!(
+        units_of("- alpha\n  more of alpha\n- beta\n"),
+        vec!["- alpha\n  more of alpha\n", "- beta\n"],
+    );
+}
+
+/// Nothing to cut. The caller then lays the chunk out as ordinary lines rather than as an empty list.
+#[test]
+fn a_chunk_with_no_list_marker_has_no_units() {
+    assert!(units_of("just a paragraph\n").is_empty());
 }
