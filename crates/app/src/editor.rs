@@ -42,6 +42,7 @@ use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
 use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
+use crate::list;
 use crate::pane;
 use crate::popup;
 use crate::prompt::{
@@ -8896,8 +8897,17 @@ impl<T: TextLayout> Editor<T> {
             Some(BlockKind::Table) => self.lay_out_table(chunk, frame),
             _ => None,
         };
+        // MDEDIT-147. A list is the other chunk that is not a plain run of lines: its items are laid
+        // out apart so a wrapped one hangs under its own text rather than under its bullet. It needs
+        // no `Grid` — nothing about a list drops a source line, so `hit` goes on counting newlines.
+        let hung = match chunk.kind {
+            Some(BlockKind::List) if grid.is_none() => self.lay_out_list(chunk, frame),
+            _ => None,
+        };
         let (mut layout, grid) = if let Some((layout, grid)) = grid {
             (layout, Some(grid))
+        } else if let Some(layout) = hung {
+            (layout, None)
         } else {
             let runs =
                 view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
@@ -8995,6 +9005,43 @@ impl<T: TextLayout> Editor<T> {
 
         let body = chunk.span.slice(&frame.text);
         Some(table::assemble(&rows, &cells, body.ends_with('\n')))
+    }
+
+    /// Lays a list out item by item, so a wrapped item hangs under its text (MDEDIT-147).
+    ///
+    /// `None` when the chunk holds no list marker after all, and the caller then lays it out as
+    /// ordinary lines — the same bargain [`Self::lay_out_table`] strikes with a malformed table.
+    ///
+    /// **Plain mode never comes here**, for the reason a table does not: `Ctrl+/` exists to show the
+    /// bytes, and the indent hangs off a marker that plain mode draws in full. There is nothing to
+    /// substitute, so there is nothing to hang from.
+    ///
+    /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
+    /// it leaves. `list`'s own docs say why one call cannot do it.
+    fn lay_out_list(&mut self, chunk: blocks::Chunk, frame: &Frame) -> Option<Layout> {
+        if self.decoration().mode == view::Mode::Plain {
+            return None;
+        }
+        let units = list::units(self.document(), chunk.span, &frame.text);
+        if units.is_empty() {
+            return None;
+        }
+
+        let mut items = Vec::with_capacity(units.len());
+        for unit in units {
+            let runs = view::build_runs_in(self.document(), self.decoration(), unit, &frame.text);
+            // The substituted marker is the run the indent is measured from, and it is always the
+            // first: `units` cuts at the marker, so nothing precedes it inside the unit.
+            let split = usize::from(runs.first().is_some_and(|run| run.substituted));
+            let (marker, rest) = runs.split_at(split);
+
+            let marker = self.text.layout(&view::as_styled(marker), f32::MAX).ok()?;
+            let width = (frame.width - list::width_of(&marker)).max(1.0);
+            let text = self.text.layout(&view::as_styled(rest), width).ok()?;
+            items.push(list::Item { marker, text });
+        }
+
+        Some(list::assemble(&items))
     }
 
     /// What a chunk's height is before it has been measured.
