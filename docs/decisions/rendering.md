@@ -178,6 +178,44 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   and MDEDIT-37 found `block_at` to be the cost in there. A frame decorates visible chunks only, so a
   screen of items is a few microseconds. `list_cost.rs`.
 
+- **A wrapped list item hangs under its own text, and the text trait did not have to grow to do it.**
+  MDEDIT-147. Substitution gives an item's *first* row its bullet and its nesting indent; a
+  continuation row still began at the layout's left edge, so a long item wrapped back underneath its
+  own bullet.
+
+  **The ticket was raised assuming this needed a hanging indent on `TextLayout::layout`**, which takes
+  `(&[StyledRun], max_width)` and nothing else — and that premise is true and stops one step short, in
+  exactly the way MDEDIT-126's did. `Layout` is not what a text engine hands back; it is what this
+  editor assembles. A table already lays its cells out apart and *places* them, so a list does the
+  same with simpler arithmetic. `mdedit-text` and both backends are untouched, and there is no shape
+  for parley to satisfy later. **The decision this ticket exists to take is "don't".**
+
+  A per-layout indent could not have worked anyway: `blocks::split` makes a whole list, nested items
+  and all, **one chunk**, so a single value on the layout call cannot express items at different
+  depths.
+
+  **The unit is an item and its indent is its own marker.** `list::units` cuts at each `ListItem`
+  marker; nesting needs no recursion, because a nested item's marker is another `ListItem` carrying
+  more leading whitespace. Each unit is laid out twice — the substituted marker alone to measure the
+  indent, then the rest at the width that leaves — and `list::assemble` stacks them. Every row of an
+  item then has the same usable text width, which is what a hanging indent *is*. One call at the
+  reduced width would be a row narrower on the first line, because the marker would be inside that
+  width as well as beside it.
+
+  **Not every `ListItem` marker opens an item**, which a test found rather than a reviewer: a
+  continuation line's leading indent is a marker too, since a marker carries its whitespace. Cutting
+  there hangs `␣␣more of alpha` as though it were an item, so a marker that is only whitespace is not
+  a boundary.
+
+  **`hit` needs nothing from this.** A table hands it row spans because a grid *drops* a source line;
+  this drops none — wrapping only ever adds rows — so counting newlines stays correct. Checked rather
+  than argued: `a_click_on_a_wrapped_row_lands_on_the_byte_under_it`.
+
+  The row-count invariant is the one to keep: a list that does not wrap must assemble to **the same
+  number of rows as the linear layout it replaces**, asserted against that layout rather than against
+  a number written by hand. Each unit ends in a newline and the engine gives it a trailing empty line,
+  so a naive stack is `2N` rows for `N` items.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage

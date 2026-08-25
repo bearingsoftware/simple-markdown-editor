@@ -215,7 +215,9 @@ benchmarks and why each job runs where it does.
   `Ctrl+/` is the escape hatch and the only mode that draws a marker.
 - **A concealed marker is substituted, never revealed** (MDEDIT-141). Where the marker *is* the
   meaning — a list bullet, a number — `view::substitute` draws a stand-in rather than dropping the
-  run. Read `StyledRun::substituted` before changing what a glyph points at.
+  run. Read `StyledRun::substituted` before changing what a glyph points at. A wrapped item then hangs
+  under its text by **placing** each item's layout (`list.rs`, MDEDIT-147) — the text trait did not
+  grow an indent, and the next thing wanting a per-line origin should not make it grow one either.
 - **All chrome draws after the document**, and there is no depth buffer or scissor — painter's order
   is the whole of the answer. See [`docs/decisions/chrome.md`](docs/decisions/chrome.md), which also
   holds the z-order rules for the panels that are hit-tested.

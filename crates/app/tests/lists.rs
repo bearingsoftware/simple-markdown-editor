@@ -246,3 +246,114 @@ fn a_continuation_paragraph_stays_with_its_item() {
 fn a_chunk_with_no_list_marker_has_no_units() {
     assert!(units_of("just a paragraph\n").is_empty());
 }
+
+// ---- MDEDIT-147: where a wrapped item's rows begin ----
+
+/// Where the **content** starts on each drawn row, top to bottom.
+///
+/// Content rather than every glyph, and that is what makes this express the criterion: a bullet is
+/// drawn in the `key` colour and prose in `text`, so filtering to `text` asks "where does the item's
+/// text begin" without having to know which row carries a bullet. The stub gives every glyph on a row
+/// the same y, so a row is a y.
+fn content_lefts(source: &str, width: f32) -> Vec<i32> {
+    content_lefts_of(&mut Editor::new(source, Grid::new()), width)
+}
+
+/// The same measurement against an editor a test has already set up.
+fn content_lefts_of(editor: &mut Editor<Grid>, width: f32) -> Vec<i32> {
+    let quads = editor.build_frame(width, 400.0, 1.0);
+    let theme = Theme::default();
+    let wanted = [theme.text.r, theme.text.g, theme.text.b, theme.text.a];
+
+    // **Inside the document, not the chrome around it.** Line numbers sit left of the margin and the
+    // status bar's own text sits above it, both drawn in this colour — without the bounds the
+    // leftmost thing on a row is a gutter digit and the topmost "row" is a band of chrome.
+    let left_edge = MARGIN;
+    let top_edge = MARGIN + mdedit_app::toolbar::HEIGHT;
+    let mut rows: Vec<(i32, i32)> = Vec::new();
+    for quad in quads.iter().filter(|quad| {
+        quad.colour == wanted && quad.rect[0] >= left_edge && quad.rect[1] >= top_edge
+    }) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "stub metrics are whole pixels"
+        )]
+        let (y, x) = (quad.rect[1] as i32, quad.rect[0] as i32);
+        match rows.iter_mut().find(|(row, _)| *row == y) {
+            Some((_, left)) => *left = (*left).min(x),
+            None => rows.push((y, x)),
+        }
+    }
+    rows.sort_unstable();
+    rows.into_iter().map(|(_, left)| left).collect()
+}
+
+/// **The defect MDEDIT-147 exists for.** A long item's second row begins under its text, not back at
+/// the left edge where its bullet is.
+#[test]
+fn a_wrapped_item_hangs_under_its_own_text() {
+    let lefts = content_lefts("- alpha beta gamma delta\n", MARGIN + 12.0 * ADVANCE);
+    assert!(lefts.len() >= 2, "the item should have wrapped: {lefts:?}");
+    assert_eq!(
+        lefts[1], lefts[0],
+        "every row of one item starts at the same x: {lefts:?}",
+    );
+}
+
+/// And it hangs by the marker's own width, so a deeper item hangs further in.
+#[test]
+fn a_nested_wrapped_item_hangs_further_in_than_a_flat_one() {
+    let width = MARGIN + 12.0 * ADVANCE;
+    let flat = content_lefts("- alpha beta gamma delta\n", width);
+    let nested = content_lefts("  - alpha beta gamma delta\n", width);
+    assert!(
+        nested[1] > flat[1],
+        "nested {nested:?} should hang further in than flat {flat:?}",
+    );
+}
+
+/// **R1 on the plan, and the invariant most likely to catch a mistake here.** Every unit ends in a
+/// newline, so the engine gives it a trailing empty line — stacked naively that is a blank row
+/// between every pair of items. Asserted against the layout this replaces rather than against a
+/// number written by hand: plain markup takes the linear path, so it is the control.
+#[test]
+fn a_list_that_does_not_wrap_keeps_the_rows_it_had() {
+    let source = "- alpha\n- beta\n  - child\n\nafter\n";
+    let hung = content_lefts(source, 600.0).len();
+
+    let mut editor = Editor::new(source, Grid::new());
+    editor.toggle_mode();
+    let linear = content_lefts_of(&mut editor, 600.0).len();
+
+    assert_eq!(
+        hung, linear,
+        "the hanging layout has a different number of rows than the linear one it replaces",
+    );
+}
+
+/// **R2 on the plan, checked rather than assumed.** A table hands `hit` its row spans because a grid
+/// *drops* a source line; this drops none, so counting newlines still finds a row's bytes. What that
+/// argument does not cover is whether a glyph on a *moved* row still addresses the byte under it — the
+/// placement rewrites positions, and MDEDIT-126's two defects both lived in exactly that seam.
+#[test]
+fn a_click_on_a_wrapped_row_lands_on_the_byte_under_it() {
+    let source = "- alpha beta gamma delta\n";
+    let width = MARGIN + 12.0 * ADVANCE;
+    let mut editor = Editor::new(source, Grid::new());
+    editor.build_frame(width, 400.0, 1.0);
+
+    // The first character of the second row, which hangs one marker-width in.
+    let x = MARGIN + 2.0 * ADVANCE + ADVANCE / 2.0;
+    let y = MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT + LINE_HEIGHT / 2.0;
+    editor.click_at(x, y);
+
+    let caret = editor.document().selection().head().get();
+    let under = source
+        .get(caret..)
+        .and_then(|rest| rest.chars().next())
+        .expect("the caret landed inside the document");
+    assert!(
+        caret > 2 && under.is_alphabetic(),
+        "clicking the start of the wrapped row put the caret at {caret} ({under:?})",
+    );
+}

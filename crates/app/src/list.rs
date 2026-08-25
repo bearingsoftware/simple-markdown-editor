@@ -183,7 +183,8 @@ fn rows_of(text: &Layout, last: bool) -> usize {
 }
 
 /// How wide a laid-out marker is, which is the indent its item's text hangs at.
-fn width_of(marker: &Layout) -> f32 {
+#[must_use]
+pub fn width_of(marker: &Layout) -> f32 {
     marker
         .glyphs()
         .map(|glyph| glyph.pos.x + glyph.advance)
