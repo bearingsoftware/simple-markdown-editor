@@ -1,0 +1,18 @@
+[package]
+name = "mdedit-image"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Resolving an image destination from document content, and decoding the PNG it names"
+
+[dependencies]
+png.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

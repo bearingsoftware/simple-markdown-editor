@@ -1048,6 +1048,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mdedit-image"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "mdedit-ini"
 version = "0.1.0"
 dependencies = [
