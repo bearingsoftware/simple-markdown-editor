@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 mdedit-document.workspace = true
+mdedit-image.workspace = true
 mdedit-file.workspace = true
 mdedit-session.workspace = true
 mdedit-json.workspace = true

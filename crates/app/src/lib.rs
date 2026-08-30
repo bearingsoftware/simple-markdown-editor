@@ -24,6 +24,7 @@ pub mod field;
 pub mod find;
 pub mod gpu;
 pub mod hit;
+pub mod image;
 pub mod ime;
 pub mod latency;
 pub mod list;
