@@ -338,3 +338,41 @@ fn editing_a_paragraph_beside_a_picture_does_not_disturb_it() {
     assert_eq!(after[0].id, before.id);
     assert_eq!(after[0].rect[2], before.rect[2]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// Against the real text engine.
+// ---------------------------------------------------------------------------------------------
+
+/// The stub answers every layout question by construction, and everything above goes through it.
+///
+/// This one does not. It exists because the stub cannot say whether the *real* pipeline reaches
+/// `lay_out_picture` at all — the grid is a different `TextLayout`, and the layer between them is
+/// exactly where MDEDIT-126's two defects lived. What is still unproven after this is only the wgpu
+/// pass, which needs a device, and whether the picture *looks* right, which needs eyes.
+///
+/// Windows-only, like `icons.rs`, and for the same reason: `mdedit-text-dwrite` compiles to nothing
+/// elsewhere.
+#[cfg(windows)]
+#[test]
+fn a_picture_is_placed_by_the_real_text_engine_too() {
+    use mdedit_text_dwrite::DirectWriteText;
+
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 100, 50);
+    let path = dir.path().join("notes.md");
+    std::fs::write(&path, "![a cat](cat.png)\n\nProse after it.\n").unwrap();
+
+    let mut workspace = Workspace::new();
+    workspace.add(path);
+    let engine = DirectWriteText::new().expect("DirectWrite is available on any supported Windows");
+    let mut editor = Editor::with_workspace(workspace, engine);
+    editor.activate_saved_tab();
+
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let drawn = editor.drawn_pictures().to_vec();
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert_eq!(drawn[0].rect[2], 100.0, "width");
+    assert_eq!(drawn[0].rect[3], 50.0, "height");
+    assert!(editor.picture(drawn[0].id).is_some(), "no pixels to upload");
+}
