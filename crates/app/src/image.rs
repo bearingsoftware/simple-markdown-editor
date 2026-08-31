@@ -33,6 +33,22 @@ use mdedit_document::Document;
 use mdedit_language::{Marker, SegmentKind};
 use mdedit_offsets::ByteSpan;
 
+/// A picture placed on screen for one frame.
+///
+/// **Data, not a draw call.** The whole reason this is a value is that CI cannot open a window: a
+/// test can assert where a picture went and how big it is without a GPU, which is the only part of
+/// this feature that can be checked automatically at all. The renderer turns these into draws and
+/// decides nothing about them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drawn {
+    /// Window-space rectangle in **physical** pixels: x, y, width, height. The same space a
+    /// `QuadInstance` is in, because it becomes one.
+    pub rect: [f32; 4],
+    /// Which decoded picture to sample. An `Editor`-assigned number, so the renderer can keep a
+    /// texture per picture and upload one only the first time it sees it.
+    pub id: u64,
+}
+
 /// An image that is the whole of its own paragraph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lone {

