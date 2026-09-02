@@ -24,7 +24,7 @@ use mdedit_session::Workspace;
 use tempfile::TempDir;
 
 mod stub;
-use stub::{Grid, MARGIN};
+use stub::{Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 900.0;
 const HEIGHT: f32 = 600.0;
@@ -375,4 +375,76 @@ fn a_picture_is_placed_by_the_real_text_engine_too() {
     assert_eq!(drawn[0].rect[2], 100.0, "width");
     assert_eq!(drawn[0].rect[3], 50.0, "height");
     assert!(editor.picture(drawn[0].id).is_some(), "no pixels to upload");
+}
+
+/// The rows glyphs were drawn on, inside the document area, deduplicated and in order.
+fn glyph_rows(editor: &mut Editor<Grid>) -> Vec<i32> {
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "stub metrics are whole pixels"
+    )]
+    let mut rows: Vec<i32> = quads
+        .iter()
+        .filter(|quad| {
+            quad.uv != [0.0, 0.0, 1.0, 1.0]
+                && quad.rect[0] >= MARGIN
+                && quad.rect[1] >= MARGIN + mdedit_app::toolbar::HEIGHT
+                // The status bar draws glyphs *below* the document, so a top bound alone counts it.
+                && quad.rect[1] < HEIGHT - mdedit_app::toolbar::HEIGHT
+        })
+        .map(|quad| quad.rect[1] as i32)
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+#[test]
+fn a_picture_is_followed_by_the_same_blank_line_a_paragraph_is() {
+    // **The defect this test was written for.** The chunk's trailing line was synthesised with
+    // height zero, and `Cached::new` subtracts a dropped line's height from the chunk's — so a
+    // picture's chunk was exactly picture-tall and the blank line every other block gets after it
+    // vanished. An image sat flush against the next paragraph while two paragraphs were a line
+    // apart. Nothing else in this file could see it: the picture's rectangle was right, its height
+    // was right, and the paragraph below it was still *below* it.
+    //
+    // Compared like for like by making the two first blocks **the same height** — a picture exactly
+    // one line tall against a one-line paragraph — so the second block lands on the same row in
+    // both, and the assertion needs no arithmetic about where a glyph sits inside its row.
+    let dir = TempDir::new().unwrap();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "stub metrics are whole positive pixels"
+    )]
+    let one_line = LINE_HEIGHT as u32;
+    write_png(&dir.path().join("cat.png"), 100, one_line);
+
+    let (mut after_picture, _) = editor_on(
+        &dir,
+        "![a](cat.png)
+
+Second.
+",
+    );
+    let (mut after_prose, _) = editor_on(
+        &dir,
+        "First.
+
+Second.
+",
+    );
+
+    let picture = pictures_of(&mut after_picture)[0].rect;
+    assert_eq!(
+        picture[3], LINE_HEIGHT,
+        "the two first blocks must be the same height"
+    );
+
+    assert_eq!(
+        glyph_rows(&mut after_picture),
+        vec![glyph_rows(&mut after_prose)[1]],
+        "the paragraph after a picture does not sit where one after a paragraph does"
+    );
 }

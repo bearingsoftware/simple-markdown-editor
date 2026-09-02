@@ -527,7 +527,11 @@ impl Renderer {
             image_pipeline,
             image_sampler,
             image_instances,
-            image_capacity: 64,
+            // **The same constant the buffer was sized with**, not a second literal. They were 16
+            // and 64 for one commit, so `ensure_image_capacity` believed there was room for 64
+            // instances in a buffer holding 16 and `write_buffer` would have overrun it at the
+            // seventeenth picture on screen. CI has no GPU and could never have seen it.
+            image_capacity: INITIAL_PICTURES,
             pictures: HashMap::new(),
         })
     }
@@ -9282,7 +9286,31 @@ impl<T: TextLayout> Editor<T> {
         };
         let (id, picture) = self.picture_at(path)?;
         let (width, height) = crate::image::fit((picture.width, picture.height), frame.width);
-        Some(Fitted { id, width, height })
+        Some(Fitted {
+            id,
+            width,
+            height,
+            after: self.body_line_height(),
+        })
+    }
+
+    /// How tall one ordinary line of body text is, measured rather than estimated.
+    ///
+    /// A picture's chunk needs it for the blank line that follows the image, and that line has to be
+    /// the same height as the blank line after a paragraph or an image sits flush against whatever
+    /// comes next. `body_size * ESTIMATED_LINE_RATIO` is close and not equal — it is the estimate
+    /// used for a chunk that has not been through the engine yet — so this asks the engine.
+    ///
+    /// A space rather than the empty string, because `layout` hands back no lines at all for nothing
+    /// to shape; that is the MDEDIT-81 case `lay_out` repairs downstream.
+    fn body_line_height(&mut self) -> f32 {
+        let style = TextStyle::body(self.theme.body_size);
+        let run = StyledRun::from_buffer(" ", style, ByteSpan::empty_at(ByteOffset::new(0)));
+        self.text
+            .layout(&[run], f32::MAX)
+            .ok()
+            .and_then(|layout| layout.lines.first().map(|line| line.height))
+            .unwrap_or((self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0))
     }
 
     /// The directory a relative destination resolves against: the visible tab's.
@@ -10007,6 +10035,8 @@ struct Fitted {
     /// Logical pixels, so a denser display draws the same picture larger rather than smaller.
     width: f32,
     height: f32,
+    /// How tall the blank line after the image is — see [`picture_layout`].
+    after: f32,
 }
 
 /// A chunk that has been through the text engine.
@@ -10141,6 +10171,18 @@ struct Anchor {
 /// The trailing line is the same bargain `table::assemble` strikes: a chunk whose bytes end in a
 /// newline gets one from the text engine and `Cached` drops it again through
 /// `blocks::drops_last_line`, so a layout assembled without one loses the picture's own row instead.
+///
+/// **The picture replaces the chunk's first line and no others.** A chunk laid out linearly gets one
+/// line per newline plus one, and `Cached` then drops the last through `blocks::drops_last_line`; a
+/// paragraph's `X\n\n` is therefore three lines and two drawn rows — the text and the blank line
+/// after it. So this shape has to be the same, with the first row as tall as the picture and the
+/// rest an ordinary line each.
+///
+/// Getting that wrong is invisible in every obvious way. The first attempt emitted one trailing line
+/// of height zero, which made the chunk exactly picture-tall: the blank line every other block gets
+/// after it disappeared and an image sat flush against the next paragraph, while the picture's own
+/// rectangle, its size and its position were all still correct. See
+/// `a_picture_is_followed_by_the_same_blank_line_a_paragraph_is`.
 fn picture_layout(fitted: Fitted, body: &str) -> Layout {
     let mut lines = vec![mdedit_text::LayoutLine {
         baseline: fitted.height,
@@ -10148,10 +10190,12 @@ fn picture_layout(fitted: Fitted, body: &str) -> Layout {
         glyphs: Vec::new(),
         rules: Vec::new(),
     }];
-    if body.ends_with('\n') {
+    let mut baseline = fitted.height;
+    for _ in body.bytes().filter(|byte| *byte == b'\n') {
+        baseline += fitted.after;
         lines.push(mdedit_text::LayoutLine {
-            baseline: fitted.height,
-            height: 0.0,
+            baseline,
+            height: fitted.after,
             glyphs: Vec::new(),
             rules: Vec::new(),
         });
