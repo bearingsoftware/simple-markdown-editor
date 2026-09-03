@@ -796,11 +796,18 @@ fn create_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            // **Filtering, though the glyph sampler does not filter** (MDEDIT-146). This layout is
+            // shared by both pipelines, and a picture is sampled `Linear` because it is nearly
+            // always scaled down. wgpu's rule runs one way only: a non-filtering sampler binds
+            // happily to a filtering slot, and a filtering one to a non-filtering slot is a
+            // validation error — which is what this was, and it aborted the process the first time a
+            // picture was actually uploaded. Both `R8Unorm` and `Rgba8Unorm` are filterable formats,
+            // so declaring it costs the glyphs nothing: `Nearest` still resolves to nearest.
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -809,7 +816,7 @@ fn create_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
         ],
