@@ -12,10 +12,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+use std::time::SystemTime;
 
 use crate::clicks::{Clicks, Granularity};
 use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
+use mdedit_image::Picture;
 use mdedit_language::Diagnostic;
 use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -299,6 +301,12 @@ pub type OpenPathPicker = Box<dyn Fn() -> Option<Vec<PathBuf>>>;
 
 /// Left and top margin, in device-independent pixels.
 const MARGIN: f32 = 24.0;
+
+/// How many pictures the instance buffer starts with (MDEDIT-146).
+///
+/// A screenful of a document that is mostly pictures, and it grows if that is wrong. Small because
+/// the usual answer is zero: most documents have no image on screen at all.
+const INITIAL_PICTURES: u64 = 16;
 /// Fewest digits the gutter is sized for, so a short file does not visibly resize its gutter the
 /// moment it grows past nine lines.
 const GUTTER_MIN_DIGITS: usize = 2;
@@ -376,6 +384,15 @@ struct Renderer {
     bind_group: wgpu::BindGroup,
     bind_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// The second pipeline: colour from a texture of its own rather than coverage from the atlas
+    /// (MDEDIT-146). Same instance format, same bind-group layout, different entry points.
+    image_pipeline: wgpu::RenderPipeline,
+    /// Linear, where [`sampler`](Self::sampler) is nearest — a picture is nearly always scaled down.
+    image_sampler: wgpu::Sampler,
+    image_instances: wgpu::Buffer,
+    image_capacity: u64,
+    /// A bind group per uploaded picture, by the editor's picture id.
+    pictures: HashMap<u64, wgpu::BindGroup>,
 }
 
 /// Why the GPU could not be brought up.
@@ -464,31 +481,7 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(SHADER.into()),
         });
 
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("glyph atlas"),
-            size: wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            // Coverage, one byte per texel. The colour comes from the instance.
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("atlas"),
-            // Nearest: glyphs are rasterized at the exact device scale, so any filtering would only
-            // blur text that DirectWrite already hinted.
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            ..Default::default()
-        });
-
+        let (atlas_texture, sampler) = create_atlas_parts(&device);
         let bind_layout = create_bind_layout(&device);
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
@@ -508,7 +501,15 @@ impl Renderer {
 
         let bind_group = make_bind_group(&device, &bind_layout, &globals, &atlas_texture, &sampler);
 
-        let pipeline = create_pipeline(&device, &shader, &bind_layout, format);
+        let pipeline = create_pipeline(
+            &device,
+            &shader,
+            &bind_layout,
+            format,
+            ("vs_main", "fs_main"),
+        );
+        let (image_pipeline, image_sampler, image_instances) =
+            create_image_parts(&device, &shader, &bind_layout, format);
 
         Ok(Self {
             surface,
@@ -523,7 +524,76 @@ impl Renderer {
             bind_group,
             bind_layout,
             sampler,
+            image_pipeline,
+            image_sampler,
+            image_instances,
+            // **The same constant the buffer was sized with**, not a second literal. They were 16
+            // and 64 for one commit, so `ensure_image_capacity` believed there was room for 64
+            // instances in a buffer holding 16 and `write_buffer` would have overrun it at the
+            // seventeenth picture on screen. CI has no GPU and could never have seen it.
+            image_capacity: INITIAL_PICTURES,
+            pictures: HashMap::new(),
         })
+    }
+
+    /// Uploads any picture on screen this frame that has not been uploaded already.
+    ///
+    /// Keyed on the editor's picture id, so the same file in two paragraphs is one texture — and so
+    /// a scroll that brings a picture back costs nothing.
+    ///
+    /// **Never evicted.** A session that opens a hundred distinct images holds a hundred textures,
+    /// which is the same bargain `heights` strikes and a smaller one than `layouts`: the editor's own
+    /// picture cache is what bounds this, and capping it is the follow-up that measurement should
+    /// ask for rather than a guess made now.
+    fn upload_pictures(&mut self, sources: &[(u64, Rc<Picture>)]) {
+        for (id, picture) in sources {
+            if self.pictures.contains_key(id) {
+                continue;
+            }
+            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("picture"),
+                size: wgpu::Extent3d {
+                    width: picture.width,
+                    height: picture.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                // Not `Rgba8UnormSrgb`: the surface is deliberately configured non-sRGB, so the
+                // shader's output reaches the display unconverted and a picture's bytes should too.
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &picture.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(picture.width * 4),
+                    rows_per_image: Some(picture.height),
+                },
+                wgpu::Extent3d {
+                    width: picture.width,
+                    height: picture.height,
+                    depth_or_array_layers: 1,
+                },
+            );
+            let bind_group = make_bind_group(
+                &self.device,
+                &self.bind_layout,
+                &self.globals,
+                &texture,
+                &self.image_sampler,
+            );
+            self.pictures.insert(*id, bind_group);
+        }
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -554,6 +624,21 @@ impl Renderer {
         );
     }
 
+    /// Grows the picture instance buffer. No bind group to rebuild: a picture's is built with its
+    /// texture and does not name this buffer.
+    fn ensure_image_capacity(&mut self, needed: u64) {
+        if needed <= self.image_capacity {
+            return;
+        }
+        self.image_capacity = needed.next_power_of_two();
+        self.image_instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pictures"),
+            size: self.image_capacity * size_of::<QuadInstance>() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+    }
+
     fn ensure_capacity(&mut self, needed: u64) {
         if needed <= self.instance_capacity {
             return;
@@ -575,7 +660,7 @@ impl Renderer {
     }
 
     /// Submits one frame and presents it.
-    fn draw(&mut self, quads: &[QuadInstance], background: Rgba) {
+    fn draw(&mut self, quads: &[QuadInstance], pictures: &[crate::image::Drawn], background: Rgba) {
         // A surface is transiently unavailable while a window is resized, occluded or minimised.
         // Skipping the frame is the documented response to each; the next redraw presents.
         // `Suboptimal` still carries a usable texture, so it draws rather than dropping a frame the
@@ -599,6 +684,23 @@ impl Renderer {
         );
         self.queue
             .write_buffer(&self.instances, 0, bytemuck::cast_slice(quads));
+
+        // One instance per picture, in the order they will be drawn. `uv` is the whole texture
+        // rather than a region of one, and the white `colour` is what `fs_image` multiplies by —
+        // the multiply exists so a future tint has somewhere to go, and today it changes nothing.
+        let image_quads: Vec<QuadInstance> = pictures
+            .iter()
+            .map(|drawn| QuadInstance {
+                rect: drawn.rect,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                colour: [1.0, 1.0, 1.0, 1.0],
+            })
+            .collect();
+        if !image_quads.is_empty() {
+            self.ensure_image_capacity(image_quads.len() as u64);
+            self.queue
+                .write_buffer(&self.image_instances, 0, bytemuck::cast_slice(&image_quads));
+        }
 
         let view = frame
             .texture
@@ -630,6 +732,22 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // **Pictures first, in the same pass.** There is no depth buffer and no scissor, so
+            // painter's order is the whole of the answer (`docs/decisions/chrome.md`) — and a
+            // picture belongs under everything, because the document's glyphs and then the chrome
+            // both have to be able to cover it. One draw apiece, because each samples its own
+            // texture and so needs its own bind group.
+            pass.set_pipeline(&self.image_pipeline);
+            pass.set_vertex_buffer(0, self.image_instances.slice(..));
+            for (index, drawn) in pictures.iter().enumerate() {
+                let Some(bind_group) = self.pictures.get(&drawn.id) else {
+                    continue;
+                };
+                pass.set_bind_group(0, bind_group, &[]);
+                let at = u32::try_from(index).unwrap_or(u32::MAX);
+                pass.draw(0..4, at..at + 1);
+            }
+
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_vertex_buffer(0, self.instances.slice(..));
@@ -678,11 +796,18 @@ fn create_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
+            // **Filtering, though the glyph sampler does not filter** (MDEDIT-146). This layout is
+            // shared by both pipelines, and a picture is sampled `Linear` because it is nearly
+            // always scaled down. wgpu's rule runs one way only: a non-filtering sampler binds
+            // happily to a filtering slot, and a filtering one to a non-filtering slot is a
+            // validation error — which is what this was, and it aborted the process the first time a
+            // picture was actually uploaded. Both `R8Unorm` and `Rgba8Unorm` are filterable formats,
+            // so declaring it costs the glyphs nothing: `Nearest` still resolves to nearest.
             wgpu::BindGroupLayoutEntry {
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -691,18 +816,24 @@ fn create_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             wgpu::BindGroupLayoutEntry {
                 binding: 2,
                 visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
             },
         ],
     })
 }
 
+/// One of the two pipelines, which differ only in their entry points.
+///
+/// A picture samples colour where a glyph samples coverage, so the fragment stage cannot be shared —
+/// but the instance format, the bind-group layout and the globals all can, which is why MDEDIT-146
+/// is a second pair of entry points rather than a second renderer.
 fn create_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     bind_layout: &wgpu::BindGroupLayout,
     format: wgpu::TextureFormat,
+    entries: (&str, &str),
 ) -> wgpu::RenderPipeline {
     let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("quads"),
@@ -715,7 +846,7 @@ fn create_pipeline(
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: shader,
-            entry_point: Some("vs_main"),
+            entry_point: Some(entries.0),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[Some(wgpu::VertexBufferLayout {
                 array_stride: size_of::<QuadInstance>() as u64,
@@ -729,7 +860,7 @@ fn create_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(entries.1),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -746,6 +877,73 @@ fn create_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// The glyph atlas's texture and its sampler.
+fn create_atlas_parts(device: &wgpu::Device) -> (wgpu::Texture, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("glyph atlas"),
+        size: wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // Coverage, one byte per texel. The colour comes from the instance.
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("atlas"),
+        // Nearest: glyphs are rasterized at the exact device scale, so any filtering would only
+        // blur text that DirectWrite already hinted.
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        ..Default::default()
+    });
+
+    (texture, sampler)
+}
+
+/// The three things only pictures need (MDEDIT-146): a pipeline, a sampler and a buffer.
+///
+/// Together rather than inline in `Renderer::new`, which is already at the length clippy will take.
+fn create_image_parts(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    bind_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::Sampler, wgpu::Buffer) {
+    let pipeline = create_pipeline(
+        device,
+        shader,
+        bind_layout,
+        format,
+        ("vs_image", "fs_image"),
+    );
+
+    // Linear, where the glyph sampler is nearest. A glyph is rasterized at the exact device scale so
+    // any filtering would only blur what DirectWrite already hinted; a picture is nearly always
+    // being scaled down to the column, and nearest there is aliasing.
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("picture"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let instances = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("pictures"),
+        size: INITIAL_PICTURES * size_of::<QuadInstance>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    (pipeline, sampler, instances)
 }
 
 fn make_bind_group(
@@ -952,6 +1150,25 @@ pub struct Editor<T: TextLayout> {
     heights: HashMap<ChunkKey, f32>,
     /// Laid-out chunks, by content. Capped — see [`MAX_CACHED_LAYOUTS`].
     layouts: HashMap<ChunkKey, Rc<Cached>>,
+    /// Decoded pictures, by the file they came from (MDEDIT-146).
+    ///
+    /// **A cache of its own rather than part of [`ChunkKey`]**, because that key hashes the chunk's
+    /// bytes and a picture's content is not in the buffer at all. Two paragraphs naming the same
+    /// file share one entry and one texture, and editing a paragraph beside an image does not
+    /// re-read it.
+    ///
+    /// **A refusal is cached too.** A document naming a file that is not there would otherwise
+    /// re-stat it on every layout, and a broken image is the common case in a document being
+    /// written — the path is typed before the file exists.
+    pictures: HashMap<PictureKey, Option<Rc<Picture>>>,
+    /// The number the next distinct picture gets, so the renderer can key a texture on it.
+    picture_ids: HashMap<PictureKey, u64>,
+    /// Which pictures the last [`build_frame`](Self::build_frame) placed, and where.
+    ///
+    /// Rebuilt each frame and read by the renderer afterwards, rather than returned: `build_frame`
+    /// returns quads and is called from thirty-odd tests, and widening its signature to carry a
+    /// second list would churn all of them to say nothing.
+    drawn_pictures: Vec<crate::image::Drawn>,
     /// What the top of the viewport is resting on, so measuring a chunk does not move the page.
     anchor: Option<Anchor>,
     /// What an input method is composing, which is deliberately not in the buffer. See [`crate::ime`].
@@ -1192,6 +1409,9 @@ impl<T: TextLayout> Editor<T> {
             follow_caret: false,
             heights: HashMap::new(),
             layouts: HashMap::new(),
+            pictures: HashMap::new(),
+            picture_ids: HashMap::new(),
+            drawn_pictures: Vec::new(),
             anchor: None,
             composition: Composition::new(),
             caret_area: None,
@@ -1894,6 +2114,52 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn text_backend(&self) -> &T {
         &self.text
+    }
+
+    /// Where the last [`build_frame`](Self::build_frame) put each picture (MDEDIT-146).
+    ///
+    /// The renderer's other half of a frame, and a headless test's only view of one: CI cannot open
+    /// a window, so this is where "the picture is 900 pixels wide and starts at the margin" is
+    /// checkable at all.
+    #[must_use]
+    pub fn drawn_pictures(&self) -> &[crate::image::Drawn] {
+        &self.drawn_pictures
+    }
+
+    /// The pixels behind a [`Drawn::id`](crate::image::Drawn::id), for the renderer to upload.
+    ///
+    /// Looked up rather than carried on the `Drawn` so that a picture drawn twice — the same file in
+    /// two paragraphs — is one texture and one upload.
+    #[must_use]
+    pub fn picture(&self, id: u64) -> Option<&Picture> {
+        let key = self
+            .picture_ids
+            .iter()
+            .find(|(_, assigned)| **assigned == id)
+            .map(|(key, _)| key)?;
+        self.pictures.get(key)?.as_deref()
+    }
+
+    /// The distinct pictures behind `drawn`, ready to hand to the renderer.
+    ///
+    /// Deduplicated, so the same file in two paragraphs is offered once.
+    fn picture_sources(&self, drawn: &[crate::image::Drawn]) -> Vec<(u64, Rc<Picture>)> {
+        let mut sources: Vec<(u64, Rc<Picture>)> = Vec::new();
+        for id in drawn.iter().map(|picture| picture.id) {
+            if sources.iter().any(|(seen, _)| *seen == id) {
+                continue;
+            }
+            let found = self
+                .picture_ids
+                .iter()
+                .find(|(_, assigned)| **assigned == id)
+                .and_then(|(key, _)| self.pictures.get(key))
+                .and_then(Clone::clone);
+            if let Some(picture) = found {
+                sources.push((id, picture));
+            }
+        }
+        sources
     }
 
     /// The buffer being edited, to change.
@@ -3540,6 +3806,9 @@ impl<T: TextLayout> Editor<T> {
     /// assert what gets drawn without a GPU: nothing here touches the renderer.
     pub fn build_frame(&mut self, width: f32, height: f32, scale: f32) -> Vec<QuadInstance> {
         let mut quads = Vec::new();
+        // Rebuilt from scratch: what was on screen last frame says nothing about this one, and a
+        // picture scrolled off has to stop being drawn.
+        self.drawn_pictures.clear();
         // Everything the chrome has not taken. One place decides it; see `crate::content`.
         self.window_height = height / scale;
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
@@ -7685,6 +7954,7 @@ impl<T: TextLayout> Editor<T> {
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             self.draw_table(quads, &cached, chunk_top, at);
+            self.place_picture(&cached, chunk_top, at);
 
             // `usize::MAX` for "there was no row above", which no line number can collide with.
             let mut previous_line = usize::MAX;
@@ -7947,6 +8217,32 @@ impl<T: TextLayout> Editor<T> {
         for x in grid.column_edges() {
             solid(x, 0.0, hairline, total);
         }
+    }
+
+    /// Records where this chunk's picture goes, if it has one (MDEDIT-146).
+    ///
+    /// **Recorded rather than drawn**, and into a list of its own rather than into `quads`. A
+    /// picture samples a texture of its own, so it cannot share the glyph atlas's draw call; and
+    /// keeping it as data is what lets a test assert the geometry without a GPU, which is the only
+    /// automated check this feature can have.
+    ///
+    /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
+    /// hanging past the edge of the document area is covered by chrome, which draws after — the
+    /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
+    fn place_picture(&mut self, cached: &Cached, chunk_top: f32, at: Placement) {
+        let Some(fitted) = cached.picture else {
+            return;
+        };
+        let (x, y) = at.content.to_window(0.0, chunk_top, at.offset);
+        self.drawn_pictures.push(crate::image::Drawn {
+            rect: [
+                x * at.scale,
+                y * at.scale,
+                fitted.width * at.scale,
+                fitted.height * at.scale,
+            ],
+            id: fitted.id,
+        });
     }
 
     /// Draws the rules under and through one visual row's runs (MDEDIT-73, MDEDIT-91).
@@ -8904,10 +9200,19 @@ impl<T: TextLayout> Editor<T> {
             Some(BlockKind::List) if grid.is_none() => self.lay_out_list(chunk, frame),
             _ => None,
         };
+        // MDEDIT-146. A lone image is the third chunk that is not a run of lines, and the only one
+        // with no glyphs at all: it lays out as a single empty line as tall as the picture.
+        let picture = if grid.is_none() && hung.is_none() {
+            self.lay_out_picture(chunk, body, frame)
+        } else {
+            None
+        };
         let (mut layout, grid) = if let Some((layout, grid)) = grid {
             (layout, Some(grid))
         } else if let Some(layout) = hung {
             (layout, None)
+        } else if let Some(fitted) = picture {
+            (picture_layout(fitted, body), None)
         } else {
             let runs =
                 view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
@@ -8933,7 +9238,7 @@ impl<T: TextLayout> Editor<T> {
             });
         }
 
-        let cached = Rc::new(Cached::new(layout, grid, &chunk, body, key.last));
+        let cached = Rc::new(Cached::new(layout, grid, picture, &chunk, body, key.last));
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
         // chunk stops being an estimate and becomes a measurement — the same moment its height
         // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
@@ -8948,6 +9253,122 @@ impl<T: TextLayout> Editor<T> {
         self.layouts.insert(key, Rc::clone(&cached));
         self.heights.insert(key, cached.height);
         Some(cached)
+    }
+
+    /// Decodes the picture this chunk is, and works out how big it is drawn (MDEDIT-146).
+    ///
+    /// `None` for every chunk that is not a lone image, and for one whose file cannot be read or
+    /// decoded — a broken image then draws its alt text, which is what the editor did before
+    /// pictures existed and is never a lie about the document.
+    ///
+    /// **Plain mode never comes here**, for the reason `lay_out_table` gives: `Ctrl+/` exists to
+    /// show the bytes, and the bytes of an image are its syntax. A picture there would be the mode
+    /// failing to do the one thing it is for.
+    fn lay_out_picture(
+        &mut self,
+        chunk: blocks::Chunk,
+        body: &str,
+        frame: &Frame,
+    ) -> Option<Fitted> {
+        if self.decoration().mode == view::Mode::Plain {
+            return None;
+        }
+        // **The cheap guard, and it is load-bearing.** `image::lone` filters the document's whole
+        // segment list, so calling it for every paragraph would be quadratic in a long document.
+        // A lone image begins `![` after at most some whitespace, and that is O(this chunk).
+        if !body.trim_start().starts_with("![") {
+            return None;
+        }
+        let found = crate::image::lone(self.document(), chunk.span, &frame.text)?;
+        let destination = found.destination.slice(&frame.text);
+
+        // Everything about what a destination may name lives in `mdedit_image::resolve`, including
+        // the rule that keeps a UNC path from leaking an NTLM hash. None of it is repeated here.
+        let path = match mdedit_image::resolve(destination, self.document_directory().as_deref()) {
+            Ok(path) => path,
+            Err(refused) => {
+                Self::note_picture_refused(&refused);
+                return None;
+            }
+        };
+        let (id, picture) = self.picture_at(path)?;
+        let (width, height) = crate::image::fit((picture.width, picture.height), frame.width);
+        Some(Fitted {
+            id,
+            width,
+            height,
+            after: self.body_line_height(),
+        })
+    }
+
+    /// How tall one ordinary line of body text is, measured rather than estimated.
+    ///
+    /// A picture's chunk needs it for the blank line that follows the image, and that line has to be
+    /// the same height as the blank line after a paragraph or an image sits flush against whatever
+    /// comes next. `body_size * ESTIMATED_LINE_RATIO` is close and not equal — it is the estimate
+    /// used for a chunk that has not been through the engine yet — so this asks the engine.
+    ///
+    /// A space rather than the empty string, because `layout` hands back no lines at all for nothing
+    /// to shape; that is the MDEDIT-81 case `lay_out` repairs downstream.
+    fn body_line_height(&mut self) -> f32 {
+        let style = TextStyle::body(self.theme.body_size);
+        let run = StyledRun::from_buffer(" ", style, ByteSpan::empty_at(ByteOffset::new(0)));
+        self.text
+            .layout(&[run], f32::MAX)
+            .ok()
+            .and_then(|layout| layout.lines.first().map(|line| line.height))
+            .unwrap_or((self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0))
+    }
+
+    /// The directory a relative destination resolves against: the visible tab's.
+    ///
+    /// `None` for an untitled or generated buffer, which has no directory of its own — and a
+    /// relative destination is then refused rather than resolved against the working directory,
+    /// which is whatever the editor happened to be launched from.
+    fn document_directory(&self) -> Option<PathBuf> {
+        self.workspace
+            .active_path()?
+            .parent()
+            .map(Path::to_path_buf)
+    }
+
+    /// The decoded picture at `path`, reading and decoding it the first time only.
+    ///
+    /// `None` when the file cannot be read or is not a usable PNG — cached as a `None` so a document
+    /// naming a file that is not there costs one attempt rather than one per layout.
+    fn picture_at(&mut self, path: PathBuf) -> Option<(u64, Rc<Picture>)> {
+        let key = PictureKey::of(path)?;
+        let next = self.picture_ids.len() as u64;
+        let id = *self.picture_ids.entry(key.clone()).or_insert(next);
+
+        if let Some(cached) = self.pictures.get(&key) {
+            return cached.clone().map(|picture| (id, picture));
+        }
+
+        let decoded = match mdedit_image::read(&key.path) {
+            Ok(picture) => Some(Rc::new(picture)),
+            Err(error) => {
+                // Once, on the frame the file is first looked at, rather than every frame after —
+                // which is what caching the refusal below buys, and a broken image in a document
+                // being written would otherwise fill the log.
+                crate::log_error!("{}: {error}", key.path.display());
+                None
+            }
+        };
+        self.pictures.insert(key, decoded.clone());
+        decoded.map(|picture| (id, picture))
+    }
+
+    /// Notes a destination this editor will not read.
+    ///
+    /// Not logged when it is merely absent: a path typed before the file exists is the ordinary
+    /// state of a document being written, and saying so on every layout is noise. A destination
+    /// **refused on a rule** is worth one line, because the alternative is a picture silently not
+    /// appearing and no way to find out why.
+    fn note_picture_refused(refused: &mdedit_image::Refused) {
+        if !matches!(refused, mdedit_image::Refused::NotAFile(_)) {
+            crate::log_error!("image not drawn: {refused}");
+        }
     }
 
     /// Lays a table out as a grid: each cell on its own, then placed into columns (MDEDIT-126).
@@ -9188,6 +9609,12 @@ impl<T: TextLayout> Editor<T> {
             self.build.record(started.elapsed());
         }
 
+        // Gathered before the renderer is borrowed, because it lives in `self` and reading the
+        // picture cache through `&self` while holding `&mut self.renderer` is two borrows. Both are
+        // cheap: a `Drawn` is `Copy` and a source is an `Rc` clone, and there are usually none.
+        let pictures = self.drawn_pictures.clone();
+        let sources = self.picture_sources(&pictures);
+
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
@@ -9195,7 +9622,8 @@ impl<T: TextLayout> Editor<T> {
             renderer.upload_atlas(&self.atlas);
             self.atlas.mark_clean();
         }
-        renderer.draw(&quads, self.theme.background);
+        renderer.upload_pictures(&sources);
+        renderer.draw(&quads, &pictures, self.theme.background);
         self.first_paint.get_or_insert_with(Instant::now);
 
         // Sampled after `present` returns, which is the last moment this process controls. See
@@ -9577,6 +10005,47 @@ impl ChunkKey {
     }
 }
 
+/// What identifies a decoded picture (MDEDIT-146).
+///
+/// The resolved path, plus the stamp of the bytes read from it. The stamp is what makes replacing a
+/// file behind the editor's back safe rather than merely unlikely: a cache on the path alone would
+/// hand back the old picture for the new bytes, and it costs one `metadata` call that
+/// `mdedit_image::read` has to make anyway.
+///
+/// **The same length-and-mtime pair `mdedit-file` stamps a loaded buffer with**, and it is weak for
+/// the same reason and to the same degree: a filesystem with a coarse clock can miss a rewrite
+/// within its tick. That is a stale picture, not a wrong document, so it is a considerably cheaper
+/// failure here than there.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PictureKey {
+    path: PathBuf,
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+impl PictureKey {
+    /// The key for `path` as it is on disk right now, or `None` if it cannot be stated.
+    fn of(path: PathBuf) -> Option<Self> {
+        let metadata = std::fs::metadata(&path).ok()?;
+        Some(Self {
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            path,
+        })
+    }
+}
+
+/// A picture as a chunk draws it: which one, and how big after fitting the column.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Fitted {
+    id: u64,
+    /// Logical pixels, so a denser display draws the same picture larger rather than smaller.
+    width: f32,
+    height: f32,
+    /// How tall the blank line after the image is — see [`picture_layout`].
+    after: f32,
+}
+
 /// A chunk that has been through the text engine.
 #[derive(Debug)]
 struct Cached {
@@ -9587,6 +10056,12 @@ struct Cached {
     /// things that need to know: `hit`, which otherwise finds a row's bytes by counting newlines,
     /// and `draw_chunks`, which otherwise rules nothing.
     grid: Option<table::Grid>,
+    /// The picture this chunk is, if it is one (MDEDIT-146).
+    ///
+    /// `None` for every chunk that is not a lone image — which, like `grid`'s `None`, is what says
+    /// "draw this as lines" to `draw_chunks`. A chunk with a picture has one empty layout line whose
+    /// height is the picture's, so everything keyed off rows goes on working.
+    picture: Option<Fitted>,
     /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
     /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
     /// added back before a span means anything.
@@ -9603,9 +10078,14 @@ struct Cached {
 }
 
 impl Cached {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "what a cached chunk is made of, and each of the six is needed to make it"
+    )]
     fn new(
         layout: Layout,
         grid: Option<table::Grid>,
+        picture: Option<Fitted>,
         chunk: &blocks::Chunk,
         body: &str,
         is_last: bool,
@@ -9628,10 +10108,13 @@ impl Cached {
         Self {
             layout,
             grid,
+            picture,
             base: chunk.span.start().get(),
             drops_last,
             height,
-            width,
+            // A picture is as wide as it is drawn. Without this the pan clamp measures its glyphs,
+            // of which it has none, and a picture wider than the window could not be scrolled to.
+            width: picture.map_or(width, |fitted| fitted.width),
         }
     }
 
@@ -9683,6 +10166,48 @@ struct Anchor {
     /// The scroll offset when this was taken. If it has changed, the user has scrolled and the
     /// anchor is stale.
     offset: f32,
+}
+
+/// The layout a picture's chunk gets: one empty line as tall as the picture (MDEDIT-146).
+///
+/// **No glyphs, and that is the whole trick.** MDEDIT-81 already made "one `LayoutLine` with no
+/// glyphs" the shape of an empty document, so every consumer downstream — `blocks::stack`, the
+/// scrollbar, the anchor, `hit`, the caret — handles it without a branch. A picture is a tall empty
+/// line, and the rectangle over it is drawn separately.
+///
+/// The trailing line is the same bargain `table::assemble` strikes: a chunk whose bytes end in a
+/// newline gets one from the text engine and `Cached` drops it again through
+/// `blocks::drops_last_line`, so a layout assembled without one loses the picture's own row instead.
+///
+/// **The picture replaces the chunk's first line and no others.** A chunk laid out linearly gets one
+/// line per newline plus one, and `Cached` then drops the last through `blocks::drops_last_line`; a
+/// paragraph's `X\n\n` is therefore three lines and two drawn rows — the text and the blank line
+/// after it. So this shape has to be the same, with the first row as tall as the picture and the
+/// rest an ordinary line each.
+///
+/// Getting that wrong is invisible in every obvious way. The first attempt emitted one trailing line
+/// of height zero, which made the chunk exactly picture-tall: the blank line every other block gets
+/// after it disappeared and an image sat flush against the next paragraph, while the picture's own
+/// rectangle, its size and its position were all still correct. See
+/// `a_picture_is_followed_by_the_same_blank_line_a_paragraph_is`.
+fn picture_layout(fitted: Fitted, body: &str) -> Layout {
+    let mut lines = vec![mdedit_text::LayoutLine {
+        baseline: fitted.height,
+        height: fitted.height,
+        glyphs: Vec::new(),
+        rules: Vec::new(),
+    }];
+    let mut baseline = fitted.height;
+    for _ in body.bytes().filter(|byte| *byte == b'\n') {
+        baseline += fitted.after;
+        lines.push(mdedit_text::LayoutLine {
+            baseline,
+            height: fitted.after,
+            glyphs: Vec::new(),
+            rules: Vec::new(),
+        });
+    }
+    Layout { lines }
 }
 
 /// Whether two spans overlap or meet. A caret at a chunk's edge belongs to both sides of it.

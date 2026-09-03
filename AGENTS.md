@@ -70,6 +70,8 @@ crates/ini/           # The same for INI and .cfg. There is no INI specification
                       #   state the dialect it reads
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
+crates/image/         # An image destination's trust boundary, and a PNG decoder behind size caps.
+                      #   Read its `resolve` docs before touching a path that came from a document
 crates/document/      # Rope buffer, selection, concealment predicate, heading trail, word and line
                       #   extents, undo transactions, many-site replace, inline formatting toggles
 crates/text/          # The text-layout trait. No platform types cross it

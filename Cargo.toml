@@ -9,6 +9,7 @@ members = [
     "crates/toml",
     "crates/ini",
     "crates/markers",
+    "crates/image",
     "crates/document",
     "crates/text",
     "crates/text-dwrite",
@@ -34,6 +35,13 @@ thiserror = "2"
 # Unicode word boundaries, for double-click and eventually Ctrl+arrows and MDEDIT-50. Pure Rust,
 # no build script, MIT/Apache — see `Document::word_at` for why the alternative was rejected.
 unicode-segmentation = "1.12"
+# PNG decoding, for MDEDIT-146. **`png` directly rather than `image`**, and the reason is the whole
+# of why the decoder decision took evidence: `png` 0.18 is `#![forbid(unsafe_code)]`, so the chunk
+# parser — the part that reads bytes an attacker chose and decides how long a buffer is — has none.
+# Taking `image` for the same two formats pulls `moxcms` and `pxfm` for colour management this editor
+# never uses, and those two carry ~570 lines of `unsafe` SIMD between them. AGENTS.md names file
+# parsing as this project's trust boundary and its CVE class; this is what acting on that looks like.
+png = { version = "0.18", default-features = false }
 # `version` alongside `path` is not redundant: without it this is a wildcard dependency,
 # which deny.toml rejects.
 mdedit-language = { path = "crates/language", version = "0.1.0" }
@@ -43,6 +51,7 @@ mdedit-xml = { path = "crates/xml", version = "0.1.0" }
 mdedit-toml = { path = "crates/toml", version = "0.1.0" }
 mdedit-ini = { path = "crates/ini", version = "0.1.0" }
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
+mdedit-image = { path = "crates/image", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }
 mdedit-text = { path = "crates/text", version = "0.1.0" }
 mdedit-text-dwrite = { path = "crates/text-dwrite", version = "0.1.0" }

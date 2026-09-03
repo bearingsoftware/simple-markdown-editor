@@ -996,6 +996,7 @@ dependencies = [
  "embed-resource",
  "mdedit-document",
  "mdedit-file",
+ "mdedit-image",
  "mdedit-ini",
  "mdedit-json",
  "mdedit-language",
@@ -1009,6 +1010,7 @@ dependencies = [
  "mdedit-toml",
  "mdedit-xml",
  "mdedit-yaml",
+ "png",
  "pollster",
  "rfd",
  "serde",
@@ -1043,6 +1045,15 @@ version = "0.1.0"
 dependencies = [
  "encoding_rs",
  "proptest",
+ "tempfile",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "mdedit-image"
+version = "0.1.0"
+dependencies = [
+ "png",
  "tempfile",
  "thiserror 2.0.19",
 ]
