@@ -1169,6 +1169,13 @@ pub struct Editor<T: TextLayout> {
     /// returns quads and is called from thirty-odd tests, and widening its signature to carry a
     /// second list would churn all of them to say nothing.
     drawn_pictures: Vec<crate::image::Drawn>,
+    /// The bytes each of those pictures stands for (MDEDIT-152).
+    ///
+    /// **What makes the caret step over an image instead of into it.** Whether a paragraph drew as a
+    /// picture is the renderer's answer, not the document's, so [`Self::concealed_at`] takes the
+    /// document's concealment and adds these. Rebuilt each frame beside `drawn_pictures`, and read
+    /// on the next key press — see that method for what the one-frame lag costs.
+    picture_spans: Vec<ByteSpan>,
     /// What the top of the viewport is resting on, so measuring a chunk does not move the page.
     anchor: Option<Anchor>,
     /// What an input method is composing, which is deliberately not in the buffer. See [`crate::ime`].
@@ -1412,6 +1419,7 @@ impl<T: TextLayout> Editor<T> {
             pictures: HashMap::new(),
             picture_ids: HashMap::new(),
             drawn_pictures: Vec::new(),
+            picture_spans: Vec::new(),
             anchor: None,
             composition: Composition::new(),
             caret_area: None,
@@ -2114,6 +2122,16 @@ impl<T: TextLayout> Editor<T> {
     #[must_use]
     pub fn text_backend(&self) -> &T {
         &self.text
+    }
+
+    /// Drops what the last frame knew about pictures, so this one rebuilds it.
+    ///
+    /// Both lists together because they are two halves of one answer — where each picture went, and
+    /// which bytes it stands for — and a frame that rebuilt one without the other would draw a
+    /// picture the caret does not step over, or step over one that is not drawn.
+    fn forget_last_frames_pictures(&mut self) {
+        self.drawn_pictures.clear();
+        self.picture_spans.clear();
     }
 
     /// Where the last [`build_frame`](Self::build_frame) put each picture (MDEDIT-146).
@@ -3686,10 +3704,62 @@ impl<T: TextLayout> Editor<T> {
     /// backtick in ``> `code` `` are separate segments.
     fn past_concealed(&self, offset: ByteOffset) -> ByteOffset {
         let mut at = offset;
-        while let Some(span) = self.document().concealed_at(at) {
+        while let Some(span) = self.concealed_at(at) {
             at = span.end();
         }
         at
+    }
+
+    /// What draws nowhere at `offset`: a concealed marker, or a picture (MDEDIT-152).
+    ///
+    /// `Document::concealed_at` answers the first. It cannot answer the second, and should not be
+    /// asked to: whether a paragraph drew as a **picture** depends on a file existing on disk and
+    /// decoding, which is the renderer's business. So the two are combined here, at the layer that
+    /// knows both — the same shape as MDEDIT-126, where a grid hands `hit.rs` its row spans because
+    /// the renderer knows something the navigation model does not.
+    ///
+    /// # Why the whole construct and not just the alt text
+    ///
+    /// An image with no alt text is already **one** `Marker::Image` segment, so the document alone
+    /// steps over `![](x.png)` correctly and always did. Give it alt text and it becomes three
+    /// segments — `![`, the alt, `](x.png)` — and the alt is `Content`, which is a legitimate caret
+    /// stop right up until the moment a picture draws over it. Returning the construct's whole span
+    /// makes the two spellings behave alike, which is the point.
+    ///
+    /// # The one-frame lag, which is real and bounded
+    ///
+    /// `picture_spans` is what the **last** frame drew, so a picture the caret is about to reach
+    /// that has not been on screen yet is not in it, and the first Right into it stops in the alt
+    /// text once. The next frame scrolls the caret into view, the picture is laid out, and the press
+    /// after that steps over it.
+    ///
+    /// Living with that rather than recomputing per key press, because the alternative is resolving
+    /// and stat-ing a path on every arrow — file I/O on the keystroke path, which is what MDEDIT-151
+    /// exists to get *off* the UI thread. A once-per-image imprecision at the edge of the viewport
+    /// is the cheaper error.
+    ///
+    /// # A picture is asked about first, and that ordering is load-bearing
+    ///
+    /// Its span **contains** the two `Marker::Image` segments inside it. Asking the document first
+    /// answers `](cat.png)` for the last byte of the construct — a true answer about a smaller thing
+    /// — and Backspace then hands that to `delete_marker`, which pairs it with the `![` and takes
+    /// both, leaving the alt text behind as prose. That is precisely the stranding `delete_marker`
+    /// exists to prevent, arrived at through the front door. The outer span is the whole truth here,
+    /// so it goes first.
+    /// # A span that no longer fits the buffer is ignored
+    ///
+    /// The lag above has a sharp edge: an edit between two key presses can shorten the document
+    /// under a span, and `past_concealed` would then hand the caret an offset past the end. Nothing
+    /// panics on one today — the selection tolerates it and the next frame corrects it — but an
+    /// out-of-range offset is a loaded gun for whoever next slices with one, and it costs a
+    /// comparison to unload.
+    fn concealed_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        let end = self.document().len_bytes();
+        self.picture_spans
+            .iter()
+            .find(|span| span.start() <= offset && offset < span.end() && span.end().get() <= end)
+            .copied()
+            .or_else(|| self.document().concealed_at(offset))
     }
 
     /// Where the caret goes from `offset` on Right.
@@ -3711,7 +3781,7 @@ impl<T: TextLayout> Editor<T> {
     fn caret_before(&self, offset: ByteOffset) -> ByteOffset {
         let from = self.past_concealed(offset);
         let mut at = self.previous_boundary(from);
-        while let Some(span) = self.document().concealed_at(at) {
+        while let Some(span) = self.concealed_at(at) {
             if span.start() == ByteOffset::ZERO {
                 return from;
             }
@@ -3758,7 +3828,7 @@ impl<T: TextLayout> Editor<T> {
         if offset == ByteOffset::ZERO {
             return None;
         }
-        self.document().concealed_at(self.previous_boundary(offset))
+        self.concealed_at(self.previous_boundary(offset))
     }
 
     /// The concealed marker the caret is standing immediately before, if any.
@@ -3767,7 +3837,7 @@ impl<T: TextLayout> Editor<T> {
     /// forward delete that took one byte of an invisible `**` would leave the other one behind as
     /// text, which is a worse answer than either taking all of it or none.
     fn concealed_after(&self, offset: ByteOffset) -> Option<ByteSpan> {
-        self.document().concealed_at(offset)
+        self.concealed_at(offset)
     }
 
     /// Moves the view by whole pages, against whatever the last frame measured.
@@ -3808,7 +3878,7 @@ impl<T: TextLayout> Editor<T> {
         let mut quads = Vec::new();
         // Rebuilt from scratch: what was on screen last frame says nothing about this one, and a
         // picture scrolled off has to stop being drawn.
-        self.drawn_pictures.clear();
+        self.forget_last_frames_pictures();
         // Everything the chrome has not taken. One place decides it; see `crate::content`.
         self.window_height = height / scale;
         self.content = ContentRect::new(width / scale, height / scale, MARGIN, self.insets());
@@ -7954,7 +8024,7 @@ impl<T: TextLayout> Editor<T> {
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             self.draw_table(quads, &cached, chunk_top, at);
-            self.place_picture(&cached, chunk_top, at);
+            self.place_picture(&cached, chunk, chunk_top, at);
 
             // `usize::MAX` for "there was no row above", which no line number can collide with.
             let mut previous_line = usize::MAX;
@@ -8229,10 +8299,23 @@ impl<T: TextLayout> Editor<T> {
     /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
     /// hanging past the edge of the document area is covered by chrome, which draws after — the
     /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
-    fn place_picture(&mut self, cached: &Cached, chunk_top: f32, at: Placement) {
+    fn place_picture(
+        &mut self,
+        cached: &Cached,
+        chunk: blocks::Chunk,
+        chunk_top: f32,
+        at: Placement,
+    ) {
         let Some(fitted) = cached.picture else {
             return;
         };
+        // Rebased from the chunk, not taken from the cache as-is: `Fitted` is content-keyed and the
+        // same image in two paragraphs shares one entry. See `Fitted::span`.
+        let base = chunk.span.start().get();
+        self.picture_spans.push(ByteSpan::new(
+            ByteOffset::new(base + fitted.span.start().get()),
+            ByteOffset::new(base + fitted.span.end().get()),
+        ));
         let (x, y) = at.content.to_window(0.0, chunk_top, at.offset);
         self.drawn_pictures.push(crate::image::Drawn {
             rect: [
@@ -9293,11 +9376,16 @@ impl<T: TextLayout> Editor<T> {
         };
         let (id, picture) = self.picture_at(path)?;
         let (width, height) = crate::image::fit((picture.width, picture.height), frame.width);
+        let base = chunk.span.start().get();
         Some(Fitted {
             id,
             width,
             height,
             after: self.body_line_height(),
+            span: ByteSpan::new(
+                ByteOffset::new(found.span.start().get() - base),
+                ByteOffset::new(found.span.end().get() - base),
+            ),
         })
     }
 
@@ -10044,6 +10132,12 @@ struct Fitted {
     height: f32,
     /// How tall the blank line after the image is — see [`picture_layout`].
     after: f32,
+    /// The `![alt](dest)` this stands for, **relative to its chunk's start** (MDEDIT-152).
+    ///
+    /// Relative because `Cached` is keyed by content: the same bytes elsewhere in the document reuse
+    /// this entry, so an absolute span would be right for the first occurrence and wrong for every
+    /// other. The same reason `Cached::base` exists, and it is rebased the same way.
+    span: ByteSpan,
 }
 
 /// A chunk that has been through the text engine.

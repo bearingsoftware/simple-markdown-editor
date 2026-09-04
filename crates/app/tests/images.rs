@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 use mdedit_app::editor::Editor;
 use mdedit_app::image::Drawn;
+use mdedit_document::Selection;
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
@@ -446,5 +448,226 @@ Second.
         glyph_rows(&mut after_picture),
         vec![glyph_rows(&mut after_prose)[1]],
         "the paragraph after a picture does not sit where one after a paragraph does"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The caret, around a picture (MDEDIT-152).
+//
+// These live here rather than beside their siblings in `concealed_caret.rs` because a picture needs
+// a real file on disk and a saved tab to resolve against, and that file's harness is `Editor::new`
+// on a bare string. The rule they pin is that file's rule, though: a position where nothing is drawn
+// is not a place the caret may be.
+// ---------------------------------------------------------------------------------------------
+
+/// Every caret position Right visits from the start of the document, until it stops moving.
+fn walk_right(editor: &mut Editor<Grid>) -> Vec<usize> {
+    while editor.press_left(false) && editor.document().selection().head().get() > 0 {}
+    let mut seen = vec![editor.document().selection().head().get()];
+    for _ in 0..40 {
+        editor.press_right(false);
+        let at = editor.document().selection().head().get();
+        if seen.last() == Some(&at) {
+            break;
+        }
+        seen.push(at);
+    }
+    seen
+}
+
+#[test]
+fn right_steps_over_a_picture_in_one_press() {
+    // `Be.\n\n![a](cat.png)\n\nAf.\n` — the construct is bytes 5..18, its alt text is byte 7.
+    // Byte 7 draws nowhere once the picture is there, so stopping at it is a keypress that moves the
+    // caret and changes nothing on screen.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](cat.png)\n\nAf.\n");
+    assert_eq!(
+        pictures_of(&mut editor).len(),
+        1,
+        "no picture, nothing to test"
+    );
+
+    let walk = walk_right(&mut editor);
+
+    assert!(
+        !walk.contains(&7),
+        "the caret stopped inside the picture's alt text: {walk:?}"
+    );
+    assert!(walk.contains(&4) && walk.contains(&18), "{walk:?}");
+}
+
+#[test]
+fn left_steps_over_a_picture_in_one_press() {
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](cat.png)\n\nAf.\n");
+    pictures_of(&mut editor);
+    editor.select_all();
+    editor.press_right(false);
+
+    // Left from just after the construct must clear it in one press, not land in the alt text.
+    // Bounded: `press_left` always reports true, so a regression that stops the caret moving would
+    // hang here rather than fail, and a test that hangs tells nobody anything.
+    for _ in 0..40 {
+        if editor.document().selection().head().get() <= 18 {
+            break;
+        }
+        editor.press_left(false);
+    }
+    assert_eq!(editor.document().selection().head().get(), 18, "setup");
+
+    editor.press_left(false);
+
+    assert!(
+        editor.document().selection().head().get() <= 5,
+        "Left landed at {} — inside the picture",
+        editor.document().selection().head().get()
+    );
+}
+
+#[test]
+fn the_alt_text_of_a_broken_image_is_still_a_caret_stop() {
+    // **The control.** The rule is "nothing is drawn there", not "it is an image". A missing file
+    // draws its alt text, so the alt text is ordinary editable content and the caret belongs in it.
+    // Without this, the fix for the two tests above would be to skip every image construct.
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](nowhere.png)\n\nAf.\n");
+    assert!(pictures_of(&mut editor).is_empty(), "setup: no picture");
+
+    let walk = walk_right(&mut editor);
+
+    assert!(
+        walk.contains(&7),
+        "the caret skipped alt text that is actually drawn: {walk:?}"
+    );
+}
+
+#[test]
+fn backspace_after_a_picture_takes_the_whole_image() {
+    // **A consequence of the same predicate, not a separate decision.** Backspace and Delete ask
+    // what is concealed just behind and just ahead of the caret, so teaching that predicate about
+    // pictures changes these too — and it changes them the right way. `![](x.png)` with no alt text
+    // is a single marker segment and has always been removed whole; without this, the same image
+    // with alt text would come off one invisible byte at a time, which is the key that does nothing
+    // until it suddenly does something that MDEDIT-118 forbids.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](cat.png)\n\nAf.\n");
+    pictures_of(&mut editor);
+
+    // Put the caret immediately after the construct, then take it off.
+    for _ in 0..40 {
+        if editor.document().selection().head().get() >= 18 {
+            break;
+        }
+        editor.press_right(false);
+    }
+    assert_eq!(editor.document().selection().head().get(), 18, "setup");
+
+    editor.press_backspace();
+
+    assert_eq!(editor.document().to_string(), "Be.\n\n\n\nAf.\n");
+}
+
+#[test]
+fn one_undo_restores_a_picture_deleted_whole() {
+    // The bytes came off in one edit, so they must come back in one — the rule `delete_marker`
+    // already follows for a link's two halves.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let source = "Be.\n\n![a](cat.png)\n\nAf.\n";
+    let (mut editor, _) = editor_on(&dir, source);
+    pictures_of(&mut editor);
+    for _ in 0..40 {
+        if editor.document().selection().head().get() >= 18 {
+            break;
+        }
+        editor.press_right(false);
+    }
+    editor.press_backspace();
+
+    editor.apply_chord("z", false);
+
+    assert_eq!(editor.document().to_string(), source);
+}
+
+#[test]
+fn no_two_consecutive_caret_positions_draw_in_the_same_place() {
+    // **The property, rather than a byte number.** `concealed_caret.rs` states the rule as "Left and
+    // Right through them were a key that appeared to do nothing" — so the check that matters is not
+    // "byte 7 is skipped" but "every press moves the caret somewhere the reader can see". Walking
+    // Right across the whole document and comparing drawn rectangles says exactly that, and it would
+    // still fail if the fix skipped the wrong span or a later change added a second dead position.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 100, 100);
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](cat.png)\n\nAf.\n");
+    assert_eq!(pictures_of(&mut editor).len(), 1, "setup");
+
+    let theme = mdedit_app::view::Theme::default();
+    let wanted = [theme.caret.r, theme.caret.g, theme.caret.b, theme.caret.a];
+    let mut seen: Vec<(usize, [f32; 4])> = Vec::new();
+    for _ in 0..40 {
+        let at = editor.document().selection().head().get();
+        let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let caret = quads
+            .iter()
+            .find(|quad| quad.colour == wanted && quad.rect[2] < 4.0)
+            .map_or_else(|| panic!("no caret drawn at byte {at}"), |quad| quad.rect);
+        seen.push((at, caret));
+        editor.press_right(false);
+        if editor.document().selection().head().get() == at {
+            break;
+        }
+    }
+
+    for pair in seen.windows(2) {
+        let [(before, first), (after, second)] = [pair[0], pair[1]];
+        assert_ne!(
+            first, second,
+            "Right from byte {before} to {after} drew the caret in the same place"
+        );
+    }
+}
+
+#[test]
+fn a_picture_span_the_buffer_has_outgrown_is_ignored() {
+    // **The sharp edge of using the last frame's answer.** `picture_spans` describes the document as
+    // it was drawn; an edit between two key presses can shorten it under one of those spans, and the
+    // caret would then be handed an offset past the end of the buffer.
+    //
+    // Found by probing rather than by reasoning, and it was worse than the out-of-range offset it
+    // was looked for: Backspace *silently did nothing* — `press_right` left the caret at 17 in a
+    // ten-byte document, and the delete that followed found nothing to remove.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    // The image construct is bytes 4..17 of an eighteen-byte document.
+    let (mut editor, _) = editor_on(&dir, "Xs\n\n![a](cat.png)\n");
+    assert_eq!(pictures_of(&mut editor).len(), 1, "setup");
+
+    // Truncate through the middle of the construct **without drawing a frame**, so the span from the
+    // last frame outlives the bytes it described.
+    editor
+        .document_mut()
+        .delete(ByteSpan::new(ByteOffset::new(10), ByteOffset::new(18)))
+        .unwrap();
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(10)));
+
+    editor.press_right(false);
+    let after = editor.document().selection().head().get();
+    assert!(
+        after <= editor.document().len_bytes(),
+        "the caret went to {after} in a {}-byte document",
+        editor.document().len_bytes()
+    );
+
+    editor.press_backspace();
+    assert_eq!(
+        editor.document().to_string(),
+        "Xs\n\n![a](",
+        "Backspace did nothing"
     );
 }

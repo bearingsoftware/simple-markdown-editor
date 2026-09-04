@@ -553,3 +553,39 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   session file the attacker needs no write access to anything of yours: `![](\evil.example\a\x.png)`
   in an attachment fires on open. `mdedit_image::resolve` refuses it, and **percent-decodes before the
   prefix check** because `%5C%5C` is `\` and a check run first waves it through.
+- **The caret steps over a picture, and the renderer is what says so (MDEDIT-152).** MDEDIT-146 left a
+  regression: with the alt text no longer drawn, byte 7 of `![a](cat.png)` and the byte after the
+  construct put the caret in the same pixel, so one Right press per image moved the caret and changed
+  nothing on screen — the defect `concealed_caret.rs` exists to prevent.
+
+  **An image with no alt text was never affected**, and that is the whole diagnosis: `![](x.png)` is a
+  *single* `Marker::Image` segment, so `Document::concealed_at` already stepped over it. Add alt text
+  and it becomes three segments, the middle one `Content` — a legitimate caret stop, right up until a
+  picture draws over it.
+
+  So `Editor::concealed_at` combines the document's answer with the spans of the pictures the last
+  frame drew. **The document is not taught about pictures**, and should not be: whether a paragraph
+  drew as one depends on a file existing and decoding, which the document cannot know. Same shape as
+  MDEDIT-126 handing `hit.rs` its row spans — the renderer knows something the navigation model does
+  not, and the join is a mapping rather than a second model.
+
+  **A picture is asked about before the document, and that ordering is load-bearing.** Its span
+  contains the two image markers inside it; asking the document first answers `](cat.png)` for the
+  construct's last byte, and Backspace hands that to `delete_marker`, which pairs it with the `![`
+  and takes both — stranding the alt text as prose. That is exactly the failure `delete_marker` was
+  written to prevent, reached through the front door. One test pins the ordering, and it is the only
+  one that fails when it is reversed.
+
+  **Backspace and Delete change with it, deliberately.** They ask the same predicate, so an image with
+  alt text now comes off whole — which is what an image *without* alt text has always done, being one
+  marker. The alternative was one spelling coming off a byte at a time through invisible bytes.
+
+  **The cost is a one-frame lag**: `picture_spans` is what the last frame drew, so the first Right
+  into a picture that has not been on screen yet stops in the alt text once. Recomputing per key press
+  means resolving and stat-ing a path on every arrow — file I/O on the keystroke path, which is what
+  MDEDIT-151 exists to remove.
+
+  **And a span the buffer has outgrown is ignored.** That lag has a sharp edge: an edit between two
+  key presses can shorten the document under a span. Probing for the out-of-range offset that would
+  produce found something worse — Backspace silently did nothing, because the delete that followed
+  the over-long jump found no bytes there. One comparison against `len_bytes` removes the class.
