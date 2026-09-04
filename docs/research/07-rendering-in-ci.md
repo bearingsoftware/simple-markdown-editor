@@ -76,6 +76,12 @@ not to hold on this pairing, which is worth having written down before somebody 
 
 ## What to build, if this is picked up
 
+> **Picked up in MDEDIT-153, and (2) is built** — `crates/app/tests/render.rs`. What forced it was
+> not this brief but MDEDIT-146 shipping a `wgpu` abort to a user past twelve green CI jobs: a
+> filtering sampler bound into a non-filtering slot, invisible to two review passes and caught by one
+> draw call in 0.19 s. (1) and (3) still stand as written — (1) is unbuilt and remains the cheapest
+> half, and (3) is why nothing in the new test is golden.
+
 In order of value per unit of work:
 
 1. **`Editor<DirectWriteText>` assertions in `crates/app/tests`.** No GPU. Assert geometry: that the

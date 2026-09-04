@@ -138,9 +138,13 @@ actually come from.
 
 **But rendering needs a device, not a window** (MDEDIT-123, measured). A hosted runner lays out a
 real `Editor<DirectWriteText>` frame in 3 ms and renders this project's own shader and atlas on WARP
-in 2.5 ms a frame. Nothing is built on that yet; read
+in 2.5 ms a frame — read
 [`docs/research/07-rendering-in-ci.md`](docs/research/07-rendering-in-ci.md) before assuming the
 sentence above closes the question.
+
+**`crates/app/tests/render.rs` builds on that** (MDEDIT-153): the real pipelines and bind groups, one
+frame on WARP, asserting ink. **Add to it rather than assuming rendering is unreachable.** What it
+still cannot see is whether the result *looks* right — see `docs/build-and-test.md`.
 
 See [`docs/build-and-test.md`](docs/build-and-test.md) for fuzzing, mutation testing, coverage,
 benchmarks and why each job runs where it does.
