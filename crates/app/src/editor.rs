@@ -3746,10 +3746,18 @@ impl<T: TextLayout> Editor<T> {
     /// both, leaving the alt text behind as prose. That is precisely the stranding `delete_marker`
     /// exists to prevent, arrived at through the front door. The outer span is the whole truth here,
     /// so it goes first.
+    /// # A span that no longer fits the buffer is ignored
+    ///
+    /// The lag above has a sharp edge: an edit between two key presses can shorten the document
+    /// under a span, and `past_concealed` would then hand the caret an offset past the end. Nothing
+    /// panics on one today — the selection tolerates it and the next frame corrects it — but an
+    /// out-of-range offset is a loaded gun for whoever next slices with one, and it costs a
+    /// comparison to unload.
     fn concealed_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        let end = self.document().len_bytes();
         self.picture_spans
             .iter()
-            .find(|span| span.start() <= offset && offset < span.end())
+            .find(|span| span.start() <= offset && offset < span.end() && span.end().get() <= end)
             .copied()
             .or_else(|| self.document().concealed_at(offset))
     }

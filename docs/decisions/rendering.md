@@ -584,3 +584,8 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   into a picture that has not been on screen yet stops in the alt text once. Recomputing per key press
   means resolving and stat-ing a path on every arrow — file I/O on the keystroke path, which is what
   MDEDIT-151 exists to remove.
+
+  **And a span the buffer has outgrown is ignored.** That lag has a sharp edge: an edit between two
+  key presses can shorten the document under a span. Probing for the out-of-range offset that would
+  produce found something worse — Backspace silently did nothing, because the delete that followed
+  the over-long jump found no bytes there. One comparison against `len_bytes` removes the class.

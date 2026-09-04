@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 
 use mdedit_app::editor::Editor;
 use mdedit_app::image::Drawn;
+use mdedit_document::Selection;
+use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
@@ -627,4 +629,45 @@ fn no_two_consecutive_caret_positions_draw_in_the_same_place() {
             "Right from byte {before} to {after} drew the caret in the same place"
         );
     }
+}
+
+#[test]
+fn a_picture_span_the_buffer_has_outgrown_is_ignored() {
+    // **The sharp edge of using the last frame's answer.** `picture_spans` describes the document as
+    // it was drawn; an edit between two key presses can shorten it under one of those spans, and the
+    // caret would then be handed an offset past the end of the buffer.
+    //
+    // Found by probing rather than by reasoning, and it was worse than the out-of-range offset it
+    // was looked for: Backspace *silently did nothing* — `press_right` left the caret at 17 in a
+    // ten-byte document, and the delete that followed found nothing to remove.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    // The image construct is bytes 4..17 of an eighteen-byte document.
+    let (mut editor, _) = editor_on(&dir, "Xs\n\n![a](cat.png)\n");
+    assert_eq!(pictures_of(&mut editor).len(), 1, "setup");
+
+    // Truncate through the middle of the construct **without drawing a frame**, so the span from the
+    // last frame outlives the bytes it described.
+    editor
+        .document_mut()
+        .delete(ByteSpan::new(ByteOffset::new(10), ByteOffset::new(18)))
+        .unwrap();
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(10)));
+
+    editor.press_right(false);
+    let after = editor.document().selection().head().get();
+    assert!(
+        after <= editor.document().len_bytes(),
+        "the caret went to {after} in a {}-byte document",
+        editor.document().len_bytes()
+    );
+
+    editor.press_backspace();
+    assert_eq!(
+        editor.document().to_string(),
+        "Xs\n\n![a](",
+        "Backspace did nothing"
+    );
 }
