@@ -286,13 +286,17 @@ fn fs_image(in: VertexOut) -> @location(0) vec4<f32> {
 // own replica of them would not have caught the defect that motivated the test: MDEDIT-146's
 // filtering sampler bound into a non-filtering slot lived in the *interaction* between
 // `create_bind_layout`, `create_image_parts` and `make_bind_group`. Only the real three catch it.
+//
+// **Public reaches exactly as far as the test needs and no further.** An integration test links the
+// crate as an outside consumer, so the five functions it calls have to be `pub`; the constant below
+// is `pub(crate)`, because widening it would have been API surface bought by nothing.
 // ---------------------------------------------------------------------------------------------
 
 /// How many pictures the instance buffer starts with (MDEDIT-146).
 ///
 /// A screenful of a document that is mostly pictures, and it grows if that is wrong. Small because
 /// the usual answer is zero: most documents have no image on screen at all.
-pub const INITIAL_PICTURES: u64 = 16;
+pub(crate) const INITIAL_PICTURES: u64 = 16;
 
 /// The one bind-group layout both pipelines share: globals, a texture, a sampler.
 ///
