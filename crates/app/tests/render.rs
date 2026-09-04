@@ -27,6 +27,13 @@
 //! plainly that this is evidence rather than a guarantee — a Windows update that reships a font
 //! would break a golden test on an unrelated pull request, with a diff explaining nothing.
 //!
+//! **It does not reach `Renderer` itself, and MDEDIT-146's *other* defect lived there.** The
+//! instance buffer sized for sixteen pictures while `image_capacity` claimed sixty-four was
+//! bookkeeping inside a struct that owns a surface, and a surface needs a window. What is reachable
+//! is everything a surface is not required for — which was enough for the defect that aborted, and
+//! is not everything. Widening `Renderer` so its non-surface half can be built headlessly would
+//! close the rest, and is not attempted here.
+//!
 //! # It has to be able to fail for the reason it exists
 //!
 //! MDEDIT-146's by-hand check ran twice and passed twice **without ever drawing a picture**, because
@@ -47,7 +54,10 @@ use mdedit_app::gpu::{
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 32;
 
-/// What the frame is cleared to, so "ink" means "not this".
+/// What the frame is cleared to, as bytes — "ink" means "not this".
+const BACKGROUND_RGBA: [u8; 4] = [0, 0, 0, 0xff];
+
+/// The same, as the clear takes it.
 const BACKGROUND: wgpu::Color = wgpu::Color {
     r: 0.0,
     g: 0.0,
@@ -172,12 +182,43 @@ fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
     [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
 }
 
-/// A one-texel opaque white RGBA texture, standing in for a decoded picture.
+/// Whether `found` is nearer `wanted` than `other`, summed over the channels.
+///
+/// **Nearness rather than equality, because the picture sampler is `Linear` and that is the one
+/// under test.** No pixel centre lands exactly on a texel centre, so a two-texel texture always
+/// comes back a few units blended — the first version of this asserted `[64, 128, 192]` and got
+/// `[68, 126, 187]`. Which texel a point *resolves to* is the property; the exact blend is the
+/// filter's business and asserting it would be asserting the rasteriser.
+fn nearer(found: [u8; 4], wanted: [u8; 4], other: [u8; 4]) -> bool {
+    let distance = |to: [u8; 4]| -> i32 {
+        found
+            .iter()
+            .zip(to)
+            .map(|(a, b)| i32::from(*a).abs_diff(i32::from(b)).cast_signed())
+            .sum()
+    };
+    distance(wanted) < distance(other)
+}
+
+/// The two texels of the stand-in picture: left and right.
+const LEFT_TEXEL: [u8; 4] = [0x40, 0x80, 0xc0, 0xff];
+const RIGHT_TEXEL: [u8; 4] = [0xc0, 0x40, 0x20, 0xff];
+
+/// A **two**-texel RGBA texture, standing in for a decoded picture.
+///
+/// **Two rather than one, and that is the point.** `vs_image` uses the instance's `uv` directly
+/// while `vs_main` divides it by the atlas size — and against a 1×1 texture those are
+/// indistinguishable, because every sample lands on the only texel there is. The image pipeline
+/// could be wired to the glyph vertex shader and nothing would notice.
+///
+/// With two texels the quad's left half samples one and its right half the other under `vs_image`,
+/// where `vs_main` would compress the whole 0..1 range into a 1/2048 sliver of the first. Found by
+/// mis-wiring the pipeline on purpose and watching the test pass.
 fn picture_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("picture"),
         size: wgpu::Extent3d {
-            width: 1,
+            width: 2,
             height: 1,
             depth_or_array_layers: 1,
         },
@@ -195,14 +236,14 @@ fn picture_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture 
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
-        &[0x40, 0x80, 0xc0, 0xff],
+        &[LEFT_TEXEL, RIGHT_TEXEL].concat(),
         wgpu::TexelCopyBufferLayout {
             offset: 0,
-            bytes_per_row: Some(4),
+            bytes_per_row: Some(8),
             rows_per_image: Some(1),
         },
         wgpu::Extent3d {
-            width: 1,
+            width: 2,
             height: 1,
             depth_or_array_layers: 1,
         },
@@ -226,6 +267,7 @@ struct Built {
     atlas_binding: wgpu::BindGroup,
     picture_binding: wgpu::BindGroup,
     instances: wgpu::Buffer,
+    picture_instances: wgpu::Buffer,
 }
 
 /// Apart from the test body, so the test reads as draw-then-assert.
@@ -251,7 +293,10 @@ fn build(harness: &Harness) -> Built {
         format,
         ("vs_main", "fs_main"),
     );
-    let (pictures, picture_sampler, _) = create_image_parts(device, &shader, &bind_layout, format);
+    // The buffer is the production one too, not a local: `Renderer::draw` keeps a separate instance
+    // buffer per pipeline, and a test that shared one would be a shape the editor never runs.
+    let (pictures, picture_sampler, picture_instances) =
+        create_image_parts(device, &shader, &bind_layout, format);
 
     let globals = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("globals"),
@@ -316,15 +361,12 @@ fn build(harness: &Harness) -> Built {
     let glyph_quad = solid([32.0, 0.0, 32.0, 32.0], [1.0, 0.0, 0.0, 1.0]);
     let instances = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
-        size: (size_of::<QuadInstance>() * 2) as u64,
+        size: size_of::<QuadInstance>() as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(
-        &instances,
-        0,
-        bytemuck::cast_slice(&[picture_quad, glyph_quad]),
-    );
+    queue.write_buffer(&instances, 0, bytemuck::cast_slice(&[glyph_quad]));
+    queue.write_buffer(&picture_instances, 0, bytemuck::cast_slice(&[picture_quad]));
 
     Built {
         quads,
@@ -332,6 +374,7 @@ fn build(harness: &Harness) -> Built {
         atlas_binding,
         picture_binding,
         instances,
+        picture_instances,
     }
 }
 
@@ -345,6 +388,7 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
         atlas_binding,
         picture_binding,
         instances,
+        picture_instances,
     } = build(&harness);
 
     let target = harness.target();
@@ -373,13 +417,13 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
         // Pictures first, then the quad pass — the order `Renderer::draw` uses.
         pass.set_pipeline(&pictures);
         pass.set_bind_group(0, &picture_binding, &[]);
-        pass.set_vertex_buffer(0, instances.slice(..));
+        pass.set_vertex_buffer(0, picture_instances.slice(..));
         pass.draw(0..4, 0..1);
 
         pass.set_pipeline(&quads);
         pass.set_bind_group(0, &atlas_binding, &[]);
         pass.set_vertex_buffer(0, instances.slice(..));
-        pass.draw(0..4, 1..2);
+        pass.draw(0..4, 0..1);
     }
     queue.submit([encoder.finish()]);
 
@@ -387,13 +431,16 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
 
     // **Ink, not survival.** Reaching here having drawn nothing is the failure mode that let
     // MDEDIT-146 through by hand, so each pipeline's own region is checked.
-    let from_picture = pixel(&pixels, 16, 16);
+    //
+    // The picture quad spans x 0..32, so a quarter and three quarters across it are the centres of
+    // its two texels — the points a `Linear` sampler resolves to pure colours rather than a blend.
+    let picture_left = pixel(&pixels, 8, 16);
+    let picture_right = pixel(&pixels, 24, 16);
     let from_glyphs = pixel(&pixels, 48, 16);
 
-    assert_eq!(
-        from_picture,
-        [0x40, 0x80, 0xc0, 0xff],
-        "the image pipeline drew nothing, or drew the wrong texture"
+    assert!(
+        nearer(picture_left, LEFT_TEXEL, BACKGROUND_RGBA),
+        "the image pipeline drew nothing, or drew the wrong texture: {picture_left:?}"
     );
     assert_eq!(
         from_glyphs,
@@ -401,9 +448,19 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
         "the glyph pipeline drew nothing, or lost the instance's colour"
     );
 
+    // **The half that tells the two vertex shaders apart.** `vs_main` divides `uv` by the atlas
+    // size, so under it the whole quad samples the *first* texel and both halves come back
+    // `LEFT_TEXEL`. Only `vs_image`'s undivided `uv` reaches the second one. Verified by mis-wiring
+    // the pipeline to `vs_main` on purpose: without this assertion the test passed.
+    assert!(
+        nearer(picture_right, RIGHT_TEXEL, LEFT_TEXEL),
+        "the picture's right half resolved to the left texel — the image pipeline is on the glyph \
+         vertex shader, or its uv mapping is wrong: {picture_right:?}"
+    );
+
     // And the frame is not uniformly one colour, which a clear alone would satisfy.
     assert_ne!(
-        from_picture, from_glyphs,
+        picture_left, from_glyphs,
         "both regions are identical, so neither pipeline is distinguishable from the clear"
     );
 }
