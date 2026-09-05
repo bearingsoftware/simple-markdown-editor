@@ -6,6 +6,11 @@ target/
 # cargo-deny / criterion output
 /criterion/
 
+# cargo-mutants writes its report here when the job is run locally, which MDEDIT-155 now expects
+# people to do — `docs/build-and-test.md` says by hand is worth more than the job is.
+/mutants.out/
+/mutants.out.old/
+
 # status-board build outputs (scripts/build-status.sh)
 /status.json
 /coverage.json

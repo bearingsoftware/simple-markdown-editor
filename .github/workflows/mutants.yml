@@ -78,15 +78,26 @@ jobs:
       # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
-      # The Windows-only crates are absent from this list because they do not build here at all —
-      # `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and their
-      # tests are the ones that need a real system stack anyway.
+      # **An exclude list, because the allow-list failed twice (MDEDIT-155).**
       #
-      # **Everything else has to be added by hand, and three crates were missed.** `mdedit-xml`,
-      # `mdedit-toml` and `mdedit-ini` shipped in MDEDIT-94/95/96 without reaching this list, so a
-      # pull request touching a brand-new lexer was mutating nothing while still reporting green.
-      # An allow-list nobody is reminded to extend is the failure mode; the alternative is excluding
-      # the three Windows crates instead, which `--exclude` supports and which fails loudly.
+      # The three Windows-only crates are named here because they do not build on this runner at
+      # all: `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and
+      # their tests want a real system stack anyway. Everything else is in, by default and for good.
+      #
+      # This file used to name the eleven crates to include, and predicted its own next failure:
+      # *"an allow-list nobody is reminded to extend is the failure mode; the alternative is
+      # excluding the three Windows crates instead, which `--exclude` supports and which fails
+      # loudly."* `mdedit-xml`, `mdedit-toml` and `mdedit-ini` had already been missed that way in
+      # MDEDIT-94/95/96. The three names were added and the trap was left, so it caught the next
+      # three: **`mdedit-app`, `mdedit-image` and `mdedit-text`**.
+      #
+      # That mattered more than the first time. `mdedit-app` is where nearly every defect of
+      # MDEDIT-146 through MDEDIT-154 lived, and `mdedit-image` holds the destination resolver —
+      # the trust boundary standing between a Markdown file and a UNC path that leaks an NTLM hash.
+      # Four pull requests reported "cargo-mutants passes on the diff" as evidence their tests were
+      # not vacuous. Every one of those runs mutated nothing.
+      #
+      # With `--exclude`, a new crate is covered the day it is created and nobody has to remember.
       # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
       # *workflow* green and still publishes a failing check, and a failing check makes the pull
       # request unmergeable — which is precisely what a job described as "it reports; it does not
@@ -100,26 +111,37 @@ jobs:
           set +e
           cargo mutants --in-diff /tmp/pr.diff \
             --test-tool nextest \
-            --package mdedit-offsets \
-            --package mdedit-language \
-            --package mdedit-json \
-            --package mdedit-yaml \
-            --package mdedit-xml \
-            --package mdedit-toml \
-            --package mdedit-ini \
-            --package mdedit-markers \
-            --package mdedit-document \
-            --package mdedit-file \
-            --package mdedit-session \
+            --exclude mdedit-text-dwrite \
+            --exclude mdedit-menu-win \
+            --exclude mdedit-shell-win \
             --timeout-multiplier 4 \
             --no-shuffle
           status=$?
           set -e
+
+          # **A job that reports success for having tested nothing is the defect this ticket is
+          # about, not a side note.** cargo-mutants exits 0 both when it killed every mutant and
+          # when it generated none, and for four pull requests the second was read as the first.
+          # `mutants.out/` exists only in the first case, so its absence is the signal.
+          #
+          # A warning rather than a failure, because zero mutants is often correct: a diff of tests,
+          # comments, docs or a workflow file has nothing to mutate. What must not happen is that it
+          # passes *silently*.
+          # **Guarded on a clean exit, or this swallows the failure it is named after.** A run that
+          # dies early — a compile error, a bad flag — also leaves no `mutants.out`, and treating
+          # that as "nothing to mutate" would report green for a broken job. Exactly the bug being
+          # fixed, one level up.
+          if [ "$status" -eq 0 ] && [ ! -d mutants.out ]; then
+            # One line, deliberately. A `\`-continued string keeps the indentation of the following
+            # line, so a wrapped annotation reaches the reader with runs of spaces in the middle of
+            # its sentences — visible in this job's own output before this was written out flat.
+            # No backticks either: inside double quotes they are command substitution.
+            echo "::warning title=No mutants were generated::cargo-mutants tested nothing on this diff. That is expected for a change to tests, comments, docs or CI, and is a red flag for a change under crates/*/src. Do not cite this job as evidence that a test is not vacuous without checking which of the two it was (MDEDIT-155)."
+            exit 0
+          fi
+
           if [ "$status" -eq 2 ]; then
-            echo "::warning title=Mutants survived::Some mutants were not caught by any test. \
-              Read the mutants-report artifact — and check the survivor is not *equivalent* before \
-              writing a test for it: on MDEDIT-88 the sole survivor was \`|\` to \`^\` between two \
-              disjoint bitflags, which no test can tell apart."
+            echo "::warning title=Mutants survived::Some mutants were not caught by any test. Read the mutants-report artifact — and check the survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
             exit 0
           fi
           exit "$status"
