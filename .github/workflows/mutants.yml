@@ -132,20 +132,16 @@ jobs:
           # that as "nothing to mutate" would report green for a broken job. Exactly the bug being
           # fixed, one level up.
           if [ "$status" -eq 0 ] && [ ! -d mutants.out ]; then
-            # No backticks in this string: it is inside double quotes, where they would be command
-            # substitution rather than punctuation.
-            echo "::warning title=No mutants were generated::cargo-mutants tested nothing on this \
-              diff. That is expected for a change to tests, comments, docs or CI, and is a red flag \
-              for a change under crates/*/src. Do not cite this job as evidence that a test is not \
-              vacuous without checking which of the two it was (MDEDIT-155)."
+            # One line, deliberately. A `\`-continued string keeps the indentation of the following
+            # line, so a wrapped annotation reaches the reader with runs of spaces in the middle of
+            # its sentences — visible in this job's own output before this was written out flat.
+            # No backticks either: inside double quotes they are command substitution.
+            echo "::warning title=No mutants were generated::cargo-mutants tested nothing on this diff. That is expected for a change to tests, comments, docs or CI, and is a red flag for a change under crates/*/src. Do not cite this job as evidence that a test is not vacuous without checking which of the two it was (MDEDIT-155)."
             exit 0
           fi
 
           if [ "$status" -eq 2 ]; then
-            echo "::warning title=Mutants survived::Some mutants were not caught by any test. \
-              Read the mutants-report artifact — and check the survivor is not *equivalent* before \
-              writing a test for it: on MDEDIT-88 the sole survivor was \`|\` to \`^\` between two \
-              disjoint bitflags, which no test can tell apart."
+            echo "::warning title=Mutants survived::Some mutants were not caught by any test. Read the mutants-report artifact — and check the survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
             exit 0
           fi
           exit "$status"
