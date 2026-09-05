@@ -38,6 +38,25 @@ pub const PADDING_X: f32 = 10.0;
 /// Space between a cell's text and its border, above and below.
 pub const PADDING_Y: f32 = 3.0;
 
+/// How far a Latin font's ascent overshoots the capitals that ordinary text actually reaches, as a
+/// fraction of the ascent (MDEDIT-154).
+///
+/// Measured rather than assumed: Consolas at 16 px has an ascent of 17.27 and puts the top of a
+/// capital 12 px above the baseline, so 5.27 px — 30.5% — is reserved for accents and tall glyphs
+/// that Latin prose never uses. Its descent, by contrast, is spent almost exactly: 0.02 px to spare
+/// under a descender.
+///
+/// **Which is why a table row looked wrong before this.** `assemble` centred the *font* box in the
+/// row, symmetric about ascent and descent, which is both what it says and what CSS does — but the
+/// font box is not symmetric about the ink inside it, so the text landed half the overshoot low and
+/// a `g` came close to the bottom rule.
+///
+/// 29% is the middle of the range this was checked across rather than one font's exact figure; the
+/// same measurement at 28 px gives 30.5% again, and Arial and Times sit nearer 21% and 26%. Being a
+/// *fraction* is the part that matters — the overshoot scales with the font size, so a fixed
+/// nudge would centre one size and miss every other.
+const ASCENT_OVERSHOOT: f32 = 0.29;
+
 /// How thick a rule is, before the device scale.
 ///
 /// One device-independent pixel, which the renderer floors at one physical pixel — a rule that
@@ -218,7 +237,11 @@ pub fn assemble(
     for row in rows {
         let text = row.iter().map(cell_height).fold(0.0_f32, f32::max);
         let height = text + PADDING_Y * 2.0;
-        let baseline = top + PADDING_Y + row.iter().map(first_baseline).fold(0.0_f32, f32::max);
+        let ascent = row.iter().map(first_baseline).fold(0.0_f32, f32::max);
+        // Lifted off the font box and onto the ink — see `optical_lift`. The row's *height* is
+        // untouched: the space the lift takes from above the text is given straight back below it,
+        // so columns, rules and row spans are all where they were.
+        let baseline = top + PADDING_Y + ascent - optical_lift(ascent);
 
         // Pushed column by column, so the last glyph on the assembled line is the rightmost one —
         // which is what `Cached::new` assumes when it measures the widest row for the pan clamp.
@@ -270,6 +293,23 @@ pub fn assemble(
             columns,
         },
     )
+}
+
+/// How far to raise a row's baseline so the text is centred on its ink (MDEDIT-154).
+///
+/// **Half** the overshoot, because moving the baseline up by one pixel takes a pixel from above the
+/// ink and gives it below: the gap closes at twice the rate the text moves.
+///
+/// This is a correction to a *boxed* row, not to text in general. Prose stacks flush with no visible
+/// edge to be off-centre in, so nothing there wants it — which is why the constant lives here rather
+/// than in the text layer, and why the text trait did not have to learn about cap heights.
+///
+/// Public so a test can state the rule rather than restate a number: three of them assert where a
+/// row's baseline lands, and a literal there would have to be recomputed by hand every time this
+/// changed — which is how a test stops describing anything.
+#[must_use]
+pub fn optical_lift(ascent: f32) -> f32 {
+    ascent * ASCENT_OVERSHOOT / 2.0
 }
 
 /// How tall one laid-out cell is. A cell that did not wrap is one line.
