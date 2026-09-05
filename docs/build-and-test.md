@@ -151,10 +151,20 @@ It works: across two runs whose *absolute* times differed by 3× — 6.27 ms and
 analysis — the measured ratio moved from ×2.09 to ×1.99. Copy the shape for any future
 this-versus-that measurement rather than reaching for a criterion baseline.
 
-The `*_cost.rs` files in `crates/app/tests` are the other half of this: ignored tests that print a
-number and assert nothing — `json_typing_cost`, `validate_cost`, `wrap_cost`, `find_cost`,
-`list_cost`. Each uses only long-standing API on purpose, so the same file can be copied into a
+The `*_cost.rs` files are the other half of this: ignored tests that print a number and assert
+nothing — `json_typing_cost`, `validate_cost`, `wrap_cost`, `find_cost`, `list_cost` and
+`frame_cost` in `crates/app/tests`, plus `decode_cost` in `crates/image` and `load_cost` in
+`crates/file`. Each uses only long-standing API on purpose, so the same file can be copied into a
 worktree of an older commit and the two runs compared.
+
+The last two are the ones that answered MDEDIT-151 — whether the worker thread `AGENTS.md` described
+was worth building, given it did not exist. They said no for saving, **yes for image decode** (now
+MDEDIT-156), and *nothing conclusive* for loading, which measured 40–99 ms at 16 MB against a 50 ms
+target. That is why these two print best **and** worst of their iterations where the older harnesses
+print one figure: five runs of the decode harness gave 65, 84, 70, 159 and 130 ms for the same work.
+**Run a cost harness on an idle machine** — the 159 came from a run overlapping a workspace build, and
+a laptop that has just compiled the workspace is not the machine the earlier figures came off either.
+A harness written to settle an argument is worth keeping for the next one.
 
 `cargo test --release -- --ignored` is otherwise reserved for perf assertions. **None exist yet**, and they will
 not run in CI: GitHub runners are virtualised and on AC power, which
