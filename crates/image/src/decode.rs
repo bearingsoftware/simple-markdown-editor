@@ -95,14 +95,59 @@ pub enum Undecodable {
 ///
 /// [`Undecodable`], naming what stopped it.
 pub fn read(path: &Path) -> Result<Picture, Undecodable> {
+    within_the_file_cap(path)?;
+    let bytes = std::fs::read(path).map_err(|_| Undecodable::Unreadable)?;
+    decode(&bytes)
+}
+
+/// The size the PNG at `path` declares, without decoding it (MDEDIT-156).
+///
+/// Reads the header and stops, which is the first few dozen bytes rather than the whole file. That
+/// is what lets the editor give an image its row on the frame it appears in and decode the pixels
+/// somewhere else: the geometry comes from here and only the picture comes from [`read`].
+///
+/// **The caps apply here too, and that is not belt and braces.** This is now the first thing to
+/// believe a header, so it is where a bomb has to be refused — a row sized from an unchecked one
+/// would be thirty thousand pixels tall before any decode was reached to say no.
+///
+/// # Errors
+///
+/// [`Undecodable`], naming what stopped it. A file whose header is intact measures even when its
+/// image data is truncated or corrupt; that only shows up in [`read`].
+pub fn measure(path: &Path) -> Result<(u32, u32), Undecodable> {
+    within_the_file_cap(path)?;
+    let file = std::fs::File::open(path).map_err(|_| Undecodable::Unreadable)?;
+    // Buffered, and the buffer is the point: unlike `read` this must not pull a 16 MB file into
+    // memory to look at its first forty bytes.
+    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
+    let info = decoder
+        .read_header_info()
+        .map_err(|error| Undecodable::Malformed(error.to_string()))?;
+    let (width, height) = (info.width, info.height);
+    within_the_pixel_caps(width, height)?;
+    Ok((width, height))
+}
+
+/// Refuses a file too big to be worth opening, from its directory entry.
+fn within_the_file_cap(path: &Path) -> Result<(), Undecodable> {
     let length = std::fs::metadata(path)
         .map_err(|_| Undecodable::Unreadable)?
         .len();
     if length > MAX_FILE_BYTES {
         return Err(Undecodable::TooLarge(length));
     }
-    let bytes = std::fs::read(path).map_err(|_| Undecodable::Unreadable)?;
-    decode(&bytes)
+    Ok(())
+}
+
+/// Refuses a surface this editor will not allocate or upload.
+fn within_the_pixel_caps(width: u32, height: u32) -> Result<(), Undecodable> {
+    if width > MAX_DIMENSION
+        || height > MAX_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_PIXELS
+    {
+        return Err(Undecodable::TooManyPixels(width, height));
+    }
+    Ok(())
 }
 
 /// Decodes PNG bytes to RGBA.
@@ -126,13 +171,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture, Undecodable> {
     // **Before the buffer is sized.** The header is cheap and honest about how big the surface will
     // be; this is the only point at which a bomb can be refused without first allocating it.
     let info = reader.info();
-    let (width, height) = (info.width, info.height);
-    if width > MAX_DIMENSION
-        || height > MAX_DIMENSION
-        || u64::from(width) * u64::from(height) > MAX_PIXELS
-    {
-        return Err(Undecodable::TooManyPixels(width, height));
-    }
+    within_the_pixel_caps(info.width, info.height)?;
 
     let mut buffer = vec![
         0;
