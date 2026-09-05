@@ -290,8 +290,27 @@ a failed install step publishes a failing check on a job that must not block.
 
 ## An allow-list nobody is reminded to extend
 
-`mutants.yml` names its packages one `--package` at a time, and `mdedit-xml`, `mdedit-toml` and
+`mutants.yml` used to name its packages one `--package` at a time, and `mdedit-xml`, `mdedit-toml` and
 `mdedit-ini` shipped in MDEDIT-94/95/96 without reaching the list. So a pull request touching a
 brand-new lexer mutated nothing and still reported green — the quietest way for a check to stop being
-one. Fixed by adding them; worth doing properly with `--exclude` for the three `cfg(windows)` crates
-instead, which fails loudly when a crate appears rather than silently skipping it.
+one. That was fixed by adding the three names, and this section then said the right answer was
+`--exclude` for the three `cfg(windows)` crates instead, "which fails loudly when a crate appears
+rather than silently skipping it".
+
+**The trap was left in place and it caught three more (MDEDIT-155): `mdedit-app`, `mdedit-image` and
+`mdedit-text`.** Worse than the first time. `mdedit-app` is where nearly every defect of MDEDIT-146
+through MDEDIT-154 lived, and `mdedit-image` holds the destination resolver — the trust boundary
+between a Markdown file and a UNC path that leaks an NTLM hash. Four pull requests cited
+"cargo-mutants passes on the diff" as evidence their new tests were not vacuous; every one of those
+runs had mutated nothing.
+
+It is now an **exclude list**: the three Windows crates by name, everything else in by default and
+for good. A crate is covered the day it is created.
+
+**And the job now says when it tested nothing.** `cargo-mutants` exits 0 both for "killed every
+mutant" and for "generated none", which is what let this hide for so long. The absence of
+`mutants.out/` is the signal, and it becomes a warning annotation — a warning rather than a failure,
+because zero mutants is often correct for a diff of tests, comments, docs or CI. The check is guarded
+on a clean exit, or a run that died early would report the same thing and swallow a real failure.
+
+**When reading that job, the question is not "is it green".** It is "how many mutants did it run".
