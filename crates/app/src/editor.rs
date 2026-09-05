@@ -40,7 +40,10 @@ use crate::content::{ContentRect, Insets, Offset};
 use crate::dialog;
 use crate::field;
 use crate::find;
-use crate::gpu::{ATLAS_SIZE, Atlas, QuadInstance, SHADER};
+use crate::gpu::{
+    ATLAS_SIZE, Atlas, INITIAL_PICTURES, QuadInstance, SHADER, create_atlas_parts,
+    create_bind_layout, create_image_parts, create_pipeline, make_bind_group,
+};
 use crate::hit;
 use crate::ime::{Action, Composition};
 use crate::latency::Latency;
@@ -301,12 +304,6 @@ pub type OpenPathPicker = Box<dyn Fn() -> Option<Vec<PathBuf>>>;
 
 /// Left and top margin, in device-independent pixels.
 const MARGIN: f32 = 24.0;
-
-/// How many pictures the instance buffer starts with (MDEDIT-146).
-///
-/// A screenful of a document that is mostly pictures, and it grows if that is wrong. Small because
-/// the usual answer is zero: most documents have no image on screen at all.
-const INITIAL_PICTURES: u64 = 16;
 /// Fewest digits the gutter is sized for, so a short file does not visibly resize its gutter the
 /// moment it grows past nine lines.
 const GUTTER_MIN_DIGITS: usize = 2;
@@ -780,198 +777,6 @@ fn px(value: u32) -> f32 {
 )]
 fn px_i(value: i32) -> f32 {
     value as f32
-}
-
-fn create_bind_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("globals"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            // **Filtering, though the glyph sampler does not filter** (MDEDIT-146). This layout is
-            // shared by both pipelines, and a picture is sampled `Linear` because it is nearly
-            // always scaled down. wgpu's rule runs one way only: a non-filtering sampler binds
-            // happily to a filtering slot, and a filtering one to a non-filtering slot is a
-            // validation error — which is what this was, and it aborted the process the first time a
-            // picture was actually uploaded. Both `R8Unorm` and `Rgba8Unorm` are filterable formats,
-            // so declaring it costs the glyphs nothing: `Nearest` still resolves to nearest.
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ],
-    })
-}
-
-/// One of the two pipelines, which differ only in their entry points.
-///
-/// A picture samples colour where a glyph samples coverage, so the fragment stage cannot be shared —
-/// but the instance format, the bind-group layout and the globals all can, which is why MDEDIT-146
-/// is a second pair of entry points rather than a second renderer.
-fn create_pipeline(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    bind_layout: &wgpu::BindGroupLayout,
-    format: wgpu::TextureFormat,
-    entries: (&str, &str),
-) -> wgpu::RenderPipeline {
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("quads"),
-        bind_group_layouts: &[Some(bind_layout)],
-        immediate_size: 0,
-    });
-
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("quads"),
-        layout: Some(&layout),
-        vertex: wgpu::VertexState {
-            module: shader,
-            entry_point: Some(entries.0),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<QuadInstance>() as u64,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x4,
-                    1 => Float32x4,
-                    2 => Float32x4,
-                ],
-            })],
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: shader,
-            entry_point: Some(entries.1),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
-            ..Default::default()
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        multiview_mask: None,
-        cache: None,
-    })
-}
-
-/// The glyph atlas's texture and its sampler.
-fn create_atlas_parts(device: &wgpu::Device) -> (wgpu::Texture, wgpu::Sampler) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("glyph atlas"),
-        size: wgpu::Extent3d {
-            width: ATLAS_SIZE,
-            height: ATLAS_SIZE,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        // Coverage, one byte per texel. The colour comes from the instance.
-        format: wgpu::TextureFormat::R8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("atlas"),
-        // Nearest: glyphs are rasterized at the exact device scale, so any filtering would only
-        // blur text that DirectWrite already hinted.
-        mag_filter: wgpu::FilterMode::Nearest,
-        min_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
-    });
-
-    (texture, sampler)
-}
-
-/// The three things only pictures need (MDEDIT-146): a pipeline, a sampler and a buffer.
-///
-/// Together rather than inline in `Renderer::new`, which is already at the length clippy will take.
-fn create_image_parts(
-    device: &wgpu::Device,
-    shader: &wgpu::ShaderModule,
-    bind_layout: &wgpu::BindGroupLayout,
-    format: wgpu::TextureFormat,
-) -> (wgpu::RenderPipeline, wgpu::Sampler, wgpu::Buffer) {
-    let pipeline = create_pipeline(
-        device,
-        shader,
-        bind_layout,
-        format,
-        ("vs_image", "fs_image"),
-    );
-
-    // Linear, where the glyph sampler is nearest. A glyph is rasterized at the exact device scale so
-    // any filtering would only blur what DirectWrite already hinted; a picture is nearly always
-    // being scaled down to the column, and nearest there is aliasing.
-    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("picture"),
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    });
-
-    let instances = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("pictures"),
-        size: INITIAL_PICTURES * size_of::<QuadInstance>() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-
-    (pipeline, sampler, instances)
-}
-
-fn make_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    globals: &wgpu::Buffer,
-    atlas: &wgpu::Texture,
-    sampler: &wgpu::Sampler,
-) -> wgpu::BindGroup {
-    let view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("globals"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    })
 }
 
 /// What the pointer is resting on, when that is worth a panel.

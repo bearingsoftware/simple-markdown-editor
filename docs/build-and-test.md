@@ -168,9 +168,13 @@ checkouts default to `core.autocrlf=true`.
 
 ## The gap none of this closes
 
-**CI cannot open a window.** Rendering and hit-testing are verified by hand on Windows, and that is
-where this project's defects come from — five in the toolbar wave alone, every one with a green suite
-behind it, and three of those were cases where the headless test stub *itself* was the lie.
+**CI cannot open a window**, and it never will. But it took MDEDIT-146 to show how much of "rendering"
+that sentence was quietly being read to cover, and the answer was too much — see
+[what the window was never needed for](#what-the-window-was-never-needed-for) below.
+
+Hit-testing and *appearance* are still verified by hand on Windows, and that is where this project's
+defects come from — five in the toolbar wave alone, every one with a green suite behind it, and three
+of those were cases where the headless test stub *itself* was the lie.
 
 `crates/app/tests/icons.rs` is the one file that asks the real font stack rather than the stub, and it
 exists because measurement needs no window.
@@ -181,11 +185,40 @@ which turns out to offer no hardware adapter at all and does not need to. `Edito
 this project's own shader, atlas and quads offscreen at 550 ms for the first frame (the driver
 compiles the shader on first draw) and 2.5 ms for every one after it.
 
-**Nothing is built on that yet, and the gap above is still real until something is.** The full
-measurement, including the two machines that produced byte-identical pixels and why that is evidence
-rather than a licence to commit a golden hash, is in
-[`docs/research/07-rendering-in-ci.md`](research/07-rendering-in-ci.md) — which also says what to
-build first, and that the cheapest half needs no GPU at all.
+The full measurement, including the two machines that produced byte-identical pixels and why that is
+evidence rather than a licence to commit a golden hash, is in
+[`docs/research/07-rendering-in-ci.md`](research/07-rendering-in-ci.md).
+
+### What the window was never needed for
+
+`crates/app/tests/render.rs` (MDEDIT-153) asks WARP for a device, builds the **real** bind-group
+layout, samplers, pipelines and bind groups out of `crate::gpu`, draws one frame into an offscreen
+`Rgba8Unorm` texture and reads it back. Under a second, and it runs in the ordinary suite rather than
+behind `#[ignore]` — a test CI has to be told to run is a test that stops being run.
+
+**It exists because MDEDIT-146 aborted on a user's first run, past twelve green jobs and 1602 tests:**
+
+```text
+In Device::create_bind_group, label = 'globals'
+  Sampler binding 2 expects filtering = false, but given a sampler with filtering = true
+```
+
+A `Linear` sampler bound into a layout declaring `NonFiltering`. No amount of reading found it — two
+review passes went by — because it is not visible in any one function. It lives in the *interaction*
+between the layout, the sampler and the moment they are bound together, and one draw call finds it in
+0.19 s. That is why the test calls the production functions rather than a replica: a replica of that
+wiring would have been written correctly and proved nothing.
+
+**It asserts ink, not survival**, and the distinction is the whole lesson. MDEDIT-146's by-hand check
+ran twice and passed twice *without ever drawing a picture* — session restore won the active tab, so
+"it did not crash" was satisfied by a process that never reached the code under test. So each pipeline
+draws into its own region and each region is checked, and the test **requires** an adapter rather than
+skipping when one is absent: WARP ships with Windows, so no adapter means something is wrong.
+
+**What it still does not do is look at the result.** Nothing is golden, no hash is committed, no
+reference image exists — finding 3 of the brief explains why that should stay true. Whether a picture
+is the right size, whether a table's text is centred in its row, whether a caret is in a sensible
+place: those are still eyes on Windows.
 
 ## The cache saves on `main` and nowhere else
 
