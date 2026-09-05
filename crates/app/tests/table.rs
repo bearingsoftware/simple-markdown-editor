@@ -307,7 +307,11 @@ fn text_sits_inside_the_cell_rather_than_on_its_border() {
         16.0 + table::PADDING_Y * 2.0,
         "the row is its text plus a padding above and below"
     );
-    assert_eq!(grid.lines[0].baseline, table::PADDING_Y + 12.0);
+    assert_eq!(
+        grid.lines[0].baseline,
+        table::PADDING_Y + 12.0 - table::optical_lift(12.0),
+        "the padding, then the ascent, less the lift that centres the ink (MDEDIT-154)"
+    );
 }
 
 /// Cells of different heights sit on one baseline, or the row reads as a stagger.
@@ -320,7 +324,7 @@ fn a_row_shares_one_baseline() {
     let (grid, _) = table::assemble(&rows, &[], false);
 
     let line = &grid.lines[0];
-    let baseline = table::PADDING_Y + 19.0;
+    let baseline = table::PADDING_Y + 19.0 - table::optical_lift(19.0);
     assert_eq!(line.baseline, baseline, "the tallest cell sets it");
     assert_eq!(line.height, 24.0 + table::PADDING_Y * 2.0);
     assert!(
@@ -349,7 +353,11 @@ fn each_row_sits_below_the_one_before_it() {
     let baselines: Vec<f32> = grid.lines.iter().map(|line| line.baseline).collect();
     assert_eq!(
         baselines,
-        vec![pad + 12.0, 22.0 + pad + 19.0, 52.0 + pad + 12.0],
+        vec![
+            pad + 12.0 - table::optical_lift(12.0),
+            22.0 + pad + 19.0 - table::optical_lift(19.0),
+            52.0 + pad + 12.0 - table::optical_lift(12.0),
+        ],
         "each row's own ascent, below the heights of the rows above it"
     );
 
