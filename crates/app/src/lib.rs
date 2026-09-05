@@ -17,6 +17,7 @@ pub mod clicks;
 pub mod clipboard;
 pub mod config;
 pub mod content;
+pub mod decoding;
 pub mod detect;
 pub mod dialog;
 pub mod editor;

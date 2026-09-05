@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
-use std::time::SystemTime;
 
 use crate::clicks::{Clicks, Granularity};
+use crate::decoding::PictureKey;
 use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
 use mdedit_image::Picture;
@@ -9895,36 +9895,6 @@ impl ChunkKey {
             last,
             mode,
         }
-    }
-}
-
-/// What identifies a decoded picture (MDEDIT-146).
-///
-/// The resolved path, plus the stamp of the bytes read from it. The stamp is what makes replacing a
-/// file behind the editor's back safe rather than merely unlikely: a cache on the path alone would
-/// hand back the old picture for the new bytes, and it costs one `metadata` call that
-/// `mdedit_image::read` has to make anyway.
-///
-/// **The same length-and-mtime pair `mdedit-file` stamps a loaded buffer with**, and it is weak for
-/// the same reason and to the same degree: a filesystem with a coarse clock can miss a rewrite
-/// within its tick. That is a stale picture, not a wrong document, so it is a considerably cheaper
-/// failure here than there.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct PictureKey {
-    path: PathBuf,
-    length: u64,
-    modified: Option<SystemTime>,
-}
-
-impl PictureKey {
-    /// The key for `path` as it is on disk right now, or `None` if it cannot be stated.
-    fn of(path: PathBuf) -> Option<Self> {
-        let metadata = std::fs::metadata(&path).ok()?;
-        Some(Self {
-            length: metadata.len(),
-            modified: metadata.modified().ok(),
-            path,
-        })
     }
 }
 
