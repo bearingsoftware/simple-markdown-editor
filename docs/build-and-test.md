@@ -159,10 +159,12 @@ worktree of an older commit and the two runs compared.
 
 The last two are the ones that answered MDEDIT-151 — whether the worker thread `AGENTS.md` described
 was worth building, given it did not exist. They said no for saving, **yes for image decode** (now
-MDEDIT-156), and *nothing conclusive* for loading, which came in both under and over its target across
-three runs. That is why these two print best **and** worst of their iterations where the older
-harnesses print one figure: a lone number off this machine is not reproducible, and the section above
-is the reason. A harness written to settle an argument is worth keeping for the next one.
+MDEDIT-156), and *nothing conclusive* for loading, which measured 40–99 ms at 16 MB against a 50 ms
+target. That is why these two print best **and** worst of their iterations where the older harnesses
+print one figure: five runs of the decode harness gave 65, 84, 70, 159 and 130 ms for the same work.
+**Run a cost harness on an idle machine** — the 159 came from a run overlapping a workspace build, and
+a laptop that has just compiled the workspace is not the machine the earlier figures came off either.
+A harness written to settle an argument is worth keeping for the next one.
 
 `cargo test --release -- --ignored` is otherwise reserved for perf assertions. **None exist yet**, and they will
 not run in CI: GitHub runners are virtualised and on AC power, which

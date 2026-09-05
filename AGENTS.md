@@ -156,7 +156,8 @@ benchmarks and why each job runs where it does.
 - **No `async` in the editor core**, and adding a runtime needs a design decision on the ticket. The
   UI thread is a synchronous frame loop, and **there is no worker thread** — this line used to claim
   one, and MDEDIT-146 built around a constraint that did not exist. Load, save, snapshot and PNG
-  decode all run on the thread that draws; what that costs is measured under Performance below.
+  decode all run on the thread that draws; the brief linked under Performance measures what that
+  costs, and MDEDIT-156 is the one that breaches a target.
 - **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
   the baseline's `deny` + scoped-allow. **Three** crates qualify: `mdedit-text-dwrite` for
   DirectWrite, `mdedit-menu-win` for the call that attaches a menu bar to a window, and

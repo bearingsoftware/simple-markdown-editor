@@ -2,9 +2,10 @@
 //!
 //! Ignored by default, like `find_cost` and `frame_cost`: a measurement, not an assertion.
 //!
-//! MDEDIT-146 put PNG decoding on the layout path, which is the UI thread. `AGENTS.md` says I/O
-//! belongs on a worker; MDEDIT-151 is about whether that sentence describes something worth
-//! building or something to correct. This is the number that decides it.
+//! MDEDIT-146 put PNG decoding on the layout path, which is the UI thread. `AGENTS.md` *used to*
+//! say I/O belonged on a worker; MDEDIT-151 was about whether that sentence described something
+//! worth building or something to correct. This is the number that decided it — correct the
+//! sentence, and raise MDEDIT-156 for the decode, which is the one cost that breaches a target.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,8 +30,8 @@ fn png(width: u32, height: u32) -> Vec<u8> {
         for x in 0..width {
             // A gradient rather than a flat fill: a solid colour deflates to almost nothing and
             // would measure the decompressor doing no work.
-            let across = u8::try_from(x % 256).unwrap_or(0);
-            let down = u8::try_from(y % 256).unwrap_or(0);
+            let across = u8::try_from(x % 256).unwrap();
+            let down = u8::try_from(y % 256).unwrap();
             pixels.extend_from_slice(&[across, down, across ^ down, 0xff]);
         }
     }
@@ -54,8 +55,9 @@ fn what_a_decode_costs() {
     ] {
         let bytes = png(w, h);
         // **Both ends of three, not just the best.** A single figure from this harness invites
-        // being quoted as settled, and it is not: two runs on the same machine gave 65 ms and
-        // 84 ms for the 4K case. Printing the spread makes one run tell you how much to trust it.
+        // being quoted as settled, and it is not: five runs on the same machine gave 65, 84, 70,
+        // 159 and 130 ms for the 4K case. Printing the spread makes one run say how far it drifted
+        // while it ran, and the fourth of those overlapped a build — run this on an idle machine.
         let mut best = f64::MAX;
         let mut worst = 0.0_f64;
         for _ in 0..3 {

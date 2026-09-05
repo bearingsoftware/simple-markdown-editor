@@ -304,52 +304,76 @@ battery, and state the machine.
 
 ## What synchronous I/O on the UI thread actually costs
 
-**Measured, MDEDIT-151 (2026-09-05), release build, Windows 11, Intel integrated graphics.** `AGENTS.md`
+**Measured, MDEDIT-151 (2026-09-05), release build, Windows 11, i7-1270P, 32 GB, on AC.** `AGENTS.md`
 claimed I/O went to a worker thread. It does not — there is no worker anywhere in `crates/*/src`, and
 MDEDIT-146 inherited the claim as a constraint it did not have. Before correcting the sentence, the
 question was whether the worker was worth building instead. These are the numbers that answered it.
 
-**Ranges, over three runs, and the range is the finding.** The first draft of this section carried one
-column of single figures; re-running produced 65 ms, 84 ms and 70 ms for the same 4K decode, and 40 ms,
-56 ms and 77 ms for the same 16 MB load. A lone number from this harness is not reproducible, so both
-harnesses now print best *and* worst of their three iterations, and the tables below span every run.
+**Read the best column and treat the worst as a warning, because five runs did not converge.** This
+section began with one column of single figures. Re-running disagreed, so it became a range; the range
+was then broken by the fourth run and broken again by the fifth. What the same 4K decode measured, run
+by run: **65, 84, 70, 159, 130 ms.** What the same 16-megapixel decode measured: **110, 130, 132,
+2543, 252 ms.**
 
-`mdedit-file`, load and save:
+The `1270P` is a thermally-throttled laptop part and the machine was doing other work by the fourth
+run — that one overlapped a workspace build, which is where the 2.5 s comes from. That is not a
+defect in the editor and not a number to quote; it is what this hardware does to any measurement taken
+carelessly, and the reason the harnesses print both ends. **Run them on an idle, cold machine, twice,
+and believe the smaller answer.** The power state was checked afterwards rather than per run, which
+the targets above say to do and this did not.
 
-| Markdown | load | save |
-|---|---:|---:|
-| 245 KB | 15–43 ms | 3–5 ms |
-| 1 MB | 16–23 ms | 3–5 ms |
-| 4 MB | 19–34 ms | 5–10 ms |
-| 16 MB | 40–77 ms | 15–25 ms |
+So the tables give the **best** seen across every run — the most favourable honest reading — and the
+worst seen on an *idle* machine beside it.
 
 `mdedit-image`, decode, gradient content so the decompressor does real work:
 
-| PNG | decode | RGBA surface |
-|---|---:|---:|
-| 640×480, a screenshot | 3–4 ms | 1.2 MB |
-| 1920×1080 | 16–25 ms | 7.9 MB |
-| 3840×2160, a 4K screenshot | **65–85 ms** | 31.6 MB |
-| 4000×4000, `MAX_PIXELS` | **110–147 ms** | 61.0 MB |
+| PNG | best | worst, idle | RGBA surface |
+|---|---:|---:|---:|
+| 640×480, a screenshot | 2.6 ms | 5.6 ms | 1.2 MB |
+| 1920×1080 | 16.2 ms | 32.3 ms | 7.9 MB |
+| 3840×2160, a 4K screenshot | **65.3 ms** | 150.5 ms | 31.6 MB |
+| 4000×4000, `MAX_PIXELS` | **110.0 ms** | 278.6 ms | 61.0 MB |
+
+`mdedit-file`, load and save:
+
+| Markdown | load, best | load, worst | save, best | save, worst |
+|---|---:|---:|---:|---:|
+| 245 KB | 14.6 ms | 43.4 ms | 2.4 ms | 4.7 ms |
+| 1 MB | 15.9 ms | 24.5 ms | 3.2 ms | 5.4 ms |
+| 4 MB | 19.2 ms | 33.8 ms | 4.7 ms | 10.2 ms |
+| 16 MB | 39.8 ms | 98.7 ms | 15.1 ms | 31.0 ms |
 
 **The decode is the one that matters, and that reverses what MDEDIT-151 assumed.** The ticket said a
-worker built for images alone would be "a worker for the least important of the four". Measured, it is
-the most expensive by a wide margin in the case people actually hit: a 4K screenshot pasted into notes
-costs 65–85 ms on the thread that draws, which breaks the ≤50 ms file-open target on its own in
-*every* run, and is eight to ten times the 8.3 ms p99 keystroke budget. That conclusion is the one the
-drift does not touch.
+worker built for images alone would be "a worker for the least important of the four". It is the most
+expensive by a wide margin in the case people actually hit, and this is the conclusion the drift cannot
+touch: **the best 4K decode ever measured, 65 ms, is already over the ≤50 ms file-open target**, and
+every other run was worse — twice over on a warm machine. It is eight times the 8.3 ms p99 keystroke
+budget at best and twenty times at worst. Nothing about how this was measured makes that go away.
 
-**Loading is the claim the drift does touch, and it is now an open question rather than a result.**
-16 MB straddles the target — under it on one run, half again over it on another — so neither "loading
-is fine" nor "loading breaches the target above ~10 MB" is supported by this data. What can be said is
-that no *realistic* Markdown file gets near 50 ms reliably, and that 16 MB of Markdown is not a file
-anybody has. Saving never approaches the target at any size.
+**Loading is where the drift bites, and it is an open question rather than a result.** 16 MB spans
+40–99 ms: under the target on the best run and twice it on the worst. Neither "loading is fine" nor
+"loading breaches the target above ~10 MB" is supported. What can be said is that no *realistic*
+Markdown file gets near 50 ms, and 16 MB of Markdown is not a file anybody has. Saving never
+approaches the target at any size.
 
-Two artefacts worth knowing before quoting the load column. The 245 KB row is the first size the
+**Save is one column because the two save paths measured the same.** `mdedit_file::save` writes the
+original bytes back when the buffer still equals what was read, and encodes the buffer when it does
+not — the fast path exists for byte preservation, not for speed. Timed apart, saving an edited 16 MB
+buffer came in at 21–29 ms against 21–31 ms unedited, inside the noise. Encoding UTF-8 that was read
+as UTF-8 is a copy; the fast path is not what makes saving cheap.
+
+Three artefacts worth knowing before quoting the load column. The 245 KB row is the first size the
 harness touches, so its worst iteration is paying for whatever the process and page cache had not
-warmed yet — that is where the 43 ms comes from, not from the size. And every load in a run reads a
-file the previous save just wrote, so this measures a warm cache throughout; a genuinely cold open off
-disk is not covered here at all.
+warmed yet — that is where the 43 ms comes from, not from the size. Every load reads a file written
+moments earlier, so this measures a warm cache throughout; a genuinely cold open off disk is not
+covered here at all. And nothing here is `mmap` — `mdedit_file::load` does a whole-file `fs::read`,
+so these figures are the cost of the read the editor performs today, not of the O(1) first paint the
+Rendering rules describe.
+
+**One thing this section does not measure, and should be read as excluded rather than absent.**
+`PictureKey::of` calls `std::fs::metadata` for every picture destination it lays out, on the same
+thread. It is a stat rather than a read, and it sits behind the layout cache so it runs on a miss and
+not per frame, but it is synchronous I/O on the thread that draws and no number here covers it.
 
 **It is a one-off, not a per-frame cost.** A picture is decoded once and cached by path and mtime
 (MDEDIT-146), so the stall lands on the frame that first shows the image and never again. That is why
