@@ -17,7 +17,9 @@ pub mod clicks;
 pub mod clipboard;
 pub mod config;
 pub mod content;
-pub mod decoding;
+// Crate-private, unlike its neighbours: everything in it is an implementation detail of the picture
+// cache, and the editor's own `await_pictures` is the whole of what a caller outside needs.
+pub(crate) mod decoding;
 pub mod detect;
 pub mod dialog;
 pub mod editor;

@@ -343,12 +343,13 @@ worst seen on an *idle* machine beside it.
 | 4 MB | 19.2 ms | 33.8 ms | 4.7 ms | 10.2 ms |
 | 16 MB | 39.8 ms | 98.7 ms | 15.1 ms | 31.0 ms |
 
-**The decode is the one that matters, and that reverses what MDEDIT-151 assumed.** The ticket said a
+**The decode is the one that matters, and that reversed what MDEDIT-151 assumed.** The ticket said a
 worker built for images alone would be "a worker for the least important of the four". It is the most
 expensive by a wide margin in the case people actually hit, and this is the conclusion the drift cannot
 touch: **the best 4K decode ever measured, 65 ms, is already over the ≤50 ms file-open target**, and
 every other run was worse — twice over on a warm machine. It is eight times the 8.3 ms p99 keystroke
-budget at best and twenty times at worst. Nothing about how this was measured makes that go away.
+budget at best and twenty times at worst. Nothing about how this was measured makes that go away, and
+it is the one number here that bought a worker thread (MDEDIT-156, below).
 
 **Loading is where the drift bites, and it is an open question rather than a result.** 16 MB spans
 40–99 ms: under the target on the best run and twice it on the worst. Neither "loading is fine" nor
@@ -375,16 +376,21 @@ Rendering rules describe.
 thread. It is a stat rather than a read, and it sits behind the layout cache so it runs on a miss and
 not per frame, but it is synchronous I/O on the thread that draws and no number here covers it.
 
-**It is a one-off, not a per-frame cost.** A picture is decoded once and cached by path and mtime
-(MDEDIT-146), so the stall lands on the frame that first shows the image and never again. That is why
-this was recorded rather than fixed: a single hitch at open is not the same defect as a hitch while
-typing, and the fix is not free.
+**It was a one-off, not a per-frame cost.** A picture is decoded once and cached by path, length and
+mtime (MDEDIT-146), so the stall landed on the frame that first laid the image out and never again.
+That is why it was recorded here rather than fixed on the spot: a single hitch at open is not the same
+defect as a hitch while typing.
 
-**What a fix would cost, and why it is a design decision rather than a refactor.** Layout needs a
-picture's dimensions to size the row it sits in. Decoding off-thread means the first frame has no
-dimensions to use, so it draws alt text or a placeholder and the image pops in when the decode lands —
-a visible change to how the editor behaves, not merely to where work happens. That belongs on its own
-ticket with its own argument.
+**Fixed on MDEDIT-156, and the split is worth reading before proposing another worker.** The obvious
+version of the fix has a visible cost — decode off-thread, and the first frame has no dimensions, so
+it draws alt text and the page reflows when the image pops in. What removed that is that a PNG's
+*header* is not expensive: `mdedit_image::measure` reads a few dozen bytes on the drawing thread, so
+the row is the right height on the frame the image first appears in, and only the pixels are late.
+Nothing moves when they land.
+
+That also keeps it clear of MDEDIT-118's trap. The layout is a function of the header alone, so it
+does not change when the decode completes and `ChunkKey` is not missing anything it would need to
+carry. `decoding.rs` has the reasoning.
 
 `crates/image/tests/decode_cost.rs` and `crates/file/tests/load_cost.rs` are the harnesses, both
 `#[ignore]`d beside `find_cost` and `frame_cost`. Re-run them before believing any of the above.

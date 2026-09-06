@@ -32,9 +32,9 @@ const WIDTH: f32 = 900.0;
 const HEIGHT: f32 = 600.0;
 
 /// A PNG of `width` x `height`, opaque mid-grey.
-fn write_png(path: &Path, width: u32, height: u32) {
-    let file = std::fs::File::create(path).unwrap();
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+fn png_bytes(width: u32, height: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().unwrap();
@@ -42,6 +42,12 @@ fn write_png(path: &Path, width: u32, height: u32) {
         .write_image_data(&vec![0x80; (width * height * 4) as usize])
         .unwrap();
     writer.finish().unwrap();
+    bytes
+}
+
+/// The same, written to `path`.
+fn write_png(path: &Path, width: u32, height: u32) {
+    std::fs::write(path, png_bytes(width, height)).unwrap();
 }
 
 /// An editor on a saved document containing `source`, in a directory of its own.
@@ -60,6 +66,29 @@ fn editor_on(dir: &TempDir, source: &str) -> (Editor<Grid>, PathBuf) {
 fn pictures_of(editor: &mut Editor<Grid>) -> Vec<Drawn> {
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     editor.drawn_pictures().to_vec()
+}
+
+/// How long a test waits for the decode worker before calling it broken.
+///
+/// Generous, and it costs nothing when things work: [`Editor::await_pictures`] blocks on the
+/// worker's answer, not on this. A machine so loaded that a 100-pixel PNG takes ten seconds has
+/// worse problems than a red test.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Waits for every picture the last frame asked for, then builds another (MDEDIT-156).
+///
+/// The decode is off the drawing thread now, so "the pixels are there" is a thing that becomes true
+/// rather than a thing that is. Waiting on the channel rather than on a clock is what keeps that
+/// from being flaky.
+fn once_decoded(editor: &mut Editor<Grid>) -> Vec<Drawn> {
+    // A frame first, because laying the picture out is what asks for it. Waiting before anything
+    // has been requested waits for nothing, which is a ten-second test rather than a passing one.
+    pictures_of(editor);
+    assert!(
+        editor.await_pictures(PATIENCE),
+        "the decode worker answered nothing in {PATIENCE:?}"
+    );
+    pictures_of(editor)
 }
 
 /// How many glyphs were drawn inside `rect`.
@@ -167,7 +196,7 @@ fn the_alt_text_is_not_drawn_where_a_picture_is() {
 
 #[test]
 fn two_paragraphs_naming_one_file_share_a_picture() {
-    // Two placements, one id — so one texture and one upload.
+    // Two placements, one id — so one texture, one upload, and one decode.
     let dir = TempDir::new().unwrap();
     write_png(&dir.path().join("cat.png"), 60, 60);
     let (mut editor, _) = editor_on(&dir, "![](cat.png)\n\n![](cat.png)\n");
@@ -176,6 +205,10 @@ fn two_paragraphs_naming_one_file_share_a_picture() {
 
     assert_eq!(drawn.len(), 2, "{drawn:?}");
     assert_eq!(drawn[0].id, drawn[1].id);
+
+    let drawn = once_decoded(&mut editor);
+
+    assert_eq!(drawn[0].id, drawn[1].id, "the id changed under the decode");
     assert!(editor.picture(drawn[0].id).is_some());
 }
 
@@ -314,14 +347,102 @@ fn an_untitled_buffer_draws_no_picture_for_a_relative_destination() {
 fn a_second_frame_reuses_the_decoded_picture() {
     let dir = TempDir::new().unwrap();
     let mut editor = one_picture(&dir, (100, 50));
-    let first = pictures_of(&mut editor)[0].id;
+    let first = once_decoded(&mut editor)[0].id;
 
-    // Deleting the file must not change the second frame: if anything re-read it, this fails.
+    // Deleting the file must not change the third frame: if anything re-read it, this fails. Waited
+    // for above, because the worker reads the file itself — deleting it before it gets there would
+    // be testing the race rather than the cache.
     std::fs::remove_file(dir.path().join("cat.png")).unwrap();
-    let second = pictures_of(&mut editor);
+    let third = pictures_of(&mut editor);
 
-    assert_eq!(second.len(), 1, "the picture was re-read and lost");
-    assert_eq!(second[0].id, first);
+    assert_eq!(third.len(), 1, "the picture was re-read and lost");
+    assert_eq!(third[0].id, first);
+    assert!(editor.picture(first).is_some(), "the pixels were dropped");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The decode is off the drawing thread (MDEDIT-156).
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn the_row_is_the_right_height_before_the_pixels_exist() {
+    // **The whole point of measuring the header.** The first frame has no picture to draw and still
+    // has to give the paragraph the 400 pixels it will need, or everything below it jumps when the
+    // decode lands.
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 400));
+
+    let drawn = pictures_of(&mut editor);
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert_eq!(drawn[0].rect[3], 400.0, "height on the first frame");
+    assert!(
+        editor.picture(drawn[0].id).is_none(),
+        "the decode happened on the thread that draws, which is the defect"
+    );
+}
+
+#[test]
+fn nothing_moves_when_the_picture_arrives() {
+    // The promise, stated as the thing a reader would notice: the rectangle is identical before and
+    // after, so no text reflows underneath it.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 300, 200);
+    let (mut editor, _) = editor_on(&dir, "![a cat](cat.png)\n\nAfter it.\n");
+
+    let before = pictures_of(&mut editor)[0];
+    let rows_before = glyph_rows(&mut editor);
+    let after = once_decoded(&mut editor)[0];
+    let rows_after = glyph_rows(&mut editor);
+
+    assert_eq!(before.rect, after.rect, "the picture moved or resized");
+    assert_eq!(rows_before, rows_after, "the text below moved");
+    assert!(
+        !rows_after.is_empty(),
+        "no text below, so nothing was shown"
+    );
+    assert!(editor.picture(after.id).is_some(), "still no pixels");
+}
+
+#[test]
+fn a_picture_over_the_caps_draws_its_alt_text_and_is_never_queued() {
+    // 9000 is past `MAX_DIMENSION`, which is the hardware's texture limit rather than a policy. The
+    // refusal happens in `measure` — *before* a row is sized for it and before the worker is asked
+    // for anything, which is what stops a document you were sent from sizing a row it should not.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 9000, 1);
+    let (mut editor, _) = editor_on(&dir, "![a cat](cat.png)\n");
+
+    assert!(pictures_of(&mut editor).is_empty());
+    assert!(
+        !editor.await_pictures(std::time::Duration::from_millis(250)),
+        "a refused header still reached the decode worker"
+    );
+}
+
+#[test]
+fn a_header_that_measures_and_pixels_that_do_not_decode_leave_a_blank_row() {
+    // A file being written while it is read, which is an ordinary thing to catch mid-copy. The
+    // header is intact, so the row is sized; the image data is not, so no pixels ever arrive. What
+    // must not happen is a panic, or a row that collapses under the reader afterwards.
+    let dir = TempDir::new().unwrap();
+    let whole = png_bytes(120, 90);
+    std::fs::write(dir.path().join("cat.png"), &whole[..40]).unwrap();
+    let (mut editor, _) = editor_on(&dir, "![a cat](cat.png)\n");
+
+    let drawn = pictures_of(&mut editor);
+
+    assert_eq!(drawn.len(), 1, "the header measured, so the row is sized");
+    assert_eq!(drawn[0].rect[3], 90.0, "height from the header");
+
+    assert!(
+        !editor.await_pictures(PATIENCE),
+        "a truncated file produced pixels"
+    );
+    let after = pictures_of(&mut editor);
+
+    assert_eq!(after[0].rect, drawn[0].rect, "the row collapsed");
+    assert!(editor.picture(after[0].id).is_none());
 }
 
 #[test]
@@ -376,6 +497,13 @@ fn a_picture_is_placed_by_the_real_text_engine_too() {
     assert_eq!(drawn.len(), 1, "{drawn:?}");
     assert_eq!(drawn[0].rect[2], 100.0, "width");
     assert_eq!(drawn[0].rect[3], 50.0, "height");
+
+    assert!(
+        editor.await_pictures(PATIENCE),
+        "the decode worker answered nothing in {PATIENCE:?}"
+    );
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
     assert!(editor.picture(drawn[0].id).is_some(), "no pixels to upload");
 }
 

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::clicks::{Clicks, Granularity};
-use crate::decoding::PictureKey;
+use crate::decoding::{Decoder, PictureKey, PictureState};
 use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
 use mdedit_image::Picture;
@@ -78,6 +78,11 @@ pub enum Wake {
     Menu(Command),
     /// Explorer handed over a selection: open every one of these, in this order.
     Open(Vec<PathBuf>),
+    /// The decode worker has finished a picture (MDEDIT-156).
+    ///
+    /// Carries nothing: the answers are on the worker's channel, and one wake is enough however
+    /// many of them arrived.
+    Pictures,
 }
 
 /// The width chunks are laid out at when word wrap is off (MDEDIT-49).
@@ -965,9 +970,17 @@ pub struct Editor<T: TextLayout> {
     /// **A refusal is cached too.** A document naming a file that is not there would otherwise
     /// re-stat it on every layout, and a broken image is the common case in a document being
     /// written — the path is typed before the file exists.
-    pictures: HashMap<PictureKey, Option<Rc<Picture>>>,
+    /// **Three answers, not two** (MDEDIT-156). A picture whose header has been read can be laid
+    /// out before its pixels exist, so "sized but not decoded yet" is a state the cache has to be
+    /// able to hold.
+    pictures: HashMap<PictureKey, PictureState>,
     /// The number the next distinct picture gets, so the renderer can key a texture on it.
     picture_ids: HashMap<PictureKey, u64>,
+    /// The thread that decodes pictures, once one has been wanted (MDEDIT-156).
+    ///
+    /// `None` until then, so a session that never opens a document with an image in it never starts
+    /// a thread — which is most sessions, and every test that does not place a picture.
+    decoder: Option<Decoder>,
     /// Which pictures the last [`build_frame`](Self::build_frame) placed, and where.
     ///
     /// Rebuilt each frame and read by the renderer afterwards, rather than returned: `build_frame`
@@ -1223,6 +1236,7 @@ impl<T: TextLayout> Editor<T> {
             layouts: HashMap::new(),
             pictures: HashMap::new(),
             picture_ids: HashMap::new(),
+            decoder: None,
             drawn_pictures: Vec::new(),
             picture_spans: Vec::new(),
             anchor: None,
@@ -1953,6 +1967,9 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// Looked up rather than carried on the `Drawn` so that a picture drawn twice — the same file in
     /// two paragraphs — is one texture and one upload.
+    ///
+    /// `None` while the decode is still running (MDEDIT-156). The rectangle is already placed and
+    /// the row is already the right height; only the pixels are late.
     #[must_use]
     pub fn picture(&self, id: u64) -> Option<&Picture> {
         let key = self
@@ -1960,12 +1977,14 @@ impl<T: TextLayout> Editor<T> {
             .iter()
             .find(|(_, assigned)| **assigned == id)
             .map(|(key, _)| key)?;
-        self.pictures.get(key)?.as_deref()
+        self.pictures.get(key)?.pixels().map(Rc::as_ref)
     }
 
     /// The distinct pictures behind `drawn`, ready to hand to the renderer.
     ///
-    /// Deduplicated, so the same file in two paragraphs is offered once.
+    /// Deduplicated, so the same file in two paragraphs is offered once. A picture still being
+    /// decoded is simply absent, and `Gpu::draw` skips an id it has no texture for — which is the
+    /// whole of what "a blank row that fills in later" needed (MDEDIT-156).
     fn picture_sources(&self, drawn: &[crate::image::Drawn]) -> Vec<(u64, Rc<Picture>)> {
         let mut sources: Vec<(u64, Rc<Picture>)> = Vec::new();
         for id in drawn.iter().map(|picture| picture.id) {
@@ -1977,7 +1996,8 @@ impl<T: TextLayout> Editor<T> {
                 .iter()
                 .find(|(_, assigned)| **assigned == id)
                 .and_then(|(key, _)| self.pictures.get(key))
-                .and_then(Clone::clone);
+                .and_then(PictureState::pixels)
+                .map(Rc::clone);
             if let Some(picture) = found {
                 sources.push((id, picture));
             }
@@ -9179,8 +9199,8 @@ impl<T: TextLayout> Editor<T> {
                 return None;
             }
         };
-        let (id, picture) = self.picture_at(path)?;
-        let (width, height) = crate::image::fit((picture.width, picture.height), frame.width);
+        let (id, declared_width, declared_height) = self.picture_at(path)?;
+        let (width, height) = crate::image::fit((declared_width, declared_height), frame.width);
         let base = chunk.span.start().get();
         Some(Fitted {
             id,
@@ -9225,31 +9245,113 @@ impl<T: TextLayout> Editor<T> {
             .map(Path::to_path_buf)
     }
 
-    /// The decoded picture at `path`, reading and decoding it the first time only.
+    /// How big the picture at `path` is, reading its header the first time only (MDEDIT-156).
     ///
-    /// `None` when the file cannot be read or is not a usable PNG — cached as a `None` so a document
-    /// naming a file that is not there costs one attempt rather than one per layout.
-    fn picture_at(&mut self, path: PathBuf) -> Option<(u64, Rc<Picture>)> {
+    /// **The header, not the picture.** This is on the layout path, which is the thread that draws,
+    /// and decoding a 4K PNG there costs more than the whole first-paint budget. So the size comes
+    /// from `mdedit_image::measure` — a few dozen bytes — and the pixels are asked of the worker,
+    /// which answers by waking the loop for another frame.
+    ///
+    /// `None` when the file cannot be read, is not a usable PNG, or declares a surface past the
+    /// caps. Cached as [`PictureState::Unusable`] so a document naming a file that is not there
+    /// costs one attempt rather than one per layout.
+    fn picture_at(&mut self, path: PathBuf) -> Option<(u64, u32, u32)> {
         let key = PictureKey::of(path)?;
         let next = self.picture_ids.len() as u64;
         let id = *self.picture_ids.entry(key.clone()).or_insert(next);
 
-        if let Some(cached) = self.pictures.get(&key) {
-            return cached.clone().map(|picture| (id, picture));
+        if let Some(known) = self.pictures.get(&key) {
+            return known.size().map(|(width, height)| (id, width, height));
         }
 
-        let decoded = match mdedit_image::read(&key.path) {
-            Ok(picture) => Some(Rc::new(picture)),
+        match mdedit_image::measure(&key.path) {
+            Ok((width, height)) => {
+                self.pictures.insert(
+                    key.clone(),
+                    PictureState::Known {
+                        width,
+                        height,
+                        pixels: None,
+                    },
+                );
+                self.decoder().request(key);
+                Some((id, width, height))
+            }
             Err(error) => {
                 // Once, on the frame the file is first looked at, rather than every frame after —
                 // which is what caching the refusal below buys, and a broken image in a document
                 // being written would otherwise fill the log.
                 crate::log_error!("{}: {error}", key.path.display());
+                self.pictures.insert(key, PictureState::Unusable);
                 None
             }
+        }
+    }
+
+    /// The decode worker, started if this is the first picture to want one.
+    fn decoder(&mut self) -> &Decoder {
+        // Cloned out first: `get_or_insert_with` holds a mutable borrow of `self.decoder` for as
+        // long as its closure runs, so the closure cannot reach `self` for the proxy.
+        let wake = self.menu_proxy.clone();
+        self.decoder.get_or_insert_with(|| Decoder::spawn(wake))
+    }
+
+    /// Takes whatever the decode worker has finished, without waiting (MDEDIT-156).
+    ///
+    /// `true` when something arrived, which is the caller's cue to draw another frame. Called on
+    /// [`Wake::Pictures`], and harmless at any other time.
+    pub fn absorb_pictures(&mut self) -> bool {
+        let Some(decoder) = self.decoder.as_ref() else {
+            return false;
         };
-        self.pictures.insert(key, decoded.clone());
-        decoded.map(|picture| (id, picture))
+        self.take_pictures(decoder.collect())
+    }
+
+    /// Blocks for up to `patience` for the worker's next answer, then takes it (MDEDIT-156).
+    ///
+    /// **For a caller with no event loop to be woken by**, which means a headless test. It waits on
+    /// the answer rather than on a clock, so a broken worker fails the test at the timeout instead
+    /// of turning it flaky.
+    #[must_use]
+    pub fn await_pictures(&mut self, patience: std::time::Duration) -> bool {
+        let Some(decoder) = self.decoder.as_ref() else {
+            return false;
+        };
+        self.take_pictures(decoder.wait(patience))
+    }
+
+    /// Files the worker's answers into the picture cache.
+    ///
+    /// A key that is no longer in the cache is dropped rather than re-inserted: the only way that
+    /// happens is the file changing under a running editor, and the answer is then about bytes
+    /// nothing is asking to draw.
+    fn take_pictures(
+        &mut self,
+        answers: Vec<(PictureKey, Result<Picture, mdedit_image::Undecodable>)>,
+    ) -> bool {
+        let mut arrived = false;
+        for (key, decoded) in answers {
+            match decoded {
+                Ok(picture) => {
+                    if let Some(PictureState::Known { pixels, .. }) = self.pictures.get_mut(&key) {
+                        *pixels = Some(Rc::new(picture));
+                        arrived = true;
+                    }
+                }
+                Err(error) => {
+                    // **Logged here rather than on the worker**, so one thread writes the log and
+                    // the lines stay in an order that matches the frames.
+                    crate::log_error!("{}: {error}", key.path.display());
+                    // A header that measured and pixels that would not decode: a truncated file, or
+                    // one being written while it is read. The row keeps the height the header gave
+                    // it, because moving it now is the reflow this change exists to avoid.
+                    if let Some(PictureState::Known { pixels, .. }) = self.pictures.get_mut(&key) {
+                        *pixels = None;
+                    }
+                }
+            }
+        }
+        arrived
     }
 
     /// Notes a destination this editor will not read.
@@ -9549,6 +9651,16 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                     // would look like it had done nothing at all.
                     if let Some(window) = self.window.as_ref() {
                         window.focus_window();
+                        window.request_redraw();
+                    }
+                }
+                return;
+            }
+            Wake::Pictures => {
+                // Only if something actually landed: a wake whose answers a previous one already
+                // collected must not cost a frame (MDEDIT-156).
+                if self.absorb_pictures() {
+                    if let Some(window) = self.window.as_ref() {
                         window.request_redraw();
                     }
                 }
