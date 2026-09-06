@@ -405,6 +405,44 @@ fn nothing_moves_when_the_picture_arrives() {
 }
 
 #[test]
+fn laying_a_known_picture_out_again_keeps_its_size() {
+    // **The second layout takes a different path from the first.** The first measures the header;
+    // every one after reads the size back out of the cache, and only a frame at a *different width*
+    // lays the chunk out again at all — `ChunkKey` carries the wrap width. Nothing exercised that
+    // until cargo-mutants replaced the cached size with `(0, 0)` and every test still passed.
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    let first = once_decoded(&mut editor)[0].rect;
+
+    editor.build_frame(WIDTH - 120.0, HEIGHT, 1.0);
+    let again = editor.drawn_pictures()[0].rect;
+
+    assert_eq!([again[2], again[3]], [first[2], first[3]], "size changed");
+    assert_eq!(again[2], 100.0, "and it is still the file's own size");
+}
+
+#[test]
+fn the_renderer_is_offered_each_picture_once() {
+    // What `Gpu::upload_pictures` is handed. Two placements of one file are one texture and one
+    // upload, and a picture whose decode has not landed is not offered at all.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "![](cat.png)\n\n![](cat.png)\n");
+
+    let drawn = pictures_of(&mut editor);
+    let before = editor.picture_sources(&drawn);
+
+    assert!(before.is_empty(), "offered pixels that do not exist yet");
+
+    let drawn = once_decoded(&mut editor);
+    let after = editor.picture_sources(&drawn);
+
+    assert_eq!(drawn.len(), 2, "two placements");
+    assert_eq!(after.len(), 1, "but one upload: {after:?}");
+    assert_eq!(after[0].0, drawn[0].id);
+}
+
+#[test]
 fn a_picture_over_the_caps_draws_its_alt_text_and_is_never_queued() {
     // 9000 is past `MAX_DIMENSION`, which is the hardware's texture limit rather than a policy. The
     // refusal happens in `measure` — *before* a row is sized for it and before the worker is asked

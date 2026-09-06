@@ -124,6 +124,13 @@ impl PictureState {
 pub(crate) struct Decoder {
     requests: Sender<PictureKey>,
     answers: Receiver<(PictureKey, Result<Picture, Undecodable>)>,
+    /// What [`Decoder::wait_for_one`] took off the channel and has not handed over yet.
+    ///
+    /// **So that waiting is not a second way into the picture cache.** A test that blocks for an
+    /// answer must end up going through the same [`Decoder::collect`] the event loop uses, or the
+    /// production path is the one nothing exercises — which is exactly what cargo-mutants found on
+    /// this ticket, by replacing `collect` with an empty vector and watching every test still pass.
+    held: Vec<(PictureKey, Result<Picture, Undecodable>)>,
 }
 
 impl Decoder {
@@ -159,7 +166,11 @@ impl Decoder {
             crate::log_error!("could not start the picture decoder: {error}");
         }
 
-        Self { requests, answers }
+        Self {
+            requests,
+            answers,
+            held: Vec::new(),
+        }
     }
 
     /// Asks for `key` to be decoded.
@@ -171,25 +182,23 @@ impl Decoder {
     }
 
     /// Every answer that has arrived, without waiting for one.
-    pub(crate) fn collect(&self) -> Vec<(PictureKey, Result<Picture, Undecodable>)> {
-        self.answers.try_iter().collect()
+    ///
+    /// The only way anything leaves this type.
+    pub(crate) fn collect(&mut self) -> Vec<(PictureKey, Result<Picture, Undecodable>)> {
+        let mut answers = std::mem::take(&mut self.held);
+        answers.extend(self.answers.try_iter());
+        answers
     }
 
-    /// Waits up to `patience` for the first answer, then takes any others that came with it.
+    /// Blocks up to `patience` for one answer and holds it for the next [`Decoder::collect`].
     ///
     /// For a caller with no event loop to be woken by — a headless test, which blocks on the answer
-    /// rather than on a clock and so is not the flaky kind.
-    pub(crate) fn wait(
-        &self,
-        patience: Duration,
-    ) -> Vec<(PictureKey, Result<Picture, Undecodable>)> {
+    /// rather than on a clock and so is not the flaky kind. It deliberately hands nothing back:
+    /// waiting decides *when* to look, and `collect` stays the one way in.
+    pub(crate) fn wait_for_one(&mut self, patience: Duration) {
         match self.answers.recv_timeout(patience) {
-            Ok(first) => {
-                let mut answers = vec![first];
-                answers.extend(self.answers.try_iter());
-                answers
-            }
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => Vec::new(),
+            Ok(answer) => self.held.push(answer),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {}
         }
     }
 }

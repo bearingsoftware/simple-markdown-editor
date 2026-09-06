@@ -1985,7 +1985,12 @@ impl<T: TextLayout> Editor<T> {
     /// Deduplicated, so the same file in two paragraphs is offered once. A picture still being
     /// decoded is simply absent, and `Gpu::draw` skips an id it has no texture for — which is the
     /// whole of what "a blank row that fills in later" needed (MDEDIT-156).
-    fn picture_sources(&self, drawn: &[crate::image::Drawn]) -> Vec<(u64, Rc<Picture>)> {
+    ///
+    /// **Public for the same reason [`Self::drawn_pictures`] is**: uploading needs a device, so this
+    /// is the last point a headless test can see what the renderer will be handed. Returning an
+    /// empty list here draws no pictures at all and no test noticed until one was made to.
+    #[must_use]
+    pub fn picture_sources(&self, drawn: &[crate::image::Drawn]) -> Vec<(u64, Rc<Picture>)> {
         let mut sources: Vec<(u64, Rc<Picture>)> = Vec::new();
         for id in drawn.iter().map(|picture| picture.id) {
             if sources.iter().any(|(seen, _)| *seen == id) {
@@ -9301,10 +9306,12 @@ impl<T: TextLayout> Editor<T> {
     /// `true` when something arrived, which is the caller's cue to draw another frame. Called on
     /// [`Wake::Pictures`], and harmless at any other time.
     pub fn absorb_pictures(&mut self) -> bool {
-        let Some(decoder) = self.decoder.as_ref() else {
-            return false;
-        };
-        self.take_pictures(decoder.collect())
+        let answers = self
+            .decoder
+            .as_mut()
+            .map(Decoder::collect)
+            .unwrap_or_default();
+        self.take_pictures(answers)
     }
 
     /// Blocks for up to `patience` for the worker's next answer, then takes it (MDEDIT-156).
@@ -9312,12 +9319,16 @@ impl<T: TextLayout> Editor<T> {
     /// **For a caller with no event loop to be woken by**, which means a headless test. It waits on
     /// the answer rather than on a clock, so a broken worker fails the test at the timeout instead
     /// of turning it flaky.
+    ///
+    /// **Waiting decides when to look and nothing else** — the answers then come through
+    /// [`Self::absorb_pictures`], the same call the event loop makes. A test that reached the cache
+    /// by its own route would leave the production path as the one nothing exercises.
     #[must_use]
     pub fn await_pictures(&mut self, patience: std::time::Duration) -> bool {
-        let Some(decoder) = self.decoder.as_ref() else {
-            return false;
-        };
-        self.take_pictures(decoder.wait(patience))
+        if let Some(decoder) = self.decoder.as_mut() {
+            decoder.wait_for_one(patience);
+        }
+        self.absorb_pictures()
     }
 
     /// Files the worker's answers into the picture cache.

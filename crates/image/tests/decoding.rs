@@ -306,3 +306,73 @@ fn measuring_a_file_that_is_not_there_is_unreadable() {
         Undecodable::Unreadable
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// The caps at their edges.
+//
+// **Every test above this point exceeds the *width*.** `MAX_DIMENSION` is checked first, so a wide
+// enough picture short-circuits the whole condition and the other two clauses were never once
+// evaluated by a test — a 1x9000 PNG would have been accepted, and then aborted the process at
+// texture creation, which is the failure MDEDIT-146 already shipped to a human. cargo-mutants found
+// this on MDEDIT-156 by turning `||` into `&&` and watching nothing go red.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_picture_too_tall_is_refused_even_though_it_is_narrow() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "tall.png", &bomb(1, 9000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(1, 9000)
+    );
+}
+
+#[test]
+fn a_picture_at_the_largest_edge_exactly_is_allowed() {
+    // 8192 is the limit, not the first refusal: `>` rather than `>=`, in both directions.
+    let dir = tempfile::TempDir::new().unwrap();
+    let wide = written(&dir, "wide.png", &bomb(8192, 1));
+    let tall = written(&dir, "tall.png", &bomb(1, 8192));
+
+    assert_eq!(measure(&wide).unwrap(), (8192, 1));
+    assert_eq!(measure(&tall).unwrap(), (1, 8192));
+}
+
+#[test]
+fn a_surface_over_the_pixel_cap_is_refused_with_both_edges_under_the_limit() {
+    // **The only test that reaches the `MAX_PIXELS` clause at all.** 8000 x 8000 is inside
+    // `MAX_DIMENSION` on both edges and 64 megapixels of RGBA, which is 256 MB — four times the cap
+    // and the allocation the cap exists to refuse.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "square.png", &bomb(8000, 8000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(8000, 8000)
+    );
+}
+
+#[test]
+fn a_surface_at_the_pixel_cap_exactly_is_allowed() {
+    // 4000 x 4000 is `MAX_PIXELS` to the pixel, and the doc comment calls sixteen megapixels a cost
+    // worth paying once. If this starts failing, the cap became `>=` and the largest picture the
+    // editor claims to support stopped working.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "cap.png", &bomb(4000, 4000));
+
+    assert_eq!(measure(&path).unwrap(), (4000, 4000));
+}
+
+#[test]
+fn the_pixel_cap_multiplies_rather_than_adds() {
+    // 5000 + 5000 is 10,000 and 5000 x 5000 is 25 million. Only one of those is over the cap, and
+    // the picture is 100 MB of RGBA either way.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "product.png", &bomb(5000, 5000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(5000, 5000)
+    );
+}
