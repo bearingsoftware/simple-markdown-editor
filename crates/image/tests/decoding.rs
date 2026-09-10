@@ -1,7 +1,7 @@
 //! What comes back out of a PNG, and what a hostile one gets instead (MDEDIT-146).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-use mdedit_image::{MAX_FILE_BYTES, Undecodable, decode, read};
+use mdedit_image::{MAX_FILE_BYTES, Undecodable, decode, measure, read};
 
 /// Encodes a PNG so the tests decode something a real encoder wrote rather than bytes we asserted
 /// about. `samples` is in `colour`'s own channel order, at eight bits.
@@ -212,4 +212,167 @@ fn a_real_file_round_trips() {
 
     assert_eq!((picture.width, picture.height), (2, 2));
     assert_eq!(picture.rgba, [0x7f; 16]);
+}
+
+// ---------------------------------------------------------------------------------------------
+// `measure`: the size without the pixels (MDEDIT-156).
+// ---------------------------------------------------------------------------------------------
+
+/// Writes `bytes` to a file in `dir` and hands back the path.
+fn written(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    let path = dir.path().join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path
+}
+
+#[test]
+fn measuring_gives_the_size_the_header_declares() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(
+        &dir,
+        "cat.png",
+        &encoded(7, 3, png::ColorType::Rgba, &[0x40; 7 * 3 * 4]),
+    );
+
+    assert_eq!(measure(&path).unwrap(), (7, 3));
+}
+
+#[test]
+fn measuring_does_not_decode_the_pixels() {
+    // **The property, not the timing.** A file cut off after its header has dimensions and no image
+    // data: `read` cannot produce a picture from it and `measure` can still say how big it claims to
+    // be. If this ever fails, `measure` has started decoding and the whole point of it is gone.
+    let dir = tempfile::TempDir::new().unwrap();
+    let whole = encoded(64, 64, png::ColorType::Rgba, &[0x20; 64 * 64 * 4]);
+    let path = written(&dir, "cut.png", &whole[..40]);
+
+    assert_eq!(measure(&path).unwrap(), (64, 64));
+    assert!(read(&path).is_err(), "a truncated PNG decoded");
+}
+
+#[test]
+fn measuring_refuses_a_bomb_on_its_header_alone() {
+    // The reason `measure` applies the caps rather than leaving them to the decode it precedes: a
+    // row sized from this header would be thirty thousand pixels tall, and the decode would never
+    // be reached to refuse it.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "bomb.png", &bomb(30_000, 30_000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(30_000, 30_000)
+    );
+}
+
+#[test]
+fn measuring_refuses_an_edge_over_the_hardware_limit() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "wide.png", &bomb(9000, 1));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(9000, 1)
+    );
+}
+
+#[test]
+fn measuring_refuses_a_file_over_the_size_cap() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("huge.png");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(MAX_FILE_BYTES + 1).unwrap();
+    drop(file);
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooLarge(MAX_FILE_BYTES + 1)
+    );
+}
+
+#[test]
+fn measuring_something_that_is_not_a_png_says_so() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "cat.png", b"\xff\xd8\xff\xe0 actually a JPEG");
+
+    assert!(matches!(measure(&path), Err(Undecodable::Malformed(_))));
+}
+
+#[test]
+fn measuring_a_file_that_is_not_there_is_unreadable() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    assert_eq!(
+        measure(&dir.path().join("absent.png")).unwrap_err(),
+        Undecodable::Unreadable
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// The caps at their edges.
+//
+// **Every test above this point exceeds the *width*.** `MAX_DIMENSION` is checked first, so a wide
+// enough picture short-circuits the whole condition and the other two clauses were never once
+// evaluated by a test — a 1x9000 PNG would have been accepted, and then aborted the process at
+// texture creation, which is the failure MDEDIT-146 already shipped to a human. cargo-mutants found
+// this on MDEDIT-156 by turning `||` into `&&` and watching nothing go red.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_picture_too_tall_is_refused_even_though_it_is_narrow() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "tall.png", &bomb(1, 9000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(1, 9000)
+    );
+}
+
+#[test]
+fn a_picture_at_the_largest_edge_exactly_is_allowed() {
+    // 8192 is the limit, not the first refusal: `>` rather than `>=`, in both directions.
+    let dir = tempfile::TempDir::new().unwrap();
+    let wide = written(&dir, "wide.png", &bomb(8192, 1));
+    let tall = written(&dir, "tall.png", &bomb(1, 8192));
+
+    assert_eq!(measure(&wide).unwrap(), (8192, 1));
+    assert_eq!(measure(&tall).unwrap(), (1, 8192));
+}
+
+#[test]
+fn a_surface_over_the_pixel_cap_is_refused_with_both_edges_under_the_limit() {
+    // **The only test that reaches the `MAX_PIXELS` clause at all.** 8000 x 8000 is inside
+    // `MAX_DIMENSION` on both edges and 64 megapixels of RGBA, which is 256 MB — four times the cap
+    // and the allocation the cap exists to refuse.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "square.png", &bomb(8000, 8000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(8000, 8000)
+    );
+}
+
+#[test]
+fn a_surface_at_the_pixel_cap_exactly_is_allowed() {
+    // 4000 x 4000 is `MAX_PIXELS` to the pixel, and the doc comment calls sixteen megapixels a cost
+    // worth paying once. If this starts failing, the cap became `>=` and the largest picture the
+    // editor claims to support stopped working.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "cap.png", &bomb(4000, 4000));
+
+    assert_eq!(measure(&path).unwrap(), (4000, 4000));
+}
+
+#[test]
+fn the_pixel_cap_multiplies_rather_than_adds() {
+    // 5000 + 5000 is 10,000 and 5000 x 5000 is 25 million. Only one of those is over the cap, and
+    // the picture is 100 MB of RGBA either way.
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = written(&dir, "product.png", &bomb(5000, 5000));
+
+    assert_eq!(
+        measure(&path).unwrap_err(),
+        Undecodable::TooManyPixels(5000, 5000)
+    );
 }

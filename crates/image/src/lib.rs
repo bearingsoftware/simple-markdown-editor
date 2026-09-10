@@ -20,5 +20,7 @@
 mod decode;
 mod resolve;
 
-pub use decode::{MAX_DIMENSION, MAX_FILE_BYTES, MAX_PIXELS, Picture, Undecodable, decode, read};
+pub use decode::{
+    MAX_DIMENSION, MAX_FILE_BYTES, MAX_PIXELS, Picture, Undecodable, decode, measure, read,
+};
 pub use resolve::{Refused, resolve};

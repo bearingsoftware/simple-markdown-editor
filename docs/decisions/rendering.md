@@ -589,3 +589,32 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   key presses can shorten the document under a span. Probing for the out-of-range offset that would
   produce found something worse — Backspace silently did nothing, because the delete that followed
   the over-long jump found no bytes there. One comparison against `len_bytes` removes the class.
+- **A picture's size comes from its header and its pixels come from a worker (MDEDIT-156).** The
+  decode was on the layout path, which is the thread that draws, at 65 ms for a 4K screenshot on the
+  best run ever measured and about 250 ms on a warm laptop — over the whole 50 ms first-paint budget
+  on its own. It was there because `AGENTS.md` claimed a worker thread existed; MDEDIT-151 found that
+  it never had.
+
+  **The split is what makes it free of a visible cost.** Decoding off-thread and nothing else means
+  the first frame has no dimensions, so it draws alt text and every paragraph below jumps down when
+  the image arrives. A PNG's `IHDR` is a few dozen bytes, so `mdedit_image::measure` reads it on the
+  drawing thread and the row is the right height on the frame the image first appears in. Only the
+  pixels are late, and the draw already skipped an id with no texture — so "blank, then filled"
+  needed no new branch in the renderer at all.
+
+  **And that is why the layout cache did not have to learn anything.** A cached layout that changes
+  with something `ChunkKey` does not carry is precisely MDEDIT-118's reveal-on-caret defect. Here the
+  geometry is a function of the header, which does not change when the decode lands, so the key is
+  not missing anything. `PictureState::Known` keeps the *header's* size even after the pixels arrive,
+  for the same reason: adopting the decoded dimensions would reintroduce the reflow for exactly the
+  file that had been rewritten between the two reads.
+
+  **The trust boundary did not move.** `resolve` still runs on the drawing thread before anything is
+  queued, and `measure` applies the same caps as `decode` — which matters more than it looks, because
+  `measure` is now the first thing to believe a header, and a row sized from an unchecked bomb would
+  be thirty thousand pixels tall before any decode was reached to refuse it. The worker is handed a
+  path that has already been accepted and only reads it.
+
+  **One thread, lazily started**, so a session that never opens a document with an image in it never
+  starts one. Failures come back as values and are logged by the editor, so one thread writes the log
+  and its lines stay in an order that matches the frames.

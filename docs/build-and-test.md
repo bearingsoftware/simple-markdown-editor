@@ -324,3 +324,20 @@ because zero mutants is often correct for a diff of tests, comments, docs or CI.
 on a clean exit, or a run that died early would report the same thing and swallow a real failure.
 
 **When reading that job, the question is not "is it green".** It is "how many mutants did it run".
+
+**What it costs, and what it found the first time it ran for real** (MDEDIT-156, the first diff to
+touch Rust source after the fix): `60 mutants tested in 35m: 17 missed, 31 caught, 12 unviable`, in a
+44-minute job. That is the runtime MDEDIT-155 could not measure, because every local attempt was
+killed for memory even at `--jobs 1`. Budget three quarters of an hour on the self-hosted runner for a
+diff of that size, and note that it is `continue-on-error` — nothing waits on it.
+
+The 17 were worth the 35 minutes. One of them was **a security cap with no test behind it**:
+`within_the_pixel_caps` refuses a picture too wide, too tall, or too many pixels, and every test
+exceeded the *width* — so `||` short-circuited and the other two clauses had never been evaluated by
+anything. A 1×9000 PNG was accepted and would have aborted the process at texture creation. Another
+was a decode path where **the tests used one route into the cache and the event loop used another**,
+so the production route could be emptied without a single test noticing.
+
+**Reproduce a survivor by hand before writing a test for it.** Both of those were confirmed by editing
+the source, running the suite and watching it stay green — which is also how you tell a real survivor
+from an equivalent mutant, and how you know afterwards that the new test actually kills it.
