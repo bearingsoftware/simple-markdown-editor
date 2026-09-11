@@ -33,6 +33,7 @@ pub mod latency;
 pub mod list;
 pub mod log;
 pub mod pane;
+pub mod place;
 pub mod popup;
 pub mod prompt;
 pub mod scroll;
