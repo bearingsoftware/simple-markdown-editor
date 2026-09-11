@@ -7449,7 +7449,7 @@ impl<T: TextLayout> Editor<T> {
             base: ByteOffset::new(cached.base),
             grid: cached.grid.as_ref(),
         };
-        let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
+        let (row, x) = cached.place_of(&target, caret)?;
         Some((index, row, x))
     }
 
@@ -9657,7 +9657,7 @@ impl<T: TextLayout> Editor<T> {
             base: ByteOffset::new(cached.base),
             grid: cached.grid.as_ref(),
         };
-        let (row, x) = hit::place_of(&target, cached.drawn_lines(), caret)?;
+        let (row, x) = cached.place_of(&target, caret)?;
         let line = cached.layout.lines.get(row)?;
         let top: f32 = cached.layout.lines[..row].iter().map(|l| l.height).sum();
 
@@ -10251,6 +10251,35 @@ impl Cached {
             // of which it has none, and a picture wider than the window could not be scrolled to.
             width: picture.map_or(width, |fitted| fitted.width),
         }
+    }
+
+    /// Where `offset` sits on this chunk — [`hit::place_of`], with one correction for block quotes.
+    ///
+    /// **A blank quoted row has no glyph to hang the caret on** (MDEDIT-145). `hit::place_of` then
+    /// answers x 0, which for a quote is its first bar, and the first keystroke jumped the caret right
+    /// to where the text goes. A row with no glyphs inside a quote's band goes to that band's indent
+    /// instead — the same repair `hit` makes for an empty table cell, made here because the bands
+    /// live on `Cached` and every caller of this already holds one.
+    ///
+    /// Both callers — where the caret is drawn and where up and down aim from — come through here,
+    /// so they cannot disagree about it.
+    fn place_of(&self, target: &hit::Chunk<'_>, offset: ByteOffset) -> Option<(usize, f32)> {
+        let (row, x) = hit::place_of(target, self.drawn_lines(), offset)?;
+        let blank = self
+            .layout
+            .lines
+            .get(row)
+            .is_some_and(|line| line.glyphs.is_empty());
+        if !blank {
+            return Some((row, x));
+        }
+        let top = hit::row_top(target, row);
+        let indent = self
+            .quote
+            .iter()
+            .find(|band| top >= band.top && top < band.top + band.height)
+            .map_or(x, |band| quote::indent(band.depth));
+        Some((row, indent))
     }
 
     /// How many of the laid-out lines this chunk actually draws.

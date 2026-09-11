@@ -19,6 +19,8 @@ use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
 use mdedit_app::quote::{BAR, STEP};
 use mdedit_app::view::Theme;
+use mdedit_document::Selection;
+use mdedit_offsets::ByteOffset;
 
 mod stub;
 use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT};
@@ -290,6 +292,39 @@ fn a_blank_quote_line_at_the_end_of_the_file_still_has_a_row() {
         drawn[0][3] >= 2.0 * LINE_HEIGHT - 0.5,
         "the last line lost its row: {drawn:?}"
     );
+}
+
+#[test]
+fn the_caret_on_a_blank_quoted_line_is_at_its_indent_not_on_the_bar() {
+    // Found in review of #166. A blank `>` line has no glyphs, and a row with no glyphs put the caret
+    // at x 0 — on the first bar, whatever the depth — and the first keystroke then jumped it right
+    // to where the text goes. It belongs where that text will appear.
+    let caret = Theme::default().caret;
+    let caret = [caret.r, caret.g, caret.b, caret.a];
+    let caret_x = |source: &str, at: usize| {
+        let mut editor = Editor::new(source, Grid::new());
+        editor
+            .document_mut()
+            .set_selection(Selection::caret(ByteOffset::new(at)));
+        let carets: Vec<f32> = editor
+            .build_frame(WIDTH, HEIGHT, 1.0)
+            .iter()
+            .filter(|quad| quad.colour == caret)
+            .map(|quad| quad.rect[0])
+            .collect();
+        assert_eq!(carets.len(), 1, "{source:?}: {carets:?}");
+        carets[0]
+    };
+    let margin = margin();
+
+    assert_eq!(caret_x("> a\n>\n> b\n", 5), margin + STEP, "one level");
+    assert_eq!(
+        caret_x("> > a\n> >\n> > b\n", 9),
+        margin + 2.0 * STEP,
+        "two levels"
+    );
+    // And a blank line that is not quoted keeps the margin — the fix must not indent everything.
+    assert_eq!(caret_x("> a\n\nafter\n", 4), margin, "outside the quote");
 }
 
 // ---------------------------------------------------------------------------------------------
