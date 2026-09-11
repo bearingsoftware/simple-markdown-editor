@@ -329,7 +329,9 @@ on a clean exit, or a run that died early would report the same thing and swallo
 touch Rust source after the fix): `60 mutants tested in 35m: 17 missed, 31 caught, 12 unviable`, in a
 44-minute job. That is the runtime MDEDIT-155 could not measure, because every local attempt was
 killed for memory even at `--jobs 1`. Budget three quarters of an hour on the self-hosted runner for a
-diff of that size, and note that it is `continue-on-error` — nothing waits on it.
+diff of that size. It is not a required check, so a slow run holds nothing up — but a *red* one still
+shows on the pull request, which is why the step below decides its own exit status rather than
+leaving it to `continue-on-error`.
 
 The 17 were worth the 35 minutes. One of them was **a security cap with no test behind it**:
 `within_the_pixel_caps` refuses a picture too wide, too tall, or too many pixels, and every test
@@ -341,3 +343,24 @@ so the production route could be emptied without a single test noticing.
 **Reproduce a survivor by hand before writing a test for it.** Both of those were confirmed by editing
 the source, running the suite and watching it stay green — which is also how you tell a real survivor
 from an equivalent mutant, and how you know afterwards that the new test actually kills it.
+
+**The job reads what happened from `mutants.out`, not from the exit code** (MDEDIT-157). The second
+run on that same pull request found no survivors at all and still went red: cargo-mutants exits **3**
+for a timeout, and the job only knew 0 and 2. That was the mild half. The serious half is that
+cargo-mutants ranks timeout *above* missed, so a run with survivors and one slow mutant also exits 3
+— and the job reported it as broken without ever saying anything had survived.
+
+So it now counts `missed.txt` and `timeout.txt`, one mutant per line, and warns on each. Exit 1, 4 and
+above still fail, because those mean the job is broken rather than that it found something. And if
+the exit code and the files disagree — 2 with nothing in `missed.txt` — it fails loudly rather than
+guessing, because the install step takes whatever cargo-mutants is current and a release that renamed
+those files would otherwise turn every survivor into a silent pass.
+
+**A timeout is an unknown, not a pass.** The auto-set timeout is the baseline's test time times four,
+and the baseline runs before the pool gets busy: PR #163's came out at 22 s and three mutants timed
+out under load. None was a hang. Two fail in under a second on a laptop, so they were catches. **The
+third was a survivor**: `user_event` replaced with `()`, which no test calls, and which the previous
+run on the same pull request had reported as MISSED. One timeout in three was hiding a survivor, so
+treating timeouts as "just the runner" would have been wrong a third of the time.
+`--minimum-test-timeout 60` puts a floor under the timeout, so a slow survivor is reported as a
+survivor. Reproduce a timed-out mutant locally before reading it either way.

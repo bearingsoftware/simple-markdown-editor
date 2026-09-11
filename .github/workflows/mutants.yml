@@ -103,9 +103,21 @@ jobs:
       # request unmergeable — which is precisely what a job described as "it reports; it does not
       # block" must not do. The fuzz workflow learned the same thing the same way.
       #
-      # A surviving mutant becomes a warning annotation, and the full report is uploaded below
-      # either way. cargo-mutants exits 2 for "mutants missed" and 1 for "something went wrong", and
-      # the two are told apart so a broken job is still a broken job.
+      # Survivors and timeouts become warning annotations, and the full report is uploaded below
+      # either way. **Which of those happened is read from `mutants.out`, never from the exit
+      # code** (MDEDIT-157). cargo-mutants 27 exits 0 all caught, 1 usage, 2 missed, 3 timeout,
+      # 4 baseline failed, 5-6 a bad diff filter, 70 internal — and it ranks timeout *above*
+      # missed, so a run with survivors and one slow mutant exits 3. Reading the code, as this job
+      # used to, reported that run as a broken job and never mentioned the survivors.
+      #
+      # `--minimum-test-timeout 60`, because the auto-set timeout is the baseline's test time times
+      # four, and the baseline runs before the shared pool gets busy. PR #163's got 22 s and three
+      # mutants timed out under load. Two of them fail in half a second on a laptop. **The third
+      # was a survivor**: `user_event` replaced with `()`, which no test calls, and which the run
+      # before had reported as MISSED. So a timeout is not "probably fine" — it is a mutant whose
+      # outcome is unknown, and one in three of those was hiding a survivor. The default floor is
+      # 20 s; at 60 a genuine infinite loop costs a minute per mutant, and a slow survivor is
+      # reported as a survivor.
       - name: Mutate
         run: |
           set +e
@@ -115,6 +127,7 @@ jobs:
             --exclude mdedit-menu-win \
             --exclude mdedit-shell-win \
             --timeout-multiplier 4 \
+            --minimum-test-timeout 60 \
             --no-shuffle
           status=$?
           set -e
@@ -140,11 +153,37 @@ jobs:
             exit 0
           fi
 
-          if [ "$status" -eq 2 ]; then
-            echo "::warning title=Mutants survived::Some mutants were not caught by any test. Read the mutants-report artifact — and check the survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
-            exit 0
+          # Everything that means the job itself is broken still fails it: a bad flag, a baseline
+          # that is already red, a diff that does not apply, an internal error.
+          case "$status" in
+            0 | 2 | 3) ;;
+            *) exit "$status" ;;
+          esac
+
+          # One name per line, created empty at the start of the run (cargo-mutants 27,
+          # `output.rs`). `grep -c` counts lines and says 0 for an empty file; a missing one is
+          # the next check's business.
+          missed=$(grep -c '' mutants.out/missed.txt 2>/dev/null || true)
+          timeouts=$(grep -c '' mutants.out/timeout.txt 2>/dev/null || true)
+          missed=${missed:-0}
+          timeouts=${timeouts:-0}
+
+          # **The exit code and the files must agree, or the files cannot be trusted.** The
+          # install step takes whatever cargo-mutants is current, so a release that renames these
+          # files would otherwise turn every survivor into a silent pass — the failure MDEDIT-155
+          # was about, arriving through an upgrade instead of an allow-list.
+          if { [ "$status" -eq 2 ] && [ "$missed" -eq 0 ]; } || { [ "$status" -eq 3 ] && [ "$timeouts" -eq 0 ]; }; then
+            echo "::error title=Mutants report unreadable::cargo-mutants exited $status but mutants.out/missed.txt has $missed lines and mutants.out/timeout.txt has $timeouts. The output format may have changed; this job cannot say what the run found (MDEDIT-157)."
+            exit 1
           fi
-          exit "$status"
+
+          if [ "$missed" -gt 0 ]; then
+            echo "::warning title=Mutants survived::$missed mutant(s) were not caught by any test. Read missed.txt in the mutants-report artifact, and check a survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
+          fi
+          if [ "$timeouts" -gt 0 ]; then
+            echo "::warning title=Mutants timed out::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report artifact."
+          fi
+          exit 0
 
       # The report is the whole output of the job, so it survives the run being tidied away.
       - name: Keep the report
