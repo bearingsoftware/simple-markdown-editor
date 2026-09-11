@@ -8124,16 +8124,6 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Records where this chunk's picture goes, if it has one (MDEDIT-146).
-    ///
-    /// **Recorded rather than drawn**, and into a list of its own rather than into `quads`. A
-    /// picture samples a texture of its own, so it cannot share the glyph atlas's draw call; and
-    /// keeping it as data is what lets a test assert the geometry without a GPU, which is the only
-    /// automated check this feature can have.
-    ///
-    /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
-    /// hanging past the edge of the document area is covered by chrome, which draws after — the
-    /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
     /// A block quote's bars, one per level (MDEDIT-145).
     ///
     /// In `theme.line`, the document's hairline colour, drawn [`quote::BAR`] wide so it reads as a
@@ -8211,6 +8201,16 @@ impl<T: TextLayout> Editor<T> {
         ));
     }
 
+    /// Records where this chunk's picture goes, if it has one (MDEDIT-146).
+    ///
+    /// **Recorded rather than drawn**, and into a list of its own rather than into `quads`. A
+    /// picture samples a texture of its own, so it cannot share the glyph atlas's draw call; and
+    /// keeping it as data is what lets a test assert the geometry without a GPU, which is the only
+    /// automated check this feature can have.
+    ///
+    /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
+    /// hanging past the edge of the document area is covered by chrome, which draws after — the
+    /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
     fn place_picture(
         &mut self,
         cached: &Cached,
@@ -9528,17 +9528,6 @@ impl<T: TextLayout> Editor<T> {
         Some(table::assemble(&rows, &cells, body.ends_with('\n')))
     }
 
-    /// Lays a list out item by item, so a wrapped item hangs under its text (MDEDIT-147).
-    ///
-    /// `None` when the chunk holds no list marker after all, and the caller then lays it out as
-    /// ordinary lines — the same bargain [`Self::lay_out_table`] strikes with a malformed table.
-    ///
-    /// **Plain mode never comes here**, for the reason a table does not: `Ctrl+/` exists to show the
-    /// bytes, and the indent hangs off a marker that plain mode draws in full. There is nothing to
-    /// substitute, so there is nothing to hang from.
-    ///
-    /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
-    /// it leaves. `list`'s own docs say why one call cannot do it.
     /// A block quote, as runs of lines at one depth, each placed past its bars (MDEDIT-145).
     ///
     /// `None` in plain mode, where the markers are the text and nothing is indented, and for a
@@ -9582,6 +9571,17 @@ impl<T: TextLayout> Editor<T> {
         Some(quote::assemble(&runs))
     }
 
+    /// Lays a list out item by item, so a wrapped item hangs under its text (MDEDIT-147).
+    ///
+    /// `None` when the chunk holds no list marker after all, and the caller then lays it out as
+    /// ordinary lines — the same bargain [`Self::lay_out_table`] strikes with a malformed table.
+    ///
+    /// **Plain mode never comes here**, for the reason a table does not: `Ctrl+/` exists to show the
+    /// bytes, and the indent hangs off a marker that plain mode draws in full. There is nothing to
+    /// substitute, so there is nothing to hang from.
+    ///
+    /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
+    /// it leaves. `list`'s own docs say why one call cannot do it.
     fn lay_out_list(&mut self, chunk: blocks::Chunk, frame: &Frame) -> Option<Layout> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
