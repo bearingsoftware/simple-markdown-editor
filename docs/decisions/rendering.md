@@ -263,6 +263,13 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   belongs to the text's position, not the window's. `theme.line` at 3 px — wider than a table's
   hairline because a rule separates and a bar marks.
 
+  **A placed row is positioned from its unit's origin, not its own top** — and wrapped list items had
+  that wrong from MDEDIT-147 until this ticket's review (MDEDIT-170). `LayoutLine::baseline` is measured from the top
+  of the layout it came from, so it already counts the rows above it; adding the row's accumulated top
+  as well pushed every continuation row one row further down than the last, and a three-row item drew
+  its third row over the next item. Only rows after an item's first were affected, and every hanging
+  test looked at x. `place::row` takes the origin now, and the list and quote tests measure y.
+
   Not covered: a quote inside a list item is a list chunk, and a list inside a quote does not hang
   its own wrapped rows under its bullet. Both are MDEDIT-169 rather than half-done here.
 
