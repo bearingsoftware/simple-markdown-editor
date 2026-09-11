@@ -111,10 +111,13 @@ jobs:
       # used to, reported that run as a broken job and never mentioned the survivors.
       #
       # `--minimum-test-timeout 60`, because the auto-set timeout is the baseline's test time times
-      # four, and the baseline runs before the shared pool gets busy. PR #163's got 22 s; three
-      # mutants that fail in half a second locally then timed out at 22 s under load, and one of
-      # them was in a function no test calls. The default floor is 20 s. A genuine infinite loop
-      # now costs a minute per mutant, which is the price of not crying wolf.
+      # four, and the baseline runs before the shared pool gets busy. PR #163's got 22 s and three
+      # mutants timed out under load. Two of them fail in half a second on a laptop. **The third
+      # was a survivor**: `user_event` replaced with `()`, which no test calls, and which the run
+      # before had reported as MISSED. So a timeout is not "probably fine" — it is a mutant whose
+      # outcome is unknown, and one in three of those was hiding a survivor. The default floor is
+      # 20 s; at 60 a genuine infinite loop costs a minute per mutant, and a slow survivor is
+      # reported as a survivor.
       - name: Mutate
         run: |
           set +e
@@ -178,7 +181,7 @@ jobs:
             echo "::warning title=Mutants survived::$missed mutant(s) were not caught by any test. Read missed.txt in the mutants-report artifact, and check a survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
           fi
           if [ "$timeouts" -gt 0 ]; then
-            echo "::warning title=Mutants timed out::$timeouts mutant(s) hit the test timeout. Usually load on the shared runner rather than a hang; reproduce one locally before trusting either reading. On MDEDIT-156 all three were caught in under a second off the runner. Listed in timeout.txt in the mutants-report artifact."
+            echo "::warning title=Mutants timed out::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report artifact."
           fi
           exit 0
 

@@ -356,8 +356,11 @@ the exit code and the files disagree — 2 with nothing in `missed.txt` — it f
 guessing, because the install step takes whatever cargo-mutants is current and a release that renamed
 those files would otherwise turn every survivor into a silent pass.
 
-**A timeout is usually the runner, not a hang.** The auto-set timeout is the baseline's test time
-times four, and the baseline runs before the pool gets busy: PR #163's came out at 22 s, and three
-mutants that fail in under a second on a laptop timed out under load — one of them in a function no
-test calls. `--minimum-test-timeout 60` puts a floor under it. Reproduce a timed-out mutant locally
-before believing it is either a hang or a catch.
+**A timeout is an unknown, not a pass.** The auto-set timeout is the baseline's test time times four,
+and the baseline runs before the pool gets busy: PR #163's came out at 22 s and three mutants timed
+out under load. None was a hang. Two fail in under a second on a laptop, so they were catches. **The
+third was a survivor**: `user_event` replaced with `()`, which no test calls, and which the previous
+run on the same pull request had reported as MISSED. One timeout in three was hiding a survivor, so
+treating timeouts as "just the runner" would have been wrong a third of the time.
+`--minimum-test-timeout 60` puts a floor under the timeout, so a slow survivor is reported as a
+survivor. Reproduce a timed-out mutant locally before reading it either way.
