@@ -264,7 +264,7 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   hairline because a rule separates and a bar marks.
 
   Not covered: a quote inside a list item is a list chunk, and a list inside a quote does not hang
-  its own wrapped rows under its bullet. Both are follow-ups rather than half-done here.
+  its own wrapped rows under its bullet. Both are MDEDIT-169 rather than half-done here.
 
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
