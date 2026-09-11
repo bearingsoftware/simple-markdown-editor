@@ -122,9 +122,12 @@ pub fn assemble(items: &[Item]) -> Layout {
         let last = index + 1 == items.len();
         let indent = width_of(&item.marker);
         let rows = place::rows_kept(&item.text, last);
+        // Where this item's layout starts. Each of its rows is placed from here, because a row's
+        // baseline already counts the rows above it — see `place::row`.
+        let origin = top;
 
         for (row, line) in item.text.lines.iter().take(rows).enumerate() {
-            let mut placed = place::row(line, indent, top);
+            let mut placed = place::row(line, indent, origin);
 
             // The marker belongs to the item's first row and to no other. That is the whole of the
             // hanging indent: every row after this one gets the offset without the bullet. Ahead of

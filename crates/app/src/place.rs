@@ -9,14 +9,21 @@
 use mdedit_offsets::LayoutPos;
 use mdedit_text::{Layout, LayoutLine};
 
-/// `line`, moved right by `indent` and down so its top is at `top`.
+/// `line`, from a separately laid-out unit, moved right by `indent` and down by `origin`.
+///
+/// **`origin` is where the unit's layout begins in the assembled one — not this row's own top.**
+/// A [`LayoutLine`]'s baseline is measured from the top of the layout it came from, so it already
+/// includes every row above it in that unit; adding the row's top as well counts them twice. That
+/// is what `list::assemble` did from MDEDIT-147 until #166's review measured it: each continuation
+/// row of a wrapped item was a row lower than the one before should have put it, and the third
+/// drew below the next item, over its text. No test looked at a row's height, only its indent.
 ///
 /// **Rules move with the text they are under.** A link's underline on a moved row would otherwise
 /// stay where the engine drew it while its glyphs moved, which only a document with an underlined
 /// link in exactly the right place would ever show.
 #[must_use]
-pub fn row(line: &LayoutLine, indent: f32, top: f32) -> LayoutLine {
-    let baseline = top + line.baseline;
+pub fn row(line: &LayoutLine, indent: f32, origin: f32) -> LayoutLine {
+    let baseline = origin + line.baseline;
     LayoutLine {
         baseline,
         height: line.height,

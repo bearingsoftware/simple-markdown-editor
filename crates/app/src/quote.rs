@@ -130,7 +130,9 @@ pub fn assemble(runs: &[(usize, Layout)]) -> (Layout, Vec<Band>) {
         let last = index + 1 == runs.len();
         let start = top;
         for line in layout.lines.iter().take(place::rows_kept(layout, last)) {
-            lines.push(place::row(line, indent(*depth), top));
+            // From the run's start, not the row's: a row's baseline already counts the rows above
+            // it in the run — see `place::row`.
+            lines.push(place::row(line, indent(*depth), start));
             top += line.height;
         }
         if *depth > 0 && top > start {
