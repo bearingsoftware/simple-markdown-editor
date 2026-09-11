@@ -216,6 +216,28 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   a number written by hand. Each unit ends in a newline and the engine gives it a trailing empty line,
   so a naive stack is `2N` rows for `N` items.
 
+- **A thematic break draws a rule, and it is a quad rather than a substitution.** MDEDIT-143. `---`
+  is only its marker, so concealing it removed the construct outright — the most complete failure of
+  the concealment family, where a list at least left its text behind. The parse was always right;
+  `BlockKind::ThematicBreak` was simply read by nothing.
+
+  **Not MDEDIT-141's substitution**, which the ticket suggested trying first: a stand-in glyph has a
+  width of its own, and a divider is the width of the column. So `draw_thematic_break` sits beside
+  `draw_table`, same `theme.line`, same `table::RULE` thickness floored at one physical pixel — both
+  are the document's hairline. Across the middle of the break's own row: the chunk also owns the blank
+  lines after it, and a rule through one of those sits below the break. Hand-mutating the fix showed a
+  rule at the row's top edge, or in the blank line, passed every test that only asked "between the
+  paragraphs"; `the_rule_is_centred_on_the_breaks_own_row` measures it against a caret on that line.
+
+  **Across the visible band, not from document x 0.** With word wrap off the view pans, and everything
+  in the document moves with it — except that a divider has no width of its own to scroll. From x 0
+  it would slide out under the gutter; it starts at the pan and spans the content rectangle instead.
+
+  **Drawn from the chunk's kind and the mode, never cached**, so `ChunkKey` gained nothing and
+  MDEDIT-118's trap does not arise. Top-level breaks only: one inside a block quote or a list item is
+  not a chunk of its own, and drawing it means finding a nested block's row inside another chunk's
+  layout. Probed on this branch, both still draw nothing: MDEDIT-168.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage
