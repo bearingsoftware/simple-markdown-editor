@@ -231,6 +231,39 @@ fn a_dash_in_a_sentence_is_not_a_rule() {
     assert!(rules.is_empty(), "{rules:?}");
 }
 
+#[test]
+fn the_rule_scales_with_the_display() {
+    // **Every other test here runs at 100%, where multiplying by the scale and dividing by it give
+    // the same answer.** The mutants job on this pull request found exactly that: seven survivors,
+    // all in the scale arithmetic, and a laptop at 150% or 200% is the ordinary case rather than the
+    // exotic one. At 200% the rule is the same rule in twice as many pixels — everything doubles,
+    // including its thickness, which is one logical pixel and so two physical ones.
+    let at = |scale: f32| {
+        let with = Editor::new("Above\n\n---\n\nBelow\n", Grid::new()).build_frame(
+            WIDTH * scale,
+            HEIGHT * scale,
+            scale,
+        );
+        let without = Editor::new("Above\n\nBelow\n", Grid::new()).build_frame(
+            WIDTH * scale,
+            HEIGHT * scale,
+            scale,
+        );
+        difference(hairlines(&with), &hairlines(&without))
+    };
+
+    let normal = at(1.0);
+    let double = at(2.0);
+
+    assert_eq!(normal.len(), 1, "{normal:?}");
+    assert_eq!(double.len(), 1, "{double:?}");
+    assert_eq!(
+        double[0],
+        normal[0].map(|value| value * 2.0),
+        "at 200% the rule is not the 100% rule doubled"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Where it goes when the view moves.
 // ---------------------------------------------------------------------------------------------
