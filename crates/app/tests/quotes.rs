@@ -193,18 +193,32 @@ fn a_wrapped_quoted_line_keeps_its_indent_on_every_row() {
 }
 
 #[test]
-fn a_wrapped_quoted_line_still_fits_the_window() {
-    // Laid out at the width the indent leaves, or its last glyphs run off the right edge.
+fn a_wrapped_quoted_line_reaches_no_further_right_than_unquoted_text() {
+    // Laid out at the width the indent leaves, so its rows end where any other text's do. Laid out
+    // at the full width and *then* moved right, they would end one step past it.
+    //
+    // Compared with unquoted text rather than with the window, because the first version of this
+    // asserted "fits in the window" — and the stub's glyphs are points and the window has a right
+    // margin, so text a step too wide still fitted. That test could not fail.
     let long = "word ".repeat(60);
-    let rightmost = frame(&format!("> {long}\n"))
-        .iter()
-        .filter(|quad| quad.uv != SOLID)
-        .map(|quad| quad.rect[0] + quad.rect[2])
-        .fold(0.0_f32, f32::max);
+    let rightmost = |source: &str| {
+        let top = mdedit_app::toolbar::HEIGHT + stub::MARGIN;
+        frame(source)
+            .iter()
+            .filter(|quad| quad.uv != SOLID)
+            .filter(|quad| {
+                quad.rect[1] >= top && quad.rect[1] < HEIGHT - mdedit_app::toolbar::HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .fold(0.0_f32, f32::max)
+    };
+
+    let quoted = rightmost(&format!("> {long}\n"));
+    let unquoted = rightmost(&format!("{long}\n"));
 
     assert!(
-        rightmost <= WIDTH,
-        "text ran to {rightmost} in a {WIDTH} window"
+        quoted <= unquoted,
+        "quoted text reached {quoted}, past unquoted text's {unquoted}"
     );
 }
 
