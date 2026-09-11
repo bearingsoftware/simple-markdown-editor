@@ -238,6 +238,34 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   not a chunk of its own, and drawing it means finding a nested block's row inside another chunk's
   layout. Probed on this branch, both still draw nothing: MDEDIT-168.
 
+- **A block quote draws a bar per level and hangs its text past them.** MDEDIT-145. Quoted text was
+  already muted and italic, so a reader could tell *whether* something was quoted; `>` and `>>` drew
+  identically, so nobody could tell *how deeply*, and a reply inside a reply read as one quote.
+
+  **Placed, not substituted.** MDEDIT-141's substitution would indent a line's first row and let a
+  wrapped row run back under the bars — exactly what MDEDIT-147 found for lists, with the same answer.
+  `quote.rs` cuts a quote into runs of lines at one depth, lays each out at the width its indent
+  leaves and places it. The row arithmetic moved out of `list.rs` into `place.rs` first, so the part
+  that is easy to get wrong — underlines moving with their text — is written once.
+
+  **Depth is asked of the block tree, at a line's *last* byte.** The markers cannot answer it: `> > b`
+  and `>> b` are each one coalesced marker, and a lazy continuation line has none while still being
+  quoted. And the first byte is the wrong place to ask: the inner quote of `> > b` begins at the
+  second `>`, so column 0 is only in the outer one. `Document::quote_depth` counts the walk
+  `in_block_quote` already does; `in_block_quote` itself is untouched because the draw path asks it
+  once per line and it can stop at the first match.
+
+  **A run with nothing left to shape still gets a row.** `>` alone on the last line of a file is all
+  marker and no newline, a text engine returns no rows for it, and the whole-chunk MDEDIT-81 repair
+  never fires because the chunk is not empty. So the repair is repeated one level down.
+
+  **The bars pan with the text**, unlike MDEDIT-143's rule: a bar marks where quoted text is, so it
+  belongs to the text's position, not the window's. `theme.line` at 3 px — wider than a table's
+  hairline because a rule separates and a bar marks.
+
+  Not covered: a quote inside a list item is a list chunk, and a list inside a quote does not hang
+  its own wrapped rows under its bullet. Both are follow-ups rather than half-done here.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage
