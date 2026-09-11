@@ -54,6 +54,7 @@ use crate::prompt::{
     self, ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved,
     UnsavedPrompt,
 };
+use crate::quote;
 use crate::scroll::{self, Scroll};
 use crate::status;
 use crate::table;
@@ -7854,6 +7855,7 @@ impl<T: TextLayout> Editor<T> {
             let mut row_top = chunk_top;
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             self.draw_table(quads, &cached, chunk_top, at);
+            self.draw_quote(quads, &cached, chunk_top, at);
             self.place_picture(&cached, chunk, chunk_top, at);
             if chunk.kind == Some(BlockKind::ThematicBreak) {
                 self.draw_thematic_break(quads, &cached, chunk_top, at);
@@ -8132,6 +8134,39 @@ impl<T: TextLayout> Editor<T> {
     /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
     /// hanging past the edge of the document area is covered by chrome, which draws after — the
     /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
+    /// A block quote's bars, one per level (MDEDIT-145).
+    ///
+    /// In `theme.line`, the document's hairline colour, drawn [`quote::BAR`] wide so it reads as a
+    /// stroke rather than a rule. **They move with the text when panned**, unlike a thematic break:
+    /// a bar marks where quoted text is, so it belongs to the text's position rather than to the
+    /// window's. A level's bar is one quad per band, and adjacent bands meet, so a quote whose depth
+    /// changes part-way still draws its outer bar as one unbroken stroke.
+    fn draw_quote(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        cached: &Cached,
+        chunk_top: f32,
+        at: Placement,
+    ) {
+        let bar = quote::BAR.max(1.0 / at.scale);
+        for band in &cached.quote {
+            for level in 0..band.depth {
+                let (x, y) =
+                    at.content
+                        .to_window(quote::bar_x(level), chunk_top + band.top, at.offset);
+                quads.push(Self::solid(
+                    [
+                        x * at.scale,
+                        y * at.scale,
+                        bar * at.scale,
+                        band.height * at.scale,
+                    ],
+                    self.theme.line,
+                ));
+            }
+        }
+    }
+
     /// A thematic break's rule (MDEDIT-143).
     ///
     /// **`---` is only its marker**, so concealing the marker in preview used to remove the whole
@@ -9162,14 +9197,24 @@ impl<T: TextLayout> Editor<T> {
         };
         // MDEDIT-146. A lone image is the third chunk that is not a run of lines, and the only one
         // with no glyphs at all: it lays out as a single empty line as tall as the picture.
-        let picture = if grid.is_none() && hung.is_none() {
+        // MDEDIT-145. A block quote is the fourth: each run of lines at one depth is laid out at the
+        // width its indent leaves and placed, so a wrapped row stays clear of the bars.
+        let quoted = match chunk.kind {
+            Some(BlockKind::BlockQuote) => self.lay_out_quote(chunk, frame),
+            _ => None,
+        };
+        let picture = if grid.is_none() && hung.is_none() && quoted.is_none() {
             self.lay_out_picture(chunk, body, frame)
         } else {
             None
         };
+        let mut bands = Vec::new();
         let (mut layout, grid) = if let Some((layout, grid)) = grid {
             (layout, Some(grid))
         } else if let Some(layout) = hung {
+            (layout, None)
+        } else if let Some((layout, quoted)) = quoted {
+            bands = quoted;
             (layout, None)
         } else if let Some(fitted) = picture {
             (picture_layout(fitted, body), None)
@@ -9198,7 +9243,9 @@ impl<T: TextLayout> Editor<T> {
             });
         }
 
-        let cached = Rc::new(Cached::new(layout, grid, picture, &chunk, body, key.last));
+        let mut cached = Cached::new(layout, grid, picture, &chunk, body, key.last);
+        cached.quote = bands;
+        let cached = Rc::new(cached);
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
         // chunk stops being an estimate and becomes a measurement — the same moment its height
         // becomes real. Only ever grows within a layout width; `set_wrap` and `set_zoom` reset it
@@ -9492,6 +9539,49 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
     /// it leaves. `list`'s own docs say why one call cannot do it.
+    /// A block quote, as runs of lines at one depth, each placed past its bars (MDEDIT-145).
+    ///
+    /// `None` in plain mode, where the markers are the text and nothing is indented, and for a
+    /// quote chunk that turns out to have no quoted line in it at all — the honest answer is then
+    /// to lay it out as ordinary lines, as `lay_out_list` does for a list with no marker.
+    fn lay_out_quote(
+        &mut self,
+        chunk: blocks::Chunk,
+        frame: &Frame,
+    ) -> Option<(Layout, Vec<quote::Band>)> {
+        if self.decoration().mode == view::Mode::Plain {
+            return None;
+        }
+        let units = quote::units(self.document(), chunk.span, &frame.text);
+        if units.iter().all(|unit| unit.depth == 0) {
+            return None;
+        }
+
+        let mut runs = Vec::with_capacity(units.len());
+        for unit in units {
+            let styled =
+                view::build_runs_in(self.document(), self.decoration(), unit.span, &frame.text);
+            let width = (frame.width - quote::indent(unit.depth)).max(1.0);
+            let mut layout = self.text.layout(&view::as_styled(&styled), width).ok()?;
+            // **A run can have nothing left to shape.** `>` alone on the last line of the file is
+            // all marker and no newline, and a text engine handed nothing answers with no rows —
+            // the MDEDIT-81 shape, one run down. The whole-chunk repair below only fires when the
+            // *chunk* is empty, so a quote ending that way would lose a line the caret can reach.
+            if layout.lines.is_empty() {
+                let height = (self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0);
+                layout.lines.push(mdedit_text::LayoutLine {
+                    baseline: height,
+                    height,
+                    glyphs: Vec::new(),
+                    rules: Vec::new(),
+                });
+            }
+            runs.push((unit.depth, layout));
+        }
+
+        Some(quote::assemble(&runs))
+    }
+
     fn lay_out_list(&mut self, chunk: blocks::Chunk, frame: &Frame) -> Option<Layout> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
@@ -10101,6 +10191,11 @@ struct Cached {
     /// "draw this as lines" to `draw_chunks`. A chunk with a picture has one empty layout line whose
     /// height is the picture's, so everything keyed off rows goes on working.
     picture: Option<Fitted>,
+    /// Where a block quote's bars go, and how many at each height (MDEDIT-145).
+    ///
+    /// Empty for every chunk that is not a quote, and empty is what says "no bars" to
+    /// `draw_quote` — the same role `grid`'s and `picture`'s `None` play.
+    quote: Vec<quote::Band>,
     /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
     /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
     /// added back before a span means anything.
@@ -10148,6 +10243,7 @@ impl Cached {
             layout,
             grid,
             picture,
+            quote: Vec::new(),
             base: chunk.span.start().get(),
             drops_last,
             height,

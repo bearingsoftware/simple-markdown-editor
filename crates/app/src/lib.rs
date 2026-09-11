@@ -36,6 +36,7 @@ pub mod pane;
 pub mod place;
 pub mod popup;
 pub mod prompt;
+pub mod quote;
 pub mod scroll;
 pub mod scrollbar;
 pub mod shortcuts;
