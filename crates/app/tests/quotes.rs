@@ -32,17 +32,24 @@ const HEIGHT: f32 = 600.0;
 const SOLID: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 fn frame(source: &str) -> Vec<QuadInstance> {
-    Editor::new(source, Grid::new()).build_frame(WIDTH, HEIGHT, 1.0)
+    frame_at(source, 1.0)
 }
 
-/// Narrow, upright solid quads in the hairline colour: what a quote bar looks like.
-fn uprights(quads: &[QuadInstance]) -> Vec<[f32; 4]> {
+/// A frame at a device scale, the window growing with it as a real one would.
+fn frame_at(source: &str, scale: f32) -> Vec<QuadInstance> {
+    Editor::new(source, Grid::new()).build_frame(WIDTH * scale, HEIGHT * scale, scale)
+}
+
+/// Narrow, upright solid quads in the hairline colour: what a quote bar looks like at `scale`.
+fn uprights(quads: &[QuadInstance], scale: f32) -> Vec<[f32; 4]> {
     let line = Theme::default().line;
     let line = [line.r, line.g, line.b, line.a];
     let mut found: Vec<[f32; 4]> = quads
         .iter()
         .filter(|quad| quad.uv == SOLID && quad.colour == line)
-        .filter(|quad| quad.rect[2] <= BAR + 0.5 && quad.rect[3] >= LINE_HEIGHT / 2.0)
+        .filter(|quad| {
+            quad.rect[2] <= BAR * scale + 0.5 && quad.rect[3] >= LINE_HEIGHT * scale / 2.0
+        })
         .map(|quad| quad.rect)
         .collect();
     found.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -50,12 +57,17 @@ fn uprights(quads: &[QuadInstance]) -> Vec<[f32; 4]> {
 }
 
 /// The bars `source` draws, less anything the chrome draws in the same window.
+fn bars(source: &str) -> Vec<[f32; 4]> {
+    bars_at(source, 1.0)
+}
+
+/// The same, at a device scale.
 ///
 /// Merged by column: a level's bar can be drawn as several quads where the depth beside it changes,
 /// and what a reader sees — and what these tests mean by "a bar" — is one continuous stroke.
-fn bars(source: &str) -> Vec<[f32; 4]> {
-    let mut extra = uprights(&frame(source));
-    for rect in uprights(&frame("unquoted\n")) {
+fn bars_at(source: &str, scale: f32) -> Vec<[f32; 4]> {
+    let mut extra = uprights(&frame_at(source, scale), scale);
+    for rect in uprights(&frame_at("unquoted\n", scale), scale) {
         if let Some(at) = extra.iter().position(|r| *r == rect) {
             extra.remove(at);
         }
@@ -282,16 +294,68 @@ fn depth_can_change_inside_one_quote() {
 
 #[test]
 fn a_blank_quote_line_at_the_end_of_the_file_still_has_a_row() {
-    // The last unit of a quote can be `>` with no newline: once the marker is concealed there is
+    // The last run of a quote can be `>` with no newline: once the marker is concealed there is
     // nothing to shape, and a text engine answers with no rows. The bar would stop short of a line
     // the caret can still be put on.
-    let drawn = bars("> text\n>");
+    //
+    // **Two levels then one, so the last line is a run of its own.** The first version of this was
+    // `> text\n>` — both lines at depth one, so one run with `text\n` in it, and the repair it
+    // exists to test was never reached. The mutants job on #166 said so: changing the repaired row's
+    // height survived.
+    let drawn = bars("> > text\n>");
 
-    assert_eq!(drawn.len(), 1, "{drawn:?}");
-    assert!(
-        drawn[0][3] >= 2.0 * LINE_HEIGHT - 0.5,
-        "the last line lost its row: {drawn:?}"
+    assert_eq!(drawn.len(), 2, "an outer bar and an inner one: {drawn:?}");
+    let (outer, inner) = (drawn[0], drawn[1]);
+    assert_eq!(
+        inner[3], LINE_HEIGHT,
+        "the inner bar is the one quoted line"
     );
+    assert!(
+        outer[3] > inner[3],
+        "the outer bar does not reach the last line, so that line has no row: {drawn:?}"
+    );
+}
+
+#[test]
+fn a_change_of_depth_leaves_no_blank_row() {
+    // Each run is laid out on its own and ends in a newline, which a text engine gives a trailing
+    // empty row. Stacked as-is that is a blank line wherever the depth changes — the defect
+    // `place::rows_kept` exists to prevent, and one nothing measured until the mutants job found
+    // it could be removed without a test noticing.
+    let top = mdedit_app::toolbar::HEIGHT + stub::MARGIN;
+    let tops: Vec<f32> = glyph_rows("> outer\n> > inner\n> outer again\n")
+        .into_iter()
+        .map(|(_, y)| y)
+        .filter(|y| *y >= top && *y < HEIGHT - mdedit_app::toolbar::HEIGHT)
+        .collect();
+
+    assert_eq!(tops.len(), 3, "{tops:?}");
+    for pair in tops.windows(2) {
+        assert_eq!(
+            pair[1] - pair[0],
+            LINE_HEIGHT,
+            "a blank row where the depth changed: {tops:?}"
+        );
+    }
+}
+
+#[test]
+fn the_bars_scale_with_the_display() {
+    // Every other test here runs at 100%, where multiplying by the scale and dividing by it give the
+    // same answer — the gap MDEDIT-143's mutants found and this one repeated. At 200% a bar is the
+    // same bar in twice as many pixels: position, width and height all double.
+    let normal = bars_at("> > deep\n", 1.0);
+    let double = bars_at("> > deep\n", 2.0);
+
+    assert_eq!(normal.len(), 2, "{normal:?}");
+    assert_eq!(double.len(), 2, "{double:?}");
+    for (at_one, at_two) in normal.iter().zip(&double) {
+        assert_eq!(
+            *at_two,
+            at_one.map(|value| value * 2.0),
+            "not the 100% bar doubled"
+        );
+    }
 }
 
 #[test]
@@ -341,8 +405,8 @@ fn plain_mode_draws_the_markers_and_no_bars() {
     baseline.toggle_mode();
 
     assert_eq!(
-        uprights(&quads),
-        uprights(&baseline.build_frame(WIDTH, HEIGHT, 1.0)),
+        uprights(&quads, 1.0),
+        uprights(&baseline.build_frame(WIDTH, HEIGHT, 1.0), 1.0),
         "plain mode drew a bar"
     );
 }
@@ -387,7 +451,7 @@ fn a_nested_quote_is_indented_and_barred_through_the_real_text_engine_too() {
             DirectWriteText::new().expect("DirectWrite is available on any supported Windows");
         Editor::new(source, engine).build_frame(WIDTH, HEIGHT, 1.0)
     };
-    let bars_of = |quads: &[QuadInstance]| uprights(quads).len();
+    let bars_of = |quads: &[QuadInstance]| uprights(quads, 1.0).len();
 
     let quoted = real("> > deep\n");
     let plain = real("unquoted\n");
@@ -401,4 +465,49 @@ fn a_nested_quote_is_indented_and_barred_through_the_real_text_engine_too() {
             .fold(f32::MAX, f32::min)
     };
     assert_eq!(text_left(&quoted) - text_left(&plain), 2.0 * STEP);
+}
+
+/// **A rule moves with the text it is drawn through.** `place::row` shifts a row's rules along with
+/// its glyphs, and the stub never draws a rule, so this is the only test that can see it: the mutants
+/// job found that deleting the shift survived every test that runs off Windows.
+///
+/// A strikethrough, because it is the rule preview actually draws over visible text. The first
+/// version of this used a link and could not have passed: only a link's *destination* is underlined
+/// (MDEDIT-73), and in preview the destination is concealed, so a link draws no rule at all.
+#[cfg(windows)]
+#[test]
+fn a_strikethrough_moves_with_its_text_into_the_quote() {
+    use mdedit_text_dwrite::DirectWriteText;
+
+    let engine = DirectWriteText::new().expect("DirectWrite is available on any supported Windows");
+    let quads = Editor::new("> ~~struck through~~\n", engine).build_frame(WIDTH, HEIGHT, 1.0);
+    let top = mdedit_app::toolbar::HEIGHT;
+    let in_document = |quad: &&QuadInstance| {
+        quad.rect[1] > top && quad.rect[1] < HEIGHT - top && quad.rect[0] > stub::MARGIN / 2.0
+    };
+
+    // The struck text, and so its colour, which is the colour its rule is drawn in.
+    let glyphs: Vec<&QuadInstance> = quads
+        .iter()
+        .filter(|quad| quad.uv != SOLID)
+        .filter(in_document)
+        .collect();
+    assert!(!glyphs.is_empty(), "no quoted text was drawn");
+    let colour = glyphs[0].colour;
+    let text_left = glyphs
+        .iter()
+        .map(|quad| quad.rect[0])
+        .fold(f32::MAX, f32::min);
+    let rule_left = quads
+        .iter()
+        .filter(|quad| quad.uv == SOLID && quad.colour == colour && quad.rect[3] <= 3.0)
+        .filter(in_document)
+        .map(|quad| quad.rect[0])
+        .fold(f32::MAX, f32::min);
+
+    assert!(rule_left < f32::MAX, "no strikethrough rule was drawn");
+    assert!(
+        (rule_left - text_left).abs() <= 2.0,
+        "the rule starts at {rule_left}, the struck text at {text_left}"
+    );
 }
