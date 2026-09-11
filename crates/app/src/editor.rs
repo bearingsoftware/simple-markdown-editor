@@ -7855,6 +7855,9 @@ impl<T: TextLayout> Editor<T> {
             // Which source line the row above was on, so a wrapped row can be told from a new one.
             self.draw_table(quads, &cached, chunk_top, at);
             self.place_picture(&cached, chunk, chunk_top, at);
+            if chunk.kind == Some(BlockKind::ThematicBreak) {
+                self.draw_thematic_break(quads, &cached, chunk_top, at);
+            }
 
             // `usize::MAX` for "there was no row above", which no line number can collide with.
             let mut previous_line = usize::MAX;
@@ -8129,6 +8132,50 @@ impl<T: TextLayout> Editor<T> {
     /// No culling of its own. `draw_chunks` already only walks the visible chunks, and a picture
     /// hanging past the edge of the document area is covered by chrome, which draws after — the
     /// painter's order `docs/decisions/chrome.md` says is the whole of the answer.
+    /// A thematic break's rule (MDEDIT-143).
+    ///
+    /// **`---` is only its marker**, so concealing the marker in preview used to remove the whole
+    /// construct: a divider in plain markup and nothing at all in preview. A list at least leaves its
+    /// text behind; a break left a blank row.
+    ///
+    /// A quad rather than a MDEDIT-141 substitution, because a stand-in glyph cannot span the column.
+    /// Drawn from the chunk's kind and the mode, and never cached, so `ChunkKey` carries nothing new
+    /// — the MDEDIT-118 trap of a layout that varies with something its key does not hold does not
+    /// arise. Same colour and thickness as a table's rules: both are the document's hairline.
+    ///
+    /// **Across the visible band, not from document x 0.** With word wrap off the view can pan, and
+    /// everything in the document moves left with it. A divider has no width of its own to scroll,
+    /// so it starts at the pan and spans the content rectangle — drawn from x 0 it would slide out of
+    /// view under the gutter.
+    fn draw_thematic_break(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        cached: &Cached,
+        chunk_top: f32,
+        at: Placement,
+    ) {
+        if self.decoration().mode == view::Mode::Plain {
+            return;
+        }
+        // The break's own line, which is the chunk's first: any blank lines after it belong to the
+        // chunk too, and a rule through the middle of those would sit below the break.
+        let Some(row) = cached.layout.lines.first() else {
+            return;
+        };
+        let hairline = table::RULE.max(1.0 / at.scale);
+        let y = chunk_top + (row.height - hairline) / 2.0;
+        let (x, y) = at.content.to_window(at.offset.x, y, at.offset);
+        quads.push(Self::solid(
+            [
+                x * at.scale,
+                y * at.scale,
+                at.content.width() * at.scale,
+                hairline * at.scale,
+            ],
+            self.theme.line,
+        ));
+    }
+
     fn place_picture(
         &mut self,
         cached: &Cached,
