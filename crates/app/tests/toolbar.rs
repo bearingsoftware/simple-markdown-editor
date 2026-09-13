@@ -394,6 +394,23 @@ fn the_list_buttons_tell_each_other_apart() {
     caret_at(&mut task, 8);
     assert!(task.is_lit(Action::Task));
     assert!(!task.is_lit(Action::Bullet), "a task is not a bullet");
+
+    let mut numbered = editor("1. [ ] a numbered task\n");
+    caret_at(&mut numbered, 9);
+    assert!(numbered.is_lit(Action::Task), "MDEDIT-142");
+    assert!(
+        !numbered.is_lit(Action::Ordered),
+        "a task is not a plain numbered item"
+    );
+}
+
+/// The button, not only the document call behind it: Task on a numbered item keeps the number.
+#[test]
+fn the_task_button_keeps_a_numbered_item_numbered() {
+    let mut editor = editor("1. first\n");
+    caret_at(&mut editor, 4);
+    assert!(editor.perform(Action::Task));
+    assert_eq!(editor.document().to_string(), "1. [ ] first\n");
 }
 
 #[test]
