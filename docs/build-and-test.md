@@ -328,10 +328,19 @@ on a clean exit, or a run that died early would report the same thing and swallo
 **What it costs, and what it found the first time it ran for real** (MDEDIT-156, the first diff to
 touch Rust source after the fix): `60 mutants tested in 35m: 17 missed, 31 caught, 12 unviable`, in a
 44-minute job. That is the runtime MDEDIT-155 could not measure, because every local attempt was
-killed for memory even at `--jobs 1`. Budget three quarters of an hour on the self-hosted runner for a
-diff of that size. It is not a required check, so a slow run holds nothing up — but a *red* one still
-shows on the pull request, which is why the step below decides its own exit status rather than
-leaving it to `continue-on-error`.
+killed for memory even at `--jobs 1`. It is not a required check, so a slow run holds nothing up — but
+a *red* one still shows on the pull request, which is why the step below decides its own exit status
+rather than leaving it to `continue-on-error`.
+
+**That 35 minutes is most of what the job is allowed** (MDEDIT-171). The self-hosted pool stops every
+job at 60 minutes, whatever the workflow asks for, and GitHub reports it about nine minutes later as
+*"the self-hosted runner lost communication"* — with no step conclusion and no log. PR #166 lost both
+attempts that way, at 69 minutes each, and the message reads like a crash rather than a limit. So the
+job asks for 55 minutes, and the Mutate step has a **40-minute budget** of its own, set once as
+`budget` in the step: when it runs out, cargo-mutants is interrupted, keeps what it found, and the job
+says so as an error — a partial run is not a result. A diff of about sixty mutants fits; a bigger one
+does not, and **the answer is to shard it (MDEDIT-172), not to raise the budget.** There is no room
+above it to raise it into.
 
 The 17 were worth the 35 minutes. One of them was **a security cap with no test behind it**:
 `within_the_pixel_caps` refuses a picture too wide, too tall, or too many pixels, and every test
