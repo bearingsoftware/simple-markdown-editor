@@ -331,6 +331,89 @@ fn a_list_that_does_not_wrap_keeps_the_rows_it_had() {
     );
 }
 
+/// The top of every row the document drew glyphs on, in order, one entry per row.
+fn document_row_tops(source: &str) -> Vec<f32> {
+    const WIDTH: f32 = 600.0;
+    const HEIGHT: f32 = 400.0;
+    let top = mdedit_app::toolbar::HEIGHT + MARGIN;
+    let mut ys: Vec<f32> = Editor::new(source, Grid::new())
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.uv != [0.0, 0.0, 1.0, 1.0] && quad.rect[0] >= MARGIN)
+        .filter(|quad| quad.rect[1] >= top && quad.rect[1] < HEIGHT - mdedit_app::toolbar::HEIGHT)
+        .map(|quad| quad.rect[1])
+        .collect();
+    ys.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ys.dedup();
+    ys
+}
+
+/// **The count above cannot see a blank row, and a blank row is the defect it names.** It counts
+/// rows *with text*, so an empty row stacked between every pair of items leaves the count unchanged.
+/// The mutants job found that on #166 (MDEDIT-145), when the arithmetic moved into `place.rs`: making
+/// `place::rows_kept` keep every unit's trailing row survived every test here. Spacing sees it.
+#[test]
+fn items_sit_one_line_apart_with_no_blank_row_between_them() {
+    let tops = document_row_tops("- alpha\n- beta\n- gamma\n");
+
+    assert_eq!(tops.len(), 3, "{tops:?}");
+    for pair in tops.windows(2) {
+        assert_eq!(
+            pair[1] - pair[0],
+            LINE_HEIGHT,
+            "a blank row between items: {tops:?}"
+        );
+    }
+}
+
+/// **A wrapped item's rows are one line apart too — and on `main` they were not.** Found while
+/// reviewing #166: a `LayoutLine`'s baseline is measured from the top of *its layout*, and the
+/// assembly added it to the row's own top, so every continuation row was pushed down by the rows
+/// above it in the item. Row two drew a row low, row three two rows low — below the next item,
+/// on top of its text. Every hanging test here checks x, and none checked y, since MDEDIT-147.
+#[test]
+fn a_wrapped_items_rows_are_one_line_apart() {
+    let long = "word ".repeat(40);
+    let tops = document_row_tops(&format!("- {long}\n- next\n"));
+
+    assert!(
+        tops.len() >= 4,
+        "the item did not wrap onto three rows: {tops:?}"
+    );
+    for pair in tops.windows(2) {
+        assert_eq!(
+            pair[1] - pair[0],
+            LINE_HEIGHT,
+            "a wrapped row is not where its row is: {tops:?}"
+        );
+    }
+}
+
+/// **A bullet sits on its item's first baseline, not above it or below.** The marker is laid out on
+/// its own, so its glyph's y has to be re-measured onto the row it joins — and nothing checked that
+/// it was. The same mutants run found a bullet placed at the chunk's top, or two ascents down,
+/// passed every test in this file.
+#[test]
+fn a_bullet_sits_on_its_items_first_baseline() {
+    // Straight at `list::assemble` rather than through a frame, so nothing about the chrome or the
+    // window can hide a bullet that went somewhere odd: every glyph on the row, bullet included, is
+    // on the row's baseline or the assembly is wrong.
+    let items = [mdedit_app::list::Item {
+        marker: laid_out("x"),
+        text: laid_out("alpha\n"),
+    }];
+    let assembled = mdedit_app::list::assemble(&items);
+    let row = &assembled.lines[0];
+
+    assert!(row.glyphs.len() > 1, "no bullet and text to compare");
+    for glyph in &row.glyphs {
+        assert_eq!(
+            glyph.pos.y, row.baseline,
+            "a glyph is off its row's baseline"
+        );
+    }
+}
+
 /// **R2 on the plan, checked rather than assumed.** A table hands `hit` its row spans because a grid
 /// *drops* a source line; this drops none, so counting newlines still finds a row's bytes. What that
 /// argument does not cover is whether a glyph on a *moved* row still addresses the byte under it — the

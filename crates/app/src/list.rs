@@ -43,6 +43,8 @@ use mdedit_language::{Marker, SegmentKind};
 use mdedit_offsets::{ByteSpan, LayoutPos};
 use mdedit_text::{Layout, LayoutLine};
 
+use crate::place;
+
 /// One item's two laid-out halves, and where its text hangs.
 #[derive(Debug)]
 pub struct Item {
@@ -119,67 +121,34 @@ pub fn assemble(items: &[Item]) -> Layout {
     for (index, item) in items.iter().enumerate() {
         let last = index + 1 == items.len();
         let indent = width_of(&item.marker);
-        let rows = rows_of(&item.text, last);
+        let rows = place::rows_kept(&item.text, last);
+        // Where this item's layout starts. Each of its rows is placed from here, because a row's
+        // baseline already counts the rows above it — see `place::row`.
+        let origin = top;
 
         for (row, line) in item.text.lines.iter().take(rows).enumerate() {
-            let baseline = top + line.baseline;
-            let mut glyphs = Vec::with_capacity(line.glyphs.len() + item.marker.glyphs().count());
+            let mut placed = place::row(line, indent, origin);
 
             // The marker belongs to the item's first row and to no other. That is the whole of the
-            // hanging indent: every row after this one gets the offset without the bullet.
+            // hanging indent: every row after this one gets the offset without the bullet. Ahead of
+            // the text's glyphs, which is the order they were in before the item was split.
             if row == 0 {
                 let first = item.marker.lines.first().map_or(0.0, |line| line.baseline);
-                for glyph in item.marker.glyphs() {
+                let marker = item.marker.glyphs().map(|glyph| {
                     let mut moved = *glyph;
-                    moved.pos = LayoutPos::new(glyph.pos.x, baseline + (glyph.pos.y - first));
-                    glyphs.push(moved);
-                }
+                    moved.pos =
+                        LayoutPos::new(glyph.pos.x, placed.baseline + (glyph.pos.y - first));
+                    moved
+                });
+                placed.glyphs.splice(0..0, marker);
             }
 
-            for glyph in &line.glyphs {
-                let mut moved = *glyph;
-                moved.pos = LayoutPos::new(glyph.pos.x + indent, baseline);
-                glyphs.push(moved);
-            }
-
-            // Rules move with the text they are under. A link's underline on a wrapped row would
-            // otherwise stay at the left edge while its glyphs hung, which is the sort of thing only
-            // a document with an underlined link in a long list item would ever show.
-            let rules = line
-                .rules
-                .iter()
-                .map(|rule| mdedit_text::Rule {
-                    x: rule.x + indent,
-                    ..*rule
-                })
-                .collect();
-
-            lines.push(LayoutLine {
-                baseline,
-                height: line.height,
-                glyphs,
-                rules,
-            });
+            lines.push(placed);
             top += line.height;
         }
     }
 
     Layout { lines }
-}
-
-/// How many of a unit's rows are rows of the list.
-///
-/// All of them for the last unit. For any other, its trailing empty line is the newline that ends it
-/// rather than a row — see [`assemble`].
-fn rows_of(text: &Layout, last: bool) -> usize {
-    if last {
-        return text.lines.len();
-    }
-    let trailing = text
-        .lines
-        .last()
-        .is_some_and(|line| line.glyphs.is_empty() && text.lines.len() > 1);
-    text.lines.len() - usize::from(trailing)
 }
 
 /// How wide a laid-out marker is, which is the indent its item's text hangs at.

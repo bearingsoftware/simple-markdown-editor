@@ -306,6 +306,35 @@ impl Document {
         false
     }
 
+    /// How many block quotes enclose `offset` — 0 outside any, 2 for `> > text` (MDEDIT-145).
+    ///
+    /// [`Document::in_block_quote`] answers whether; a preview that draws one bar per level needs how
+    /// many, and without it `>` and `>>` drew identically. The same walk, counting every enclosing
+    /// quote instead of returning at the first, which is why `in_block_quote` is left as it is: the
+    /// renderer asks it once per line and it can stop earlier.
+    ///
+    /// **From the block tree, not from the markers**, because the markers cannot say. `> > b` and
+    /// `>> b` arrive as one coalesced marker each, and a lazy continuation line has no marker at
+    /// all while still belonging to its quote. The blocks get all three right.
+    #[must_use]
+    pub fn quote_depth(&self, offset: ByteOffset) -> usize {
+        let candidates = self
+            .blocks
+            .partition_point(|block| block.span().start() <= offset);
+
+        let mut depth = 0;
+        for block in self.blocks[..candidates].iter().rev() {
+            if offset < block.span().end() {
+                if block.kind() == BlockKind::BlockQuote {
+                    depth += 1;
+                }
+            } else if block.depth() == 0 {
+                break;
+            }
+        }
+        depth
+    }
+
     /// The heading trail enclosing `offset`, outermost first. See [`outline::heading_trail`].
     #[must_use]
     pub fn heading_trail(&self, offset: ByteOffset) -> Vec<Heading> {

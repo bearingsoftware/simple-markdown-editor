@@ -114,6 +114,67 @@ fn a_list_inside_a_quote_is_quoted_and_one_outside_is_not() {
 fn an_offset_past_the_end_is_not_in_anything() {
     let doc = Document::from("> quoted\n");
     assert!(!doc.in_block_quote(ByteOffset::new(1_000)));
+    assert_eq!(doc.quote_depth(ByteOffset::new(1_000)), 0);
+}
+
+// ---------------------------------------------------------------------------------------------
+// How deep (MDEDIT-145). `in_block_quote` answers *whether*; a preview that draws one bar per level
+// needs *how many*, and `>` and `>>` were indistinguishable without it.
+// ---------------------------------------------------------------------------------------------
+
+/// The depth at the first byte of `needle`.
+fn depth_at(source: &str, needle: &str) -> usize {
+    let doc = Document::from(source);
+    doc.quote_depth(ByteOffset::new(source.find(needle).unwrap()))
+}
+
+#[test]
+fn prose_is_at_depth_zero() {
+    assert_eq!(depth_at("plain words\n", "words"), 0);
+}
+
+#[test]
+fn a_quote_is_at_depth_one() {
+    assert_eq!(depth_at("> quoted\n", "quoted"), 1);
+}
+
+#[test]
+fn both_spellings_of_a_nested_quote_are_at_depth_two() {
+    // `> >` and `>>` are the same construct and arrive as one coalesced marker either way, which is
+    // why depth cannot come from counting marker segments.
+    assert_eq!(depth_at("> > deep\n", "deep"), 2);
+    assert_eq!(depth_at(">> deep\n", "deep"), 2);
+}
+
+#[test]
+fn three_levels_are_three() {
+    assert_eq!(depth_at("> > > deepest\n", "deepest"), 3);
+}
+
+#[test]
+fn a_lazy_continuation_line_is_at_its_quotes_depth() {
+    // `continued` carries no `>` at all and is still part of the quoted paragraph — so counting the
+    // `>` characters on its line would say 0, and the block tree says 1.
+    assert_eq!(depth_at("> lazy\ncontinued\n", "continued"), 1);
+}
+
+#[test]
+fn depth_returns_to_the_outer_level_after_a_nested_quote() {
+    let source = "> outer\n>\n> > inner\n>\n> outer again\n";
+    assert_eq!(depth_at(source, "outer"), 1);
+    assert_eq!(depth_at(source, "inner"), 2);
+    assert_eq!(depth_at(source, "outer again"), 1);
+}
+
+#[test]
+fn a_list_inside_a_quote_is_at_the_quotes_depth() {
+    // The innermost block is the list item, which is not a quote; the depth is still one.
+    assert_eq!(depth_at("> - item\n", "item"), 1);
+}
+
+#[test]
+fn text_after_a_quote_is_back_at_depth_zero() {
+    assert_eq!(depth_at("> quoted\n\nafter\n", "after"), 0);
 }
 
 proptest! {
@@ -140,5 +201,29 @@ proptest! {
                 && at < block.span().end()
         });
         prop_assert_eq!(doc.in_block_quote(at), expected, "in {:?} at {}", source, at);
+    }
+
+    /// `quote_depth` walks the same prefix and stops at the same place, so it rests on containment
+    /// in exactly the way `in_block_quote` does — and checking it by brute force over the block list
+    /// is what catches a walk that stops one block early.
+    #[test]
+    fn quote_depth_counts_the_quotes_the_block_list_says_contain_the_offset(
+        source in "(?s)[a-z >\\-#\n]{0,120}",
+        offset in 0_usize..120,
+    ) {
+        let doc = Document::from(source.as_str());
+        let at = ByteOffset::new(offset.min(source.len()));
+
+        let expected = doc
+            .blocks()
+            .iter()
+            .filter(|block| {
+                block.kind() == mdedit_language::BlockKind::BlockQuote
+                    && block.span().start() <= at
+                    && at < block.span().end()
+            })
+            .count();
+        prop_assert_eq!(doc.quote_depth(at), expected, "in {:?} at {}", source, at);
+        prop_assert_eq!(doc.in_block_quote(at), expected > 0);
     }
 }
