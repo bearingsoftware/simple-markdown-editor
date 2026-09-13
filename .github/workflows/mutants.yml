@@ -30,6 +30,12 @@ jobs:
     runs-on: [self-hosted, Linux, X64, proxmox, general]
     # A trial. It reports; it does not block.
     continue-on-error: true
+    # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
+    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
+    # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
+    # nothing saying why. This is the backstop; the Mutate step has its own, shorter budget so
+    # it can stop cleanly and say so.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,7 +127,13 @@ jobs:
       - name: Mutate
         run: |
           set +e
-          cargo mutants --in-diff /tmp/pr.diff \
+          # **A budget for the mutation run itself (MDEDIT-171)**, inside the job's 55 minutes and
+          # the pool's 60, leaving room for checkout, the toolchain and building cargo-mutants from
+          # source. INT rather than KILL, so cargo-mutants stops the way it does on Ctrl-C and what
+          # it has already found is still written to mutants.out for the upload below.
+          started=$SECONDS
+          timeout --signal=INT --kill-after=120 40m \
+            cargo mutants --in-diff /tmp/pr.diff \
             --test-tool nextest \
             --exclude mdedit-text-dwrite \
             --exclude mdedit-menu-win \
@@ -131,6 +143,16 @@ jobs:
             --no-shuffle
           status=$?
           set -e
+
+          # 124 is timeout's own code; 137 is the KILL that follows if cargo-mutants ignored the INT,
+          # and counts only after the budget has actually elapsed, so an OOM kill is not reported as
+          # running out of time. Either way the diff was only partly mutated, and a partial run must
+          # not read as a result — the same rule MDEDIT-157 applies to an unreadable report.
+          if [ "$status" -eq 124 ] || { [ "$status" -eq 137 ] && [ $((SECONDS - started)) -ge 2400 ]; }; then
+            missed=$(grep -c '' mutants.out/missed.txt 2>/dev/null || true)
+            echo "::error title=Mutants ran out of time::cargo-mutants did not finish within 40 minutes, so this diff was only partly mutated (${missed:-0} survivor(s) found before it stopped). The untested remainder is neither caught nor missed. Split the diff or shard the run rather than raising the limit: the runner pool stops every job at 60 minutes (MDEDIT-171)."
+            exit 1
+          fi
 
           # **A job that reports success for having tested nothing is the defect this ticket is
           # about, not a side note.** cargo-mutants exits 0 both when it killed every mutant and
