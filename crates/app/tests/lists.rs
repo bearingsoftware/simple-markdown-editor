@@ -205,6 +205,134 @@ fn no_substituted_marker_spans_a_line() {
     }
 }
 
+// ---- MDEDIT-142: a task draws its box ----
+
+#[test]
+fn a_task_draws_its_box_in_place_of_the_bullet() {
+    assert_eq!(drawn("- [ ] buy milk\n"), "\u{2610} buy milk\n");
+    assert_eq!(drawn("- [x] call bank\n"), "\u{2611} call bank\n");
+    assert_eq!(drawn("* [X] shout\n"), "\u{2611} shout\n");
+}
+
+/// The number is information and stays; only a bullet is redundant beside a box.
+#[test]
+fn a_numbered_task_keeps_its_number() {
+    assert_eq!(
+        drawn("1. [ ] step\n2. [x] done\n"),
+        "1. \u{2610} step\n2. \u{2611} done\n",
+    );
+}
+
+/// The bullet goes and its indent stays, which is what keeps a nested task nested.
+#[test]
+fn a_nested_task_keeps_its_indent() {
+    assert_eq!(
+        drawn("- parent\n  - [ ] child\n"),
+        "\u{2022} parent\n  \u{2610} child\n",
+    );
+}
+
+/// A bullet is only dropped for a box that is really there. `[ ]` with nothing after it is not a
+/// task in GFM, and `[y]` never is.
+#[test]
+fn brackets_that_are_not_a_task_leave_the_bullet_alone() {
+    assert_eq!(drawn("- [y] maybe\n"), "\u{2022} [y] maybe\n");
+    assert_eq!(drawn("- a [ ] later\n"), "\u{2022} a [ ] later\n");
+}
+
+/// Plain markup is the file as it is, box and all.
+#[test]
+fn plain_markup_draws_the_brackets() {
+    let source = "- [x] done\n";
+    let document = Document::from(source);
+    let whole = ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len()));
+    let theme = Theme::default();
+    let plain = mdedit_app::view::Decoration {
+        theme: &theme,
+        mode: mdedit_app::view::Mode::Plain,
+    };
+    let text: String = mdedit_app::view::build_runs_in(&document, plain, whole, source)
+        .iter()
+        .map(|run| run.text.as_ref())
+        .collect();
+    assert_eq!(text, source);
+}
+
+/// Drawing a box writes nothing, and the box names the bytes it stands for.
+#[test]
+fn the_task_bytes_are_unchanged() {
+    let source = "- [x] done\n";
+    let document = Document::from(source);
+    let runs = build_runs(&document, &Theme::default(), source);
+
+    assert_eq!(document.to_string(), source, "the buffer was rewritten");
+    let task = runs
+        .iter()
+        .find(|run| run.text.starts_with('\u{2611}'))
+        .expect("a box was drawn");
+    assert!(task.substituted);
+    assert_eq!(task.source.slice(source), "[x]");
+}
+
+/// Every place Right stops on, from the start of `source` to its end.
+fn caret_stops(source: &str) -> Vec<usize> {
+    let mut editor = Editor::new(source, Grid::new());
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::ZERO));
+    let mut stops = vec![0];
+    while editor.press_right(false) {
+        let at = editor.document().selection().head().get();
+        if stops.last() == Some(&at) {
+            break;
+        }
+        stops.push(at);
+    }
+    stops
+}
+
+/// **The box is not a caret position**, which is the ticket's own warning. The caret stepping over
+/// the bullet walks straight on across the box, so neither `- ` nor `[ ]` is ever stood inside.
+#[test]
+fn the_caret_never_stands_inside_a_task_marker() {
+    for (source, markers) in [("- [ ] alpha\n", 1..5), ("1. [x] alpha\n", 1..6)] {
+        let stops = caret_stops(source);
+        assert!(
+            stops.iter().all(|stop| !markers.contains(stop)),
+            "{source:?}: the caret stopped inside the markers: {stops:?}",
+        );
+    }
+}
+
+/// A click on the box addresses its `[`, between the concealed bullet and the concealed box, where
+/// typing would break the item. It lands on the text after the box instead.
+#[test]
+fn clicking_a_box_puts_the_caret_after_it() {
+    //  ☐  ␣  a       the drawn row
+    //  2  2  6       the bytes each glyph addresses
+    let mut editor = Editor::new("- [ ] alpha\n", Grid::new());
+    editor.build_frame(600.0, 400.0, 1.0);
+    // The box's left half, which is the half a nearest-boundary hit resolves to the box itself.
+    editor.click_at(
+        MARGIN + ADVANCE / 4.0,
+        MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT / 2.0,
+    );
+    assert_eq!(editor.document().selection().head().get(), 6);
+}
+
+/// Plain markup draws `[`, so before it is a place the caret can be like any other.
+#[test]
+fn in_plain_markup_a_click_before_the_brackets_stays_there() {
+    let mut editor = Editor::new("- [ ] alpha\n", Grid::new());
+    editor.toggle_mode();
+    editor.build_frame(600.0, 400.0, 1.0);
+    editor.click_at(
+        ADVANCE.mul_add(2.0, MARGIN) + ADVANCE / 4.0,
+        MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT / 2.0,
+    );
+    assert_eq!(editor.document().selection().head().get(), 2);
+}
+
 // ---- MDEDIT-147: the units a hanging indent is assembled from ----
 
 /// What `list::units` cuts a chunk into, as text, so a wrong boundary reads as a wrong string.
@@ -310,6 +438,34 @@ fn a_nested_wrapped_item_hangs_further_in_than_a_flat_one() {
         nested[1] > flat[1],
         "nested {nested:?} should hang further in than flat {flat:?}",
     );
+}
+
+/// **A wrapped task hangs under its box** (MDEDIT-142). GFM makes the box the start of the item's
+/// content, and that is where GitHub aligns a continuation row too. The box is not in the text colour,
+/// so the first row's left edge is the space after it and the second row's is its first word.
+#[test]
+fn a_wrapped_task_hangs_under_its_box() {
+    let width = MARGIN + 12.0 * ADVANCE;
+    for (source, indent) in [
+        ("- [ ] alpha beta gamma delta\n", 0.0),
+        ("  - [ ] alpha beta gamma delta\n", 2.0),
+        ("1. [ ] alpha beta gamma delta\n", 3.0),
+    ] {
+        let lefts = content_lefts(source, width);
+        assert!(
+            lefts.len() >= 2,
+            "{source:?} should have wrapped: {lefts:?}"
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "stub metrics are whole pixels"
+        )]
+        let under_the_box = ADVANCE.mul_add(indent, MARGIN) as i32;
+        assert_eq!(
+            lefts[1], under_the_box,
+            "{source:?}: the second row does not start under the box: {lefts:?}",
+        );
+    }
 }
 
 /// **R1 on the plan, and the invariant most likely to catch a mistake here.** Every unit ends in a

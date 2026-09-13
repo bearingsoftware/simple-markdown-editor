@@ -1246,4 +1246,19 @@ impl Document {
         let span = segment.span();
         (matches!(segment.kind(), SegmentKind::Marker(_)) && offset < span.end()).then_some(span)
     }
+
+    /// The span of the task box — `[ ]`, `[x]` or `[X]` — that starts at `offset`, if one does.
+    ///
+    /// A preview draws a box in place of those bytes (MDEDIT-142), and every glyph of a substitute
+    /// addresses the start of what it stands for, so the `[` is what a point on the box resolves to.
+    #[must_use]
+    pub fn task_box_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        let index = self
+            .segments
+            .partition_point(|segment| segment.span().start() < offset);
+        let segment = self.segments.get(index)?;
+        (segment.span().start() == offset
+            && segment.kind() == SegmentKind::Marker(Marker::TaskMarker))
+        .then(|| segment.span())
+    }
 }

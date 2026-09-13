@@ -7394,7 +7394,15 @@ impl<T: TextLayout> Editor<T> {
         // The same rectangle the glyphs were placed with, run backwards. Neither side computes an
         // offset of its own, so the two cannot drift apart.
         let (x, y) = self.content.to_document(x, y, self.viewport_offset());
-        self.offset_in_document(x, y)
+        let offset = self.offset_in_document(x, y)?;
+        // **A task's box is not a caret position** (MDEDIT-142). A point on it addresses its `[`,
+        // which in preview sits between concealed markers — the bullet and the box — so typing there
+        // would write into the list's syntax and break the item. Past them is the nearest place a
+        // caret can be. Plain mode draws the brackets as they are, and before one is fine.
+        if self.mode == view::Mode::Preview && self.document().task_box_at(offset).is_some() {
+            return Some(self.past_concealed(offset));
+        }
+        Some(offset)
     }
 
     /// The byte at a point in the document's own coordinates.
@@ -9595,8 +9603,13 @@ impl<T: TextLayout> Editor<T> {
         for unit in units {
             let runs = view::build_runs_in(self.document(), self.decoration(), unit, &frame.text);
             // The substituted marker is the run the indent is measured from, and it is always the
-            // first: `units` cuts at the marker, so nothing precedes it inside the unit.
-            let split = usize::from(runs.first().is_some_and(|run| run.substituted));
+            // first: `units` cuts at the marker, so nothing precedes it inside the unit. A task's box
+            // can be first too, when the bullet it replaced had no indent to leave behind, and it is
+            // content rather than the marker (MDEDIT-142).
+            let split = usize::from(
+                runs.first()
+                    .is_some_and(|run| run.substituted && !view::is_task_box(run)),
+            );
             let (marker, rest) = runs.split_at(split);
 
             let marker = self.text.layout(&view::as_styled(marker), f32::MAX).ok()?;

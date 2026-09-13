@@ -279,7 +279,8 @@ fn every_bullet_a_list_draws_is_in_the_font() {
     let mut text = engine();
     let mut missing = Vec::new();
 
-    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}'] {
+    // And a task's two boxes (MDEDIT-142), which are substituted and drawn the same way.
+    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}', '\u{2610}', '\u{2611}'] {
         let advances = shape(&mut text, bullet, FontFamily::Mono, 16.0);
         if advances.iter().any(|advance| *advance < 0.0) {
             missing.push(format!("U+{:04X}", u32::from(bullet)));

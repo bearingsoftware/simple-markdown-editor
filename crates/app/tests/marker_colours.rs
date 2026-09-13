@@ -207,18 +207,18 @@ fn a_task_checkbox_is_syntax_and_not_the_bullets_colour() {
     );
 }
 
-/// And in preview it is not drawn at all. **Not "like every other marker" any more** — MDEDIT-141
-/// substitutes a bullet for the list marker beside it — but the box itself still draws nothing until
-/// MDEDIT-142 gives it something to draw.
+/// And in preview it draws a box, in the same colour. It drew nothing from MDEDIT-88 until MDEDIT-142,
+/// which made a task list indistinguishable from a bullet list — and a literal pair of brackets, the
+/// defect MDEDIT-88 fixed, is still not what comes back.
 #[test]
-fn a_task_checkbox_is_concealed_in_preview() {
-    let text: String = drawn_in("- [x] done\n", Mode::Preview)
-        .iter()
-        .map(|run| run.text.as_str())
-        .collect();
+fn a_task_checkbox_draws_a_box_in_preview() {
+    let runs = drawn_in("- [x] done\n", Mode::Preview);
+    let text: String = runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(text, "\u{2611} done\n");
     assert_eq!(
-        text, "\u{2022} done\n",
-        "a literal pair of brackets in the rendered line is the defect this fixed"
+        run_of(&runs, "\u{2611} ").colour,
+        Theme::default().token_literal,
+        "a box is state, drawn or not"
     );
 }
 
