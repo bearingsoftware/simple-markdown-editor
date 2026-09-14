@@ -209,9 +209,9 @@ fn no_substituted_marker_spans_a_line() {
 
 #[test]
 fn a_task_draws_its_box_in_place_of_the_bullet() {
-    assert_eq!(drawn("- [ ] buy milk\n"), "\u{2610} buy milk\n");
-    assert_eq!(drawn("- [x] call bank\n"), "\u{2611} call bank\n");
-    assert_eq!(drawn("* [X] shout\n"), "\u{2611} shout\n");
+    assert_eq!(drawn("- [ ] buy milk\n"), "\u{E739} buy milk\n");
+    assert_eq!(drawn("- [x] call bank\n"), "\u{E73A} call bank\n");
+    assert_eq!(drawn("* [X] shout\n"), "\u{E73A} shout\n");
 }
 
 /// The number is information and stays; only a bullet is redundant beside a box.
@@ -219,7 +219,7 @@ fn a_task_draws_its_box_in_place_of_the_bullet() {
 fn a_numbered_task_keeps_its_number() {
     assert_eq!(
         drawn("1. [ ] step\n2. [x] done\n"),
-        "1. \u{2610} step\n2. \u{2611} done\n",
+        "1. \u{E739} step\n2. \u{E73A} done\n",
     );
 }
 
@@ -228,7 +228,7 @@ fn a_numbered_task_keeps_its_number() {
 fn a_nested_task_keeps_its_indent() {
     assert_eq!(
         drawn("- parent\n  - [ ] child\n"),
-        "\u{2022} parent\n  \u{2610} child\n",
+        "\u{2022} parent\n  \u{E739} child\n",
     );
 }
 
@@ -268,7 +268,7 @@ fn the_task_bytes_are_unchanged() {
     assert_eq!(document.to_string(), source, "the buffer was rewritten");
     let task = runs
         .iter()
-        .find(|run| run.text.starts_with('\u{2611}'))
+        .find(|run| run.text.starts_with('\u{E73A}'))
         .expect("a box was drawn");
     assert!(task.substituted);
     assert_eq!(task.source.slice(source), "[x]");

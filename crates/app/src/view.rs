@@ -25,7 +25,7 @@ use std::borrow::Cow;
 use mdedit_document::Document;
 use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
-use mdedit_text::{StyledRun, TextStyle};
+use mdedit_text::{FontFamily, FontSize, StyledRun, TextStyle};
 
 /// A straight RGBA colour, 0–1 per channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -622,15 +622,28 @@ fn substitute(marker: Marker, piece: &str, boxed: bool) -> Option<Cow<'_, str>> 
 /// which is wrong-looking rather than broken and has no reported user.
 const BULLETS: [char; 3] = ['•', '◦', '▪'];
 
-/// What an unticked task draws. Ticked is a different *shape*, not the same box in another colour,
-/// so the palette's "never colour alone" contract holds here as it does for [`BULLETS`].
+/// What an unticked task draws: Checkbox, from the icon font. Ticked is a different *shape*, not the
+/// same box in another colour, so the palette's "never colour alone" contract holds here as it does
+/// for [`BULLETS`].
+///
+/// **A matched pair from one font, and not Unicode's ☐ and ☑.** Those looked like the obvious pair
+/// and came from two different fonts: ☑ has an emoji form, so DirectWrite's fallback drew it from
+/// Segoe UI Emoji at 22 px of advance against ☐'s 13.8, and ticking a box moved the item's text 8 px
+/// to the right. The icon font's `Checkbox` and `CheckboxComposite` are one design at one advance —
+/// Windows draws its own checkboxes with them — and both Segoe Fluent Icons and Segoe MDL2 Assets
+/// carry the code points, so Windows 10 has them too.
 ///
 /// **The space is the box's own**, because the one in the source is not content: `mdedit-markers`
 /// leaves the byte between `]` and the text as syntax, so it is concealed and draws nowhere.
-const UNTICKED: &str = "\u{2610} ";
+const UNTICKED: &str = "\u{E739} ";
 
-/// What a ticked task draws — `[x]` and `[X]` alike, as GFM reads them.
-const TICKED: &str = "\u{2611} ";
+/// What a ticked task draws — `[x]` and `[X]` alike, as GFM reads them: `CheckboxComposite`.
+const TICKED: &str = "\u{E73A} ";
+
+/// A box's size against the text beside it. The icon font's em is the whole box, so at body size it
+/// stands taller than a capital; seven eighths brings it close to the cap height, and the row's height
+/// is unchanged either way — measured, the line metrics are the body font's.
+const TASK_BOX_SCALE: f32 = 0.875;
 
 /// Whether a run is a task's box rather than a list item's marker.
 ///
@@ -921,7 +934,11 @@ impl<'t> Builder<'_, 't> {
         if text.is_empty() {
             return;
         }
-        let (style, colour) = self.decorate(span.start(), role);
+        let (mut style, colour) = self.decorate(span.start(), role);
+        if role == Role::Marker(Marker::TaskMarker) {
+            style.family = FontFamily::Icon;
+            style.size = FontSize::new(style.size.get() * TASK_BOX_SCALE);
+        }
         self.runs.push(ViewRun {
             text,
             style,

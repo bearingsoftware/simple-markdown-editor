@@ -10,9 +10,16 @@
 //! there is no Segoe anything to ask.
 
 #![cfg(windows)]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 use mdedit_app::toolbar::{self, Action};
+use mdedit_app::view::{Theme, as_styled, build_runs};
+use mdedit_document::Document;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{FontFamily, StyledRun, TextLayout, TextStyle};
 use mdedit_text_dwrite::DirectWriteText;
@@ -279,8 +286,7 @@ fn every_bullet_a_list_draws_is_in_the_font() {
     let mut text = engine();
     let mut missing = Vec::new();
 
-    // And a task's two boxes (MDEDIT-142), which are substituted and drawn the same way.
-    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}', '\u{2610}', '\u{2611}'] {
+    for bullet in ['\u{2022}', '\u{25e6}', '\u{25aa}'] {
         let advances = shape(&mut text, bullet, FontFamily::Mono, 16.0);
         if advances.iter().any(|advance| *advance < 0.0) {
             missing.push(format!("U+{:04X}", u32::from(bullet)));
@@ -292,6 +298,52 @@ fn every_bullet_a_list_draws_is_in_the_font() {
         "the mono font on this machine has no glyph for: {}",
         missing.join(", ")
     );
+}
+
+/// Where a task item's text starts, laid out as the editor lays it out.
+fn task_text_left(text: &mut DirectWriteText, source: &str) -> f32 {
+    let runs = build_runs(&Document::from(source), &Theme::default(), source);
+    let layout = text.layout(&as_styled(&runs), 1000.0).unwrap();
+    // The first glyph of the text, which starts at byte 6 in both spellings. The box and its space
+    // are substituted, so they address the `[` at byte 2.
+    layout
+        .glyphs()
+        .find(|glyph| glyph.source.start().get() >= 6)
+        .expect("the item has text")
+        .pos
+        .x
+}
+
+/// **Ticking a box does not move the item's text** (MDEDIT-142).
+///
+/// It did, by 8 px, in the first build anyone looked at. Unicode's ☐ and ☑ look like a pair and
+/// are not: ☑ has an emoji form, so DirectWrite drew it from Segoe UI Emoji at 22 px of advance and
+/// ☐ from a symbol font at 13.8. The stub gives every glyph one width, so only the real font can
+/// show it — which is why this is here and not in `lists.rs`.
+#[test]
+fn ticking_a_box_does_not_move_the_text() {
+    let mut text = engine();
+    let unticked = task_text_left(&mut text, "- [ ] buy milk\n");
+    let ticked = task_text_left(&mut text, "- [x] buy milk\n");
+    assert!(unticked > 0.0, "the box takes no room at all");
+    assert_eq!(unticked, ticked, "the text moved when the box was ticked");
+}
+
+/// Both boxes are really in the icon font this machine has, and draw something.
+#[test]
+fn both_task_boxes_are_in_the_font() {
+    let mut text = engine();
+    for (source, name) in [("- [ ] a\n", "unticked"), ("- [x] a\n", "ticked")] {
+        let runs = build_runs(&Document::from(source), &Theme::default(), source);
+        let layout = text.layout(&as_styled(&runs), 1000.0).unwrap();
+        let first = layout.glyphs().next().expect("a box is drawn");
+        assert!(!first.key.glyph.is_notdef(), "the {name} box is .notdef");
+        let image = text.rasterize(first.key, 1.0).unwrap();
+        assert!(
+            image.is_some_and(|image| image.coverage.iter().any(|px| *px > 0)),
+            "the {name} box has no ink"
+        );
+    }
 }
 
 /// One button's face, measured as the bar measures it.

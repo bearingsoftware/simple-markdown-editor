@@ -214,9 +214,9 @@ fn a_task_checkbox_is_syntax_and_not_the_bullets_colour() {
 fn a_task_checkbox_draws_a_box_in_preview() {
     let runs = drawn_in("- [x] done\n", Mode::Preview);
     let text: String = runs.iter().map(|run| run.text.as_str()).collect();
-    assert_eq!(text, "\u{2611} done\n");
+    assert_eq!(text, "\u{E73A} done\n");
     assert_eq!(
-        run_of(&runs, "\u{2611} ").colour,
+        run_of(&runs, "\u{E73A} ").colour,
         Theme::default().token_literal,
         "a box is state, drawn or not"
     );

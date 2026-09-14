@@ -278,9 +278,15 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   is state that exists nowhere else on screen, the worst thing in the concealment family to lose.
   MDEDIT-88 had already said why: a bullet is scaffolding and a box is state.
 
-  **Substituted, as a bullet is**: `☐ ` or `☑ `, two shapes rather than one box in two colours. The
-  space is the box's own, because `mdedit-markers` leaves the byte between `]` and the text as
-  syntax, so it is concealed. **The box replaces a bullet and sits after a number** — the box already
+  **Substituted, as a bullet is**: the icon font's Checkbox and CheckboxComposite (`U+E739`,
+  `U+E73A`), two shapes rather than one box in two colours. **Not Unicode's ☐ and ☑**, which the
+  first build used and which are not a pair: ☑ has an emoji form, so DirectWrite drew it from Segoe
+  UI Emoji at 22 px of advance against ☐'s 13.8 from a symbol font, and ticking a box moved the text
+  8 px. The stub gives every glyph one width, so `icons.rs` asks the real font. The icon pair is one
+  design at one advance, in both Segoe Fluent Icons and Segoe MDL2 Assets, drawn at seven eighths of
+  body size to sit near the cap height; the row's height does not change. The space is the box's
+  own, because `mdedit-markers` leaves the byte between `]` and the text as syntax, so it is
+  concealed. **The box replaces a bullet and sits after a number** — the box already
   says "list item", which is what GitHub, Obsidian and Typora concluded, and a number is information.
   The bullet's substitute keeps its indent, so a nested task stays nested.
 
