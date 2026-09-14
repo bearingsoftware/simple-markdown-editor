@@ -304,16 +304,18 @@ fn the_caret_never_stands_inside_a_task_marker() {
     }
 }
 
-/// A click on the box addresses its `[`, between the concealed bullet and the concealed box, where
-/// typing would break the item. It lands on the text after the box instead.
+/// A point on the box addresses its `[`, between the concealed bullet and the concealed box, where
+/// typing would break the item. It lands on the text after the box instead. A plain click on a box
+/// ticks it (`tests/tasks.rs`), so this is a drag across one — which, like a shift+click or a
+/// right-click, still has to put the selection's end somewhere.
 #[test]
-fn clicking_a_box_puts_the_caret_after_it() {
+fn a_point_on_a_box_puts_the_caret_after_it() {
     //  ☐  ␣  a       the drawn row
     //  2  2  6       the bytes each glyph addresses
     let mut editor = Editor::new("- [ ] alpha\n", Grid::new());
     editor.build_frame(600.0, 400.0, 1.0);
     // The box's left half, which is the half a nearest-boundary hit resolves to the box itself.
-    editor.click_at(
+    editor.drag_to(
         MARGIN + ADVANCE / 4.0,
         MARGIN + mdedit_app::toolbar::HEIGHT + LINE_HEIGHT / 2.0,
     );

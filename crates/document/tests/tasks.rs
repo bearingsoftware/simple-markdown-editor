@@ -2,7 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use mdedit_document::Document;
+use mdedit_document::{Document, Selection};
 use mdedit_offsets::ByteOffset;
 
 /// The box starting at `offset`, as the text it covers.
@@ -34,4 +34,52 @@ fn nowhere_else_on_the_line_is_a_box() {
 fn brackets_that_are_not_a_task_are_not_a_box() {
     assert_eq!(box_at("- [y] maybe\n", 2), None);
     assert_eq!(box_at("[ ] not a list\n", 0), None);
+}
+
+// ---- ticking one ----
+
+/// What `toggle_task` at `offset` leaves in the buffer, and whether it did anything.
+fn toggled(source: &str, offset: usize) -> (bool, String) {
+    let mut doc = Document::from(source);
+    let acted = doc.toggle_task(ByteOffset::new(offset));
+    (acted, doc.to_string())
+}
+
+/// The byte between the brackets and nothing else, which is the invariant that outranks everything.
+#[test]
+fn ticking_writes_one_byte() {
+    assert_eq!(toggled("- [ ] a\n", 2), (true, "- [x] a\n".to_owned()));
+    assert_eq!(toggled("- [x] a\n", 2), (true, "- [ ] a\n".to_owned()));
+    assert_eq!(toggled("- [X] a\n", 2), (true, "- [ ] a\n".to_owned()));
+    assert_eq!(
+        toggled("1. [ ] a\r\n", 3),
+        (true, "1. [x] a\r\n".to_owned())
+    );
+}
+
+/// Anywhere that is not a box's start is not a box, and nothing is written.
+#[test]
+fn ticking_nothing_writes_nothing() {
+    for (source, offset) in [("- [ ] a\n", 0), ("- [ ] a\n", 3), ("- [y] a\n", 2)] {
+        assert_eq!(
+            toggled(source, offset),
+            (false, source.to_owned()),
+            "{source:?} at {offset}"
+        );
+    }
+}
+
+/// The caret is put back, and one undo restores the byte and the caret together.
+#[test]
+fn ticking_keeps_the_caret_and_undoes_in_one_step() {
+    let mut doc = Document::from("- [ ] a\nprose\n");
+    let caret = Selection::caret(ByteOffset::new(10));
+    doc.set_selection(caret);
+
+    assert!(doc.toggle_task(ByteOffset::new(2)));
+    assert_eq!(doc.selection(), caret);
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), "- [ ] a\nprose\n");
+    assert_eq!(doc.selection(), caret);
 }

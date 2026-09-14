@@ -181,6 +181,34 @@ pub fn offset_in_row(chunk: &Chunk<'_>, row: usize, x: f32) -> ByteOffset {
     ByteOffset::new(chunk.start.get() + chunk.line_end(row))
 }
 
+/// Where the drawn stand-in under a point came from: the start of the marker it substitutes for.
+///
+/// A substitute's glyphs carry an empty source at the start of what they stand for
+/// (`StyledRun::substituted`), so this is how a click finds the construct a task's box belongs to
+/// (MDEDIT-142). **Under the glyph, not the nearest boundary** — a box is pressed, not placed between —
+/// and on a row the point is really on: [`row_at`] clamps a point below the text to the last row,
+/// which would tick a box at the end of a file from a click in the space beneath it.
+#[must_use]
+pub fn substitute_at(chunk: &Chunk<'_>, drawn: usize, y: f32, x: f32) -> Option<ByteOffset> {
+    let mut top = 0.0;
+    let line = chunk
+        .layout
+        .lines
+        .iter()
+        .take(rows(chunk, drawn))
+        .find(|line| {
+            let on = (top..top + line.height).contains(&y);
+            top += line.height;
+            on
+        })?;
+    line.glyphs
+        .iter()
+        .find(|glyph| {
+            glyph.source.is_empty() && glyph.pos.x <= x && x < glyph.pos.x + glyph.advance
+        })
+        .map(|glyph| chunk.rebase(glyph.source.start()))
+}
+
 /// Where `offset` sits: which visual line, and how far along it.
 ///
 /// The `x` is what a caller moving up or down should aim for on the next line.
