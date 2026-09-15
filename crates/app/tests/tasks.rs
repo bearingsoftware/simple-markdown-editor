@@ -28,8 +28,15 @@ fn editor(source: &str) -> Editor<Grid> {
 /// Presses the middle of character `column` on document row `row`, and draws the frame after it.
 fn press(editor: &mut Editor<Grid>, row: usize, column: usize) -> bool {
     #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
+    let column = column as f32 + 0.5;
+    press_at(editor, row, column)
+}
+
+/// Presses `columns` character widths in from the left of document row `row`.
+fn press_at(editor: &mut Editor<Grid>, row: usize, columns: f32) -> bool {
+    #[allow(clippy::cast_precision_loss, reason = "small test coordinates")]
     let (x, y) = (
-        ADVANCE.mul_add(column as f32, MARGIN) + ADVANCE / 2.0,
+        ADVANCE.mul_add(columns, MARGIN),
         LINE_HEIGHT.mul_add(row as f32, MARGIN + mdedit_app::toolbar::HEIGHT) + LINE_HEIGHT / 2.0,
     );
     let acted = editor.click(x, y);
@@ -123,6 +130,36 @@ fn pressing_a_bullet_changes_nothing() {
     press(&mut editor, 0, 0);
     assert_eq!(text(&editor), "- buy milk\n");
     assert_eq!(editor.document().selection().head().get(), 0);
+}
+
+/// **A box below the first block.** Every block is laid out from its own top, so a point has to be
+/// moved into the block's coordinates before a row is looked for — and a box in the document's first
+/// block, which starts at zero, cannot tell whether it was. The mutants job found that on #168.
+#[test]
+fn a_box_further_down_the_document_ticks() {
+    let mut editor = editor("prose\n\n- [ ] later\n");
+    //  prose / blank / ☐ later
+    press(&mut editor, 2, 0);
+    assert_eq!(text(&editor), "prose\n\n- [x] later\n");
+}
+
+/// The glyph under the point, not the nearest one to its right: the space of `1. ` sits just left of
+/// the box, and pressing it is a press on the number.
+#[test]
+fn pressing_just_left_of_a_box_does_not_tick_it() {
+    let mut editor = editor("1. [ ] step\n");
+    //  1  .  ␣  ☐
+    press(&mut editor, 0, 2);
+    assert_eq!(text(&editor), "1. [ ] step\n");
+}
+
+/// And the box's right edge is the text's: a point exactly where the box's space ends is on the text.
+#[test]
+fn the_boxs_right_edge_belongs_to_the_text() {
+    let mut editor = editor("- [ ] buy milk\n");
+    //  ☐  ␣ | b     the press lands on the line between the space and the `b`
+    press_at(&mut editor, 0, 2.0);
+    assert_eq!(text(&editor), "- [ ] buy milk\n");
 }
 
 /// Pressing the item's text places the caret, however close it is to the box.
