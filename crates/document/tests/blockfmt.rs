@@ -144,6 +144,16 @@ fn task_on_a_mixed_selection_is_a_round_trip() {
     assert_eq!(doc.to_string(), source);
 }
 
+/// A box belongs to a list item. Brackets opening a paragraph or a heading are text, so the line
+/// is not a task and the Task button does not light on it.
+#[test]
+fn brackets_opening_a_line_with_no_list_are_not_a_task() {
+    for source in ["[ ] a note\n", "# [x] a heading\n"] {
+        let doc = at(source, 4);
+        assert!(!doc.carries(Block::Task), "{source:?}");
+    }
+}
+
 /// A numbered task is not also a plain numbered item, as a bulleted one is not a plain bullet.
 /// Ordered on it converts it to one rather than clearing it to prose.
 #[test]
