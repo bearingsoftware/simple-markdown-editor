@@ -15,6 +15,36 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   in it, a task's box, and that is asked only after every panel in `Editor::click` has declined the
   point. So a panel's rules still hold without change: nothing drawn over a box can pass a click
   through to it. See the MDEDIT-142 entry in [rendering](rendering.md).
+
+- **The pointer says what is under it, and the shape follows the click.** MDEDIT-176. Nothing in the
+  workspace called `Window::set_cursor`, so the arrow was drawn everywhere — including over the text,
+  where an editor is expected to show an I-beam, and over MDEDIT-142's box, which is the one thing in
+  a document you press. `Editor::pointer_at` answers a point with `pointer::Pointer` — this crate's
+  own three shapes, not winit's `CursorIcon` — so a headless test asks it through the grid stub
+  exactly as it asks a click, and the mapping to winit is the one line that talks to the window.
+
+  **It asks the same predicates as `Editor::click`, in the same order**, because a panel that takes
+  the click takes the shape. What it does *not* do is repeat every arm: the formatting bar, the tab
+  strip, the file pane, the status bar, the gutter and — less obviously — the scrollbar all sit
+  **outside `ContentRect`**, the bar because it overlays the window's right margin rather than the
+  text. Every point outside the content is already the arrow, so an arm apiece would be branches no
+  test could tell from their absence. Both facts were found by mutating the arms one at a time: four
+  survived, which is what said they were redundant rather than untested. What is left is the dialog
+  and the open list, drawn over the text, and the find bar, outside the content and still wanting an
+  I-beam on its fields.
+
+  **A gesture outranks the pixel underneath.** Dragging a selection keeps the I-beam wherever the
+  pointer goes and a held scrollbar thumb keeps the arrow, because mid-drag what the pointer is doing
+  has stopped being a question about what it is over.
+
+  **Set on a move and on a frame.** A scroll, a panel opening, a tab switch or `Ctrl+/` all change
+  what is under a pointer that has not moved, and `CursorMoved` does not fire for any of them. The
+  shape is compared before it is set, so crossing a region costs a comparison per event rather than a
+  call into the window per event.
+
+  Not done: a hand over a link, until something follows one — a hand promising an action that does
+  not happen is worse than the arrow. Nor a resize shape on the file pane's edge, which is a fixed
+  width, nor a busy pointer, since nothing blocks the UI thread long enough to need one (MDEDIT-151).
 - **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
   a formatting bar, and the open files shown either as a tab strip or as a left pane.** Every view
   toggle now has a menu item as well as a chord.

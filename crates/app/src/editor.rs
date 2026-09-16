@@ -31,7 +31,7 @@ use winit::event::{
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::blocks;
 use crate::clipboard::{Clipboard, HoldNothing};
@@ -49,6 +49,7 @@ use crate::ime::{Action, Composition};
 use crate::latency::Latency;
 use crate::list;
 use crate::pane;
+use crate::pointer::Pointer;
 use crate::popup;
 use crate::prompt::{
     self, ChangeNothing, Conflict, ConflictPrompt, Conflicting, KeepEverything, Unsaved,
@@ -947,6 +948,9 @@ pub struct Editor<T: TextLayout> {
     row_labels: HashMap<String, Label>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
+    /// What shape the window was last told to draw the pointer as (MDEDIT-176). Held so a still
+    /// pointer costs nothing and a moving one costs a comparison rather than a call per event.
+    pointer: Pointer,
     /// Where the viewport sits over the document.
     scroll: Scroll,
     /// What the last frame measured, so the wheel and the page keys have something to clamp to.
@@ -1230,6 +1234,7 @@ impl<T: TextLayout> Editor<T> {
             snapshots: None,
             snapshotted: HashMap::new(),
             cursor: (0.0, 0.0),
+            pointer: Pointer::Arrow,
             scroll: Scroll::new(),
             viewport: Viewport::default(),
             follow_caret: false,
@@ -3856,10 +3861,21 @@ impl<T: TextLayout> Editor<T> {
         // And after even that: the dialog is modal, so nothing may be drawn over it (MDEDIT-129).
         self.draw_dialog(&mut quads, width, height, scale);
 
-        // Kept for the next click and the next Up or Down: both need to know where the lines
-        // ended up, and this is the only place that knows.
-        self.last_frame = Some(frame);
+        self.finish_frame(frame);
         quads
+    }
+
+    /// Keeps what a frame measured, and gives the pointer its shape from it.
+    ///
+    /// The frame is kept for the next click and the next Up or Down: both need to know where the
+    /// lines ended up, and this is the only place that knows.
+    ///
+    /// **The pointer has not moved, and what is under it has** (MDEDIT-176): a scroll, a panel, a
+    /// tab switch or Ctrl+/ all change the answer with no `CursorMoved` to prompt it. It goes after
+    /// the frame is kept, because that is what the shape over the document is read from.
+    fn finish_frame(&mut self, frame: Frame) {
+        self.last_frame = Some(frame);
+        let _ = self.refresh_pointer();
     }
 
     /// Draws the modal dialog, and the dim over everything behind it (MDEDIT-129).
@@ -5878,6 +5894,114 @@ impl<T: TextLayout> Editor<T> {
         if let Some(menu) = self.menu.as_ref() {
             menu.set_tools(wanted);
         }
+    }
+
+    /// What shape the pointer takes over a point in the window (MDEDIT-176).
+    ///
+    /// **The order is [`click`](Self::click)'s**, and for the same reason: a panel that takes the
+    /// click takes the shape. Two copies of that order is how the pointer would come to say one
+    /// thing while a click at the same point did another.
+    ///
+    /// **Only the panels that overlay the document need an arm here**, which is fewer than `click`
+    /// has to ask. The formatting bar, the tab strip, the file pane, the status bar and the gutter
+    /// all sit *outside* [`ContentRect`], so the arrow they want is the arrow every point outside
+    /// the content already gets; an arm apiece would be branches no test could tell from their
+    /// absence. **The scrollbar is outside it too**, which its own doc comment does not say: it
+    /// overlays the *window's* right margin rather than the text, so a point on the bar is already
+    /// outside the content. What is left is the dialog and the open list, which are drawn over the
+    /// text, and the find bar, which is outside the content and still needs an I-beam on its fields.
+    ///
+    /// A gesture in progress outranks the pixel underneath: a selection being dragged keeps the
+    /// I-beam wherever the pointer goes, and a held scrollbar thumb keeps the arrow, because what
+    /// the pointer is doing is no longer a question about what it is over.
+    #[must_use]
+    pub fn pointer_at(&self, x: f32, y: f32) -> Pointer {
+        if self.thumb_grab.is_some() {
+            return Pointer::Arrow;
+        }
+        if self.dragging {
+            return Pointer::Text;
+        }
+
+        // A dialog is modal and swallows even the clicks it has no control for, so every point
+        // inside it is the dialog's; outside falls through, as a click there does.
+        if let Some(open) = self.dialog.as_ref() {
+            let fields = open.fields().len();
+            let at = self.dialog_at();
+            if dialog::contains(fields, x, y, at) {
+                return match dialog::hit_test(fields, x, y, at) {
+                    Some(dialog::Hit::Field(_)) => Pointer::Text,
+                    _ => Pointer::Arrow,
+                };
+            }
+        }
+        if let Some(menu) = self.open_menu.as_ref() {
+            if popup::contains(menu.rows.len(), x, y, menu.at, menu.width) {
+                return Pointer::Arrow;
+            }
+        }
+        if let Some(layout) = self.find_layout.as_ref() {
+            let inside = y - (self.strip_height() + self.toolbar_height());
+            if (0.0..find::height(layout.mode)).contains(&inside) {
+                return match layout.over_field(x, inside) {
+                    Some(_) => Pointer::Text,
+                    None => Pointer::Arrow,
+                };
+            }
+        }
+        // Everything else the chrome owns is outside the content: the bar and the strip above it,
+        // the pane beside it, the status bar below, and the gutter — which is left of the text and
+        // selects nothing, so it is not an I-beam and not the reversed arrow that would promise a
+        // line selection this editor does not do.
+        if !self.content.contains(x, y) {
+            return Pointer::Arrow;
+        }
+        // The one thing in a document that is pressed rather than typed into (MDEDIT-142), found
+        // with the same two lookups the press itself uses so the two cannot disagree.
+        if self.task_box_at_point(x, y).is_some() {
+            return Pointer::Hand;
+        }
+        Pointer::Text
+    }
+
+    /// Notes where the pointer is and gives it its shape. Returns whether the shape changed.
+    ///
+    /// Public so a test can move the pointer without a window, as [`click_at`](Self::click_at) is:
+    /// the window's own handler does this and then [`on_pointer_moved`](Self::on_pointer_moved),
+    /// which is the half that drags and hovers.
+    pub fn move_pointer(&mut self, x: f32, y: f32) -> bool {
+        self.cursor = (x, y);
+        self.refresh_pointer()
+    }
+
+    /// What shape the pointer is wearing.
+    #[must_use]
+    pub fn pointer(&self) -> Pointer {
+        self.pointer
+    }
+
+    /// Tells the window what shape to draw, when that has changed since the last time it was told.
+    ///
+    /// Called from every pointer move and from every frame: scrolling, opening a panel, switching
+    /// tab or toggling plain markup all change what is under a pointer that has not moved, and a
+    /// pointer that stays an I-beam over a toolbar that has just appeared under it is the tell.
+    ///
+    /// **Compared before it is set**, so a pointer crossing one region costs a comparison per event
+    /// rather than a call into the window per event. Returns whether the window was told.
+    fn refresh_pointer(&mut self) -> bool {
+        let wanted = self.pointer_at(self.cursor.0, self.cursor.1);
+        if self.pointer == wanted {
+            return false;
+        }
+        self.pointer = wanted;
+        if let Some(window) = self.window.as_ref() {
+            window.set_cursor(match wanted {
+                Pointer::Arrow => CursorIcon::Default,
+                Pointer::Text => CursorIcon::Text,
+                Pointer::Hand => CursorIcon::Pointer,
+            });
+        }
+        true
     }
 
     /// A left-click anywhere in the window.
@@ -9983,7 +10107,9 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                     reason = "cursor positions are small screen coordinates"
                 )]
                 let point = ((position.x / scale) as f32, (position.y / scale) as f32);
-                self.cursor = point;
+                // The shape first, and before the drag arms inside `on_pointer_moved` return early:
+                // a drag holds its own shape, and `pointer_at` is what knows that.
+                let _ = self.move_pointer(point.0, point.1);
                 self.on_pointer_moved(point);
             }
             // New with MDEDIT-85, and the window handler had no arm for it before: without one, a
