@@ -11,10 +11,21 @@ name: Mutants
 #
 # `--in-diff`, so it mutates only what a pull request changed. A whole-workspace run is hours and
 # would never be looked at; a diff-sized one is minutes and lands with the change that caused it.
+#
+# **Sharded, because a diff-sized run outgrew one job** (MDEDIT-172). MDEDIT-171 gave the run a
+# 40-minute budget inside the pool's 60-minute kill and made running out of it an honest error; the
+# next pull request, MDEDIT-142's #168, generated 82 mutants and got through 35 of them. The rest
+# were run on a laptop, and two survivors came out of the part CI never reached. So `plan` counts
+# what the diff generates and `mutants` runs that count in parallel shards, each with the same budget.
 
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      base:
+        description: What to diff against, for re-running a real diff by hand
+        required: false
+        default: main
 
 # A superseded push should stop costing the one runner time it could be giving the next pull request.
 concurrency:
@@ -23,19 +34,49 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # **One copy, read by both jobs**, because the count `plan` emits and the set the shards run have
+  # to be the same set. Two lists that must agree is how MDEDIT-155 happened.
+  #
+  # **An exclude list, because the allow-list failed twice (MDEDIT-155).**
+  #
+  # The three Windows-only crates are named here because they do not build on this runner at all:
+  # `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and their
+  # tests want a real system stack anyway. Everything else is in, by default and for good.
+  #
+  # This file used to name the eleven crates to include, and predicted its own next failure: *"an
+  # allow-list nobody is reminded to extend is the failure mode; the alternative is excluding the
+  # three Windows crates instead, which `--exclude` supports and which fails loudly."* `mdedit-xml`,
+  # `mdedit-toml` and `mdedit-ini` had already been missed that way in MDEDIT-94/95/96. The three
+  # names were added and the trap was left, so it caught the next three: **`mdedit-app`,
+  # `mdedit-image` and `mdedit-text`**.
+  #
+  # That mattered more than the first time. `mdedit-app` is where nearly every defect of MDEDIT-146
+  # through MDEDIT-154 lived, and `mdedit-image` holds the destination resolver — the trust boundary
+  # standing between a Markdown file and a UNC path that leaks an NTLM hash. Four pull requests
+  # reported "cargo-mutants passes on the diff" as evidence their tests were not vacuous. Every one
+  # of those runs mutated nothing.
+  #
+  # With `--exclude`, a new crate is covered the day it is created and nobody has to remember.
+  MUTANTS_EXCLUDES: --exclude mdedit-text-dwrite --exclude mdedit-menu-win --exclude mdedit-shell-win
+  # Roughly what one shard can finish inside the 40-minute budget: PR #163 managed 60 mutants in 35
+  # minutes of mutation, so thirty is comfortably under half of it on a busy pool.
+  MUTANTS_PER_SHARD: 30
+  # **A decision, not arithmetic.** Six shards of thirty is 180 mutants; past that a shard still says
+  # it ran out of time, because the answer to a diff that large is to split the pull request rather
+  # than to take six more runners off everything else queued on this pool.
+  MUTANTS_MAX_SHARDS: 6
 
 jobs:
-  mutants:
-    name: cargo-mutants (in diff)
+  plan:
+    name: cargo-mutants (plan)
     runs-on: [self-hosted, Linux, X64, proxmox, general]
-    # A trial. It reports; it does not block.
+    # It reports; it does not block. Same rule as the shards below.
     continue-on-error: true
-    # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
-    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
-    # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
-    # nothing saying why. This is the backstop; the Mutate step has its own, shorter budget so
-    # it can stop cleanly and say so.
-    timeout-minutes: 55
+    timeout-minutes: 20
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+      mutants: ${{ steps.plan.outputs.mutants }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,59 +92,156 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # **The prebuilt binary is tried first, which MDEDIT-132 left open.** It was linked against
+      # GLIBC 2.39 and the self-hosted box was older, so the download died on `version 'GLIBC_2.39'
+      # not found` before doing anything. The image may have moved on; asking costs one step, and a
+      # binary that will not run looks exactly like one that is missing to the guard below.
+      - uses: taiki-e/install-action@v2
+        continue-on-error: true
+        with:
+          tool: cargo-mutants
+      - name: Install cargo-mutants
+        # **`--version` rather than `command -v`**, so a binary that is present and cannot run — the
+        # GLIBC case — falls back to the source build instead of failing the first mutation step with
+        # a linker error. `cargo install` *stops* rather than skips when its own binary is in place
+        # (`binary 'cargo-mutants' already exists`, exit 101), which is why this is a guard and not an
+        # unconditional install.
+        run: |
+          if cargo mutants --version >/dev/null 2>&1; then
+            echo "prebuilt cargo-mutants runs on this image: $(cargo mutants --version)"
+          else
+            echo "no usable prebuilt binary (MDEDIT-132); building from source"
+            cargo install cargo-mutants --locked
+          fi
+
+      # `github.base_ref` is the pull request's target branch and is empty on a dispatch, where the
+      # input says what to diff against instead. Without it a dispatch diffs against `origin/` and
+      # mutates nothing, which made the workflow impossible to exercise by hand.
+      - name: What this pull request changed
+        run: |
+          base="origin/${{ github.base_ref }}"
+          if [ -z "${{ github.base_ref }}" ]; then
+            base="${{ inputs.base }}"
+          fi
+          echo "diffing against $base"
+          git diff "$base"...HEAD > /tmp/pr.diff
+          wc -l < /tmp/pr.diff
+
+      # Upload the diff rather than recompute it per shard: every shard has to mutate *the same* set,
+      # and two `git diff`s against a branch that moved under them would not.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutants-diff
+          path: /tmp/pr.diff
+
+      # The binary is built once and handed to the shards. Compiling ~250 crates per shard is the
+      # cost that would make sharding worse than the problem it fixes, on a pool CI shares.
+      - name: Keep the binary for the shards
+        run: cp "$(command -v cargo-mutants)" /tmp/cargo-mutants
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-mutants-bin
+          path: /tmp/cargo-mutants
+
+      - name: How many shards
+        id: plan
+        # `--list` parses rather than builds, so counting costs seconds. It takes the same filters as
+        # the run: a count of a different set than the shards mutate would put mutants in no shard.
+        run: |
+          set -o pipefail
+          cargo mutants --list --in-diff /tmp/pr.diff $MUTANTS_EXCLUDES > /tmp/mutants.list
+          total=$(grep -c '' /tmp/mutants.list || true)
+          total=${total:-0}
+          echo "mutants=$total" >> "$GITHUB_OUTPUT"
+
+          # **A job that reports success for having tested nothing is a defect, not a side note**
+          # (MDEDIT-155). cargo-mutants exits 0 both when it killed every mutant and when it
+          # generated none, and for four pull requests the second was read as the first. Counting
+          # here is what makes the difference sayable: no shards start, and the reason is annotated.
+          #
+          # A warning rather than a failure, because zero mutants is often correct: a diff of tests,
+          # comments, docs or a workflow file has nothing to mutate. What must not happen is that it
+          # passes *silently*. One line, deliberately: a `\`-continued string keeps the indentation of
+          # the next line and reaches the reader with runs of spaces mid-sentence. No backticks
+          # either — inside double quotes they are command substitution.
+          if [ "$total" -eq 0 ]; then
+            echo "shards=[]" >> "$GITHUB_OUTPUT"
+            echo "total=0" >> "$GITHUB_OUTPUT"
+            echo "::warning title=No mutants were generated::cargo-mutants tested nothing on this diff. That is expected for a change to tests, comments, docs or CI, and is a red flag for a change under crates/*/src. Do not cite this job as evidence that a test is not vacuous without checking which of the two it was (MDEDIT-155)."
+            exit 0
+          fi
+
+          # Ceiling division, clamped: one shard for a small diff, never more than the cap.
+          shards=$(( (total + MUTANTS_PER_SHARD - 1) / MUTANTS_PER_SHARD ))
+          if [ "$shards" -gt "$MUTANTS_MAX_SHARDS" ]; then
+            shards=$MUTANTS_MAX_SHARDS
+          fi
+
+          # `--shard k/n` is zero-based and refuses k = n, so the list is 0..n-1.
+          list=$(seq -s, 0 $((shards - 1)))
+          echo "total=$shards" >> "$GITHUB_OUTPUT"
+          echo "shards=[$list]" >> "$GITHUB_OUTPUT"
+          echo "$total mutants over $shards shard(s)"
+
+  mutants:
+    name: cargo-mutants (shard ${{ matrix.shard }})
+    needs: plan
+    # No shards for a diff with nothing to mutate; `plan` has already said so.
+    if: needs.plan.outputs.shards != '[]'
+    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    # A trial. It reports; it does not block.
+    continue-on-error: true
+    # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
+    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
+    # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
+    # nothing saying why. This is the backstop; the Mutate step has its own, shorter budget so
+    # it can stop cleanly and say so.
+    timeout-minutes: 55
+    strategy:
+      # One shard's survivors must not cancel another's run: each is a separate part of the answer.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # **Built from source, unlike nextest.** The prebuilt `cargo-mutants` was linked against
-      # GLIBC 2.39 and the self-hosted box was older than that, so the downloaded binary died on
-      # `version 'GLIBC_2.39' not found` before it had done anything. Worth re-testing against the
-      # pristine runner image, which may have moved past that — MDEDIT-132 leaves it open rather than
-      # guessing, because a failed install step publishes a failing check on a job that must not
-      # block.
-      - name: Install cargo-mutants
-        # **The guard is for a runner that already has the binary, not for a cache.** It used to say
-        # `cache-bin: true` kept `~/.cargo/bin` between runs; the log disproves that. On run
-        # 31839765178 rust-cache reported `No cache found` at 20:51:02 and six seconds later this
-        # step resolved in 26 ms — the binary came off a long-lived runner's disk, not off the GitHub
-        # cache. The general pool is ephemeral now, so this compiles ~250 crates every run.
-        #
-        # It stays because `cargo install` *stops* rather than skips when it finds its own binary in
-        # place — `binary 'cargo-mutants' already exists in destination`, exit 101, and a red X on a
-        # job whose whole point is to report rather than block. `--force` would avoid that by
-        # rebuilding unconditionally, which is what this already effectively does.
-        run: |
-          if ! command -v cargo-mutants >/dev/null 2>&1; then
-            cargo install cargo-mutants --locked
-          else
-            echo "cargo-mutants $(cargo mutants --version) already on this runner"
-          fi
 
-      - name: What this pull request changed
-        run: git diff origin/${{ github.base_ref }}...HEAD > /tmp/pr.diff
+      - uses: actions/download-artifact@v4
+        with:
+          name: mutants-diff
+          path: /tmp
+      - uses: actions/download-artifact@v4
+        with:
+          name: cargo-mutants-bin
+          path: /tmp/bin
+      - name: Use the binary the plan job built
+        # Same pool image, so the binary it built runs here. The fallback is for the day that stops
+        # being true, and the log says which path ran rather than leaving it to be inferred.
+        run: |
+          mkdir -p "$HOME/.cargo/bin"
+          if [ -f /tmp/bin/cargo-mutants ]; then
+            install -m 755 /tmp/bin/cargo-mutants "$HOME/.cargo/bin/cargo-mutants"
+          fi
+          if cargo mutants --version >/dev/null 2>&1; then
+            echo "using the binary from the plan job: $(cargo mutants --version)"
+          else
+            echo "the handed-over binary does not run here; building from source"
+            cargo install cargo-mutants --locked --force
+          fi
 
       # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
-      # **An exclude list, because the allow-list failed twice (MDEDIT-155).**
-      #
-      # The three Windows-only crates are named here because they do not build on this runner at
-      # all: `mdedit-text-dwrite`, `mdedit-menu-win` and `mdedit-shell-win` are `cfg(windows)`, and
-      # their tests want a real system stack anyway. Everything else is in, by default and for good.
-      #
-      # This file used to name the eleven crates to include, and predicted its own next failure:
-      # *"an allow-list nobody is reminded to extend is the failure mode; the alternative is
-      # excluding the three Windows crates instead, which `--exclude` supports and which fails
-      # loudly."* `mdedit-xml`, `mdedit-toml` and `mdedit-ini` had already been missed that way in
-      # MDEDIT-94/95/96. The three names were added and the trap was left, so it caught the next
-      # three: **`mdedit-app`, `mdedit-image` and `mdedit-text`**.
-      #
-      # That mattered more than the first time. `mdedit-app` is where nearly every defect of
-      # MDEDIT-146 through MDEDIT-154 lived, and `mdedit-image` holds the destination resolver —
-      # the trust boundary standing between a Markdown file and a UNC path that leaks an NTLM hash.
-      # Four pull requests reported "cargo-mutants passes on the diff" as evidence their tests were
-      # not vacuous. Every one of those runs mutated nothing.
-      #
-      # With `--exclude`, a new crate is covered the day it is created and nobody has to remember.
       # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
       # *workflow* green and still publishes a failing check, and a failing check makes the pull
       # request unmergeable — which is precisely what a job described as "it reports; it does not
@@ -124,13 +262,20 @@ jobs:
       # outcome is unknown, and one in three of those was hiding a survivor. The default floor is
       # 20 s; at 60 a genuine infinite loop costs a minute per mutant, and a slow survivor is
       # reported as a survivor.
+      #
+      # **Each shard runs its own baseline.** `--minimum-test-timeout` scales off the baseline's own
+      # test time, and a shard whose tests are red before any mutation has to say so rather than
+      # report a run built on them.
       - name: Mutate
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ needs.plan.outputs.total }}
         run: |
           set +e
           # **A budget for the mutation run itself (MDEDIT-171)**, inside the job's 55 minutes and
-          # the pool's 60, leaving room for checkout, the toolchain and building cargo-mutants from
-          # source. INT rather than KILL, so cargo-mutants stops the way it does on Ctrl-C and what
-          # it has already found is still written to mutants.out for the upload below.
+          # the pool's 60, leaving room for checkout, the toolchain and the binary. INT rather than
+          # KILL, so cargo-mutants stops the way it does on Ctrl-C and what it has already found is
+          # still written to mutants.out for the upload below.
           #
           # **One number, used twice.** It sets the timeout and it decides, below, whether a 137 was
           # this budget's KILL or something else's. Written out twice, a change to one would either
@@ -139,10 +284,9 @@ jobs:
           started=$SECONDS
           timeout --signal=INT --kill-after=120 "${budget}s" \
             cargo mutants --in-diff /tmp/pr.diff \
+            --shard "$SHARD/$SHARDS" \
             --test-tool nextest \
-            --exclude mdedit-text-dwrite \
-            --exclude mdedit-menu-win \
-            --exclude mdedit-shell-win \
+            $MUTANTS_EXCLUDES \
             --timeout-multiplier 4 \
             --minimum-test-timeout 60 \
             --no-shuffle
@@ -151,33 +295,21 @@ jobs:
 
           # 124 is timeout's own code; 137 is the KILL that follows if cargo-mutants ignored the INT,
           # and counts only after the budget has actually elapsed, so an OOM kill is not reported as
-          # running out of time. Either way the diff was only partly mutated, and a partial run must
-          # not read as a result — the same rule MDEDIT-157 applies to an unreadable report.
+          # running out of time. Either way this shard was only partly mutated, and a partial run
+          # must not read as a result — the same rule MDEDIT-157 applies to an unreadable report.
           if [ "$status" -eq 124 ] || { [ "$status" -eq 137 ] && [ $((SECONDS - started)) -ge "$budget" ]; }; then
             missed=$(grep -c '' mutants.out/missed.txt 2>/dev/null || true)
-            echo "::error title=Mutants ran out of time::cargo-mutants did not finish within $((budget / 60)) minutes, so this diff was only partly mutated (${missed:-0} survivor(s) found before it stopped). The untested remainder is neither caught nor missed. Split the diff or shard the run rather than raising the limit: the runner pool stops every job at 60 minutes (MDEDIT-171)."
+            echo "::error title=Shard $SHARD ran out of time::cargo-mutants did not finish shard $SHARD of $SHARDS within $((budget / 60)) minutes, so part of this diff was not mutated (${missed:-0} survivor(s) found before it stopped). The untested remainder is neither caught nor missed. Split the pull request: the shard cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-172)."
             exit 1
           fi
 
-          # **A job that reports success for having tested nothing is the defect this ticket is
-          # about, not a side note.** cargo-mutants exits 0 both when it killed every mutant and
-          # when it generated none, and for four pull requests the second was read as the first.
-          # `mutants.out/` exists only in the first case, so its absence is the signal.
-          #
-          # A warning rather than a failure, because zero mutants is often correct: a diff of tests,
-          # comments, docs or a workflow file has nothing to mutate. What must not happen is that it
-          # passes *silently*.
-          # **Guarded on a clean exit, or this swallows the failure it is named after.** A run that
-          # dies early — a compile error, a bad flag — also leaves no `mutants.out`, and treating
-          # that as "nothing to mutate" would report green for a broken job. Exactly the bug being
-          # fixed, one level up.
+          # **A missing report is a broken shard**, not an empty diff: `plan` counted the mutants
+          # before this job started, so there is something for every shard to do. A run that dies
+          # early — a compile error, a bad flag — also leaves no `mutants.out`, and that is exactly
+          # what this catches now that "nothing was generated" is answered one job up (MDEDIT-155).
           if [ "$status" -eq 0 ] && [ ! -d mutants.out ]; then
-            # One line, deliberately. A `\`-continued string keeps the indentation of the following
-            # line, so a wrapped annotation reaches the reader with runs of spaces in the middle of
-            # its sentences — visible in this job's own output before this was written out flat.
-            # No backticks either: inside double quotes they are command substitution.
-            echo "::warning title=No mutants were generated::cargo-mutants tested nothing on this diff. That is expected for a change to tests, comments, docs or CI, and is a red flag for a change under crates/*/src. Do not cite this job as evidence that a test is not vacuous without checking which of the two it was (MDEDIT-155)."
-            exit 0
+            echo "::error title=Shard $SHARD produced no report::The plan job counted mutants on this diff, so shard $SHARD of $SHARDS had work to do and left no mutants.out. The run did not get as far as mutating anything; read the step log rather than treating this as a pass (MDEDIT-155, MDEDIT-172)."
+            exit 1
           fi
 
           # Everything that means the job itself is broken still fails it: a bad flag, a baseline
@@ -200,23 +332,24 @@ jobs:
           # files would otherwise turn every survivor into a silent pass — the failure MDEDIT-155
           # was about, arriving through an upgrade instead of an allow-list.
           if { [ "$status" -eq 2 ] && [ "$missed" -eq 0 ]; } || { [ "$status" -eq 3 ] && [ "$timeouts" -eq 0 ]; }; then
-            echo "::error title=Mutants report unreadable::cargo-mutants exited $status but mutants.out/missed.txt has $missed lines and mutants.out/timeout.txt has $timeouts. The output format may have changed; this job cannot say what the run found (MDEDIT-157)."
+            echo "::error title=Shard $SHARD report unreadable::cargo-mutants exited $status but mutants.out/missed.txt has $missed lines and mutants.out/timeout.txt has $timeouts. The output format may have changed; this job cannot say what the run found (MDEDIT-157)."
             exit 1
           fi
 
           if [ "$missed" -gt 0 ]; then
-            echo "::warning title=Mutants survived::$missed mutant(s) were not caught by any test. Read missed.txt in the mutants-report artifact, and check a survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
+            echo "::warning title=Mutants survived in shard $SHARD::$missed mutant(s) were not caught by any test. Read missed.txt in the mutants-report-shard-$SHARD artifact, and check a survivor is not *equivalent* before writing a test for it: on MDEDIT-88 the sole survivor was | to ^ between two disjoint bitflags, which no test can tell apart."
           fi
           if [ "$timeouts" -gt 0 ]; then
-            echo "::warning title=Mutants timed out::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report artifact."
+            echo "::warning title=Mutants timed out in shard $SHARD::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report-shard-$SHARD artifact."
           fi
           exit 0
 
-      # The report is the whole output of the job, so it survives the run being tidied away.
+      # The report is the whole output of the job, so it survives the run being tidied away. One name
+      # per shard: two uploads under one name is a failed upload or a lost half of the evidence.
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report
+          name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
           if-no-files-found: ignore
