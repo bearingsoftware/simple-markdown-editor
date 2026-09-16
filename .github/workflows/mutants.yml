@@ -104,15 +104,21 @@ jobs:
       - name: Install cargo-mutants
         # **`--version` rather than `command -v`**, so a binary that is present and cannot run — the
         # GLIBC case — falls back to the source build instead of failing the first mutation step with
-        # a linker error. `cargo install` *stops* rather than skips when its own binary is in place
-        # (`binary 'cargo-mutants' already exists`, exit 101), which is why this is a guard and not an
-        # unconditional install.
+        # a linker error. **`--force` in the fallback**, because that is exactly the case where the
+        # prebuilt binary *is* in place: `cargo install` stops rather than skips when it finds its own
+        # binary there (`binary 'cargo-mutants' already exists`, exit 101), which failed this job on
+        # the first run of this workflow.
+        #
+        # The error is printed rather than swallowed: MDEDIT-132 is open on *why* the prebuilt binary
+        # does not run here, and a run that says "no usable prebuilt binary" without saying what it
+        # said cannot answer it.
         run: |
-          if cargo mutants --version >/dev/null 2>&1; then
-            echo "prebuilt cargo-mutants runs on this image: $(cargo mutants --version)"
+          if version=$(cargo mutants --version 2>&1); then
+            echo "prebuilt cargo-mutants runs on this image: $version"
           else
-            echo "no usable prebuilt binary (MDEDIT-132); building from source"
-            cargo install cargo-mutants --locked
+            echo "no usable prebuilt binary (MDEDIT-132), building from source. It said:"
+            echo "$version"
+            cargo install cargo-mutants --locked --force
           fi
 
       # `github.base_ref` is the pull request's target branch and is empty on a dispatch, where the
@@ -232,10 +238,11 @@ jobs:
           if [ -f /tmp/bin/cargo-mutants ]; then
             install -m 755 /tmp/bin/cargo-mutants "$HOME/.cargo/bin/cargo-mutants"
           fi
-          if cargo mutants --version >/dev/null 2>&1; then
-            echo "using the binary from the plan job: $(cargo mutants --version)"
+          if version=$(cargo mutants --version 2>&1); then
+            echo "using the binary from the plan job: $version"
           else
-            echo "the handed-over binary does not run here; building from source"
+            echo "the handed-over binary does not run here, building from source. It said:"
+            echo "$version"
             cargo install cargo-mutants --locked --force
           fi
 
