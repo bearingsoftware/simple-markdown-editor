@@ -366,6 +366,13 @@ report artifact. Three runs over #168's diff set every number in it:
 | 5 × 20 | round-robin | 5 | Two shards managed 16–17 mutants in 41 minutes, three managed 9. 60 of 82 tested |
 | 6 × 15 | round-robin | 2 | **All 82: 81 caught, 1 unviable, none missed, none timed out.** 46 minutes of wall clock |
 
+Verified afterwards rather than assumed: the set of mutants the six shards report is **identical to the
+set the diff generates**, not merely the same size. A two-mutant diff plans one shard and costs 13
+minutes of planning — nearly all of it building `cargo-mutants` — plus two and a half of mutation.
+And the step's verdicts were driven through every outcome by extracting its own script from the
+workflow and stubbing the run: survivors, timeouts, both at once, a report that disagrees with the
+exit code, out of time, a kill before and after the budget, a missing report, and a broken run.
+
 Two things came out of that. **A mutant's cost is not uniform** — one in `mdedit-app` rebuilds the
 largest crate and runs the largest test suite at roughly 90 seconds, against nearer 40 for one in
 `mdedit-document` — so consecutive mutants are the expensive ones together, and round-robin gives
@@ -376,7 +383,11 @@ budget needs.
 
 Six shards of fifteen is 90 mutants before a diff is told to split, and #168 is the largest this
 project has produced. `workflow_dispatch` takes a `base` ref so a real diff can be re-run by hand;
-without one a dispatch diffs against `origin/` and mutates nothing.
+without one a dispatch diffs against `origin/` and mutates nothing. **That input takes a branch name
+or a commit**, and it has to: a checkout has the remote's refs and no local branches, so `main` — the
+input's own default — is not a revision in the job, and `git diff main...HEAD` fails outright. The
+first dispatches all passed a SHA, which resolves either way, so the default was the one spelling
+nothing had tried until the single-shard case was checked.
 
 The 17 were worth the 35 minutes. One of them was **a security cap with no test behind it**:
 `within_the_pixel_caps` refuses a picture too wide, too tall, or too many pixels, and every test
