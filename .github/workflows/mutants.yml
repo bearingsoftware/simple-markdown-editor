@@ -58,16 +58,20 @@ env:
   #
   # With `--exclude`, a new crate is covered the day it is created and nobody has to remember.
   MUTANTS_EXCLUDES: --exclude mdedit-text-dwrite --exclude mdedit-menu-win --exclude mdedit-shell-win
-  # **Measured, not guessed** (MDEDIT-172). Thirty a shard was the first answer, from PR #163's rate
-  # of 60 mutants in 35 minutes — and the first sharded run of #168's diff put 28 of them in one
-  # shard that ran out of time while the other two finished early. A mutant's cost is not uniform:
-  # one in `mdedit-app` rebuilds the largest crate and runs the largest test suite, at roughly 90
-  # seconds, where one in `mdedit-document` is nearer 40. Twenty keeps a shard well inside the budget
-  # even when every one of them is an expensive one.
-  MUTANTS_PER_SHARD: 20
-  # **A decision, not arithmetic.** Six shards of twenty is 120 mutants; past that a shard still says
+  # **Measured twice, and the second run is why this is fifteen** (MDEDIT-172). Thirty came from PR
+  # #163's rate of 60 mutants in 35 minutes; the first sharded run of #168's diff put 28 of them in
+  # one shard that ran out of time while the other two finished early, because a mutant's cost is not
+  # uniform — one in `mdedit-app` rebuilds the largest crate and runs the largest test suite, at
+  # roughly 90 seconds, against nearer 40 for one in `mdedit-document`.
+  #
+  # Twenty with five shards then ran *slower per mutant*, not faster: see `max-parallel` below. At
+  # fifteen, two shards at a time, a shard has both a small enough share of the diff and enough of the
+  # host to finish it.
+  MUTANTS_PER_SHARD: 15
+  # **A decision, not arithmetic.** Six shards of fifteen is 90 mutants; past that a shard still says
   # it ran out of time, because the answer to a diff that large is to split the pull request rather
-  # than to take six more runners off everything else queued on this pool.
+  # than to take six more runners off everything else queued on this pool. #168, the largest diff
+  # this project has produced, generated 82.
   MUTANTS_MAX_SHARDS: 6
 
 jobs:
@@ -211,6 +215,13 @@ jobs:
     strategy:
       # One shard's survivors must not cancel another's run: each is a separate part of the answer.
       fail-fast: false
+      # **Two at a time, because the pool's runners are not independent machines.** They are VMs on
+      # one Proxmox host, so five shards do not get five machines' worth of CPU — they get a fifth
+      # each. Measured on #168's diff: five shards started together on five different runners, and in
+      # the same 41 minutes two managed 16 and 17 mutants while three managed 9. Sharding wider makes
+      # each shard slower, which is the opposite of what the budget needs. Two shards keep the host
+      # usefully busy without starving each other, and the waves cost wall-clock rather than results.
+      max-parallel: 2
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
