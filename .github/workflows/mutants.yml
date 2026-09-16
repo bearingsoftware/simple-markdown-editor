@@ -137,6 +137,14 @@ jobs:
           base="origin/${{ github.base_ref }}"
           if [ -z "${{ github.base_ref }}" ]; then
             base="${{ inputs.base }}"
+            # **A checkout has the remote's refs, not local branches**, so the obvious value for this
+            # input — a branch name, and `main` is its own default — is not a revision here and
+            # `git diff` fails with "ambiguous argument". A commit SHA resolves either way, which is
+            # what the first dispatches happened to pass, so this only showed up when the default was
+            # used. Take the input as given when it resolves, and as a remote branch when it does not.
+            if ! git rev-parse --verify --quiet "$base^{commit}" > /dev/null; then
+              base="origin/$base"
+            fi
           fi
           echo "diffing against $base"
           git diff "$base"...HEAD > /tmp/pr.diff
