@@ -1246,4 +1246,42 @@ impl Document {
         let span = segment.span();
         (matches!(segment.kind(), SegmentKind::Marker(_)) && offset < span.end()).then_some(span)
     }
+
+    /// The span of the task box — `[ ]`, `[x]` or `[X]` — that starts at `offset`, if one does.
+    ///
+    /// A preview draws a box in place of those bytes (MDEDIT-142), and every glyph of a substitute
+    /// addresses the start of what it stands for, so the `[` is what a point on the box resolves to.
+    #[must_use]
+    pub fn task_box_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        let index = self
+            .segments
+            .partition_point(|segment| segment.span().start() < offset);
+        let segment = self.segments.get(index)?;
+        (segment.span().start() == offset
+            && segment.kind() == SegmentKind::Marker(Marker::TaskMarker))
+        .then(|| segment.span())
+    }
+
+    /// Ticks the task box that starts at `offset`, or unticks it. Returns whether there was one.
+    ///
+    /// **One byte**, the one between the brackets, so nothing else about the line is rewritten. In a
+    /// transaction that puts the selection back: pressing a box is not a click in the text, so the
+    /// caret stays where it was, and one Ctrl+Z restores the byte and the caret together. `[X]` unticks
+    /// like `[x]` and ticks back as `[x]`, the spelling GFM's own examples use.
+    pub fn toggle_task(&mut self, offset: ByteOffset) -> bool {
+        let Some(task) = self.task_box_at(offset) else {
+            return false;
+        };
+        let state = ByteSpan::new(
+            ByteOffset::new(task.start().get() + 1),
+            ByteOffset::new(task.start().get() + 2),
+        );
+        let ticked = self.text.byte(state.start().get()) != b' ';
+        let selection = self.selection;
+        self.transact(|doc| {
+            let _ = doc.replace(state, if ticked { " " } else { "x" });
+            doc.set_selection(selection);
+        });
+        true
+    }
 }

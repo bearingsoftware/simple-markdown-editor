@@ -7394,7 +7394,37 @@ impl<T: TextLayout> Editor<T> {
         // The same rectangle the glyphs were placed with, run backwards. Neither side computes an
         // offset of its own, so the two cannot drift apart.
         let (x, y) = self.content.to_document(x, y, self.viewport_offset());
-        self.offset_in_document(x, y)
+        let offset = self.offset_in_document(x, y)?;
+        // **A task's box is not a caret position** (MDEDIT-142). A point on it addresses its `[`,
+        // which in preview sits between concealed markers — the bullet and the box — so typing there
+        // would write into the list's syntax and break the item. Past them is the nearest place a
+        // caret can be. Plain mode draws the brackets as they are, and before one is fine.
+        if self.mode == view::Mode::Preview && self.document().task_box_at(offset).is_some() {
+            return Some(self.past_concealed(offset));
+        }
+        Some(offset)
+    }
+
+    /// The task box drawn under a point in the window, as the offset of its `[`.
+    ///
+    /// The glyph is asked first and the document second: a bullet is substituted too, so "a
+    /// substitute is under the pointer" is not yet "a box is". Plain mode substitutes nothing, so it
+    /// never has a box to find.
+    fn task_box_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
+        let (x, y) = self.content.to_document(x, y, self.viewport_offset());
+        let frame = self.last_frame.as_ref()?;
+        let index = frame.tops.partition_point(|top| *top <= y).checked_sub(1)?;
+        let chunk = *frame.chunks.get(index)?;
+        let cached = self.chunk_layout(frame, index)?;
+        let target = hit::Chunk {
+            layout: &cached.layout,
+            text: chunk.span.slice(&frame.text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(cached.base),
+            grid: cached.grid.as_ref(),
+        };
+        let at = hit::substitute_at(&target, cached.drawn_lines(), y - frame.tops[index], x)?;
+        self.document().task_box_at(at).map(ByteSpan::start)
     }
 
     /// The byte at a point in the document's own coordinates.
@@ -7593,6 +7623,19 @@ impl<T: TextLayout> Editor<T> {
     /// A test cannot wait half a second between clicks and should not have to, so the moment a press
     /// happened is a parameter rather than a call to the clock. See [`crate::clicks`].
     pub fn click_at_time(&mut self, x: f32, y: f32, at: Instant) -> bool {
+        // **A task's box is the first thing in a document that is pressed rather than placed in**
+        // (MDEDIT-142). It needs no z-order of its own: `click` has asked every panel before reaching
+        // here, so a box is only pressed where nothing is drawn over it. Shift still extends a
+        // selection, which is what it means everywhere else in the text.
+        if !self.modifiers.shift_key() {
+            if let Some(task) = self.task_box_at_point(x, y) {
+                // Not part of a run: a second press on the box unticks it rather than selecting a
+                // word, and a click in the text after it is a first click.
+                self.clicks.reset();
+                return self.document_mut().toggle_task(task);
+            }
+        }
+
         let Some(offset) = self.offset_at_point(x, y) else {
             return false;
         };
@@ -9595,8 +9638,13 @@ impl<T: TextLayout> Editor<T> {
         for unit in units {
             let runs = view::build_runs_in(self.document(), self.decoration(), unit, &frame.text);
             // The substituted marker is the run the indent is measured from, and it is always the
-            // first: `units` cuts at the marker, so nothing precedes it inside the unit.
-            let split = usize::from(runs.first().is_some_and(|run| run.substituted));
+            // first: `units` cuts at the marker, so nothing precedes it inside the unit. A task's box
+            // can be first too, when the bullet it replaced had no indent to leave behind, and it is
+            // content rather than the marker (MDEDIT-142).
+            let split = usize::from(
+                runs.first()
+                    .is_some_and(|run| run.substituted && !view::is_task_box(run)),
+            );
             let (marker, rest) = runs.split_at(split);
 
             let marker = self.text.layout(&view::as_styled(marker), f32::MAX).ok()?;

@@ -10,6 +10,11 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   appended after `draw_chunks`. The row cull deliberately keeps up to a line-height of overshoot above the viewport
   — it is what makes a partly-scrolled row look cut off rather than popping in — so a piece of chrome
   drawn first is painted over by it. MDEDIT-39 was exactly that, and `frame.rs` guards it.
+
+  The document is the bottom layer for clicks as well. Since MDEDIT-142 it has something pressable
+  in it, a task's box, and that is asked only after every panel in `Editor::click` has declined the
+  point. So a panel's rules still hold without change: nothing drawn over a box can pass a click
+  through to it. See the MDEDIT-142 entry in [rendering](rendering.md).
 - **There is a File, Edit, View and Help menu, a status bar, a scrollbar, a right-click context menu,
   a formatting bar, and the open files shown either as a tab strip or as a left pane.** Every view
   toggle now has a menu item as well as a chord.

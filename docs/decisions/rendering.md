@@ -273,6 +273,50 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Not covered: a quote inside a list item is a list chunk, and a list inside a quote does not hang
   its own wrapped rows under its bullet. Both are MDEDIT-169 rather than half-done here.
 
+- **A task draws its box, and pressing the box ticks it.** MDEDIT-142. `[ ]` was concealed with
+  nothing substituted, so a task list drew exactly as a bullet list — and whether an item is ticked
+  is state that exists nowhere else on screen, the worst thing in the concealment family to lose.
+  MDEDIT-88 had already said why: a bullet is scaffolding and a box is state.
+
+  **Substituted, as a bullet is**: the icon font's Checkbox and CheckboxComposite (`U+E739`,
+  `U+E73A`), two shapes rather than one box in two colours. **Not Unicode's ☐ and ☑**, which the
+  first build used and which are not a pair: ☑ has an emoji form, so DirectWrite drew it from Segoe
+  UI Emoji at 22 px of advance against ☐'s 13.8 from a symbol font, and ticking a box moved the text
+  8 px. The stub gives every glyph one width, so `icons.rs` asks the real font. The icon pair is one
+  design at one advance, in both Segoe Fluent Icons and Segoe MDL2 Assets, drawn at seven eighths of
+  body size to sit near the cap height; the row's height does not change. The space is the box's
+  own, because `mdedit-markers` leaves the byte between `]` and the text as syntax, so it is
+  concealed. **The box replaces a bullet and sits after a number** — the box already
+  says "list item", which is what GitHub, Obsidian and Typora concluded, and a number is information.
+  The bullet's substitute keeps its indent, so a nested task stays nested.
+
+  **A wrapped task hangs under its box**, not under its text: GFM makes the box the start of the
+  item's content, and GitHub aligns a continuation there. So a box is never the marker `lay_out_list`
+  measures a hang from, and `view::is_task_box` is how it tells the two substitutes apart.
+
+  **The first thing in a document that is pressed rather than placed in, and it needed no z-order
+  of its own.** `Editor::click` asks every panel before the document, so a box is only pressed where
+  nothing is drawn over it. `hit::substitute_at` finds the stand-in *under* the pointer — not the
+  nearest boundary, and only on a row the point is really on, since `row_at` clamps a click below the
+  text to the last row — and `Document::task_box_at` confirms it is a box, because a bullet is
+  substituted too. `Document::toggle_task` writes the one byte between the brackets in a transaction
+  and puts the caret back, so one Ctrl+Z restores both. Shift+click still extends a selection.
+
+  **The box is not a caret position.** Stepping already crossed it — `past_concealed` walks the bullet
+  and the box as one run — but a *point* on it addresses its `[`, between two concealed markers,
+  where typing breaks the item. `offset_at_point` sends it past them, which is what a drag, a
+  shift+click or a right-click over a box gets.
+
+  **Task keeps a numbered item numbered.** `set_block(Task)` stripped whatever marker a line had and
+  wrote `- `, so this editor could not produce `1. [ ] step`, which GFM allows. A task is a modifier on
+  a list item: on a numbered one Task adds or removes the box and keeps the author's number. A bullet
+  is only what Task supplies to a line with no list, and goes with the box, so paragraph → task →
+  paragraph stays a round trip. As a bulleted task is not a plain bullet, a numbered task lights Task
+  and not Ordered.
+
+  Not done: a keyboard way to tick a box — the caret cannot stand inside `[ ]`, so in preview only
+  the mouse can — and a pointer cursor over one, since nothing in the editor sets a cursor shape yet.
+
 - **Whitespace and line endings can be drawn, and drawing is *all* it does.** MDEDIT-46. Spaces are a
   middot, tabs an arrow, the rest of C0 its Unicode Control Picture, and each line ending its own mark
   — `␊`, `␍␊`, or a lone `␍` **in the warning colour**, because a bare CR is nearly always damage

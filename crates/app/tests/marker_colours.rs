@@ -8,7 +8,12 @@
 //! window. Concealment is a separate question — what these say is that a marker which *is* drawn is
 //! drawn in the right colour, and one test says concealment did not change while that happened.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 use mdedit_app::view::{Decoration, Mode, Rgba, Theme, build_runs_in};
 use mdedit_document::Document;
@@ -207,19 +212,42 @@ fn a_task_checkbox_is_syntax_and_not_the_bullets_colour() {
     );
 }
 
-/// And in preview it is not drawn at all. **Not "like every other marker" any more** — MDEDIT-141
-/// substitutes a bullet for the list marker beside it — but the box itself still draws nothing until
-/// MDEDIT-142 gives it something to draw.
+/// And in preview it draws a box, in the same colour. It drew nothing from MDEDIT-88 until MDEDIT-142,
+/// which made a task list indistinguishable from a bullet list — and a literal pair of brackets, the
+/// defect MDEDIT-88 fixed, is still not what comes back.
 #[test]
-fn a_task_checkbox_is_concealed_in_preview() {
-    let text: String = drawn_in("- [x] done\n", Mode::Preview)
-        .iter()
-        .map(|run| run.text.as_str())
-        .collect();
+fn a_task_checkbox_draws_a_box_in_preview() {
+    let runs = drawn_in("- [x] done\n", Mode::Preview);
+    let text: String = runs.iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(text, "\u{E73A} done\n");
     assert_eq!(
-        text, "\u{2022} done\n",
-        "a literal pair of brackets in the rendered line is the defect this fixed"
+        run_of(&runs, "\u{E73A} ").colour,
+        Theme::default().token_literal,
+        "a box is state, drawn or not"
     );
+}
+
+/// **The box is drawn from the icon font, a size down, and a bullet is not.** The pair in that font
+/// is what keeps the text still when a box is ticked (`tests/icons.rs` measures that against the real
+/// font). This is the half a headless run can check: the stub gives every glyph one width whatever
+/// its family and size, so without it CI could not tell a box drawn in the wrong face or at the wrong
+/// size from the right one.
+#[test]
+fn a_box_is_drawn_from_the_icon_font_and_a_bullet_is_not() {
+    let theme = Theme::default();
+    let runs = drawn_in("- [ ] todo\n- plain\n", Mode::Preview);
+
+    let task = run_of(&runs, "\u{E739} ");
+    assert_eq!(task.style.family, FontFamily::Icon);
+    assert_eq!(task.style.size.get(), theme.body_size * 0.875);
+
+    let bullet = run_of(&runs, "\u{2022} ");
+    assert_eq!(
+        bullet.style.family,
+        FontFamily::Mono,
+        "a bullet is a marker like any other"
+    );
+    assert_eq!(bullet.style.size.get(), theme.body_size);
 }
 
 /// **A footnote's label is a landmark, not scaffolding** (MDEDIT-90) — the same argument that sends

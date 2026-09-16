@@ -97,11 +97,70 @@ fn converting_between_list_kinds_swaps_the_marker() {
     doc.set_block(Block::Ordered);
     assert_eq!(doc.to_string(), "1. one\n2. two\n");
 
+    // A box, not a swap: Task keeps a numbered list numbered (MDEDIT-142).
     doc.set_block(Block::Task);
-    assert_eq!(doc.to_string(), "- [ ] one\n- [ ] two\n");
+    assert_eq!(doc.to_string(), "1. [ ] one\n2. [ ] two\n");
 
     doc.set_block(Block::Bullet);
     assert_eq!(doc.to_string(), "- one\n- two\n");
+}
+
+// ---- tasks (MDEDIT-142) ----
+
+/// GFM allows a numbered task, and this editor could neither write one nor keep one: Task replaced
+/// the number with a bullet. The number is the author's, so it is not renumbered either.
+#[test]
+fn task_keeps_a_numbered_item_numbered() {
+    let mut doc = at("3. step\n", 4);
+    assert!(doc.set_block(Block::Task));
+    assert_eq!(doc.to_string(), "3. [ ] step\n");
+}
+
+/// Off takes the box and leaves the number, which is what the box was added to.
+#[test]
+fn task_off_on_a_numbered_task_keeps_the_number() {
+    let mut doc = at("1. [x] done\n", 8);
+    assert!(doc.set_block(Block::Task));
+    assert_eq!(doc.to_string(), "1. done\n");
+}
+
+/// A bullet is what Task supplies to a line with no list, so it goes with the box.
+#[test]
+fn task_off_on_a_bulleted_task_leaves_a_paragraph() {
+    let mut doc = at("- [ ] todo\n", 7);
+    assert!(doc.set_block(Block::Task));
+    assert_eq!(doc.to_string(), "todo\n");
+}
+
+/// Each line keeps what it was, and a second press puts every one of them back.
+#[test]
+fn task_on_a_mixed_selection_is_a_round_trip() {
+    let source = "1. one\ntwo\n";
+    let mut doc = all(source);
+    doc.set_block(Block::Task);
+    assert_eq!(doc.to_string(), "1. [ ] one\n- [ ] two\n");
+
+    doc.set_block(Block::Task);
+    assert_eq!(doc.to_string(), source);
+}
+
+/// A box belongs to a list item. Brackets opening a paragraph or a heading are text, so the line
+/// is not a task and the Task button does not light on it.
+#[test]
+fn brackets_opening_a_line_with_no_list_are_not_a_task() {
+    for source in ["[ ] a note\n", "# [x] a heading\n"] {
+        let doc = at(source, 4);
+        assert!(!doc.carries(Block::Task), "{source:?}");
+    }
+}
+
+/// A numbered task is not also a plain numbered item, as a bulleted one is not a plain bullet.
+/// Ordered on it converts it to one rather than clearing it to prose.
+#[test]
+fn a_numbered_task_is_not_also_plain_ordered() {
+    let mut doc = all("1. [ ] a task\n");
+    doc.set_block(Block::Ordered);
+    assert_eq!(doc.to_string(), "1. a task\n");
 }
 
 /// A task is a bullet with a checkbox, so the two must not both claim the same line.

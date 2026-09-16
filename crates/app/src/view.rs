@@ -25,7 +25,7 @@ use std::borrow::Cow;
 use mdedit_document::Document;
 use mdedit_language::{Block, BlockKind, Marker, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
-use mdedit_text::{StyledRun, TextStyle};
+use mdedit_text::{FontFamily, FontSize, StyledRun, TextStyle};
 
 /// A straight RGBA colour, 0–1 per channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -519,7 +519,8 @@ pub fn build_runs_in<'t>(
         .segments()
         .partition_point(|segment| segment.span().end() <= within.start());
 
-    for segment in &doc.segments()[first..] {
+    let segments = doc.segments();
+    for (index, segment) in segments.iter().enumerate().skip(first) {
         let Some(span) = clip(segment.span(), within) else {
             // In order, so the first one past the end means there is nothing left.
             if segment.span().start() >= within.end() {
@@ -539,9 +540,12 @@ pub fn build_runs_in<'t>(
                 // must still embolden what follows, which is the entire point.
                 builder.apply(marker);
                 builder.note_link(marker, piece);
+                let boxed = segments
+                    .get(index + 1)
+                    .is_some_and(|next| next.kind() == SegmentKind::Marker(Marker::TaskMarker));
                 if revealed {
                     builder.push_split(piece, span, Role::Marker(marker));
-                } else if let Some(drawn) = substitute(marker, piece) {
+                } else if let Some(drawn) = substitute(marker, piece, boxed) {
                     builder.push_substitute(drawn, span, Role::Marker(marker));
                 }
             }
@@ -571,9 +575,23 @@ pub fn build_runs_in<'t>(
 /// **The indent comes free.** `mdedit_markers` counts a list marker's leading whitespace as part of
 /// the marker, so `␣␣- ` is concealed indent and all; carrying that whitespace into the substitute is
 /// the whole of what makes nesting visible. Nothing here computes a depth or an offset.
-fn substitute(marker: Marker, piece: &str) -> Option<Cow<'_, str>> {
-    if marker != Marker::ListItem {
-        return None;
+///
+/// **A task's `[ ]` is the other marker that is meaning** (MDEDIT-142), and the worse one to lose: a
+/// bullet is scaffolding, but whether an item is ticked is state that exists nowhere else on screen.
+/// It draws a box, and a bullet in front of one (`boxed`) draws only its indent — the box already
+/// says "list item", which is what GitHub, Obsidian and Typora all concluded. A number stays, because
+/// the number is information.
+fn substitute(marker: Marker, piece: &str, boxed: bool) -> Option<Cow<'_, str>> {
+    match marker {
+        Marker::TaskMarker => {
+            return Some(Cow::Borrowed(if piece == "[ ]" {
+                UNTICKED
+            } else {
+                TICKED
+            }));
+        }
+        Marker::ListItem => {}
+        _ => return None,
     }
 
     let indent = piece.len() - piece.trim_start_matches([' ', '\t']).len();
@@ -584,6 +602,9 @@ fn substitute(marker: Marker, piece: &str) -> Option<Cow<'_, str>> {
         // number rather than renumbering — so the bytes are the right answer as well as the easy
         // one. The work here is not discarding them.
         return Some(Cow::Borrowed(piece));
+    }
+    if boxed {
+        return Some(Cow::Borrowed(&piece[..indent]));
     }
 
     let mut drawn = String::with_capacity(piece.len() + BULLETS[0].len_utf8());
@@ -600,6 +621,39 @@ fn substitute(marker: Marker, piece: &str) -> Option<Cow<'_, str>> {
 /// what a nested list is written with; a tab-indented list draws every level with the first bullet,
 /// which is wrong-looking rather than broken and has no reported user.
 const BULLETS: [char; 3] = ['•', '◦', '▪'];
+
+/// What an unticked task draws: Checkbox, from the icon font. Ticked is a different *shape*, not the
+/// same box in another colour, so the palette's "never colour alone" contract holds here as it does
+/// for [`BULLETS`].
+///
+/// **A matched pair from one font, and not Unicode's ☐ and ☑.** Those looked like the obvious pair
+/// and came from two different fonts: ☑ has an emoji form, so DirectWrite's fallback drew it from
+/// Segoe UI Emoji at 22 px of advance against ☐'s 13.8, and ticking a box moved the item's text 8 px
+/// to the right. The icon font's `Checkbox` and `CheckboxComposite` are one design at one advance —
+/// Windows draws its own checkboxes with them — and both Segoe Fluent Icons and Segoe MDL2 Assets
+/// carry the code points, so Windows 10 has them too.
+///
+/// **The space is the box's own**, because the one in the source is not content: `mdedit-markers`
+/// leaves the byte between `]` and the text as syntax, so it is concealed and draws nowhere.
+const UNTICKED: &str = "\u{E739} ";
+
+/// What a ticked task draws — `[x]` and `[X]` alike, as GFM reads them: `CheckboxComposite`.
+const TICKED: &str = "\u{E73A} ";
+
+/// A box's size against the text beside it. The icon font's em is the whole box, so at body size it
+/// stands taller than a capital; seven eighths brings it close to the cap height, and the row's height
+/// is unchanged either way — measured, the line metrics are the body font's.
+const TASK_BOX_SCALE: f32 = 0.875;
+
+/// Whether a run is a task's box rather than a list item's marker.
+///
+/// Both are substituted, and a list hangs its text from its marker alone (MDEDIT-147). A box is not
+/// that marker: GFM makes it the start of the item's *content*, so a wrapped task hangs under its box,
+/// which is where GitHub puts it too.
+#[must_use]
+pub fn is_task_box(run: &ViewRun<'_>) -> bool {
+    run.substituted && matches!(run.text.as_ref(), UNTICKED | TICKED)
+}
 
 /// The part of `span` inside `within`, or `None` if they do not overlap.
 ///
@@ -880,7 +934,11 @@ impl<'t> Builder<'_, 't> {
         if text.is_empty() {
             return;
         }
-        let (style, colour) = self.decorate(span.start(), role);
+        let (mut style, colour) = self.decorate(span.start(), role);
+        if role == Role::Marker(Marker::TaskMarker) {
+            style.family = FontFamily::Icon;
+            style.size = FontSize::new(style.size.get() * TASK_BOX_SCALE);
+        }
         self.runs.push(ViewRun {
             text,
             style,

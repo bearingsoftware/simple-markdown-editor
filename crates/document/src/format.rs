@@ -427,7 +427,8 @@ pub enum Block {
     Bullet,
     /// `1. `, renumbered from one on every application.
     Ordered,
-    /// `- [ ] `, a bullet with a checkbox.
+    /// A checkbox on a list item: `[ ] ` after a number the line already has, or `- [ ] ` on any
+    /// other line.
     Task,
 }
 
@@ -461,11 +462,11 @@ impl Parts {
     fn is(&self, what: Block) -> bool {
         match what {
             Block::Heading(level) => self.marker.trim_end() == "#".repeat(level as usize),
-            // A task is a bullet whose content starts with a checkbox, so it has to be tested before
-            // plain bullet or every task would answer to both.
-            Block::Task => is_bullet(&self.marker) && checkbox_len(&self.content).is_some(),
+            // A task is a list item whose content starts with a checkbox, and it is not also the
+            // plain kind of list it is written on — or every task would answer to both.
+            Block::Task => is_list(&self.marker) && checkbox_len(&self.content).is_some(),
             Block::Bullet => is_bullet(&self.marker) && checkbox_len(&self.content).is_none(),
-            Block::Ordered => is_ordered(&self.marker),
+            Block::Ordered => is_ordered(&self.marker) && checkbox_len(&self.content).is_none(),
         }
     }
 }
@@ -482,6 +483,11 @@ fn is_ordered(marker: &str) -> bool {
         return false;
     };
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Whether `marker` is either kind of list marker, which is what a task's box can follow.
+fn is_list(marker: &str) -> bool {
+    is_bullet(marker) || is_ordered(marker)
 }
 
 /// How many bytes of `content` are a task checkbox, if it opens with one.
@@ -597,10 +603,21 @@ impl Document {
         let rewritten: Vec<String> = parsed
             .into_iter()
             .map(|mut parts| {
+                // **A task is a modifier on a list item, not a third kind of list** (MDEDIT-142), so
+                // Task on a numbered item adds or removes the box and keeps the author's number. A
+                // bullet is only what Task supplies to a line with no list, and it goes with the box,
+                // which keeps paragraph → task → paragraph a round trip.
+                let numbered = (what == Block::Task && is_ordered(&parts.marker))
+                    .then(|| parts.marker.clone());
                 strip_block_marker(&mut parts);
+                if let Some(marker) = &numbered {
+                    parts.marker.clone_from(marker);
+                }
                 if !clearing {
                     number += 1;
-                    parts.marker = marker_for(what, number);
+                    if numbered.is_none() {
+                        parts.marker = marker_for(what, number);
+                    }
                     if what == Block::Task {
                         parts.content = format!("[ ] {}", parts.content);
                     }
@@ -745,7 +762,7 @@ fn line_body(line: &str) -> &str {
 /// Called before applying a new one, which is what makes bullet → ordered → task a *swap* rather
 /// than a stack of prefixes.
 fn strip_block_marker(parts: &mut Parts) {
-    if is_bullet(&parts.marker) {
+    if is_list(&parts.marker) {
         if let Some(len) = checkbox_len(&parts.content) {
             parts.content.drain(..len);
         }
