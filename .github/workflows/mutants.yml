@@ -58,10 +58,14 @@ env:
   #
   # With `--exclude`, a new crate is covered the day it is created and nobody has to remember.
   MUTANTS_EXCLUDES: --exclude mdedit-text-dwrite --exclude mdedit-menu-win --exclude mdedit-shell-win
-  # Roughly what one shard can finish inside the 40-minute budget: PR #163 managed 60 mutants in 35
-  # minutes of mutation, so thirty is comfortably under half of it on a busy pool.
-  MUTANTS_PER_SHARD: 30
-  # **A decision, not arithmetic.** Six shards of thirty is 180 mutants; past that a shard still says
+  # **Measured, not guessed** (MDEDIT-172). Thirty a shard was the first answer, from PR #163's rate
+  # of 60 mutants in 35 minutes — and the first sharded run of #168's diff put 28 of them in one
+  # shard that ran out of time while the other two finished early. A mutant's cost is not uniform:
+  # one in `mdedit-app` rebuilds the largest crate and runs the largest test suite, at roughly 90
+  # seconds, where one in `mdedit-document` is nearer 40. Twenty keeps a shard well inside the budget
+  # even when every one of them is an expensive one.
+  MUTANTS_PER_SHARD: 20
+  # **A decision, not arithmetic.** Six shards of twenty is 120 mutants; past that a shard still says
   # it ran out of time, because the answer to a diff that large is to split the pull request rather
   # than to take six more runners off everything else queued on this pool.
   MUTANTS_MAX_SHARDS: 6
@@ -273,6 +277,13 @@ jobs:
       # **Each shard runs its own baseline.** `--minimum-test-timeout` scales off the baseline's own
       # test time, and a shard whose tests are red before any mutation has to say so rather than
       # report a run built on them.
+      #
+      # **`--sharding round-robin`, and the default cost a run to learn.** Slice is the default and
+      # gives a shard consecutive mutants — which are mostly one file, so the build stays warm. It
+      # also means one shard gets every mutant in the most expensive crate: on the first sharded run
+      # of #168's diff, shard 0 took all 28 `mdedit-app` mutants and ran out of the 40-minute budget
+      # while shards 1 and 2 finished early on `mdedit-document`. Round-robin gives each shard the
+      # same mix, so the slowest shard is the average rather than the worst crate.
       - name: Mutate
         env:
           SHARD: ${{ matrix.shard }}
@@ -292,6 +303,7 @@ jobs:
           timeout --signal=INT --kill-after=120 "${budget}s" \
             cargo mutants --in-diff /tmp/pr.diff \
             --shard "$SHARD/$SHARDS" \
+            --sharding round-robin \
             --test-tool nextest \
             $MUTANTS_EXCLUDES \
             --timeout-multiplier 4 \
