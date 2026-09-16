@@ -17,6 +17,8 @@ use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 800.0;
 const HEIGHT: f32 = 600.0;
+/// Wider than the default, for the buttons this grid pushes into the overflow at 800.
+const WIDE: f32 = 1200.0;
 
 fn editor(source: &str) -> Editor<Grid> {
     let mut editor = Editor::new(source, Grid::new());
@@ -192,6 +194,14 @@ fn over_a_dialog_a_field_is_an_i_beam_and_its_panel_is_not() {
         pointer_at(&editor, (at.0 + 4.0, at.1 + 4.0)),
         Pointer::Arrow
     );
+
+    // And the text behind it, where a click cancels the dialog rather than placing a caret. An
+    // I-beam there would promise a caret the click does not place.
+    assert_eq!(
+        pointer_at(&editor, in_document(0, 2.0)),
+        Pointer::Arrow,
+        "behind a modal dialog",
+    );
 }
 
 // ---- a gesture holds its own shape ----
@@ -234,6 +244,9 @@ fn a_held_scrollbar_thumb_keeps_the_arrow() {
 #[test]
 fn a_menu_over_the_document_wins() {
     let mut editor = editor("prose\n");
+    let over_text = in_document(0, 2.0);
+    assert_eq!(pointer_at(&editor, over_text), Pointer::Text, "before it");
+
     // Opened the way a user opens it, so the panel lands where the editor really puts it.
     let button = editor
         .toolbar_buttons()
@@ -257,6 +270,13 @@ fn a_menu_over_the_document_wins() {
     );
 
     assert_eq!(pointer_at(&editor, in_the_list), Pointer::Arrow);
+    // And a list takes every point while it is open, because a click anywhere closes it rather than
+    // reaching the document — `click_menu` swallows the lot.
+    assert_eq!(
+        pointer_at(&editor, over_text),
+        Pointer::Arrow,
+        "far from it"
+    );
 }
 
 // ---- the window is told only when the shape changes ----
@@ -293,4 +313,32 @@ fn a_frame_gives_a_still_pointer_its_shape_again() {
     editor.toggle_mode();
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     assert_eq!(editor.pointer(), Pointer::Text, "the box is gone");
+}
+
+/// **The table picker is a list whose rows are its geometry, not a `Vec` of actions.** A click
+/// anywhere in it belongs to it (`Editor::click`), so the pointer over it must be the arrow too.
+#[test]
+fn over_the_table_picker_it_is_an_arrow() {
+    // Wide, because this grid draws words rather than icons and the table button overflows at 800.
+    let mut editor = Editor::new("prose\n", Grid::new());
+    editor.build_frame(WIDE, HEIGHT, 1.0);
+    let button = editor
+        .toolbar_buttons()
+        .iter()
+        .find(|button| button.action == toolbar::Action::Table)
+        .copied()
+        .expect("the table button is on the bar");
+    editor.click(button.x + button.width / 2.0, toolbar::HEIGHT / 2.0);
+    editor.build_frame(WIDE, HEIGHT, 1.0);
+
+    let (x, y) = editor.menu_at().expect("the picker should be open");
+    let at = (
+        x + mdedit_app::popup::grid::width() / 2.0,
+        y + mdedit_app::popup::grid::height() / 2.0,
+    );
+    assert!(
+        editor.content_rect().contains(at.0, at.1),
+        "the probe must be where the picker covers the document: {at:?}",
+    );
+    assert_eq!(pointer_at(&editor, at), Pointer::Arrow);
 }

@@ -5923,22 +5923,25 @@ impl<T: TextLayout> Editor<T> {
             return Pointer::Text;
         }
 
-        // A dialog is modal and swallows even the clicks it has no control for, so every point
-        // inside it is the dialog's; outside falls through, as a click there does.
+        // **A dialog is modal, so every point in the window is the dialog's** — inside it a click
+        // acts or is swallowed, and outside it cancels (MDEDIT-129). Neither reaches the document,
+        // so nothing outside its fields is worth pointing at.
         if let Some(open) = self.dialog.as_ref() {
             let fields = open.fields().len();
             let at = self.dialog_at();
-            if dialog::contains(fields, x, y, at) {
-                return match dialog::hit_test(fields, x, y, at) {
-                    Some(dialog::Hit::Field(_)) => Pointer::Text,
-                    _ => Pointer::Arrow,
-                };
-            }
+            return match dialog::hit_test(fields, x, y, at) {
+                Some(dialog::Hit::Field(_)) => Pointer::Text,
+                _ => Pointer::Arrow,
+            };
         }
-        if let Some(menu) = self.open_menu.as_ref() {
-            if popup::contains(menu.rows.len(), x, y, menu.at, menu.width) {
-                return Pointer::Arrow;
-            }
+        // **An open list takes every point, not just its own panel.** `click_menu` swallows a click
+        // anywhere while one is open — on a row it acts, off the panel it closes — so nothing
+        // reaches the document and nothing under it is worth pointing at. Asking `popup::contains`
+        // instead looked right and was wrong twice: it let the pointer promise an I-beam a click
+        // would not honour, and it measured a panel of `rows.len()` rows, which is **zero** for the
+        // table picker, whose rows are its geometry rather than a list of actions.
+        if self.open_menu.is_some() {
+            return Pointer::Arrow;
         }
         if let Some(layout) = self.find_layout.as_ref() {
             let inside = y - (self.strip_height() + self.toolbar_height());
