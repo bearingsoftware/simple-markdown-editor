@@ -290,13 +290,21 @@ the guard reported the binary present, resolving in 26 ms — it came off a long
 
 The guard still earns its place, for the reason it was written: `cargo install` *stops* rather than
 skips when it finds its own binary in place — `binary 'cargo-mutants' already exists in destination`,
-exit 101, a red X on a job whose whole point is to report rather than block. It is now a guard
-against a warm runner rather than against a cache, and the log line says so.
+exit 101, a red X on a job whose whole point is to report rather than block. The first sharded run
+walked straight into it: the prebuilt binary was on the box, would not run, and the fallback install
+refused because the file was there. Both fallbacks pass `--force` now.
 
-With the pool ephemeral, that job compiles `cargo-mutants` from source every run. The prebuilt
-`taiki-e/install-action` route was rejected because the binary needed GLIBC 2.39 and the box was
-older; **that is worth re-testing against the current image** and is deliberately left open, because
-a failed install step publishes a failing check on a job that must not block.
+**The prebuilt route was re-tested on 2026-09-16, and it still does not work** (MDEDIT-132, answered
+by MDEDIT-172). `taiki-e/install-action` installs happily and the binary then dies with `version
+'GLIBC_2.39' not found`, so the job asks it for `--version` and treats a binary that cannot run
+exactly like one that is missing: it builds from source instead, and prints what the binary said, so
+the next person gets an answer rather than "no usable prebuilt binary". The install step is
+`continue-on-error`, so it cannot publish a failing check on a job that must not block.
+
+**The source build is paid once per run, not once per shard.** The plan job installs `cargo-mutants`
+and uploads the binary; each shard downloads it, and falls back to building from source only if that
+binary will not run there. Six shards compiling ~250 crates each would take more from the pool than
+the sharding gives back.
 
 ## An allow-list nobody is reminded to extend
 
@@ -339,8 +347,47 @@ attempts that way, at 69 minutes each, and the message reads like a crash rather
 job asks for 55 minutes, and the Mutate step has a **40-minute budget** of its own, set once as
 `budget` in the step: when it runs out, cargo-mutants is interrupted, keeps what it found, and the job
 says so as an error — a partial run is not a result. A diff of about sixty mutants fits; a bigger one
-does not, and **the answer is to shard it (MDEDIT-172), not to raise the budget.** There is no room
-above it to raise it into.
+does not, and **the answer is to shard it, not to raise the budget.** There is no room above it to
+raise it into.
+
+**So it is sharded (MDEDIT-172), and the shape of that was measured rather than argued.** MDEDIT-171
+made running out of time honest; it did not make the answer complete, and the next pull request, #168,
+generated **82 mutants and got through 35**. The rest were run on a laptop, and two survivors came out
+of the part CI never reached — so the untested remainder was not a formality.
+
+A `plan` job now counts what the diff generates (`--list` parses rather than builds, so it costs
+seconds) and emits a matrix of **fifteen mutants a shard, at most six**; each shard runs `--shard k/n`
+over the same diff with the same 40-minute budget, its own baseline, its own annotations and its own
+report artifact. Three runs over #168's diff set every number in it:
+
+| Shards | Sharding | At once | Result |
+| --- | --- | --- | --- |
+| 3 × 30 | slice (the default) | 3 | Shard 0 took all 28 `mdedit-app` mutants and ran out of time; the other two finished early on `mdedit-document` |
+| 5 × 20 | round-robin | 5 | Two shards managed 16–17 mutants in 41 minutes, three managed 9. 60 of 82 tested |
+| 6 × 15 | round-robin | 2 | **All 82: 81 caught, 1 unviable, none missed, none timed out.** 46 minutes of wall clock |
+
+Verified afterwards rather than assumed: the set of mutants the six shards report is **identical to the
+set the diff generates**, not merely the same size. A two-mutant diff plans one shard and costs 13
+minutes of planning — nearly all of it building `cargo-mutants` — plus two and a half of mutation.
+And the step's verdicts were driven through every outcome by extracting its own script from the
+workflow and stubbing the run: survivors, timeouts, both at once, a report that disagrees with the
+exit code, out of time, a kill before and after the budget, a missing report, and a broken run.
+
+Two things came out of that. **A mutant's cost is not uniform** — one in `mdedit-app` rebuilds the
+largest crate and runs the largest test suite at roughly 90 seconds, against nearer 40 for one in
+`mdedit-document` — so consecutive mutants are the expensive ones together, and round-robin gives
+every shard the same mix. And **the pool's runners are not independent machines**: five shards started
+together on five different runner VMs of one Proxmox host and got a fifth of it each, which is why
+`max-parallel` is 2. Sharding wider makes each shard slower, which is the opposite of what a per-shard
+budget needs.
+
+Six shards of fifteen is 90 mutants before a diff is told to split, and #168 is the largest this
+project has produced. `workflow_dispatch` takes a `base` ref so a real diff can be re-run by hand;
+without one a dispatch diffs against `origin/` and mutates nothing. **That input takes a branch name
+or a commit**, and it has to: a checkout has the remote's refs and no local branches, so `main` — the
+input's own default — is not a revision in the job, and `git diff main...HEAD` fails outright. The
+first dispatches all passed a SHA, which resolves either way, so the default was the one spelling
+nothing had tried until the single-shard case was checked.
 
 The 17 were worth the 35 minutes. One of them was **a security cap with no test behind it**:
 `within_the_pixel_caps` refuses a picture too wide, too tall, or too many pixels, and every test
