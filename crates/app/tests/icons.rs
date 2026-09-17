@@ -17,6 +17,7 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::pane::Icon;
 use mdedit_app::toolbar::{self, Action};
 use mdedit_app::view::{Theme, as_styled, build_runs};
 use mdedit_document::Document;
@@ -342,6 +343,58 @@ fn both_task_boxes_are_in_the_font() {
         assert!(
             image.is_some_and(|image| image.coverage.iter().any(|px| *px > 0)),
             "the {name} box has no ink"
+        );
+    }
+}
+
+/// **Each file-pane icon is really in the icon font on this machine, and they are three different
+/// shapes** (MDEDIT-174). The reference list is not evidence: its `Document`, `Page` and
+/// `MusicInfo` code points rasterise to one identical glyph in this font, which is how the first
+/// choice of three was found to be one.
+#[test]
+fn every_pane_icon_is_in_the_font_and_they_differ() {
+    let mut text = engine();
+    let icons = [Icon::Note, Icon::Structured, Icon::Text];
+
+    let mut shapes: Vec<Vec<u8>> = Vec::new();
+    for icon in icons {
+        let glyph = icon.glyph();
+        let advances = shape(&mut text, glyph, FontFamily::Icon, ICON_SIZE);
+        assert!(
+            advances.iter().all(|advance| *advance >= 0.0),
+            "the icon font has no glyph for {icon:?} (U+{:04X})",
+            u32::from(glyph),
+        );
+        let fraction = ink(&mut text, glyph);
+        assert!(
+            fraction.is_some_and(|lit| lit > 0.0),
+            "{icon:?} is in the font and rasterises to nothing",
+        );
+
+        let owned = glyph.to_string();
+        let style = TextStyle {
+            family: FontFamily::Icon,
+            ..TextStyle::body(ICON_SIZE)
+        };
+        let layout = text
+            .layout(
+                &[StyledRun::from_buffer(
+                    &owned,
+                    style,
+                    ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(owned.len())),
+                )],
+                1000.0,
+            )
+            .unwrap();
+        let key = layout.glyphs().next().unwrap().key;
+        shapes.push(text.rasterize(key, 1.0).unwrap().unwrap().coverage);
+    }
+
+    for (first, second) in [(0, 1), (1, 2), (0, 2)] {
+        assert_ne!(
+            shapes[first], shapes[second],
+            "{:?} and {:?} rasterise to the same shape",
+            icons[first], icons[second],
         );
     }
 }

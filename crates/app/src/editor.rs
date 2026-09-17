@@ -23,7 +23,7 @@ use mdedit_markers::BlockKind;
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use mdedit_session::recent::Recent;
-use mdedit_text::{GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
+use mdedit_text::{FontFamily, GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
 use winit::application::ApplicationHandler;
 use winit::event::{
     ElementState, KeyEvent, MouseButton, MouseScrollDelta, StartCause, WindowEvent,
@@ -946,6 +946,12 @@ pub struct Editor<T: TextLayout> {
     /// saved somewhere new, which is rare enough that keying on the text is the whole cache
     /// invalidation this needs. Bounded by the session's tab limit.
     row_labels: HashMap<String, Label>,
+    /// Whether each type icon resolved to a glyph this machine has (MDEDIT-174), asked once.
+    ///
+    /// Not cleared with the label caches: whether a font has a code point does not change with the
+    /// size it is drawn at, and asking per row per frame is a text-engine call on the path a
+    /// keystroke takes — which is the trap the gutter, the status bar and the pane have each hit.
+    icon_faces: HashMap<pane::Icon, bool>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
     /// What shape the window was last told to draw the pointer as (MDEDIT-176). Held so a still
@@ -1229,6 +1235,7 @@ impl<T: TextLayout> Editor<T> {
             row_rects: Vec::new(),
             pane_scroll: 0.0,
             row_labels: HashMap::new(),
+            icon_faces: HashMap::new(),
             // Nowhere, until somebody says where. See `with_snapshot_store`, and MDEDIT-68 for what
             // defaulting this to the real directory cost.
             snapshots: None,
@@ -5659,6 +5666,25 @@ impl<T: TextLayout> Editor<T> {
                 close_width,
             );
 
+            // The icon before the name, in the column `label_x` leaves for it (MDEDIT-174). Drawn in
+            // the row's own colour: it says what the file is, not how it is doing.
+            let icon = self.icon_for(rect.index);
+            let (face, face_style) = self.row_icon_face(icon, style);
+            self.draw_row_label(
+                quads,
+                &face,
+                face_style,
+                rect.icon_x(),
+                baseline,
+                if is_active {
+                    self.theme.text
+                } else {
+                    self.theme.marker
+                },
+                scale,
+                pane::ICON_WIDTH,
+            );
+
             let clipped = self.draw_row_label(
                 quads,
                 &name,
@@ -5676,6 +5702,46 @@ impl<T: TextLayout> Editor<T> {
             if clipped {
                 self.truncated_rows.push(rect.index);
             }
+        }
+    }
+
+    /// Which icon a pane row's file gets (MDEDIT-174).
+    ///
+    /// **Asked of the path, not of the document.** A tab is a lightweight handle until it is shown,
+    /// so most rows have no document to ask — and `detect::language_for` is the same answer the
+    /// highlighting uses, which is what stops an icon disagreeing with the colours in the file it
+    /// names. A buffer with no path has no extension either, so it comes out plain text's.
+    fn icon_for(&self, index: usize) -> pane::Icon {
+        self.workspace.tabs()[index]
+            .path()
+            .map_or(pane::Icon::Text, |path| {
+                pane::Icon::of(crate::detect::language_for(path))
+            })
+    }
+
+    /// The glyph to draw for an icon, or its badge on a machine whose fonts have not got it.
+    ///
+    /// The same `.notdef` check the formatting bar makes (MDEDIT-92), and for the same reason: a
+    /// tofu box in a column of file names is a bug report, where two letters are merely plain.
+    fn row_icon_face(&mut self, icon: pane::Icon, text: TextStyle) -> (String, TextStyle) {
+        let style = TextStyle {
+            family: FontFamily::Icon,
+            ..text
+        };
+        let glyph = icon.glyph().to_string();
+        let drawn = if let Some(known) = self.icon_faces.get(&icon) {
+            *known
+        } else {
+            let resolved = self
+                .lay_out_label(&glyph, style)
+                .is_some_and(|label| !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()));
+            self.icon_faces.insert(icon, resolved);
+            resolved
+        };
+        if drawn {
+            (glyph, style)
+        } else {
+            (icon.badge().to_owned(), text)
         }
     }
 

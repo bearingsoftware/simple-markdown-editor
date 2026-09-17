@@ -30,6 +30,72 @@ const LABEL_PADDING: f32 = 10.0;
 /// Width of the close region at the right of each row.
 const CLOSE_WIDTH: f32 = 24.0;
 
+/// The column a row's type icon sits in, its gap included (MDEDIT-174).
+///
+/// It comes off the name's width, which is the whole of its cost: the pane is a fixed 200 px, so an
+/// icon is eighteen pixels a name no longer has. That is what makes MDEDIT-121's truncation the thing
+/// to keep honest — the name must be measured against what is left, not against what used to be there.
+pub const ICON_WIDTH: f32 = 18.0;
+
+/// What a row's icon says its file is (MDEDIT-174).
+///
+/// **Three, not seven.** The icon font has no JSON glyph and no YAML one; its usable silhouettes are
+/// a page, a page with lines, code brackets and three rules, and its `Document`, `Page` and
+/// `MusicInfo` code points rasterise to one identical glyph. So the languages are grouped by what
+/// they are *for* rather than given a shape apiece they cannot have. JSON and YAML look alike here,
+/// and their names are what tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Icon {
+    /// Prose to read: Markdown.
+    Note,
+    /// Structure to configure: JSON, YAML, XML, TOML, INI.
+    Structured,
+    /// Plain text, and anything with no language of its own.
+    Text,
+}
+
+impl Icon {
+    /// Which icon a language gets.
+    ///
+    /// **Keyed off the language rather than the extension**, so a new one gets an icon by being added
+    /// to [`crate::detect`] and nowhere else — `.yml` and `.yaml` cannot drift apart, because they are
+    /// one language by the time this is asked.
+    #[must_use]
+    pub fn of(language: &dyn mdedit_language::Language) -> Self {
+        match language.name() {
+            "Markdown" => Self::Note,
+            "JSON" | "YAML" | "XML" | "TOML" | "INI" => Self::Structured,
+            _ => Self::Text,
+        }
+    }
+
+    /// The private-use code point this draws, from the icon font MDEDIT-92 already uses.
+    ///
+    /// **Rasterised and looked at, not taken from a reference page** — that is how the three
+    /// identical "document" code points were found.
+    #[must_use]
+    pub fn glyph(self) -> char {
+        match self {
+            Self::Note => '\u{E9F9}',
+            Self::Structured => '\u{E943}',
+            Self::Text => '\u{E14C}',
+        }
+    }
+
+    /// What to draw instead on a machine whose fonts have no such glyph.
+    ///
+    /// Short enough for the icon's column, because that column is all the room there is: a fallback
+    /// that overran it would push into the name it is supposed to leave alone.
+    #[must_use]
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::Note => "MD",
+            Self::Structured => "{}",
+            Self::Text => "TXT",
+        }
+    }
+}
+
 /// Where one row sits in the pane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RowRect {
@@ -46,16 +112,22 @@ impl RowRect {
         self.y + ROW_HEIGHT
     }
 
-    /// Where the label may be drawn.
+    /// Where the type icon is drawn (MDEDIT-174).
+    #[must_use]
+    pub fn icon_x(&self) -> f32 {
+        LABEL_PADDING
+    }
+
+    /// Where the label may be drawn: past the icon's column.
     #[must_use]
     pub fn label_x(&self) -> f32 {
-        LABEL_PADDING
+        LABEL_PADDING + ICON_WIDTH
     }
 
     /// Width available to the label, before the close region.
     #[must_use]
     pub fn label_width(&self) -> f32 {
-        (PANE_WIDTH - LABEL_PADDING - CLOSE_WIDTH).max(0.0)
+        (PANE_WIDTH - LABEL_PADDING - ICON_WIDTH - CLOSE_WIDTH).max(0.0)
     }
 
     /// The close region, as `(x, width)`.
