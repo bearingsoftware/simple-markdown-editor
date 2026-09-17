@@ -138,6 +138,28 @@ fn over_the_find_bar_a_field_is_an_i_beam_and_a_button_is_not() {
     );
 }
 
+/// **With the find bar open, the document below it is still text.** That is what says the bar's band
+/// is measured *from* its top rather than scaled by it: the mutants job on #170 turned `y - top` into
+/// `y / top` and every other test here still passed, because a probe a few pixels into the bar is
+/// inside the band either way. A point far below it is not.
+#[test]
+fn with_the_find_bar_open_the_text_below_it_is_an_i_beam() {
+    let mut editor = editor("prose\nmore prose\nand more again\n");
+    editor.open_find();
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    // Clear of the field's own column as well as below the bar: a scaled `y` lands every point
+    // inside the band, and there it is the *x* that decides field from button.
+    let layout = editor.find_layout().expect("the bar is laid out").clone();
+    let (field_x, field_width) = layout.field;
+    let at = (field_x + field_width + 40.0, HEIGHT / 2.0);
+    assert!(
+        editor.content_rect().contains(at.0, at.1),
+        "the probe must be in the document, well below the bar: {at:?}",
+    );
+    assert_eq!(pointer_at(&editor, at), Pointer::Text);
+}
+
 /// A file pane takes width from the document rather than overlaying it, and its rows are controls.
 #[test]
 fn over_a_file_pane_row_it_is_an_arrow() {
