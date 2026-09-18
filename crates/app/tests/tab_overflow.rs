@@ -12,13 +12,15 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::float_cmp
+    clippy::float_cmp,
+    clippy::cast_precision_loss
 )]
 
 use std::cell::Cell;
 
 use mdedit_app::editor::Editor;
 use mdedit_app::file_icon::Icon;
+use mdedit_app::gpu::QuadInstance;
 use mdedit_app::popup;
 use mdedit_app::tabs::{self, Hit, STRIP_HEIGHT};
 use mdedit_app::toolbar;
@@ -330,4 +332,196 @@ fn each_row_draws_its_files_icon() {
             want.badge(),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Where things are drawn, at a scale factor of two.
+//
+// `cargo-mutants` on #173 found the button's and the list's placement could be rearranged — `*
+// scale` as `+ scale`, a centring `-` as `+` — without a test noticing, because everything above
+// counts glyphs rather than asking where they are. At scale one, multiplying and dividing by the
+// scale are the same thing, so these draw at two.
+// ---------------------------------------------------------------------------
+
+const SCALE: f32 = 2.0;
+
+/// The grid's glyphs are one pixel wide and advance eight, and a glyph quad starts one physical
+/// pixel above its baseline — `stub::Grid::rasterize`'s `top: -1`.
+const ADVANCE: f32 = 8.0;
+
+/// A frame at [`SCALE`], the window the same logical size as every other frame here.
+fn at_two(editor: &mut Editor<Grid>) -> Vec<QuadInstance> {
+    editor.build_frame(WIDTH * SCALE, HEIGHT * SCALE, SCALE)
+}
+
+/// Where a glyph drawn at logical `(x, baseline)` lands, in physical pixels.
+fn glyph_at(x: f32, baseline: f32) -> [f32; 2] {
+    [x * SCALE, baseline * SCALE - 1.0]
+}
+
+fn is_glyph(quad: &QuadInstance) -> bool {
+    quad.uv != [0.0, 0.0, 1.0, 1.0]
+}
+
+/// **A tab is exactly its measured name plus its fixed parts**, through the editor's own
+/// measurement. `tabs.rs` pins the arithmetic on a width it is handed; this pins the width the
+/// editor hands it, which is where a glyph's advance is added to its position.
+#[test]
+fn a_tab_is_as_wide_as_its_measured_name() {
+    let dir = TempDir::new().unwrap();
+    let editor = editor_with(&dir, &twelve());
+    let name = "file-00.md".len() as f32 * ADVANCE;
+    assert_eq!(
+        editor.tab_rects()[0].width,
+        name + 12.0 * 2.0 + 20.0 + tabs::ICON_WIDTH
+    );
+}
+
+/// **The button's face is centred in it, on the tabs' baseline**, and its ground is lit exactly
+/// over it while its list is open — and not before.
+#[test]
+fn the_button_is_drawn_where_it_is_hit() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    let closed = at_two(&mut editor);
+    let more = editor.strip().more.unwrap();
+    let top = toolbar::HEIGHT;
+
+    // Without the icon font the face is the bar's own fallback, one character wide.
+    let face: Vec<[f32; 2]> = closed
+        .iter()
+        .filter(|quad| {
+            is_glyph(quad)
+                && quad.rect[0] >= more * SCALE
+                && quad.rect[0] < (more + tabs::MORE_WIDTH) * SCALE
+                && quad.rect[1] >= top * SCALE
+                && quad.rect[1] < (top + STRIP_HEIGHT) * SCALE
+        })
+        .map(|quad| [quad.rect[0], quad.rect[1]])
+        .collect();
+    assert_eq!(
+        face,
+        vec![glyph_at(
+            more + (tabs::MORE_WIDTH - ADVANCE) / 2.0,
+            top + STRIP_HEIGHT * 0.68,
+        )],
+    );
+
+    let ground = [
+        more * SCALE,
+        top * SCALE,
+        tabs::MORE_WIDTH * SCALE,
+        STRIP_HEIGHT * SCALE,
+    ];
+    let lit = |quads: &[QuadInstance]| {
+        quads
+            .iter()
+            .any(|quad| !is_glyph(quad) && quad.rect == ground)
+    };
+    assert!(!lit(&closed), "not lit before its list is open");
+    let (x, y) = on_more(&editor);
+    editor.click(x, y);
+    assert!(lit(&at_two(&mut editor)), "lit while its list is open");
+}
+
+/// **A row's icon sits in the icon column, its name after it, both on one baseline in the row**,
+/// and the row under the pointer is tinted edge to edge less the panel's border.
+#[test]
+fn a_list_row_is_drawn_where_it_is_hit() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    let (x, y) = on_more(&editor);
+    editor.click(x, y);
+    let (panel_x, panel_y) = editor.menu_at().unwrap();
+    let width = editor.menu_width().unwrap();
+    editor.hover(
+        panel_x + popup::ICON_COLUMN,
+        panel_y + popup::row_top(1) + popup::ROW_HEIGHT / 2.0,
+    );
+    let quads = at_two(&mut editor);
+
+    let hovered = [
+        (panel_x + 2.0) * SCALE,
+        (panel_y + popup::row_top(1)) * SCALE,
+        (width - 4.0) * SCALE,
+        popup::ROW_HEIGHT * SCALE,
+    ];
+    assert!(
+        quads
+            .iter()
+            .any(|quad| !is_glyph(quad) && quad.rect == hovered),
+        "the hovered row's ground at {hovered:?}",
+    );
+
+    // Row zero's badge in the icon column, then its name. The body size is the theme's default
+    // sixteen.
+    let first = editor.menu_tabs().unwrap()[0];
+    let badge = if first == PLAIN {
+        Icon::Text
+    } else {
+        Icon::Note
+    }
+    .badge();
+    let name = &twelve()[first];
+    let top = panel_y + popup::row_top(0);
+    let baseline = top + (popup::ROW_HEIGHT / 2.0 + 16.0 * 0.22);
+    let in_row: Vec<[f32; 2]> = quads
+        .iter()
+        .filter(|quad| {
+            is_glyph(quad)
+                && quad.rect[0] >= panel_x * SCALE
+                && quad.rect[0] < (panel_x + width) * SCALE
+                && quad.rect[1] >= top * SCALE
+                && quad.rect[1] < (top + popup::ROW_HEIGHT) * SCALE
+        })
+        .map(|quad| [quad.rect[0], quad.rect[1]])
+        .collect();
+    let mut want: Vec<[f32; 2]> = (0..badge.len())
+        .map(|n| glyph_at(panel_x + popup::PADDING + n as f32 * ADVANCE, baseline))
+        .collect();
+    want.extend(
+        (0..name.len())
+            .map(|n| glyph_at(panel_x + popup::ICON_COLUMN + n as f32 * ADVANCE, baseline)),
+    );
+    assert_eq!(in_row, want);
+}
+
+/// **A name longer than the window is clipped at the panel's right padding**, and not before it.
+/// The panel is never wider than the window, so this is the one case where a row's name meets its
+/// edge.
+#[test]
+fn a_long_name_in_the_list_stops_at_the_panels_padding() {
+    const NARROW: f32 = 400.0;
+    let dir = TempDir::new().unwrap();
+    let long = "a-name-long-enough-to-be-wider-than-the-whole-window-by-far";
+    let names: Vec<String> = (0..4).map(|n| format!("{long}-{n}.md")).collect();
+    let mut editor = editor_with(&dir, &names);
+    let _ = editor.build_frame(NARROW, HEIGHT, 1.0);
+    let more = editor.strip().more.expect("four long tabs overflow 400 px");
+    editor.click(
+        more + tabs::MORE_WIDTH / 2.0,
+        toolbar::HEIGHT + STRIP_HEIGHT / 2.0,
+    );
+    let (panel_x, panel_y) = editor.menu_at().unwrap();
+    let width = editor.menu_width().unwrap();
+    assert_eq!(width, NARROW, "no wider than the window");
+    let quads = editor.build_frame(NARROW, HEIGHT, 1.0);
+
+    let top = panel_y + popup::row_top(0);
+    let last = quads
+        .iter()
+        .filter(|quad| {
+            is_glyph(quad)
+                && quad.rect[0] >= panel_x + popup::ICON_COLUMN
+                && quad.rect[1] >= top
+                && quad.rect[1] < top + popup::ROW_HEIGHT
+        })
+        .map(|quad| quad.rect[0])
+        .fold(f32::MIN, f32::max);
+    let edge = panel_x + width - popup::PADDING;
+    assert!(last <= edge, "a glyph starts at {last}, past {edge}");
+    assert!(
+        last > edge - ADVANCE,
+        "the name stops at {last}, short of {edge}"
+    );
 }

@@ -11,7 +11,12 @@
 //!
 //! Timing is driven rather than waited on, as in `tooltip.rs` and for the reason it gives.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::float_cmp
+)]
 
 use mdedit_app::editor::{Editor, Hovered};
 use mdedit_app::pane;
@@ -275,4 +280,47 @@ fn resting_on_a_tab_that_fits_arms_nothing() {
     editor.hover(x, y);
 
     assert_eq!(editor.next_wake(), None);
+}
+
+/// **A tab's panel hangs below the strip, centred on the tab** — measured, not merely counted.
+/// `cargo-mutants` on #173 showed `tooltip_anchor` could return any point at all and
+/// `a_tabs_panel_hangs_below_the_strip` would still see a panel drawn.
+#[test]
+fn a_tabs_panel_is_placed_under_its_tab() {
+    let (_dir, mut editor) = editor_with(&distinct(LONG, 3));
+    let before = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let rect = editor.tab_rects()[1];
+
+    let at = on_tab(&editor, 1);
+    rest_at(&mut editor, at);
+    let after = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let panel: Vec<_> = after
+        .iter()
+        .filter(|quad| quad.uv == [0.0, 0.0, 1.0, 1.0] && !before.contains(quad))
+        .collect();
+    assert!(!panel.is_empty(), "a panel was drawn");
+
+    let strip_bottom = toolbar::HEIGHT + tabs::STRIP_HEIGHT;
+    let left = panel
+        .iter()
+        .map(|quad| quad.rect[0])
+        .fold(f32::MAX, f32::min);
+    let right = panel
+        .iter()
+        .map(|quad| quad.rect[0] + quad.rect[2])
+        .fold(f32::MIN, f32::max);
+    let top = panel
+        .iter()
+        .map(|quad| quad.rect[1])
+        .fold(f32::MAX, f32::min);
+    assert!(
+        top >= strip_bottom - 1.0,
+        "the panel starts at {top}, above the strip's bottom at {strip_bottom}"
+    );
+    let centre = rect.x + rect.width / 2.0;
+    assert!(
+        (f32::midpoint(left, right) - centre).abs() <= 1.0,
+        "the panel spans {left}..{right}, centred on {} rather than the tab's {centre}",
+        f32::midpoint(left, right),
+    );
 }
