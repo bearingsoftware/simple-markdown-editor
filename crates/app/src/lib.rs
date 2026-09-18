@@ -24,6 +24,7 @@ pub mod detect;
 pub mod dialog;
 pub mod editor;
 pub mod field;
+pub mod file_icon;
 pub mod find;
 pub mod gpu;
 pub mod hit;
