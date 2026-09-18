@@ -55,6 +55,29 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   way round because a tab that does not fit is simply not laid out, whereas a name cut short sooner
   sends the user to MDEDIT-121's tooltip more often.
 
+- **Tabs that do not fit go behind an overflow button, and the active tab is always drawn.**
+  MDEDIT-179. `tabs::layout` stopped at the edge and said nothing about what it left off, so a tab
+  past the edge could not be reached from the strip — and, because it always started at tab zero,
+  the *active* tab could be one of the missing ones, lighting nothing when you switched to it.
+
+  **The formatting bar's answer, chosen over wrapping.** Wrapping onto more rows would have made
+  the strip's height depend on the window and on how many files are open, and every one of the
+  content rect, the find bar, MDEDIT-121's tooltip and the scrollbar reads that height as a constant.
+  `tabs::overflowing` is `toolbar::overflowing` (MDEDIT-116) for tabs: the room for the button is
+  reserved only when it is needed, and what is drawn and what is listed come from one call so a tab
+  cannot end up in neither. The list is `popup`'s, as `toolbar::Menu::Tabs`, so it is drawn, hovered
+  and clicked by the code the bar's lists already use; each row shows the file's icon and its name.
+
+  **One thing the bar does not need: the window of tabs moves to include the active one**, but only
+  when it has to. An active tab that fits counting from the first leaves the strip where it is,
+  because scrolling on every click would reshuffle the tabs under the pointer. Once the strip
+  overflows, only whole tabs are drawn — a tab cut off at the edge would be both on the strip and in
+  the list.
+
+  **Names are measured when `overflowing` asks, not up front**, which is how `layout`'s rule survives
+  it: the run from the start, to find whether the strip overflows at all, and the run around the
+  active tab. `only_tabs_that_might_be_drawn_are_measured` holds it to that with two hundred open.
+
 - **The pointer says what is under it, and the shape follows the click.** MDEDIT-176. Nothing in the
   workspace called `Window::set_cursor`, so the arrow was drawn everywhere — including over the text,
   where an editor is expected to show an I-beam, and over MDEDIT-142's box, which is the one thing in

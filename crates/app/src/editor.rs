@@ -282,10 +282,24 @@ struct OpenMenu {
     kind: toolbar::Menu,
     /// The rows, in order.
     rows: Vec<toolbar::Action>,
+    /// The tabs a [`toolbar::Menu::Tabs`] list offers, in order, where `rows` is empty
+    /// (MDEDIT-179). Empty for every other kind.
+    tabs: Vec<usize>,
     /// Top-left corner, in window coordinates.
     at: (f32, f32),
     /// Panel width, measured from the widest row when it opened.
     width: f32,
+}
+
+impl OpenMenu {
+    /// How many rows the list has, whichever kind of row they are.
+    fn len(&self) -> usize {
+        if self.kind == toolbar::Menu::Tabs {
+            self.tabs.len()
+        } else {
+            self.rows.len()
+        }
+    }
 }
 
 /// Where a laid-out label goes, and in what.
@@ -841,8 +855,8 @@ pub struct Editor<T: TextLayout> {
     gpu_error: Option<GpuError>,
     /// Held so Ctrl+S can be told apart from a plain `s`.
     modifiers: ModifiersState,
-    /// Where each tab landed in the strip last frame, for resolving a click.
-    tab_rects: Vec<tabs::TabRect>,
+    /// Where each tab landed in the strip last frame, and what did not fit, for resolving a click.
+    strip: tabs::Strip,
     /// Whether the formatting bar is showing. Per-run: MDEDIT-52 left the setting to the settings
     /// story, and Ctrl+B-era per-run chrome is the precedent.
     toolbar: bool,
@@ -930,7 +944,7 @@ pub struct Editor<T: TextLayout> {
     find_layout: Option<find::Layout>,
     /// Where the open files are shown. See [`Chrome`].
     chrome: Chrome,
-    /// The pane's visible rows, kept for the next click, as `tab_rects` is for the strip.
+    /// The pane's visible rows, kept for the next click, as `strip` is for the strip.
     row_rects: Vec<pane::RowRect>,
     /// How far the pane's list has been scrolled. Its own, not the document's — the two scroll
     /// independently, which is the point of a pane that can hold more files than fit.
@@ -947,13 +961,13 @@ pub struct Editor<T: TextLayout> {
     /// saved somewhere new, which is rare enough that keying on the text is the whole cache
     /// invalidation this needs. Bounded by the session's tab limit.
     row_labels: HashMap<String, Label>,
-    /// Whether each type icon resolved to a glyph this machine has (MDEDIT-174), asked once and
-    /// shared by the pane and the strip (MDEDIT-178).
+    /// Whether each icon code point resolved to a glyph this machine has (MDEDIT-174), asked once and
+    /// shared by the pane, the strip (MDEDIT-178) and the strip's overflow button (MDEDIT-179).
     ///
     /// Not cleared with the label caches: whether a font has a code point does not change with the
     /// size it is drawn at, and asking per row per frame is a text-engine call on the path a
     /// keystroke takes — which is the trap the gutter, the status bar and the pane have each hit.
-    icon_faces: HashMap<file_icon::Icon, bool>,
+    icon_faces: HashMap<char, bool>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
     /// What shape the window was last told to draw the pointer as (MDEDIT-176). Held so a still
@@ -1211,7 +1225,7 @@ impl<T: TextLayout> Editor<T> {
             first_paint: None,
             gpu_error: None,
             modifiers: ModifiersState::empty(),
-            tab_rects: Vec::new(),
+            strip: tabs::Strip::default(),
             toolbar: true,
             toolbar_buttons: Vec::new(),
             toolbar_labels: HashMap::new(),
@@ -4199,7 +4213,7 @@ impl<T: TextLayout> Editor<T> {
         let height = if menu.kind == toolbar::Menu::TableSize {
             popup::grid::height()
         } else {
-            popup::height_of(menu.rows.len())
+            popup::height_of(menu.len())
         };
 
         quads.push(Self::solid(
@@ -4218,8 +4232,57 @@ impl<T: TextLayout> Editor<T> {
 
         if menu.kind == toolbar::Menu::TableSize {
             self.draw_size_picker(quads, scale, menu.at);
+        } else if menu.kind == toolbar::Menu::Tabs {
+            self.draw_tab_menu_rows(quads, scale, &menu);
         } else {
             self.draw_menu_rows(quads, scale, &menu);
+        }
+    }
+
+    /// Draws the rows of the list of hidden tabs (MDEDIT-179): each file's type icon in the icon
+    /// column, as its tab and its pane row draw it, and its name beside it.
+    fn draw_tab_menu_rows(&mut self, quads: &mut Vec<QuadInstance>, scale: f32, menu: &OpenMenu) {
+        let (x, y) = menu.at;
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        let baseline_offset = popup::ROW_HEIGHT / 2.0 + self.theme.body_size * 0.22;
+
+        for (row, index) in menu.tabs.clone().into_iter().enumerate() {
+            let top = y + popup::row_top(row);
+            if self.hovered_row == Some(row) {
+                quads.push(Self::solid(
+                    [
+                        (x + 2.0) * scale,
+                        top * scale,
+                        (menu.width - 4.0) * scale,
+                        popup::ROW_HEIGHT * scale,
+                    ],
+                    self.theme.selection,
+                ));
+            }
+
+            let (face, face_style) = self.row_icon_face(self.icon_for(index), style);
+            self.draw_label(
+                quads,
+                &face,
+                face_style,
+                x + popup::PADDING,
+                top + baseline_offset,
+                self.theme.text,
+                scale,
+                popup::ICON_COLUMN - popup::PADDING,
+            );
+
+            let name = self.workspace.tabs()[index].display_name();
+            self.draw_label(
+                quads,
+                &name,
+                style,
+                x + popup::ICON_COLUMN,
+                top + baseline_offset,
+                self.theme.text,
+                scale,
+                (menu.width - popup::ICON_COLUMN - popup::PADDING).max(0.0),
+            );
         }
     }
 
@@ -4474,7 +4537,8 @@ impl<T: TextLayout> Editor<T> {
                 .find(|button| button.action == action)
                 .map(|button| (button.x + button.width / 2.0, toolbar::HEIGHT)),
             Hovered::Tab(index) => {
-                self.tab_rects
+                self.strip
+                    .tabs
                     .iter()
                     .find(|rect| rect.index == index)
                     .map(|rect| {
@@ -5401,46 +5465,49 @@ impl<T: TextLayout> Editor<T> {
 
     /// Draws the strip, and remembers where each tab landed so a click can be resolved.
     fn build_tab_strip(&mut self, width: f32, scale: f32) -> Vec<QuadInstance> {
-        self.tab_rects.clear();
+        self.strip = tabs::Strip::default();
         if self.chrome != Chrome::Strip || self.workspace.tabs().is_empty() {
+            self.close_tab_menu_if(|_| true);
             return Vec::new();
         }
 
         let logical_width = width / scale;
         let label_style = TextStyle::body(13.0);
 
-        // Measured for as many tabs as could possibly fit, not for all of them: with two hundred
-        // open, shaping every label to draw eight would be the same mistake the document renderer
-        // makes, and there is no reason to repeat it here.
         let names: Vec<String> = self
             .workspace
             .tabs()
             .iter()
             .map(mdedit_session::Tab::display_name)
             .collect();
-        let mut label_widths = Vec::with_capacity(names.len());
-        for name in &names {
-            let run =
-                StyledRun::from_buffer(name, label_style, ByteSpan::empty_at(ByteOffset::ZERO));
-            let measured = self.text.layout(&[run], f32::MAX).map_or(60.0, |layout| {
-                layout
-                    .glyphs()
-                    .map(|glyph| glyph.pos.x + glyph.advance)
-                    .fold(0.0_f32, f32::max)
-            });
-            label_widths.push(measured);
-            // One more than fits is enough to know where the edge is.
-            if label_widths
-                .iter()
-                .sum::<f32>()
-                .gt(&(logical_width + tabs::STRIP_HEIGHT))
-            {
-                break;
-            }
-        }
-
-        self.tab_rects = tabs::layout(&label_widths, logical_width);
+        // Measured only when `overflowing` asks, which is for about as many tabs as fit: with two
+        // hundred open, shaping every label to draw eight would be the same mistake the document
+        // renderer makes, and there is no reason to repeat it here.
+        let text = &mut self.text;
+        self.strip = tabs::overflowing(
+            names.len(),
+            self.workspace.active(),
+            logical_width,
+            |index| {
+                let run = StyledRun::from_buffer(
+                    &names[index],
+                    label_style,
+                    ByteSpan::empty_at(ByteOffset::ZERO),
+                );
+                text.layout(&[run], f32::MAX).map_or(60.0, |layout| {
+                    layout
+                        .glyphs()
+                        .map(|glyph| glyph.pos.x + glyph.advance)
+                        .fold(0.0_f32, f32::max)
+                })
+            },
+        );
         self.truncated_tabs.clear();
+        // A list of hidden tabs that no longer matches what is hidden — the window was widened, a
+        // tab closed, another became active — is offering the wrong files. The toolbar's overflow
+        // closes for the same reason, and closing is the only honest answer here too.
+        let hidden = self.strip.hidden.clone();
+        self.close_tab_menu_if(|listed| listed != hidden.as_slice());
 
         // MDEDIT-84: the formatting bar is above the strip now, so the strip starts where the bar
         // ends. `tabs.rs` is untouched by that — it lays out within a row whose origin the caller
@@ -5451,11 +5518,55 @@ impl<T: TextLayout> Editor<T> {
             self.theme.strip,
         )];
 
-        for rect in self.tab_rects.clone() {
+        for rect in self.strip.tabs.clone() {
             self.draw_tab(&mut quads, rect, names.get(rect.index), label_style, scale);
+        }
+        if let Some(more) = self.strip.more {
+            self.draw_strip_more(&mut quads, more, label_style, scale);
         }
 
         quads
+    }
+
+    /// Draws the strip's overflow button (MDEDIT-179): the formatting bar's `More` face, lit while
+    /// its list is open, as a lit button on the bar is.
+    fn draw_strip_more(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        more: f32,
+        label_style: TextStyle,
+        scale: f32,
+    ) {
+        let top = self.toolbar_height();
+        if self.menu_kind() == Some(toolbar::Menu::Tabs) {
+            quads.push(Self::solid(
+                [
+                    more * scale,
+                    top * scale,
+                    tabs::MORE_WIDTH * scale,
+                    tabs::STRIP_HEIGHT * scale,
+                ],
+                self.theme.tab_active,
+            ));
+        }
+        let (face, style) = self.icon_face(
+            toolbar::Action::More.icon().unwrap_or('\u{E712}'),
+            &toolbar::Action::More.label(),
+            label_style,
+        );
+        let width = self
+            .lay_out_label(&face, style)
+            .map_or(tabs::MORE_WIDTH, |label| label.width);
+        self.draw_label(
+            quads,
+            &face,
+            style,
+            more + (tabs::MORE_WIDTH - width) / 2.0,
+            top + tabs::STRIP_HEIGHT * 0.68,
+            self.theme.text,
+            scale,
+            tabs::MORE_WIDTH,
+        );
     }
 
     /// Draws one tab: its ground, its close affordance and its name.
@@ -5743,24 +5854,32 @@ impl<T: TextLayout> Editor<T> {
     /// The same `.notdef` check the formatting bar makes (MDEDIT-92), and for the same reason: a
     /// tofu box in a column of file names is a bug report, where two letters are merely plain.
     fn row_icon_face(&mut self, icon: file_icon::Icon, text: TextStyle) -> (String, TextStyle) {
+        self.icon_face(icon.glyph(), icon.badge(), text)
+    }
+
+    /// `glyph` in the icon font, or `fallback` in `text` on a machine that has not got it.
+    ///
+    /// Asked of the font once per code point and remembered, because chrome is redrawn every frame
+    /// and the answer cannot change with the size it is drawn at.
+    fn icon_face(&mut self, glyph: char, fallback: &str, text: TextStyle) -> (String, TextStyle) {
         let style = TextStyle {
             family: FontFamily::Icon,
             ..text
         };
-        let glyph = icon.glyph().to_string();
-        let drawn = if let Some(known) = self.icon_faces.get(&icon) {
+        let face = glyph.to_string();
+        let drawn = if let Some(known) = self.icon_faces.get(&glyph) {
             *known
         } else {
             let resolved = self
-                .lay_out_label(&glyph, style)
+                .lay_out_label(&face, style)
                 .is_some_and(|label| !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()));
-            self.icon_faces.insert(icon, resolved);
+            self.icon_faces.insert(glyph, resolved);
             resolved
         };
         if drawn {
-            (glyph, style)
+            (face, style)
         } else {
-            (icon.badge().to_owned(), text)
+            (fallback.to_owned(), text)
         }
     }
 
@@ -6333,7 +6452,7 @@ impl<T: TextLayout> Editor<T> {
                 self.hovered_cell = cell;
                 moved
             } else {
-                let row = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
+                let row = popup::hit_test(menu.len(), x, y, menu.at, menu.width);
                 let moved = row != self.hovered_row;
                 self.hovered_row = row;
                 moved
@@ -6366,7 +6485,12 @@ impl<T: TextLayout> Editor<T> {
         if !self.toolbar_buttons.is_empty() && (0.0..toolbar::HEIGHT).contains(&y) {
             return toolbar::hit_test(&self.toolbar_buttons, x, y).map(Hovered::Button);
         }
-        if let Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)) = self.strip_hit(x, y) {
+        if let Some(hit) = self.strip_hit(x, y) {
+            // The overflow button explains itself by being pressed; a tooltip naming it would
+            // cover the list it is about to open.
+            let (tabs::Hit::Select(index) | tabs::Hit::Close(index)) = hit else {
+                return None;
+            };
             return self
                 .truncated_tabs
                 .contains(&index)
@@ -6456,6 +6580,21 @@ impl<T: TextLayout> Editor<T> {
         self.open_menu.as_ref().map(|menu| menu.rows.as_slice())
     }
 
+    /// The tabs the open list offers, if it is the strip's list of hidden tabs (MDEDIT-179).
+    #[must_use]
+    pub fn menu_tabs(&self) -> Option<&[usize]> {
+        self.open_menu
+            .as_ref()
+            .filter(|menu| menu.kind == toolbar::Menu::Tabs)
+            .map(|menu| menu.tabs.as_slice())
+    }
+
+    /// The strip as last drawn: its tabs, what did not fit, and where the overflow button is.
+    #[must_use]
+    pub fn strip(&self) -> &tabs::Strip {
+        &self.strip
+    }
+
     /// Which menu a button opens, given where the caret is (MDEDIT-128).
     ///
     /// [`toolbar::Action::opens`] answers the structural half — *this button opens a panel* — and
@@ -6514,10 +6653,12 @@ impl<T: TextLayout> Editor<T> {
             // **Whatever the bar dropped, taken from the row it drew** rather than recomputed. The
             // two are one partition and deriving them twice is how an action ends up in neither.
             toolbar::Menu::Overflow => self.dropped.clone(),
-            // MDEDIT-127's grid has no rows of actions — its contents are its geometry — so it is
-            // never empty and the check below does not apply to it.
-            toolbar::Menu::TableSize => Vec::new(),
             toolbar::Menu::TableEdit => toolbar::TABLE_EDIT.to_vec(),
+            // MDEDIT-127's grid has no rows of actions — its contents are its geometry — so it is
+            // never empty and the check below does not apply to it. The strip's list of hidden tabs
+            // (MDEDIT-179) is opened by `toggle_tab_menu`, never by a button on this bar, and an
+            // empty list is refused just below, so a bar that somehow asked opens nothing.
+            toolbar::Menu::TableSize | toolbar::Menu::Tabs => Vec::new(),
         };
         if kind != toolbar::Menu::TableSize && rows.is_empty() {
             return false;
@@ -6535,12 +6676,66 @@ impl<T: TextLayout> Editor<T> {
         self.open_menu = Some(OpenMenu {
             kind,
             rows,
+            tabs: Vec::new(),
             at,
             width,
         });
         // A menu and a tooltip about the same button at once is two panels saying different things.
         self.tooltip = None;
         true
+    }
+
+    /// Opens the list of tabs the strip had no room for, or closes it (MDEDIT-179).
+    ///
+    /// **The rows are the strip's `hidden`, taken from the layout it drew** rather than recomputed —
+    /// the toolbar's rule for its own overflow, and for the same reason: what is drawn and what is
+    /// listed are one partition, and deriving them twice is how a tab ends up in neither.
+    fn toggle_tab_menu(&mut self) -> bool {
+        let (Some(more), false) = (self.strip.more, self.strip.hidden.is_empty()) else {
+            return false;
+        };
+        if self.open_menu.is_some() {
+            return self.close_menu();
+        }
+
+        let tabs = self.strip.hidden.clone();
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        let mut widest = 0.0_f32;
+        for &index in &tabs {
+            let name = self.workspace.tabs()[index].display_name();
+            if let Some(label) = self.lay_out_label(&name, style) {
+                widest = widest.max(label.width);
+            }
+        }
+        // Never wider than the window: a name that long is clipped in its row, as it is on a tab,
+        // and MDEDIT-121's tooltip is what shows the rest of it there.
+        let width = popup::width_of(widest).min(self.window_width);
+        let at = popup::place(
+            width,
+            more,
+            self.toolbar_height() + tabs::STRIP_HEIGHT,
+            self.window_width,
+        );
+        self.open_menu = Some(OpenMenu {
+            kind: toolbar::Menu::Tabs,
+            rows: Vec::new(),
+            tabs,
+            at,
+            width,
+        });
+        self.tooltip = None;
+        true
+    }
+
+    /// Closes the list of hidden tabs if it is open and `stale` says what it lists is out of date.
+    fn close_tab_menu_if(&mut self, stale: impl FnOnce(&[usize]) -> bool) {
+        if self
+            .open_menu
+            .as_ref()
+            .is_some_and(|open| open.kind == toolbar::Menu::Tabs && stale(&open.tabs))
+        {
+            self.close_menu();
+        }
     }
 
     /// How wide a list of rows has to be, laying out any words it needs on the way.
@@ -6635,8 +6830,23 @@ impl<T: TextLayout> Editor<T> {
                 None => true,
             });
         }
-        let hit = popup::hit_test(menu.rows.len(), x, y, menu.at, menu.width);
+        let hit = popup::hit_test(menu.len(), x, y, menu.at, menu.width);
         self.close_menu();
+        if menu.kind == toolbar::Menu::Tabs {
+            // Choosing a hidden tab shows it, and the next frame's strip moves to include it —
+            // `overflowing` keeps the active tab in view, which is what makes the list a way *to*
+            // the tab rather than a second, separate place to switch from.
+            return Some(match hit.and_then(|row| menu.tabs.get(row).copied()) {
+                Some(index) => match self.workspace.activate(index) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        crate::log_error!("could not open tab: {error}");
+                        true
+                    }
+                },
+                None => true,
+            });
+        }
         match hit.and_then(|row| menu.rows.get(row).copied()) {
             Some(action) => Some(self.perform(action)),
             None => Some(true),
@@ -6871,7 +7081,7 @@ impl<T: TextLayout> Editor<T> {
     /// Doing the subtraction in both places is how one of them ends up not doing it, which is
     /// exactly what happened here when only the left click was moved.
     fn strip_hit(&self, x: f32, y: f32) -> Option<tabs::Hit> {
-        tabs::hit_test(&self.tab_rects, x, y - self.toolbar_height())
+        self.strip.hit_test(x, y - self.toolbar_height())
     }
 
     /// Resolves a click in the formatting bar.
@@ -7545,7 +7755,7 @@ impl<T: TextLayout> Editor<T> {
     /// a window position into a hit should use `strip_hit` rather than doing the arithmetic again.
     #[must_use]
     pub fn tab_rects(&self) -> &[tabs::TabRect] {
-        &self.tab_rects
+        &self.strip.tabs
     }
 
     /// Where the file pane's rows landed, for a test. The pane's twin of
@@ -7587,6 +7797,7 @@ impl<T: TextLayout> Editor<T> {
                 true
             }
             tabs::Hit::Close(index) => self.close_tab_at(index),
+            tabs::Hit::More => self.toggle_tab_menu(),
         }
     }
 
@@ -10243,7 +10454,7 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                         | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
                             self.close_tab_at(index)
                         }
-                        (None, None) => false,
+                        (Some(tabs::Hit::More) | None, None) => false,
                     },
                     _ => false,
                 };
