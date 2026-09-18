@@ -15,8 +15,8 @@
 
 use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
 use mdedit_text::{
-    FontId, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine, PositionedGlyph, StyledRun,
-    TextError, TextLayout,
+    FontFamily, FontId, GlyphId, GlyphImage, GlyphKey, Layout, LayoutLine, PositionedGlyph,
+    StyledRun, TextError, TextLayout,
 };
 
 pub const LINE_HEIGHT: f32 = 20.0;
@@ -37,11 +37,26 @@ pub struct Grid {
     /// How many chunks have been through the engine. The whole point of MDEDIT-17 is that this
     /// stays small however long the document is, so the tests assert on it directly.
     layouts: usize,
+    /// Whether a private-use code point in a [`FontFamily::Icon`] run resolves. Off by default, so
+    /// every test exercises the fallback unless it asks otherwise — see the comment on the glyph
+    /// below.
+    icon_font: bool,
 }
 
 impl Grid {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A grid on a machine that has the icon font: a private-use code point resolves, but **only in
+    /// a run that asked for [`FontFamily::Icon`]**, as it does on Windows. That condition is the
+    /// point. Without it a caller that forgot to ask for the icon family would pass here and draw
+    /// `.notdef` there (MDEDIT-174's surviving mutant).
+    pub fn with_icon_font() -> Self {
+        Self {
+            icon_font: true,
+            ..Self::default()
+        }
     }
 
     pub fn layouts(&self) -> usize {
@@ -136,8 +151,11 @@ impl TextLayout for Grid {
                         // Windows — so MDEDIT-92's `U+E8DD` has to come back the way it would on a
                         // machine without Segoe Fluent Icons, or every test in this crate would
                         // exercise the icon path and none would exercise the fallback that exists
-                        // for exactly that machine. The real font is asked in `tests/icons.rs`.
-                        glyph: if ('\u{E000}'..='\u{F8FF}').contains(&character) {
+                        // for exactly that machine. The real font is asked in `tests/icons.rs`;
+                        // `Grid::with_icon_font` is the machine that has it.
+                        glyph: if ('\u{E000}'..='\u{F8FF}').contains(&character)
+                            && !(self.icon_font && run.style.family == FontFamily::Icon)
+                        {
                             GlyphId::new(0)
                         } else {
                             GlyphId::new(1)

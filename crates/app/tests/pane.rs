@@ -31,13 +31,18 @@ const HEIGHT: f32 = MARGIN + 400.0;
 
 /// A workspace of `count` files, with the first showing.
 fn editor_with_files(dir: &TempDir, count: usize, contents: &str) -> Editor<Grid> {
+    editor_with_files_on(dir, count, contents, Grid::new())
+}
+
+/// The same, laid out by a given grid — for a test that needs the icon font present.
+fn editor_with_files_on(dir: &TempDir, count: usize, contents: &str, grid: Grid) -> Editor<Grid> {
     let mut workspace = Workspace::new();
     for n in 0..count {
         let path = dir.path().join(format!("file-{n}.md"));
         std::fs::write(&path, contents).unwrap();
         workspace.add(path);
     }
-    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    let mut editor = Editor::with_workspace(workspace, grid);
     editor.activate_saved_tab();
     editor
 }
@@ -462,5 +467,34 @@ fn a_missing_glyph_falls_back_to_something_visible() {
         quads.iter().filter(in_the_icon_column).count(),
         badge.chars().count(),
         "the column should hold {badge:?}, not one box",
+    );
+}
+
+/// **With the icon font present, the column holds the icon: one glyph, not the badge.** The other
+/// half of the test above, and the half that says the row asked for the icon *family*. Every font
+/// but the icon font answers a private-use code point with `.notdef`, so a row that laid its glyph
+/// out in the UI face would fall back to its badge on the one machine that has the icon — which is
+/// what `cargo-mutants` found nothing here could see.
+#[test]
+fn with_the_icon_font_the_column_holds_the_icon() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files_on(&dir, 2, "prose\n", Grid::with_icon_font());
+    editor.toggle_chrome();
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let row = pane::layout(2, 400.0, 0.0)[0];
+    let top = mdedit_app::toolbar::HEIGHT;
+    let in_the_icon_column = |quad: &&mdedit_app::gpu::QuadInstance| {
+        quad.uv != [0.0, 0.0, 1.0, 1.0]
+            && quad.rect[0] >= row.icon_x()
+            && quad.rect[0] < row.label_x()
+            && quad.rect[1] >= top + row.y
+            && quad.rect[1] < top + row.bottom()
+    };
+    assert_eq!(
+        quads.iter().filter(in_the_icon_column).count(),
+        1,
+        "the column should hold the icon's one glyph, not {:?}",
+        mdedit_app::pane::Icon::Note.badge(),
     );
 }
