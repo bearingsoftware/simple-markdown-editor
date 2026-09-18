@@ -22,6 +22,14 @@ const MAX_TAB_WIDTH: f32 = 200.0;
 /// Narrowest a tab may be, so a very short name still has something to click.
 const MIN_TAB_WIDTH: f32 = 70.0;
 
+/// The column a tab's type icon sits in, its gap included (MDEDIT-178).
+///
+/// **Added to the tab, not taken from its name**, which is where the strip parts company with the
+/// pane (MDEDIT-174). The pane is a fixed 200 px, so its icon had to come off the name; a tab is
+/// sized from its name, so the icon can go on top and every name keeps the room it had. The cost
+/// moves to the strip instead: eighteen pixels a tab, so fewer tabs fit before [`layout`] stops.
+pub const ICON_WIDTH: f32 = 18.0;
+
 /// Where one tab sits in the strip.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TabRect {
@@ -40,16 +48,22 @@ impl TabRect {
         self.x + self.width
     }
 
-    /// Where the label may be drawn, before the close region.
+    /// Where the type icon is drawn (MDEDIT-178).
+    #[must_use]
+    pub fn icon_x(&self) -> f32 {
+        self.x + LABEL_PADDING
+    }
+
+    /// Where the label may be drawn: past the icon, before the close region.
     #[must_use]
     pub fn label_x(&self) -> f32 {
-        self.x + LABEL_PADDING
+        self.x + LABEL_PADDING + ICON_WIDTH
     }
 
     /// Width available to the label.
     #[must_use]
     pub fn label_width(&self) -> f32 {
-        (self.width - LABEL_PADDING - CLOSE_WIDTH).max(0.0)
+        (self.width - LABEL_PADDING - ICON_WIDTH - CLOSE_WIDTH).max(0.0)
     }
 
     /// The close region, as `(x, width)`.
@@ -86,8 +100,11 @@ pub fn layout(label_widths: &[f32], available_width: f32) -> Vec<TabRect> {
     let mut x = 0.0_f32;
 
     for (index, label_width) in label_widths.iter().enumerate() {
-        let width =
-            (label_width + LABEL_PADDING * 2.0 + CLOSE_WIDTH).clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH);
+        // The icon goes on after the clamp, so the bounds still describe the name's room and a
+        // name clamped before MDEDIT-178 is clamped at exactly the same width now.
+        let width = (label_width + LABEL_PADDING * 2.0 + CLOSE_WIDTH)
+            .clamp(MIN_TAB_WIDTH, MAX_TAB_WIDTH)
+            + ICON_WIDTH;
         if x >= available_width {
             break;
         }

@@ -42,6 +42,19 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   pane itself have each hit. The answer cannot change with the size it is drawn at, so it is cached
   and never invalidated; a machine without either Segoe icon font draws MD, {} or TXT instead.
 
+- **A tab draws the same icon as its pane row, and the icon goes on top of the tab.** MDEDIT-178.
+  Nothing about *which* icon was redecided: the strip asks the same `icon_for` and draws through the
+  same `row_icon_face`, so the two presentations cannot disagree about a file. `Icon` moved out of
+  `pane.rs` into `file_icon.rs` because it stopped being the pane's, and `tabs` depending on `pane`
+  for it would have been the wrong way round.
+
+  **Where the column comes from is the one thing that differs.** The pane is a fixed 200 px, so its
+  icon had to come off the name. A tab is sized from its name, so `tabs::layout` adds `ICON_WIDTH`
+  *after* the clamp: the 70–200 px bounds still describe the name's room, every name keeps exactly
+  what it had, and the eighteen pixels are paid in how many tabs fit instead. That trade is the right
+  way round because a tab that does not fit is simply not laid out, whereas a name cut short sooner
+  sends the user to MDEDIT-121's tooltip more often.
+
 - **The pointer says what is under it, and the shape follows the click.** MDEDIT-176. Nothing in the
   workspace called `Window::set_cursor`, so the arrow was drawn everywhere — including over the text,
   where an editor is expected to show an I-beam, and over MDEDIT-142's box, which is the one thing in

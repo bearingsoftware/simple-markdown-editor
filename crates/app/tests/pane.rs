@@ -372,7 +372,7 @@ fn the_chrome_choice_survives_a_restart() {
 /// rather than by a silently changed icon.
 #[test]
 fn every_language_has_an_icon() {
-    use mdedit_app::pane::Icon;
+    use mdedit_app::file_icon::Icon;
     for (name, file, want) in [
         ("Markdown", "notes.md", Icon::Note),
         ("Markdown", "notes.markdown", Icon::Note),
@@ -398,7 +398,7 @@ fn every_language_has_an_icon() {
 /// `Document`, `Page` and `MusicInfo` code points really are one glyph, so this is worth asserting.
 #[test]
 fn the_icons_are_told_apart() {
-    use mdedit_app::pane::Icon;
+    use mdedit_app::file_icon::Icon;
     let glyphs = [Icon::Note, Icon::Structured, Icon::Text].map(Icon::glyph);
     assert_ne!(glyphs[0], glyphs[1]);
     assert_ne!(glyphs[1], glyphs[2]);
@@ -462,7 +462,7 @@ fn a_missing_glyph_falls_back_to_something_visible() {
     };
     // **Counted, not merely present.** A `.notdef` box is one glyph and draws a quad of its own, so
     // "something is there" cannot tell tofu from a fallback. The badge's own letters can.
-    let badge = mdedit_app::pane::Icon::Note.badge();
+    let badge = mdedit_app::file_icon::Icon::Note.badge();
     assert_eq!(
         quads.iter().filter(in_the_icon_column).count(),
         badge.chars().count(),
@@ -495,6 +495,6 @@ fn with_the_icon_font_the_column_holds_the_icon() {
         quads.iter().filter(in_the_icon_column).count(),
         1,
         "the column should hold the icon's one glyph, not {:?}",
-        mdedit_app::pane::Icon::Note.badge(),
+        mdedit_app::file_icon::Icon::Note.badge(),
     );
 }

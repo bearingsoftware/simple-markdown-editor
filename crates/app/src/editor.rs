@@ -39,6 +39,7 @@ use crate::config::Config;
 use crate::content::{ContentRect, Insets, Offset};
 use crate::dialog;
 use crate::field;
+use crate::file_icon;
 use crate::find;
 use crate::gpu::{
     ATLAS_SIZE, Atlas, INITIAL_PICTURES, QuadInstance, SHADER, create_atlas_parts,
@@ -946,12 +947,13 @@ pub struct Editor<T: TextLayout> {
     /// saved somewhere new, which is rare enough that keying on the text is the whole cache
     /// invalidation this needs. Bounded by the session's tab limit.
     row_labels: HashMap<String, Label>,
-    /// Whether each type icon resolved to a glyph this machine has (MDEDIT-174), asked once.
+    /// Whether each type icon resolved to a glyph this machine has (MDEDIT-174), asked once and
+    /// shared by the pane and the strip (MDEDIT-178).
     ///
     /// Not cleared with the label caches: whether a font has a code point does not change with the
     /// size it is drawn at, and asking per row per frame is a text-engine call on the path a
     /// keystroke takes — which is the trap the gutter, the status bar and the pane have each hit.
-    icon_faces: HashMap<pane::Icon, bool>,
+    icon_faces: HashMap<file_icon::Icon, bool>,
     /// Last known cursor position, in device-independent pixels.
     cursor: (f32, f32),
     /// What shape the window was last told to draw the pointer as (MDEDIT-176). Held so a still
@@ -5515,6 +5517,27 @@ impl<T: TextLayout> Editor<T> {
             close_width,
         );
 
+        let ink = if is_active {
+            self.theme.text
+        } else {
+            self.theme.marker
+        };
+
+        // The same icon the tab's pane row draws (MDEDIT-178), from the same answer and through the
+        // same fallback, so the two presentations cannot disagree about what a file is.
+        let icon = self.icon_for(rect.index);
+        let (face, face_style) = self.row_icon_face(icon, label_style);
+        self.draw_label(
+            quads,
+            &face,
+            face_style,
+            rect.icon_x(),
+            top + tabs::STRIP_HEIGHT * 0.68,
+            ink,
+            scale,
+            tabs::ICON_WIDTH,
+        );
+
         if let Some(name) = name {
             let clipped = self.draw_label(
                 quads,
@@ -5522,11 +5545,7 @@ impl<T: TextLayout> Editor<T> {
                 label_style,
                 rect.label_x(),
                 top + tabs::STRIP_HEIGHT * 0.68,
-                if is_active {
-                    self.theme.text
-                } else {
-                    self.theme.marker
-                },
+                ink,
                 scale,
                 rect.label_width(),
             );
@@ -5705,17 +5724,17 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Which icon a pane row's file gets (MDEDIT-174).
+    /// Which icon a tab's file gets, in the pane (MDEDIT-174) and the strip (MDEDIT-178).
     ///
     /// **Asked of the path, not of the document.** A tab is a lightweight handle until it is shown,
     /// so most rows have no document to ask — and `detect::language_for` is the same answer the
     /// highlighting uses, which is what stops an icon disagreeing with the colours in the file it
     /// names. A buffer with no path has no extension either, so it comes out plain text's.
-    fn icon_for(&self, index: usize) -> pane::Icon {
+    fn icon_for(&self, index: usize) -> file_icon::Icon {
         self.workspace.tabs()[index]
             .path()
-            .map_or(pane::Icon::Text, |path| {
-                pane::Icon::of(crate::detect::language_for(path))
+            .map_or(file_icon::Icon::Text, |path| {
+                file_icon::Icon::of(crate::detect::language_for(path))
             })
     }
 
@@ -5723,7 +5742,7 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// The same `.notdef` check the formatting bar makes (MDEDIT-92), and for the same reason: a
     /// tofu box in a column of file names is a bug report, where two letters are merely plain.
-    fn row_icon_face(&mut self, icon: pane::Icon, text: TextStyle) -> (String, TextStyle) {
+    fn row_icon_face(&mut self, icon: file_icon::Icon, text: TextStyle) -> (String, TextStyle) {
         let style = TextStyle {
             family: FontFamily::Icon,
             ..text

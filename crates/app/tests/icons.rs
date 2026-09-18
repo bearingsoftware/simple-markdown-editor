@@ -17,7 +17,7 @@
     clippy::float_cmp
 )]
 
-use mdedit_app::pane::Icon;
+use mdedit_app::file_icon::Icon;
 use mdedit_app::toolbar::{self, Action};
 use mdedit_app::view::{Theme, as_styled, build_runs};
 use mdedit_document::Document;
