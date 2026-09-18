@@ -16,6 +16,32 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   point. So a panel's rules still hold without change: nothing drawn over a box can pass a click
   through to it. See the MDEDIT-142 entry in [rendering](rendering.md).
 
+- **A file-pane row shows what kind of file it is, in three shapes rather than seven.** MDEDIT-174.
+  A pane of names told you nothing until you read the extension at the end of a name the pane may
+  have truncated. The icon is asked of `detect::language_for` — the same answer the highlighting
+  uses — so `.yml` and `.yaml` cannot drift apart, and a new language gets an icon by being added to
+  `detect` and nowhere else.
+
+  **The font decided the grouping, and only rasterising found that out.** MDEDIT-92's rule is that a
+  private-use code point is a promise about a font rather than a standard, and this is the second
+  time it paid: `U+E8A5` "Document", `U+E7C3` "Page" and `U+E130` "MusicInfo" rasterise to *the same
+  glyph* in Segoe Fluent Icons — identical bitmaps, not merely similar — and there is no JSON glyph
+  or YAML one at all. The usable silhouettes are a page, a page with lines, code brackets and three
+  rules. So the seven languages are grouped by what they are for: Markdown a document, the five
+  structured formats code brackets, plain text lined paper. Letter badges for all seven were the
+  alternative and cost twice the width in a 200 px pane, to be *read* rather than glanced at.
+  `tests/icons.rs` asserts the three exist, have ink, and rasterise to three different shapes.
+
+  **The column comes off the name**, which is the whole of its cost, so `RowRect::label_x` and
+  `label_width` move by it and MDEDIT-121's truncation is measured against what is left. The hit test
+  needed nothing: everything left of the close region is already the row's body, so a click on the
+  icon selects the row.
+
+  **Whether the glyph resolves is asked once, not per row per frame.** A `.notdef` check is a
+  text-engine call, and chrome is redrawn every frame — the trap the gutter, the status bar and the
+  pane itself have each hit. The answer cannot change with the size it is drawn at, so it is cached
+  and never invalidated; a machine without either Segoe icon font draws MD, {} or TXT instead.
+
 - **The pointer says what is under it, and the shape follows the click.** MDEDIT-176. Nothing in the
   workspace called `Window::set_cursor`, so the arrow was drawn everywhere — including over the text,
   where an editor is expected to show an I-beam, and over MDEDIT-142's box, which is the one thing in

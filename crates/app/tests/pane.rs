@@ -31,13 +31,18 @@ const HEIGHT: f32 = MARGIN + 400.0;
 
 /// A workspace of `count` files, with the first showing.
 fn editor_with_files(dir: &TempDir, count: usize, contents: &str) -> Editor<Grid> {
+    editor_with_files_on(dir, count, contents, Grid::new())
+}
+
+/// The same, laid out by a given grid — for a test that needs the icon font present.
+fn editor_with_files_on(dir: &TempDir, count: usize, contents: &str, grid: Grid) -> Editor<Grid> {
     let mut workspace = Workspace::new();
     for n in 0..count {
         let path = dir.path().join(format!("file-{n}.md"));
         std::fs::write(&path, contents).unwrap();
         workspace.add(path);
     }
-    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    let mut editor = Editor::with_workspace(workspace, grid);
     editor.activate_saved_tab();
     editor
 }
@@ -354,5 +359,142 @@ fn the_chrome_choice_survives_a_restart() {
         next.chrome(),
         Chrome::Pane,
         "the next run should open on whichever was chosen"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The type icon (MDEDIT-174).
+// ---------------------------------------------------------------------------
+
+/// **Each of the seven languages gets an icon, and the grouping is the decision.** The icon font has
+/// no JSON glyph and no YAML one, so the languages are grouped by what they are for: prose, structure,
+/// and everything else. Asserted through the real `Language` values, so renaming one is caught here
+/// rather than by a silently changed icon.
+#[test]
+fn every_language_has_an_icon() {
+    use mdedit_app::pane::Icon;
+    for (name, file, want) in [
+        ("Markdown", "notes.md", Icon::Note),
+        ("Markdown", "notes.markdown", Icon::Note),
+        ("JSON", "config.json", Icon::Structured),
+        ("YAML", "deploy.yaml", Icon::Structured),
+        ("YAML", "deploy.yml", Icon::Structured),
+        ("XML", "data.xml", Icon::Structured),
+        ("TOML", "Cargo.toml", Icon::Structured),
+        ("INI", "setup.ini", Icon::Structured),
+        ("INI", "setup.cfg", Icon::Structured),
+        ("Plain Text", "changelog.txt", Icon::Text),
+        ("Plain Text", "unknown.zzz", Icon::Text),
+        ("Plain Text", "no-extension", Icon::Text),
+    ] {
+        let language = mdedit_app::detect::language_for(std::path::Path::new(file));
+        assert_eq!(language.name(), name, "{file} is not {name}");
+        assert_eq!(Icon::of(language), want, "{file}");
+    }
+}
+
+/// The three icons are three *different* glyphs. Two categories sharing one would be a column of
+/// identical marks, which is the defect this feature exists to avoid — and the font's own
+/// `Document`, `Page` and `MusicInfo` code points really are one glyph, so this is worth asserting.
+#[test]
+fn the_icons_are_told_apart() {
+    use mdedit_app::pane::Icon;
+    let glyphs = [Icon::Note, Icon::Structured, Icon::Text].map(Icon::glyph);
+    assert_ne!(glyphs[0], glyphs[1]);
+    assert_ne!(glyphs[1], glyphs[2]);
+    assert_ne!(glyphs[0], glyphs[2]);
+
+    let badges = [Icon::Note, Icon::Structured, Icon::Text].map(Icon::badge);
+    assert_ne!(badges[0], badges[1]);
+    assert_ne!(badges[1], badges[2]);
+    assert_ne!(badges[0], badges[2]);
+}
+
+/// The name starts clear of the icon, and loses exactly the icon's column to it — which is what
+/// MDEDIT-121's truncation then measures against.
+#[test]
+fn the_name_starts_after_the_icon() {
+    let row = pane::layout(1, 400.0, 0.0)[0];
+    assert_eq!(row.label_x(), row.icon_x() + pane::ICON_WIDTH);
+    assert_eq!(
+        row.label_width(),
+        PANE_WIDTH - row.label_x() - (PANE_WIDTH - row.close_region().0),
+        "the name runs from past the icon to the close region",
+    );
+}
+
+/// **A click on the icon selects the row**, as a click on its name does: the icon is part of the
+/// row's body, not a control of its own.
+#[test]
+fn a_click_on_the_icon_selects_the_row() {
+    let dir = TempDir::new().unwrap();
+    let editor = editor_with_files(&dir, 3, "prose\n");
+    let rows = pane::layout(3, 400.0, 0.0);
+    let second = rows[1];
+
+    let at = second.icon_x() + pane::ICON_WIDTH / 2.0;
+    assert_eq!(
+        pane::hit_test(&rows, at, second.y + ROW_HEIGHT / 2.0),
+        Some(Hit::Select(1)),
+    );
+    drop(editor);
+}
+
+/// **A machine whose fonts lack the icon draws a badge, not `.notdef`.** The grid stub answers
+/// `.notdef` for every private-use code point on purpose (MDEDIT-92), so this is the fallback path,
+/// and glyph quads in the icon's column are what says something was drawn there at all.
+#[test]
+fn a_missing_glyph_falls_back_to_something_visible() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files(&dir, 2, "prose\n");
+    editor.toggle_chrome();
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let row = pane::layout(2, 400.0, 0.0)[0];
+    let top = mdedit_app::toolbar::HEIGHT;
+    let in_the_icon_column = |quad: &&mdedit_app::gpu::QuadInstance| {
+        // A glyph, not one of the panel or row fills: those carry the whole-texture uv.
+        quad.uv != [0.0, 0.0, 1.0, 1.0]
+            && quad.rect[0] >= row.icon_x()
+            && quad.rect[0] < row.label_x()
+            && quad.rect[1] >= top + row.y
+            && quad.rect[1] < top + row.bottom()
+    };
+    // **Counted, not merely present.** A `.notdef` box is one glyph and draws a quad of its own, so
+    // "something is there" cannot tell tofu from a fallback. The badge's own letters can.
+    let badge = mdedit_app::pane::Icon::Note.badge();
+    assert_eq!(
+        quads.iter().filter(in_the_icon_column).count(),
+        badge.chars().count(),
+        "the column should hold {badge:?}, not one box",
+    );
+}
+
+/// **With the icon font present, the column holds the icon: one glyph, not the badge.** The other
+/// half of the test above, and the half that says the row asked for the icon *family*. Every font
+/// but the icon font answers a private-use code point with `.notdef`, so a row that laid its glyph
+/// out in the UI face would fall back to its badge on the one machine that has the icon — which is
+/// what `cargo-mutants` found nothing here could see.
+#[test]
+fn with_the_icon_font_the_column_holds_the_icon() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files_on(&dir, 2, "prose\n", Grid::with_icon_font());
+    editor.toggle_chrome();
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let row = pane::layout(2, 400.0, 0.0)[0];
+    let top = mdedit_app::toolbar::HEIGHT;
+    let in_the_icon_column = |quad: &&mdedit_app::gpu::QuadInstance| {
+        quad.uv != [0.0, 0.0, 1.0, 1.0]
+            && quad.rect[0] >= row.icon_x()
+            && quad.rect[0] < row.label_x()
+            && quad.rect[1] >= top + row.y
+            && quad.rect[1] < top + row.bottom()
+    };
+    assert_eq!(
+        quads.iter().filter(in_the_icon_column).count(),
+        1,
+        "the column should hold the icon's one glyph, not {:?}",
+        mdedit_app::pane::Icon::Note.badge(),
     );
 }
