@@ -273,3 +273,55 @@ fn with_the_icon_font_each_tab_draws_its_icon() {
         );
     }
 }
+
+/// **A tab's width is exactly its name plus its fixed parts**, in the range the clamp leaves alone:
+/// twelve pixels of padding either side, the twenty-pixel close region and the eighteen-pixel icon
+/// column. `a_name_keeps_the_room_it_had` only bounds it from below, and `cargo-mutants` on #172
+/// showed the formula could be rearranged under that bound without a test noticing.
+#[test]
+fn a_tab_is_its_name_plus_its_fixed_parts() {
+    for name in [50.0_f32, 100.0] {
+        let rect = tabs::layout(&[name], 1000.0)[0];
+        assert_eq!(
+            rect.width,
+            name + 12.0 * 2.0 + 20.0 + tabs::ICON_WIDTH,
+            "{name}"
+        );
+    }
+}
+
+/// **The icon sits on the name's baseline.** They are one line of the tab, so their glyphs start
+/// at the same height — asserted against each other rather than against a number, because the
+/// number is a design choice and the agreement is not. Found by `cargo-mutants` on #172: moving
+/// either baseline alone was invisible to every other test here.
+#[test]
+fn the_icon_and_the_name_share_a_baseline() {
+    let dir = TempDir::new().unwrap();
+    let (editor, quads) = strip_of(&dir, &["a.md"], Grid::with_icon_font());
+    let rect = editor.tab_rects()[0];
+    let (close_x, _) = rect.close_region();
+
+    // Glyphs in the strip's band: the toolbar above and the document below share these x.
+    let tops = |from: f32, to: f32| -> Vec<f32> {
+        quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= from
+                    && quad.rect[0] < to
+                    && quad.rect[1] >= toolbar::HEIGHT
+                    && quad.rect[1] < toolbar::HEIGHT + STRIP_HEIGHT
+            })
+            .map(|quad| quad.rect[1])
+            .collect()
+    };
+    let icon = tops(rect.icon_x(), rect.label_x());
+    let name = tops(rect.label_x(), close_x);
+    assert_eq!(icon.len(), 1, "one icon glyph");
+    assert!(!name.is_empty(), "the name was drawn");
+    assert!(
+        name.iter().all(|top| *top == icon[0]),
+        "icon at {} but name at {name:?}",
+        icon[0],
+    );
+}
