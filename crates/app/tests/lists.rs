@@ -598,3 +598,30 @@ fn a_click_on_a_wrapped_row_lands_on_the_byte_under_it() {
         "clicking the start of the wrapped row put the caret at {caret} ({under:?})",
     );
 }
+
+/// **A wrapped item reaches no further right than unlisted text.** Laid out at the width its marker
+/// leaves, its rows end where a paragraph's do; laid out at the full width and then hung, they would
+/// end a marker's width past it. Every hanging test here looked at where rows start.
+#[test]
+fn a_wrapped_item_reaches_no_further_right_than_a_paragraph() {
+    let long = "word ".repeat(60);
+    let rightmost = |source: &str| {
+        let top = mdedit_app::toolbar::HEIGHT + MARGIN;
+        Editor::new(source, Grid::new())
+            .build_frame(900.0, 600.0, 1.0)
+            .iter()
+            .filter(|quad| quad.uv != [0.0, 0.0, 1.0, 1.0])
+            .filter(|quad| {
+                quad.rect[1] >= top && quad.rect[1] < 600.0 - mdedit_app::toolbar::HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .fold(0.0_f32, f32::max)
+    };
+
+    let listed = rightmost(&format!("- {long}\n"));
+    let plain = rightmost(&format!("{long}\n"));
+    assert!(
+        listed <= plain,
+        "the item reached {listed}, past a paragraph's {plain}"
+    );
+}
