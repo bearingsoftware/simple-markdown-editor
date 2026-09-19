@@ -38,7 +38,7 @@ from that tag — see [Configs](#configs).
 - **Jira project:** `MDEDIT` — https://chattersley.atlassian.net/browse/MDEDIT
 - **Confluence space:** `MDEDIT` — https://chattersley.atlassian.net/wiki/spaces/MDEDIT/overview
   (`Features` and `Bugs` parent pages)
-- **Build order:** [the toolbar wave and after](https://chattersley.atlassian.net/wiki/spaces/MDEDIT/pages/2206433281)
+- **Build order:** [after the chrome wave](https://chattersley.atlassian.net/wiki/spaces/MDEDIT/pages/2227765249)
 
 Commit scope is the ticket key: `feat(MDEDIT-12): add marker locator`. Statuses are
 `To Do → In Progress → In Review → Done` (this project's board adds `In Review` over the baseline
