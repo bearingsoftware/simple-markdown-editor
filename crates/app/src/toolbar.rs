@@ -527,6 +527,13 @@ pub enum Menu {
     /// buttons or going to the overflow, and both were answers to a width problem this does not
     /// have.
     TableEdit,
+    /// The tabs the strip had no room for (MDEDIT-179).
+    ///
+    /// **Not opened by a button on this bar** but by the strip's own overflow button, which is this
+    /// bar's `More` moved down a row. It is here rather than in a second enum because it is the same
+    /// panel — [`crate::popup`]'s list, drawn, hovered and clicked by the same code — with files for
+    /// rows instead of actions.
+    Tabs,
 }
 
 /// What [`Menu::TableEdit`] offers, in the order it offers it (MDEDIT-128).
