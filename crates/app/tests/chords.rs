@@ -19,8 +19,8 @@ use mdedit_app::editor::Editor;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod chordlist;
-mod stub;
+use crate::chordlist;
+use crate::stub;
 use stub::Grid;
 
 /// An editor on one saved file, and a picker that answers with `save_to`.

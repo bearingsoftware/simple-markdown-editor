@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use mdedit_app::clicks::{Clicks, Granularity, SLOP};
 use mdedit_app::editor::Editor;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 600.0;

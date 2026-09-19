@@ -14,7 +14,7 @@ use mdedit_app::editor::Editor;
 use mdedit_session::recent::Recent;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 /// An editor with nothing open and its recent list in a temporary directory.

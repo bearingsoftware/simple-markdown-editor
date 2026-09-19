@@ -3,7 +3,7 @@
 //! Ignored, so it never runs in CI — run it by hand:
 //!
 //! ```text
-//! cargo test --release -p mdedit-app --test find_cost -- --ignored --nocapture
+//! cargo test --release -p mdedit-app --test app -- find_cost:: --ignored --nocapture
 //! ```
 //!
 //! It exists because the find bar's rescan is the first thing this editor has put **on the document
@@ -33,7 +33,7 @@ use mdedit_app::find::Key;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

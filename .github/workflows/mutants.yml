@@ -67,6 +67,10 @@ env:
   # Twenty with five shards then ran *slower per mutant*, not faster: see `max-parallel` below. At
   # fifteen, two shards at a time, a shard has both a small enough share of the diff and enough of the
   # host to finish it.
+  #
+  # **The cost those numbers were measured at is gone (MDEDIT-182).** `mdedit-app`'s tests are one
+  # binary now and mutants build without debug info, which took a mutant's rebuild from 135 s to 7 s
+  # on one machine. Left at fifteen until a run here measures the new cost — see build-and-test.md.
   MUTANTS_PER_SHARD: 15
   # **A decision, not arithmetic.** Six shards of fifteen is 90 mutants; past that a shard still says
   # it ran out of time, because the answer to a diff that large is to split the pull request rather

@@ -18,7 +18,7 @@ use mdedit_app::prompt::{Conflict, ConflictPrompt, Conflicting};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 /// Answers with whatever it was told to, and records what it was asked.

@@ -96,3 +96,11 @@ lossy_float_literal = "deny"
 # the test that covers it runs under the test profile, not this one.
 [profile.release]
 overflow-checks = true
+
+# What `cargo-mutants` builds each mutant with (MDEDIT-182), set in `.cargo/mutants.toml`. The test
+# profile without debug info: a mutant's build is a link of the editor and its tests, and debug info
+# is most of what a link writes. Measured on MDEDIT-182 at 18 s a mutant with it and 7 s without.
+# Nothing here is ever run under a debugger; a surviving mutant is reproduced with an ordinary build.
+[profile.mutants]
+inherits = "test"
+debug = "none"

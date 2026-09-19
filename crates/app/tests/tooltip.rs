@@ -31,7 +31,7 @@ use mdedit_session::Workspace;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

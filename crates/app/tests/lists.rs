@@ -21,7 +21,7 @@ use mdedit_document::{Document, Selection};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{Layout, TextLayout};
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 fn runs_of(source: &str) -> Vec<ViewRun<'_>> {

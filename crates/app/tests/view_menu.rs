@@ -20,7 +20,7 @@ use mdedit_app::editor::Editor;
 use mdedit_app::view::{Chrome, Mode};
 use mdedit_menu_win::Command;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 fn fresh() -> Editor<Grid> {

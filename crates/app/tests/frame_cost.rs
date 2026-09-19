@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use mdedit_app::editor::Editor;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 const ROUNDS: u32 = 20;

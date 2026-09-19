@@ -22,7 +22,7 @@ use mdedit_app::view::Theme;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT};
 
 const WIDTH: f32 = 900.0;

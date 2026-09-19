@@ -14,7 +14,7 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::scrollbar::{self, MIN_THUMB, WIDTH};
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 const WINDOW: f32 = 400.0;

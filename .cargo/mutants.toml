@@ -28,3 +28,7 @@ test_tool = "nextest"
 # The property tests are legitimately slow in a debug build, and a mutant that merely makes one
 # slower must not be scored as caught by a timeout.
 timeout_multiplier = 4.0
+
+# The workspace's `mutants` profile: the test profile without debug info, because a mutant's build is
+# mostly a link and debug info is most of what a link writes (MDEDIT-182).
+profile = "mutants"

@@ -8,10 +8,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# One integration-test binary rather than one per file (MDEDIT-182): each is a full link of the
+# editor, and a change to the library relinked seventy-five of them. See `tests/main.rs`.
+autotests = false
 
 [[bin]]
 name = "mdedit"
 path = "src/main.rs"
+
+[[test]]
+name = "app"
+path = "tests/main.rs"
 
 [dependencies]
 mdedit-document.workspace = true

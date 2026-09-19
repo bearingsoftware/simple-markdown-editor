@@ -15,7 +15,7 @@ use mdedit_app::view::{Decoration, Mode, Theme, build_runs_in};
 use mdedit_document::{Document, Selection};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 400.0;

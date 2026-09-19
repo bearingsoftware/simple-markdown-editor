@@ -4,7 +4,7 @@
 //! Ignored, so it never runs in CI — run it by hand:
 //!
 //! ```text
-//! cargo test --release -p mdedit-app --test validate_cost -- --ignored --nocapture
+//! cargo test --release -p mdedit-app --test app -- validate_cost:: --ignored --nocapture
 //! ```
 //!
 //! MDEDIT-47's acceptance criterion is that typing at 357 KB of JSON is **unchanged**, and the whole
@@ -39,7 +39,7 @@ use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;
