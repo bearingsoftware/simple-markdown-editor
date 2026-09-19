@@ -26,7 +26,7 @@ use mdedit_app::view::Chrome;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

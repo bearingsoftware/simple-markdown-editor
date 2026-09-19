@@ -20,7 +20,7 @@ use mdedit_session::Workspace;
 use mdedit_session::snapshot::Store;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 /// Answers with whatever it was told to, and records what it was shown.

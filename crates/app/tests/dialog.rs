@@ -30,7 +30,7 @@ use mdedit_app::view::{Rgba, Theme, ThemeChoice};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

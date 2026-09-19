@@ -14,8 +14,8 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::shortcuts;
 
-mod chordlist;
-mod stub;
+use crate::chordlist;
+use crate::stub;
 use stub::Grid;
 
 /// Every chord the reference claims, flattened.

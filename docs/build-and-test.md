@@ -381,6 +381,35 @@ together on five different runner VMs of one Proxmox host and got a fifth of it 
 `max-parallel` is 2. Sharding wider makes each shard slower, which is the opposite of what a per-shard
 budget needs.
 
+**Then the cost of a mutant itself came down, by an order of magnitude (MDEDIT-182).** Sharding
+spread the work; it did nothing about each piece of it, and pull requests in the app crate kept
+generating more mutants than six shards could hold — #173 made 190 and every shard ran out of time,
+twice, while holding the pool the rest of CI queues on. Most of a mutant's cost was not the change:
+
+- **`mdedit-app` had seventy-five integration-test binaries**, one per file under `tests/`, and each
+  depends on the library. A mutant changes the library, so every one of them recompiles and relinks
+  wgpu, winit and the rest. They are now **one binary**, `crates/app/tests/main.rs`, with Cargo's
+  discovery off — `every_test_file_is_declared_here` fails on a file nobody added to it. nextest
+  still runs every test in its own process, so nothing about isolation changes.
+- **Debug info is most of what a link writes**, and nobody runs a mutant under a debugger. The
+  workspace's `mutants` profile is the test profile without it, and `.cargo/mutants.toml` selects it.
+
+Measured on one Windows machine, rebuilding the app's tests after touching `editor.rs`:
+
+| | Debug info | None |
+| --- | --- | --- |
+| 75 test binaries | 135 s | 75 s |
+| One test binary | 18 s | **7 s** |
+
+On the runners, before: `mdedit-app` mutants took 69–189 s to build and 8–52 s to test. After, the same
+machine that measured the table ran eleven app mutants — baseline included — in 13 minutes, where
+cargo-mutants on `main` could not get through its baseline at all: building seventy-five test binaries
+at once ran the machine out of memory. The shard size and cap are left as they were until a CI run
+has measured the new cost; they were set by measurement and should move by it.
+
+To run one file's tests now: `cargo nextest run -p mdedit-app -E 'test(/^quotes::/)'`. The cost
+harnesses take `--test app -- find_cost:: --ignored --nocapture` in place of `--test find_cost`.
+
 Six shards of fifteen is 90 mutants before a diff is told to split, and #168 is the largest this
 project has produced. `workflow_dispatch` takes a `base` ref so a real diff can be re-run by hand;
 without one a dispatch diffs against `origin/` and mutates nothing. **That input takes a branch name

@@ -25,7 +25,7 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 900.0;

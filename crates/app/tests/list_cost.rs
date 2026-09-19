@@ -1,7 +1,7 @@
 //! What decorating a list-heavy document costs. A measurement, not an assertion.
 //!
 //! ```text
-//! cargo test --release -p mdedit-app --test list_cost -- --ignored --nocapture
+//! cargo test --release -p mdedit-app --test app -- list_cost:: --ignored --nocapture
 //! ```
 //!
 //! MDEDIT-141 put a branch and, for a bulleted item, a small allocation on `build_runs_in` — which is

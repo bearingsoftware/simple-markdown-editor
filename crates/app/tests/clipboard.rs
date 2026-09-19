@@ -23,7 +23,7 @@ use mdedit_app::editor::Editor;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 /// A clipboard in a variable. Shared with the test so it can be read back after a copy.

@@ -16,7 +16,7 @@ use mdedit_app::view::{Decoration, Mode, Theme, build_runs_in};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

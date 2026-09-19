@@ -12,7 +12,7 @@ use mdedit_app::toolbar;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 800.0;

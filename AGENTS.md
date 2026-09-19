@@ -146,6 +146,11 @@ sentence above closes the question.
 frame on WARP, asserting ink. **Add to it rather than assuming rendering is unreachable.** What it
 still cannot see is whether the result *looks* right — see `docs/build-and-test.md`.
 
+**`mdedit-app`'s integration tests are one binary**, `crates/app/tests/main.rs` (MDEDIT-182): each
+binary is a full link of the editor, and seventy-five of them made every mutant cost minutes. **A new
+test file is declared in `main.rs` or it never compiles** — `every_test_file_is_declared_here` fails
+on one that was forgotten. One file's tests: `cargo nextest run -p mdedit-app -E 'test(/^quotes::/)'`.
+
 See [`docs/build-and-test.md`](docs/build-and-test.md) for fuzzing, mutation testing, coverage,
 benchmarks and why each job runs where it does.
 

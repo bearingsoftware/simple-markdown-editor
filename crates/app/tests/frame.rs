@@ -21,7 +21,7 @@ use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, ASCENT, Grid, LINE_HEIGHT, MARGIN};
 
 /// One line, as a whole number of pixels: the tests compare rounded rows, so the step has to be

@@ -25,7 +25,7 @@ use mdedit_app::toolbar::{self, Action};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 /// Wide enough for every button — see `toolbar.rs` for why the stub needs more than 900.

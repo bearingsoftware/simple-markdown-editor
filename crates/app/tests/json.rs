@@ -20,7 +20,7 @@ use mdedit_language::{SegmentKind, Token};
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 600.0;

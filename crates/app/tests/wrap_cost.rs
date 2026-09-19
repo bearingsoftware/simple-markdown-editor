@@ -1,7 +1,7 @@
 //! What a keystroke costs with word wrap on and off. A measurement, not an assertion.
 //!
 //! ```text
-//! cargo test --release -p mdedit-app --test wrap_cost -- --ignored --nocapture
+//! cargo test --release -p mdedit-app --test app -- wrap_cost:: --ignored --nocapture
 //! ```
 //!
 //! MDEDIT-49's acceptance criterion is that the keystroke budget holds in **both** modes, and the
@@ -26,7 +26,7 @@ use mdedit_app::editor::Editor;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;

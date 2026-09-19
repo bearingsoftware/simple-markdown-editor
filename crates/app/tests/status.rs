@@ -18,7 +18,7 @@ use mdedit_document::Selection;
 use mdedit_file::Newline;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 600.0;

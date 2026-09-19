@@ -18,7 +18,7 @@ use mdedit_app::editor::Editor;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 fn editor(source: &str, caret: usize) -> Editor<Grid> {

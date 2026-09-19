@@ -29,7 +29,7 @@
 use mdedit_app::config::{Config, MAX_ZOOM, MIN_ZOOM, Settings};
 use mdedit_app::editor::Editor;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 const WIDTH: f32 = 600.0;

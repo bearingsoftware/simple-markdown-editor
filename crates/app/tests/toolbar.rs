@@ -31,7 +31,7 @@ use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 /// Wider than the 900-pixel default window, and MDEDIT-92 is why.

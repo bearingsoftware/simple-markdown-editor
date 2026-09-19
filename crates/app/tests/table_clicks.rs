@@ -18,7 +18,7 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::view::Theme;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 800.0;

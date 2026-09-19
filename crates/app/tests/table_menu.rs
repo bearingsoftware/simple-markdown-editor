@@ -13,7 +13,7 @@ use mdedit_app::toolbar::{self, Action};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDE: f32 = 1000.0;

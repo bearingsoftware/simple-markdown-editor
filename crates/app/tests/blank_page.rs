@@ -26,7 +26,7 @@ use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
 use mdedit_app::view::{Appearance, Rgba, Theme, ThemeChoice};
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 600.0;

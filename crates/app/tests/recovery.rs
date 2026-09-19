@@ -23,7 +23,7 @@ use mdedit_session::Workspace;
 use mdedit_session::snapshot::Store;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 /// An editor on one saved file, with its snapshots pointed at a temporary directory.

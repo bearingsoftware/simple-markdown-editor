@@ -21,7 +21,7 @@ use mdedit_app::view::{Appearance, Rgba, Theme, ThemeChoice};
 use mdedit_menu_win::{AppearanceChoice, Command};
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::Grid;
 
 const WIDTH: f32 = 600.0;

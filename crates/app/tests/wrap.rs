@@ -21,7 +21,7 @@ use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
 use mdedit_offsets::ByteOffset;
 
-mod stub;
+use crate::stub;
 use stub::{ADVANCE, Grid, LINE_HEIGHT};
 
 const WIDTH: f32 = 600.0;

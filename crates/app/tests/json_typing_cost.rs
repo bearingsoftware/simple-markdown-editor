@@ -1,7 +1,7 @@
 //! What a keystroke in a large JSON document costs. A measurement, not an assertion.
 //!
 //! ```text
-//! cargo test --release -p mdedit-app --test json_typing_cost -- --ignored --nocapture
+//! cargo test --release -p mdedit-app --test app -- json_typing_cost:: --ignored --nocapture
 //! ```
 //!
 //! **It deliberately uses nothing but the API that has always been there** — an `Editor`, a
@@ -32,7 +32,7 @@ use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
-mod stub;
+use crate::stub;
 use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 900.0;
