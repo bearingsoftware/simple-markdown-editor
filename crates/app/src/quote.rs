@@ -57,6 +57,10 @@ pub struct Band {
     pub height: f32,
     /// How many bars: one per enclosing quote.
     pub depth: usize,
+    /// Where the quote's left edge is, from the chunk's (MDEDIT-169). Zero for a quote that is a
+    /// chunk of its own; for one inside a list item, the item's text indent, so its bars stand under
+    /// the item rather than at the margin.
+    pub x: f32,
 }
 
 /// How far text at `depth` is indented.
@@ -140,6 +144,7 @@ pub fn assemble(runs: &[(usize, Layout)]) -> (Layout, Vec<Band>) {
                 top: start,
                 height: top - start,
                 depth: *depth,
+                x: 0.0,
             });
         }
     }

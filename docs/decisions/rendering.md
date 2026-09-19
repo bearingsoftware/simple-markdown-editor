@@ -292,6 +292,34 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Not covered: a quote inside a list item is a list chunk, and a list inside a quote does not hang
   its own wrapped rows under its bullet. Both are MDEDIT-169 rather than half-done here.
 
+- **A quote inside a list item is barred, and a list inside a quote hangs.** MDEDIT-169. Each was
+  laid out by the other block's code: a list chunk by `list.rs`, which knew nothing about quotes, so
+  a quoted line in an item drew no bar at all; and a quote chunk by `quote.rs`, which laid a list's
+  lines out as lines, so a wrapped item ran back under its own bullet.
+
+  **Composed rather than generalised.** `lay_out_items` (what `lay_out_list` became) cuts an item
+  into runs by quote depth when its depth changes, places them with `quote::assemble`, and returns
+  the bars with the layout. `list::Item` carries them, and `list::assemble` moves them right by the
+  marker and down to the item. `lay_out_quote` hands the part of a run that is a list to
+  `lay_out_items` at the width the quote leaves. `quote::Band` grew an `x` for the bars' left edge,
+  zero everywhere except inside an item.
+
+  **One level each way, and that falls out rather than being enforced.** `lay_out_quote` only ever
+  hands over lines of one depth, so a list inside a quote never finds a depth change inside an item
+  and is not asked to draw bars of its own. A quote in a list in a quote draws its innermost quote
+  as lines. Nobody has asked for that one.
+
+  **Where a list ends comes from the block tree, not the markers.** A paragraph after a list in the
+  same quote has no marker, so `list::units` attached it to the last item and would have hung it
+  there. `list_pieces` cuts at the `List` block instead. Its span ends *after the `> `* of the next
+  line, where the next block's content begins, so the cut is taken back to that line's start —
+  rounding it forward was the first version, and pulled the paragraph in.
+
+  **A band is cut to the rows its item keeps.** A quote that ends an item brings its trailing empty
+  row, and `place::rows_kept` drops that row when another item follows. A bar drawn to the dropped
+  row's bottom ran down beside the next item. `a_quote_inside_an_item_stops_before_the_next_item`
+  holds it.
+
 - **A task draws its box, and pressing the box ticks it.** MDEDIT-142. `[ ]` was concealed with
   nothing substituted, so a task list drew exactly as a bullet list — and whether an item is ticked
   is state that exists nowhere else on screen, the worst thing in the concealment family to lose.

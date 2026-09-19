@@ -8610,9 +8610,11 @@ impl<T: TextLayout> Editor<T> {
         let bar = quote::BAR.max(1.0 / at.scale);
         for band in &cached.quote {
             for level in 0..band.depth {
-                let (x, y) =
-                    at.content
-                        .to_window(quote::bar_x(level), chunk_top + band.top, at.offset);
+                let (x, y) = at.content.to_window(
+                    band.x + quote::bar_x(level),
+                    chunk_top + band.top,
+                    at.offset,
+                );
                 quads.push(Self::solid(
                     [
                         x * at.scale,
@@ -9749,7 +9751,8 @@ impl<T: TextLayout> Editor<T> {
         let mut breaks = Vec::new();
         let (mut layout, grid) = if let Some((layout, grid)) = grid {
             (layout, Some(grid))
-        } else if let Some((layout, nested)) = hung {
+        } else if let Some((layout, quoted, nested)) = hung {
+            bands = quoted;
             breaks = nested;
             (layout, None)
         } else if let Some((layout, quoted, nested)) = quoted {
@@ -10074,6 +10077,11 @@ impl<T: TextLayout> Editor<T> {
     /// `None` in plain mode, where the markers are the text and nothing is indented, and for a
     /// quote chunk that turns out to have no quoted line in it at all — the honest answer is then
     /// to lay it out as ordinary lines, as `lay_out_list` does for a list with no marker.
+    ///
+    /// **A list inside the quote is laid out as a list** (MDEDIT-169), at the width the quote leaves,
+    /// so a wrapped item hangs under its own text rather than under its bullet. Which part of a run
+    /// is a list is the block tree's answer ([`list_pieces`]): a paragraph before it or after it in
+    /// the same quote is not an item, and is not hung as one.
     fn lay_out_quote(
         &mut self,
         chunk: blocks::Chunk,
@@ -10090,35 +10098,59 @@ impl<T: TextLayout> Editor<T> {
         let mut runs = Vec::with_capacity(units.len());
         let mut breaks = Vec::new();
         for unit in units {
-            // A break in a quote starts past its bars (MDEDIT-168), so the rule does not cross them.
-            breaks.extend(nested_breaks(
-                self.document(),
-                unit.span,
-                chunk.span.start(),
-                quote::indent(unit.depth),
-            ));
-            let styled =
-                view::build_runs_in(self.document(), self.decoration(), unit.span, &frame.text);
-            let width = (frame.width - quote::indent(unit.depth)).max(1.0);
-            let mut layout = self.text.layout(&view::as_styled(&styled), width).ok()?;
-            // **A run can have nothing left to shape.** `>` alone on the last line of the file is
-            // all marker and no newline, and a text engine handed nothing answers with no rows —
-            // the MDEDIT-81 shape, one run down. The whole-chunk repair below only fires when the
-            // *chunk* is empty, so a quote ending that way would lose a line the caret can reach.
-            if layout.lines.is_empty() {
-                let height = (self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0);
-                layout.lines.push(mdedit_text::LayoutLine {
-                    baseline: height,
-                    height,
-                    glyphs: Vec::new(),
-                    rules: Vec::new(),
-                });
+            let indent = quote::indent(unit.depth);
+            let width = (frame.width - indent).max(1.0);
+            for (piece, is_list) in list_pieces(self.document(), unit.span, &frame.text) {
+                let listed = if is_list {
+                    self.lay_out_items(piece, chunk.span.start(), width, &frame.text)
+                } else {
+                    None
+                };
+                let layout = if let Some((layout, _, nested)) = listed {
+                    // The items' breaks hang from the items' text; the quote moves all of it right.
+                    breaks.extend(nested.into_iter().map(|nested| Nested {
+                        indent: nested.indent + indent,
+                        ..nested
+                    }));
+                    layout
+                } else {
+                    // A break in a quote starts past its bars (MDEDIT-168), so the rule does not
+                    // cross them.
+                    breaks.extend(nested_breaks(
+                        self.document(),
+                        piece,
+                        chunk.span.start(),
+                        indent,
+                    ));
+                    self.lay_out_run(piece, width, &frame.text)?
+                };
+                runs.push((unit.depth, layout));
             }
-            runs.push((unit.depth, layout));
         }
 
         let (layout, bands) = quote::assemble(&runs);
         Some((layout, bands, breaks))
+    }
+
+    /// `span` laid out as ordinary lines at `width`, never with no rows at all.
+    ///
+    /// **A run can have nothing left to shape.** `>` alone on the last line of the file is all marker
+    /// and no newline, and a text engine handed nothing answers with no rows — the MDEDIT-81 shape,
+    /// one run down. The whole-chunk repair only fires when the *chunk* is empty, so a quote ending
+    /// that way would lose a line the caret can reach.
+    fn lay_out_run(&mut self, span: ByteSpan, width: f32, text: &str) -> Option<Layout> {
+        let styled = view::build_runs_in(self.document(), self.decoration(), span, text);
+        let mut layout = self.text.layout(&view::as_styled(&styled), width).ok()?;
+        if layout.lines.is_empty() {
+            let height = (self.theme.body_size * ESTIMATED_LINE_RATIO).max(1.0);
+            layout.lines.push(mdedit_text::LayoutLine {
+                baseline: height,
+                height,
+                glyphs: Vec::new(),
+                rules: Vec::new(),
+            });
+        }
+        Some(layout)
     }
 
     /// Lays a list out item by item, so a wrapped item hangs under its text (MDEDIT-147).
@@ -10129,18 +10161,35 @@ impl<T: TextLayout> Editor<T> {
     /// **Plain mode never comes here**, for the reason a table does not: `Ctrl+/` exists to show the
     /// bytes, and the indent hangs off a marker that plain mode draws in full. There is nothing to
     /// substitute, so there is nothing to hang from.
-    ///
-    /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
-    /// it leaves. `list`'s own docs say why one call cannot do it.
     fn lay_out_list(
         &mut self,
         chunk: blocks::Chunk,
         frame: &Frame,
-    ) -> Option<(Layout, Vec<Nested>)> {
+    ) -> Option<(Layout, Vec<quote::Band>, Vec<Nested>)> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
         }
-        let units = list::units(self.document(), chunk.span, &frame.text);
+        self.lay_out_items(chunk.span, chunk.span.start(), frame.width, &frame.text)
+    }
+
+    /// The items in `span`, each hung under its own text at `width`, and stacked.
+    ///
+    /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
+    /// it leaves. `list`'s own docs say why one call cannot do it.
+    ///
+    /// **A quote inside an item is laid out as a quote** (MDEDIT-169): its lines are cut into runs by
+    /// depth, placed past their bars within the item's text, and the bars come back with the layout
+    /// to be drawn under the item. Depth is measured from the item's first line, so it is a quote
+    /// *inside* the item that counts. That is also what keeps this one level deep: `lay_out_quote`
+    /// only hands over lines of a single depth, so a list inside a quote never finds one here.
+    fn lay_out_items(
+        &mut self,
+        span: ByteSpan,
+        chunk_start: ByteOffset,
+        width: f32,
+        text: &str,
+    ) -> Option<(Layout, Vec<quote::Band>, Vec<Nested>)> {
+        let units = list::units(self.document(), span, text);
         if units.is_empty() {
             return None;
         }
@@ -10148,7 +10197,13 @@ impl<T: TextLayout> Editor<T> {
         let mut items = Vec::with_capacity(units.len());
         let mut breaks = Vec::new();
         for unit in units {
-            let runs = view::build_runs_in(self.document(), self.decoration(), unit, &frame.text);
+            let depths = quote::units(self.document(), unit, text);
+            let base = depths.first().map_or(0, |run| run.depth);
+            let has_quote = depths.iter().any(|run| run.depth != base);
+            // The part holding the marker: the whole item, or its lines before the quote starts.
+            let head = if has_quote { depths[0].span } else { unit };
+
+            let runs = view::build_runs_in(self.document(), self.decoration(), head, text);
             // The substituted marker is the run the indent is measured from, and it is always the
             // first: `units` cuts at the marker, so nothing precedes it inside the unit. A task's box
             // can be first too, when the bullet it replaced had no indent to leave behind, and it is
@@ -10161,19 +10216,44 @@ impl<T: TextLayout> Editor<T> {
 
             let marker = self.text.layout(&view::as_styled(marker), f32::MAX).ok()?;
             let indent = list::width_of(&marker);
-            let width = (frame.width - indent).max(1.0);
-            let text = self.text.layout(&view::as_styled(rest), width).ok()?;
-            items.push(list::Item { marker, text });
+            let width = (width - indent).max(1.0);
+            let first = self.text.layout(&view::as_styled(rest), width).ok()?;
             // A break in an item hangs where the item's text does, not under its bullet (MDEDIT-168).
-            breaks.extend(nested_breaks(
-                self.document(),
-                unit,
-                chunk.span.start(),
-                indent,
-            ));
+            breaks.extend(nested_breaks(self.document(), head, chunk_start, indent));
+
+            if !has_quote {
+                items.push(list::Item {
+                    marker,
+                    text: first,
+                    bands: Vec::new(),
+                });
+                continue;
+            }
+            let mut stacked = vec![(0, first)];
+            for run in &depths[1..] {
+                let depth = run.depth.saturating_sub(base);
+                let inset = quote::indent(depth);
+                stacked.push((
+                    depth,
+                    self.lay_out_run(run.span, (width - inset).max(1.0), text)?,
+                ));
+                breaks.extend(nested_breaks(
+                    self.document(),
+                    run.span,
+                    chunk_start,
+                    indent + inset,
+                ));
+            }
+            let (text_layout, bands) = quote::assemble(&stacked);
+            items.push(list::Item {
+                marker,
+                text: text_layout,
+                bands,
+            });
         }
 
-        Some((list::assemble(&items), breaks))
+        let (layout, bands) = list::assemble(&items);
+        Some((layout, bands, breaks))
     }
 
     /// What a chunk's height is before it has been measured.
@@ -10780,6 +10860,66 @@ fn nested_breaks(
         .collect()
 }
 
+/// `span`, a run of whole lines, cut where a list inside it starts and ends (MDEDIT-169).
+///
+/// Each piece is whole lines, marked `true` if it is a list. From the block tree rather than the
+/// markers, because the markers cannot say where a list *ends*: a paragraph after it in the same
+/// quote has no marker of its own, and `list::units` would attach it to the last item and hang it
+/// there.
+///
+/// **A list's span starts and ends mid-line** inside a quote, and both are cut back to a line
+/// start. It starts after the `> ` of its own first line, and it ends after the `> ` of the line
+/// *following* it — where the next block's content begins. Rounding that end forward pulled the next
+/// paragraph into the list, which is the defect this function exists to avoid. The one end rounded
+/// forward is a list's last line with no newline, at the end of the file.
+fn list_pieces(doc: &Document, span: ByteSpan, text: &str) -> Vec<(ByteSpan, bool)> {
+    let line_start = |at: usize| text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let line_end = |at: usize, start: usize| {
+        if at == 0 || text.as_bytes()[at - 1] == b'\n' {
+            at
+        } else if line_start(at) > start {
+            line_start(at)
+        } else {
+            text[at..]
+                .find('\n')
+                .map_or(text.len(), |newline| at + newline + 1)
+        }
+    };
+
+    let mut pieces = Vec::new();
+    let mut at = span.start().get();
+    let blocks = doc.blocks();
+    let first = blocks.partition_point(|block| block.span().start() < span.start());
+    for block in blocks[first..]
+        .iter()
+        .take_while(|block| block.span().start() < span.end())
+    {
+        // Outermost lists only: a nested one starts inside the piece already taken.
+        if block.kind() != BlockKind::List || block.span().start().get() < at {
+            continue;
+        }
+        let start = line_start(block.span().start().get()).max(at);
+        let end = line_end(block.span().end().get(), start).min(span.end().get());
+        if start > at {
+            pieces.push((
+                ByteSpan::new(ByteOffset::new(at), ByteOffset::new(start)),
+                false,
+            ));
+        }
+        if end > start {
+            pieces.push((
+                ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),
+                true,
+            ));
+        }
+        at = end.max(start);
+    }
+    if at < span.end().get() || pieces.is_empty() {
+        pieces.push((ByteSpan::new(ByteOffset::new(at), span.end()), false));
+    }
+    pieces
+}
+
 /// A chunk that has been through the text engine.
 #[derive(Debug)]
 struct Cached {
@@ -10891,7 +11031,7 @@ impl Cached {
             .quote
             .iter()
             .find(|band| top >= band.top && top < band.top + band.height)
-            .map_or(x, |band| quote::indent(band.depth));
+            .map_or(x, |band| band.x + quote::indent(band.depth));
         Some((row, indent))
     }
 

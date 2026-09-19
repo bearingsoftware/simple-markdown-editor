@@ -559,8 +559,9 @@ fn a_bullet_sits_on_its_items_first_baseline() {
     let items = [mdedit_app::list::Item {
         marker: laid_out("x"),
         text: laid_out("alpha\n"),
+        bands: Vec::new(),
     }];
-    let assembled = mdedit_app::list::assemble(&items);
+    let (assembled, _) = mdedit_app::list::assemble(&items);
     let row = &assembled.lines[0];
 
     assert!(row.glyphs.len() > 1, "no bullet and text to compare");

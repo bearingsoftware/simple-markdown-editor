@@ -511,3 +511,186 @@ fn a_strikethrough_moves_with_its_text_into_the_quote() {
         "the rule starts at {rule_left}, the struck text at {text_left}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// A quote inside a list item, and a list inside a quote (MDEDIT-169).
+//
+// Each is laid out by the other block's code: a list chunk by `list.rs`, which knew nothing about
+// quotes, and a quote chunk by `quote.rs`, which knew nothing about hanging an item. So a quote in
+// an item drew no bar at all, and a list item in a quote wrapped back under its own bullet.
+// ---------------------------------------------------------------------------------------------
+
+/// Where the item's own text starts on its first row: past the bullet the list draws for it.
+///
+/// `- ` is drawn as `• ` (MDEDIT-141), two glyphs of the stub's fixed advance, so the text is two
+/// advances past where the row starts.
+fn item_text_left(source: &str) -> f32 {
+    document_row_starts(source)[0] + 2.0 * ADVANCE
+}
+
+/// The y of the document's `row`th row of glyphs.
+fn document_row_y(source: &str, row: usize) -> f32 {
+    let top = mdedit_app::toolbar::HEIGHT + stub::MARGIN;
+    glyph_rows(source)
+        .into_iter()
+        .filter(|(_, y)| *y >= top && *y < HEIGHT - mdedit_app::toolbar::HEIGHT)
+        .nth(row)
+        .map(|(_, y)| y)
+        .expect("that many rows")
+}
+
+#[test]
+fn a_quote_inside_a_list_item_draws_its_bar() {
+    let drawn = bars("- item\n\n  > quoted\n");
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+}
+
+#[test]
+fn a_quote_inside_a_list_item_is_barred_under_the_items_text() {
+    // Under the item's text, not at the margin: the quote belongs to the item, and a bar at the
+    // margin would read as the quote being outside the list.
+    let source = "- item\n\n  > quoted\n";
+    let bar = bars(source)[0];
+    let text = item_text_left(source);
+    let quoted = document_row_starts(source)[1];
+
+    assert_eq!(bar[0], text, "the bar is not under the item's text");
+    assert_eq!(
+        quoted,
+        text + STEP,
+        "the quoted text is not one step past its bar"
+    );
+}
+
+#[test]
+fn a_nested_quote_inside_a_list_item_draws_two_bars() {
+    let drawn = bars("- item\n\n  > > deep\n");
+
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+}
+
+#[test]
+fn a_wrapped_quoted_line_inside_a_list_item_hangs_on_every_row() {
+    let source = format!("- item\n\n  > {}\n", "word ".repeat(60));
+    let starts = document_row_starts(&source);
+
+    assert!(starts.len() >= 4, "the quoted line should wrap: {starts:?}");
+    let quoted = &starts[1..];
+    assert!(
+        quoted.iter().all(|x| *x == quoted[0]),
+        "a wrapped quoted row left its indent: {starts:?}"
+    );
+    assert_eq!(quoted[0], item_text_left(&source) + STEP);
+}
+
+#[test]
+fn a_wrapped_item_inside_a_quote_hangs_under_its_own_text() {
+    // MDEDIT-147's defect one level in: every row after the first began at the quote's indent,
+    // which is where the bullet is.
+    let source = format!("> - {}\n", "word ".repeat(60));
+    let starts = document_row_starts(&source);
+    let text = item_text_left(&source);
+
+    assert!(starts.len() >= 3, "the item should wrap: {starts:?}");
+    assert!(
+        starts[1..].iter().all(|x| *x == text),
+        "a wrapped row is not under the item's text at {text}: {starts:?}"
+    );
+    assert!(text > starts[0], "the text is not past the bullet");
+}
+
+#[test]
+fn a_list_inside_a_quote_still_draws_one_bar_down_all_of_it() {
+    let source = format!("> - {}\n> - next\n", "word ".repeat(60));
+    let drawn = bars(&source);
+    let first = document_row_y(&source, 0);
+    let rows = document_row_starts(&source).len();
+    let last = document_row_y(&source, rows - 1);
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    let (top, bottom) = (drawn[0][1], drawn[0][1] + drawn[0][3]);
+    assert!(
+        top <= first && bottom >= last + LINE_HEIGHT - ASCENT,
+        "the bar {top}..{bottom} does not cover the rows {first}..{last}"
+    );
+}
+
+#[test]
+fn a_paragraph_after_a_list_in_a_quote_is_not_hung_as_an_item() {
+    // The markers cannot say where a list ends — the paragraph has none of its own — so without the
+    // block tree it would be attached to the last item and hang under its text.
+    let starts = document_row_starts("> - item\n>\n> after\n");
+
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    assert_eq!(
+        starts[1],
+        margin() + STEP,
+        "the paragraph is not at the quote's indent"
+    );
+}
+
+#[test]
+fn a_quote_inside_an_item_stops_before_the_next_item() {
+    // The quote ends its item, so it brings its trailing empty row; that row is dropped when another
+    // item follows, and a bar drawn to the dropped row's bottom would run down beside the next item.
+    let source = "- item\n\n  > quoted\n- next\n";
+    let drawn = bars(source);
+    let next_row_top = document_row_y(source, 2) + 1.0 - ASCENT;
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert!(
+        drawn[0][1] + drawn[0][3] <= next_row_top,
+        "the bar runs to {} past the next item at {next_row_top}",
+        drawn[0][1] + drawn[0][3]
+    );
+}
+
+#[test]
+fn the_caret_on_a_blank_quoted_line_inside_an_item_is_at_the_quotes_indent() {
+    // MDEDIT-145's repair for a blank quoted row, one level in: the quote's indent is measured from
+    // the item's text now, not from the margin.
+    let source = "- item\n\n  > a\n  >\n  > b\n";
+    let caret = Theme::default().caret;
+    let caret = [caret.r, caret.g, caret.b, caret.a];
+    let mut editor = Editor::new(source, Grid::new());
+    let blank = source.find("  >\n").unwrap() + 3;
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(blank)));
+    let carets: Vec<f32> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == caret)
+        .map(|quad| quad.rect[0])
+        .collect();
+
+    assert_eq!(carets, vec![item_text_left(source) + STEP]);
+}
+
+#[test]
+fn a_wrapped_quote_inside_an_item_reaches_no_further_right_than_the_items_own_text() {
+    // Laid out at the width the item *and* the quote leave, so its rows end where the item's do.
+    // At the item's width and then moved a step right, they would end one step past it — the
+    // top-level test above, one level in.
+    let long = "word ".repeat(60);
+    let rightmost = |source: &str| {
+        let top = mdedit_app::toolbar::HEIGHT + stub::MARGIN;
+        frame(source)
+            .iter()
+            .filter(|quad| quad.uv != SOLID)
+            .filter(|quad| {
+                quad.rect[1] >= top && quad.rect[1] < HEIGHT - mdedit_app::toolbar::HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .fold(0.0_f32, f32::max)
+    };
+
+    let quoted = rightmost(&format!("- item\n\n  > {long}\n"));
+    let unquoted = rightmost(&format!("- {long}\n"));
+
+    assert!(
+        quoted <= unquoted,
+        "the quote in the item reached {quoted}, past the item's own text at {unquoted}"
+    );
+}
