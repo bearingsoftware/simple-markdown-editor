@@ -583,3 +583,38 @@ fn a_break_in_a_list_inside_a_quote_starts_under_the_items_text() {
     // `- ` is drawn as `• `: the item's text is two advances past its bullet.
     assert_eq!(rules[0][0], bullet + 2.0 * stub::ADVANCE);
 }
+
+#[test]
+fn a_nested_break_in_a_quote_further_down_the_document_still_draws() {
+    // Every other fixture here starts at byte 0, where a break's offset from its chunk and from the
+    // buffer are the same number — so nothing could tell them apart. A paragraph first moves the
+    // quote's chunk off the start.
+    let with = "Intro\n\n> Quote\n>\n> ---\n>\n> More\n";
+    let rules = added(with, "Intro\n\n> Quote\n>\n> More\n");
+    let in_a_quote = added(IN_A_QUOTE.0, IN_A_QUOTE.1);
+
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    assert_eq!(rules[0][0], in_a_quote[0][0], "not at the quote's indent");
+    // And on the break's own row: an offset taken from the wrong origin names another line, where
+    // the rule still draws at the quote's indent.
+    let row = caret_row_middle(with, with.find("---").unwrap());
+    let middle = rules[0][1] + rules[0][3] / 2.0;
+    assert!(
+        (row - middle).abs() < 0.5,
+        "rule at {middle}, the break's row at {row}"
+    );
+}
+
+#[test]
+fn a_break_straight_after_a_change_of_depth_is_at_its_own_depth() {
+    // The break opens the depth-one run that follows a depth-two one. A span that took in its own
+    // end would record the break in both runs, and the deeper one's indent would win.
+    let rules = added("> > deep\n> ---\n> more\n", "> > deep\n> more\n");
+    let in_a_quote = added(IN_A_QUOTE.0, IN_A_QUOTE.1);
+
+    assert_eq!(rules.len(), 1, "{rules:?}");
+    assert_eq!(
+        rules[0][0], in_a_quote[0][0],
+        "drawn at the deeper quote's indent"
+    );
+}
