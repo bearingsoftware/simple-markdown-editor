@@ -570,6 +570,21 @@ fn a_rule_is_drawn_through_the_real_text_engine_too() {
 }
 
 #[test]
+fn a_break_in_a_list_inside_a_quote_starts_under_the_items_text() {
+    // MDEDIT-169 lays a list inside a quote out as a list, so the break inside its item hangs from
+    // the item's text: past the quote's bar, and past the bullet too.
+    let with = "> - item\n>\n>   ---\n>\n> - next\n";
+    let without = "> - item\n>\n> - next\n";
+    let rules = added(with, without);
+    assert_eq!(rules.len(), 1, "{rules:?}");
+
+    let quads = frame(with);
+    let bullet = last_rows_text_left(&quads, 0);
+    // `- ` is drawn as `• `: the item's text is two advances past its bullet.
+    assert_eq!(rules[0][0], bullet + 2.0 * stub::ADVANCE);
+}
+
+#[test]
 fn a_nested_break_in_a_quote_further_down_the_document_still_draws() {
     // Every other fixture here starts at byte 0, where a break's offset from its chunk and from the
     // buffer are the same number — so nothing could tell them apart. A paragraph first moves the

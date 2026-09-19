@@ -44,6 +44,7 @@ use mdedit_offsets::{ByteSpan, LayoutPos};
 use mdedit_text::{Layout, LayoutLine};
 
 use crate::place;
+use crate::quote::Band;
 
 /// One item's two laid-out halves, and where its text hangs.
 #[derive(Debug)]
@@ -55,6 +56,9 @@ pub struct Item {
     pub marker: Layout,
     /// Everything after the marker, laid out at the width the marker leaves.
     pub text: Layout,
+    /// Where the bars of a quote inside this item go, measured from the item's text (MDEDIT-169).
+    /// Empty for an item with no quote in it, which is nearly all of them.
+    pub bands: Vec<Band>,
 }
 
 /// Where each list item begins within `span`, as the spans to lay out.
@@ -114,8 +118,9 @@ pub fn units(doc: &Document, span: ByteSpan, text: &str) -> Vec<ByteSpan> {
 /// its baseline is measured from *its* block's top; putting it on the row unchanged drops it onto the
 /// text's ascent and the bullet floats.
 #[must_use]
-pub fn assemble(items: &[Item]) -> Layout {
+pub fn assemble(items: &[Item]) -> (Layout, Vec<Band>) {
     let mut lines: Vec<LayoutLine> = Vec::new();
+    let mut bands: Vec<Band> = Vec::new();
     let mut top = 0.0_f32;
 
     for (index, item) in items.iter().enumerate() {
@@ -146,9 +151,25 @@ pub fn assemble(items: &[Item]) -> Layout {
             lines.push(placed);
             top += line.height;
         }
+
+        // A quote inside the item stands where the item's text does (MDEDIT-169): its bars move
+        // right by the marker and down to the item. Cut at the rows kept, because a quote that ends
+        // the item brings its trailing empty row, and that row is dropped when another item follows.
+        let kept = top - origin;
+        for band in &item.bands {
+            let height = band.height.min(kept - band.top);
+            if height > 0.0 {
+                bands.push(Band {
+                    top: origin + band.top,
+                    height,
+                    x: indent + band.x,
+                    ..*band
+                });
+            }
+        }
     }
 
-    Layout { lines }
+    (Layout { lines }, bands)
 }
 
 /// How wide a laid-out marker is, which is the indent its item's text hangs at.
