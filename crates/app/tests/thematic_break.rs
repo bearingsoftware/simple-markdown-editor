@@ -22,7 +22,7 @@ use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
 mod stub;
-use stub::{Grid, MARGIN};
+use stub::{ASCENT, Grid, LINE_HEIGHT, MARGIN};
 
 const WIDTH: f32 = 900.0;
 const HEIGHT: f32 = 600.0;
@@ -321,6 +321,215 @@ fn a_rule_scrolls_with_the_document() {
         100.0,
         "the rule moved by something other than the scroll"
     );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Inside a quote or a list item (MDEDIT-168).
+//
+// MDEDIT-143 drew a rule for a break that is a chunk of its own. One inside a container is a block
+// within a quote's or a list's chunk, and it still vanished: both sources below drew no rule.
+// ---------------------------------------------------------------------------------------------
+
+const IN_A_QUOTE: (&str, &str) = ("> Quote\n>\n> ---\n>\n> More\n", "> Quote\n>\n> More\n");
+const IN_A_LIST: (&str, &str) = ("- item\n\n  ---\n\n- next\n", "- item\n\n- next\n");
+
+/// The x of the first glyph on the last glyph row, which in both fixtures is the container's own
+/// text: `More` past the quote's bars, `next` past its bullet.
+fn last_rows_text_left(quads: &[QuadInstance], skip: usize) -> f32 {
+    let rows = glyph_rows(quads);
+    let last = *rows.last().unwrap();
+    let mut xs: Vec<f32> = quads
+        .iter()
+        .filter(|quad| quad.uv != SOLID && quad.rect[1] == last && quad.rect[0] >= MARGIN)
+        .map(|quad| quad.rect[0])
+        .collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs[skip]
+}
+
+/// The middle of the row the caret is on, with the caret put on `at` in `source`.
+fn caret_row_middle(source: &str, at: usize) -> f32 {
+    let mut editor = Editor::new(source, Grid::new());
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(at)));
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let caret = Theme::default().caret;
+    let caret = [caret.r, caret.g, caret.b, caret.a];
+    let carets: Vec<[f32; 4]> = quads
+        .iter()
+        .filter(|quad| quad.colour == caret)
+        .map(|quad| quad.rect)
+        .collect();
+    assert_eq!(carets.len(), 1, "{carets:?}");
+    carets[0][1] + carets[0][3] / 2.0
+}
+
+#[test]
+fn a_break_in_a_quote_or_a_list_item_draws_one_rule() {
+    for (with, without) in [IN_A_QUOTE, IN_A_LIST] {
+        let rules = added(with, without);
+        assert_eq!(rules.len(), 1, "{with:?} drew {rules:?}");
+    }
+}
+
+#[test]
+fn a_rule_in_a_quote_starts_past_its_bars() {
+    // Where the quoted text starts, and so clear of the bar: a rule crossing it would read as the
+    // quote ending there.
+    let (with, without) = IN_A_QUOTE;
+    let rule = added(with, without)[0];
+    let text_left = last_rows_text_left(&frame(with), 0);
+
+    assert_eq!(rule[0], text_left, "the rule and the quoted text disagree");
+    assert!(
+        rule[0] >= MARGIN + mdedit_app::quote::BAR,
+        "a rule at {} crosses the bar",
+        rule[0]
+    );
+}
+
+#[test]
+fn a_rule_in_a_list_item_starts_under_its_text_not_its_bullet() {
+    let (with, without) = IN_A_LIST;
+    let rule = added(with, without)[0];
+    let quads = frame(with);
+    let bullet = last_rows_text_left(&quads, 0);
+    // `next` is the last four glyphs on its row, after the substituted bullet.
+    let rows = glyph_rows(&quads);
+    let last = *rows.last().unwrap();
+    let on_row = quads
+        .iter()
+        .filter(|quad| quad.uv != SOLID && quad.rect[1] == last && quad.rect[0] >= MARGIN)
+        .count();
+    let text_left = last_rows_text_left(&quads, on_row - 4);
+
+    assert_eq!(rule[0], text_left, "the rule and the item's text disagree");
+    assert!(rule[0] > bullet, "the rule runs under the bullet");
+}
+
+#[test]
+fn a_nested_rule_ends_where_a_top_level_one_does() {
+    let top = added("Above\n\n---\n\nBelow\n", "Above\n\nBelow\n")[0];
+    for (with, without) in [IN_A_QUOTE, IN_A_LIST] {
+        let rule = added(with, without)[0];
+        assert_eq!(
+            rule[0] + rule[2],
+            top[0] + top[2],
+            "{with:?}'s rule ends somewhere else"
+        );
+    }
+}
+
+#[test]
+fn a_nested_rule_is_centred_on_the_breaks_own_row() {
+    // The caret is drawn a full row tall on the break's line, so it says where that row is.
+    for (with, without) in [IN_A_QUOTE, IN_A_LIST] {
+        let rule = added(with, without)[0];
+        let row = caret_row_middle(with, with.find("---").unwrap());
+        let middle = rule[1] + rule[3] / 2.0;
+        assert!(
+            (row - middle).abs() < 0.5,
+            "{with:?}: rule centred at {middle}, its row at {row}"
+        );
+    }
+}
+
+#[test]
+fn a_wrapped_line_above_a_nested_break_does_not_move_its_rule() {
+    // Rows that come from wrapping are rows with no newline of their own, so a mapping that counted
+    // newlines would put the rule on the long line's last row instead. The caret cannot be the
+    // yardstick here — it has exactly that defect (MDEDIT-183) — so the rows are read from the
+    // glyphs: the long line's three rows, then the blank quoted line, then the break.
+    let long = format!("> {}\n>\n> ---\n>\n> More\n", "word ".repeat(60));
+    let without = format!("> {}\n>\n> More\n", "word ".repeat(60));
+    let rule = added(&long, &without)[0];
+    let rows = glyph_rows(&frame(&long));
+    assert_eq!(rows.len(), 4, "three wrapped rows and `More`: {rows:?}");
+
+    // A glyph quad starts one pixel above its baseline, and a row's baseline is `ASCENT` below its
+    // top — `stub::Grid`'s arithmetic.
+    let last_wrapped_top = rows[2] + 1.0 - ASCENT;
+    let break_middle = last_wrapped_top + 2.0 * LINE_HEIGHT + LINE_HEIGHT / 2.0;
+    let middle = rule[1] + rule[3] / 2.0;
+    assert!(
+        (break_middle - middle).abs() < 0.5,
+        "rule centred at {middle}, the break's row at {break_middle}"
+    );
+}
+
+#[test]
+fn a_nested_rule_moves_with_the_text_when_panned_and_keeps_its_right_edge() {
+    // Unlike a top-level rule, which spans the visible band: this one starts where its container's
+    // text does, so it moves with that text as the quote's bars do. Its right end stays at the
+    // column's edge, so it still reaches across what is in view.
+    let long = "x".repeat(400);
+    let with = format!("> {long}\n>\n> ---\n>\n> More\n");
+    let without = format!("> {long}\n>\n> More\n");
+    let hairlines_at = |source: &str, pan: f32| {
+        let mut editor = Editor::new(source, Grid::new());
+        assert!(editor.set_wrap(false));
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        if pan > 0.0 {
+            assert!(editor.pan_by(pan), "nothing to pan to");
+        }
+        hairlines(&editor.build_frame(WIDTH, HEIGHT, 1.0))
+    };
+
+    let still = difference(hairlines_at(&with, 0.0), &hairlines_at(&without, 0.0));
+    let panned = difference(hairlines_at(&with, 40.0), &hairlines_at(&without, 40.0));
+    assert_eq!(still.len(), 1, "{still:?}");
+    assert_eq!(panned.len(), 1, "{panned:?}");
+    assert_eq!(
+        panned[0][0],
+        still[0][0] - 40.0,
+        "the rule did not move with the text"
+    );
+    assert_eq!(
+        panned[0][0] + panned[0][2],
+        still[0][0] + still[0][2],
+        "the rule's right end moved"
+    );
+}
+
+#[test]
+fn plain_mode_draws_no_nested_rule() {
+    for (with, without) in [IN_A_QUOTE, IN_A_LIST] {
+        let plain = |source: &str| {
+            let mut editor = Editor::new(source, Grid::new());
+            editor.toggle_mode();
+            hairlines(&editor.build_frame(WIDTH, HEIGHT, 1.0))
+        };
+        assert_eq!(
+            plain(with),
+            plain(without),
+            "{with:?} drew a rule in plain mode"
+        );
+    }
+}
+
+#[test]
+fn a_nested_rule_scales_with_the_display() {
+    for (with, without) in [IN_A_QUOTE, IN_A_LIST] {
+        let at = |scale: f32| {
+            let frame = |source: &str| {
+                hairlines(&Editor::new(source, Grid::new()).build_frame(
+                    WIDTH * scale,
+                    HEIGHT * scale,
+                    scale,
+                ))
+            };
+            difference(frame(with), &frame(without))
+        };
+        let normal = at(1.0);
+        let double = at(2.0);
+        assert_eq!(double.len(), 1, "{with:?}: {double:?}");
+        assert_eq!(
+            double[0],
+            normal[0].map(|value| value * 2.0),
+            "{with:?}: at 200% the rule is not the 100% rule doubled"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

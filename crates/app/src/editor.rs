@@ -8319,14 +8319,11 @@ impl<T: TextLayout> Editor<T> {
                 .map(|diagnostic| diagnostic.span)
                 .collect();
             let mut row_top = chunk_top;
-            // Which source line the row above was on, so a wrapped row can be told from a new one.
-            self.draw_table(quads, &cached, chunk_top, at);
-            self.draw_quote(quads, &cached, chunk_top, at);
-            self.place_picture(&cached, chunk, chunk_top, at);
-            if chunk.kind == Some(BlockKind::ThematicBreak) {
-                self.draw_thematic_break(quads, &cached, chunk_top, at);
-            }
+            self.draw_chunk_ground(quads, &cached, chunk, chunk_top, at);
+            // The breaks inside a quote or list (MDEDIT-168), by the source line each is on.
+            let nested = self.nested_break_lines(&cached, chunk);
 
+            // Which source line the row above was on, so a wrapped row can be told from a new one.
             // `usize::MAX` for "there was no row above", which no line number can collide with.
             let mut previous_line = usize::MAX;
 
@@ -8381,6 +8378,12 @@ impl<T: TextLayout> Editor<T> {
                 // top of it and the text sits on top of them.
                 if current {
                     self.draw_caret_line(quads, here, at);
+                }
+                let rule = nested
+                    .iter()
+                    .find(|(at_line, _)| starts_a_line && *at_line == source_line);
+                if let Some(&(_, indent)) = rule {
+                    self.draw_nested_break(quads, here, indent, at);
                 }
                 self.draw_matches(quads, &found, here, at);
                 self.draw_row_selection(quads, selected, here, at);
@@ -8661,6 +8664,74 @@ impl<T: TextLayout> Editor<T> {
                 x * at.scale,
                 y * at.scale,
                 at.content.width() * at.scale,
+                hairline * at.scale,
+            ],
+            self.theme.line,
+        ));
+    }
+
+    /// What a chunk draws as a whole rather than row by row: a table's rules, a quote's bars, a
+    /// picture, a top-level break's rule. Before any row, so each row's text sits on top of them.
+    #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
+    fn draw_chunk_ground(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        cached: &Cached,
+        chunk: blocks::Chunk,
+        chunk_top: f32,
+        at: Placement,
+    ) {
+        self.draw_table(quads, cached, chunk_top, at);
+        self.draw_quote(quads, cached, chunk_top, at);
+        self.place_picture(cached, chunk, chunk_top, at);
+        if chunk.kind == Some(BlockKind::ThematicBreak) {
+            self.draw_thematic_break(quads, cached, chunk_top, at);
+        }
+    }
+
+    /// The breaks nested in this chunk (MDEDIT-168), as the source line each is on and its indent.
+    ///
+    /// Asked once per chunk, and matched to a row by the same `line_of_row` the gutter uses: a
+    /// wrapped row above a break only ever adds rows, so the break's row is the one its line starts
+    /// on.
+    fn nested_break_lines(&self, cached: &Cached, chunk: blocks::Chunk) -> Vec<(usize, f32)> {
+        cached
+            .breaks
+            .iter()
+            .map(|nested| {
+                let offset =
+                    (chunk.span.start().get() + nested.at).min(self.document().len_bytes());
+                (self.document().rope().byte_to_line(offset), nested.indent)
+            })
+            .collect()
+    }
+
+    /// A thematic break's rule, inside a quote or a list item (MDEDIT-168).
+    ///
+    /// The same hairline as a top-level break's, across the middle of the break's own row, but
+    /// **from its container's indent rather than from the column's edge**: a rule in a quote that
+    /// crossed the quote's bars would read as the quote ending, and one in a list item that ran
+    /// under the bullet would read as a break between items rather than within one.
+    ///
+    /// It starts at a document x, so like the bars it moves with the text when panned, and it runs
+    /// to the right-hand edge of the visible band as a top-level rule does. Nothing in plain mode:
+    /// there the quote and list layouts are not used, so no break is recorded, and the dashes draw.
+    fn draw_nested_break(
+        &self,
+        quads: &mut Vec<QuadInstance>,
+        row: Row<'_>,
+        indent: f32,
+        at: Placement,
+    ) {
+        let hairline = table::RULE.max(1.0 / at.scale);
+        let y = row.top + (row.height - hairline) / 2.0;
+        let (x, y) = at.content.to_window(indent, y, at.offset);
+        let width = (at.content.width() - (indent - at.offset.x)).max(0.0);
+        quads.push(Self::solid(
+            [
+                x * at.scale,
+                y * at.scale,
+                width * at.scale,
                 hairline * at.scale,
             ],
             self.theme.line,
@@ -9675,12 +9746,15 @@ impl<T: TextLayout> Editor<T> {
             None
         };
         let mut bands = Vec::new();
+        let mut breaks = Vec::new();
         let (mut layout, grid) = if let Some((layout, grid)) = grid {
             (layout, Some(grid))
-        } else if let Some(layout) = hung {
+        } else if let Some((layout, nested)) = hung {
+            breaks = nested;
             (layout, None)
-        } else if let Some((layout, quoted)) = quoted {
+        } else if let Some((layout, quoted, nested)) = quoted {
             bands = quoted;
+            breaks = nested;
             (layout, None)
         } else if let Some(fitted) = picture {
             (picture_layout(fitted, body), None)
@@ -9711,6 +9785,7 @@ impl<T: TextLayout> Editor<T> {
 
         let mut cached = Cached::new(layout, grid, picture, &chunk, body, key.last);
         cached.quote = bands;
+        cached.breaks = breaks;
         let cached = Rc::new(cached);
         // What this chunk contributes to the horizontal clamp. Recorded here because this is where a
         // chunk stops being an estimate and becomes a measurement — the same moment its height
@@ -10003,7 +10078,7 @@ impl<T: TextLayout> Editor<T> {
         &mut self,
         chunk: blocks::Chunk,
         frame: &Frame,
-    ) -> Option<(Layout, Vec<quote::Band>)> {
+    ) -> Option<(Layout, Vec<quote::Band>, Vec<Nested>)> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
         }
@@ -10013,7 +10088,15 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let mut runs = Vec::with_capacity(units.len());
+        let mut breaks = Vec::new();
         for unit in units {
+            // A break in a quote starts past its bars (MDEDIT-168), so the rule does not cross them.
+            breaks.extend(nested_breaks(
+                self.document(),
+                unit.span,
+                chunk.span.start(),
+                quote::indent(unit.depth),
+            ));
             let styled =
                 view::build_runs_in(self.document(), self.decoration(), unit.span, &frame.text);
             let width = (frame.width - quote::indent(unit.depth)).max(1.0);
@@ -10034,7 +10117,8 @@ impl<T: TextLayout> Editor<T> {
             runs.push((unit.depth, layout));
         }
 
-        Some(quote::assemble(&runs))
+        let (layout, bands) = quote::assemble(&runs);
+        Some((layout, bands, breaks))
     }
 
     /// Lays a list out item by item, so a wrapped item hangs under its text (MDEDIT-147).
@@ -10048,7 +10132,11 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// Two layout calls an item — the marker alone to measure the indent, then the rest at the width
     /// it leaves. `list`'s own docs say why one call cannot do it.
-    fn lay_out_list(&mut self, chunk: blocks::Chunk, frame: &Frame) -> Option<Layout> {
+    fn lay_out_list(
+        &mut self,
+        chunk: blocks::Chunk,
+        frame: &Frame,
+    ) -> Option<(Layout, Vec<Nested>)> {
         if self.decoration().mode == view::Mode::Plain {
             return None;
         }
@@ -10058,6 +10146,7 @@ impl<T: TextLayout> Editor<T> {
         }
 
         let mut items = Vec::with_capacity(units.len());
+        let mut breaks = Vec::new();
         for unit in units {
             let runs = view::build_runs_in(self.document(), self.decoration(), unit, &frame.text);
             // The substituted marker is the run the indent is measured from, and it is always the
@@ -10071,12 +10160,20 @@ impl<T: TextLayout> Editor<T> {
             let (marker, rest) = runs.split_at(split);
 
             let marker = self.text.layout(&view::as_styled(marker), f32::MAX).ok()?;
-            let width = (frame.width - list::width_of(&marker)).max(1.0);
+            let indent = list::width_of(&marker);
+            let width = (frame.width - indent).max(1.0);
             let text = self.text.layout(&view::as_styled(rest), width).ok()?;
             items.push(list::Item { marker, text });
+            // A break in an item hangs where the item's text does, not under its bullet (MDEDIT-168).
+            breaks.extend(nested_breaks(
+                self.document(),
+                unit,
+                chunk.span.start(),
+                indent,
+            ));
         }
 
-        Some(list::assemble(&items))
+        Some((list::assemble(&items), breaks))
     }
 
     /// What a chunk's height is before it has been measured.
@@ -10648,6 +10745,41 @@ struct Fitted {
     span: ByteSpan,
 }
 
+/// A thematic break inside a quote or a list item, as its container laid it out (MDEDIT-168).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Nested {
+    /// Where the break starts, **from the start of its chunk**. Not a buffer offset: the layout
+    /// cache is keyed by content, so the same quote further down the document reuses this entry,
+    /// and only an offset relative to the chunk still means the same bytes there.
+    at: usize,
+    /// How far from the text's left edge the rule starts: past the quote's bars, or under the list
+    /// item's text rather than its bullet.
+    indent: f32,
+}
+
+/// The thematic breaks inside `span`, each as its offset from `chunk_start` with `indent`.
+///
+/// From the block tree, as `quote_depth` is and for the reason it gives: the `---` of a break
+/// inside `> ` arrives as one marker with the quote's, and the tree is what says which is which.
+fn nested_breaks(
+    doc: &Document,
+    span: ByteSpan,
+    chunk_start: ByteOffset,
+    indent: f32,
+) -> Vec<Nested> {
+    let blocks = doc.blocks();
+    let first = blocks.partition_point(|block| block.span().start() < span.start());
+    blocks[first..]
+        .iter()
+        .take_while(|block| block.span().start() < span.end())
+        .filter(|block| block.kind() == BlockKind::ThematicBreak)
+        .map(|block| Nested {
+            at: block.span().start().get() - chunk_start.get(),
+            indent,
+        })
+        .collect()
+}
+
 /// A chunk that has been through the text engine.
 #[derive(Debug)]
 struct Cached {
@@ -10669,6 +10801,13 @@ struct Cached {
     /// Empty for every chunk that is not a quote, and empty is what says "no bars" to
     /// `draw_quote` — the same role `grid`'s and `picture`'s `None` play.
     quote: Vec<quote::Band>,
+    /// The thematic breaks nested inside this quote or list, and how far each one's rule is indented
+    /// (MDEDIT-168).
+    ///
+    /// Empty for every other chunk. A top-level break is a chunk of its own and is drawn from the
+    /// chunk's kind; one inside a container is a block *within* a chunk, and only the layout that
+    /// placed its container knows where the container's text starts.
+    breaks: Vec<Nested>,
     /// Where in the buffer the text was when it was laid out. Glyphs carry absolute source spans,
     /// and the same bytes elsewhere in the document reuse this entry, so the difference has to be
     /// added back before a span means anything.
@@ -10717,6 +10856,7 @@ impl Cached {
             grid,
             picture,
             quote: Vec::new(),
+            breaks: Vec::new(),
             base: chunk.span.start().get(),
             drops_last,
             height,

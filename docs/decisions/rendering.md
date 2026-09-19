@@ -238,6 +238,25 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   not a chunk of its own, and drawing it means finding a nested block's row inside another chunk's
   layout. Probed on this branch, both still draw nothing: MDEDIT-168.
 
+- **A break inside a quote or a list item draws its rule from its container's indent.** MDEDIT-168.
+  The layout that places a container is the only thing that knows where its text starts, so
+  `lay_out_quote` and `lay_out_list` record each nested break as it goes: the quote's
+  `quote::indent(depth)`, or the item's measured marker width. The break's position is kept as an
+  offset **from the chunk's start**, not a buffer offset, because the layout cache is keyed by
+  content and the same quote further down reuses the entry. `draw_chunks` matches a break to its row
+  through `line_of_row`, the gutter's mapping, which reads glyph sources and so is not fooled by rows
+  that wrapping added.
+
+  **It starts at a document x, like the quote bars, not at the pan like a top-level rule.** A rule
+  that crossed a quote's bars would read as the quote ending, and one under a list item's bullet as a
+  break between items rather than within one. Its right end is the column's edge, as a top-level
+  rule's is, so it still reaches across what is in view.
+
+  **Testing it found MDEDIT-183.** `hit::Chunk::line_start` counts newlines to find a row's bytes,
+  which is wrong for every row after a wrap. So the caret on any line after a wrapped one in a list
+  or quote draws rows too high. The rule is right and the caret is not; the wrapped-line test reads
+  the rows from the glyphs for that reason.
+
 - **A block quote draws a bar per level and hangs its text past them.** MDEDIT-145. Quoted text was
   already muted and italic, so a reader could tell *whether* something was quoted; `>` and `>>` drew
   identically, so nobody could tell *how deeply*, and a reply inside a reply read as one quote.
