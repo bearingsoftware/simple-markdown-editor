@@ -6222,10 +6222,24 @@ impl<T: TextLayout> Editor<T> {
     /// The strip and the pane are asked in that order for the reason `click` gives — only one of the
     /// two is ever showing. The overflow button (MDEDIT-179) closes nothing: it is not a tab, and a
     /// middle-click on it should no more close something than one on the empty strip beside it.
+    ///
+    /// **A dialog or an open list stops it, which `click`'s own order says and this used to skip.**
+    /// A modal swallows a click even where it has no control (MDEDIT-129), and closing a tab under
+    /// one is worse than letting a caret through: `close_tab_at` activates another document, and the
+    /// dialog then acts on a file the user never opened it against. Nothing is dismissed here,
+    /// though — a middle-click is not how either is cancelled, and inventing that is not this
+    /// method's business.
     pub fn middle_click(&mut self, x: f32, y: f32) -> bool {
+        if self.dialog.is_some() || self.open_menu.is_some() {
+            return false;
+        }
         match (self.strip_hit(x, y), self.pane_hit(x, y)) {
             (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
             | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
+                // The pointer was on chrome, so the click run ends — a tab closed between two
+                // clicks in the document must not make them a double-click, which is the rule
+                // `click` follows for every piece of chrome it hits.
+                self.clicks.reset();
                 self.close_tab_at(index)
             }
             (Some(tabs::Hit::More) | None, None) => false,
