@@ -6211,6 +6211,27 @@ impl<T: TextLayout> Editor<T> {
         true
     }
 
+    /// A middle-click anywhere in the window: it closes the tab under the pointer, as every editor
+    /// with tabs does, and does nothing anywhere else.
+    ///
+    /// **Here rather than in the event handler so that a test can reach it** (MDEDIT-181). It used
+    /// to be a `match` arm on a winit `MouseButton`, which no test can construct, and deleting that
+    /// arm outright failed nothing: `cargo-mutants` found it on #173. The left-click path was
+    /// already split out for the same reason, which is what [`click`](Self::click) says.
+    ///
+    /// The strip and the pane are asked in that order for the reason `click` gives — only one of the
+    /// two is ever showing. The overflow button (MDEDIT-179) closes nothing: it is not a tab, and a
+    /// middle-click on it should no more close something than one on the empty strip beside it.
+    pub fn middle_click(&mut self, x: f32, y: f32) -> bool {
+        match (self.strip_hit(x, y), self.pane_hit(x, y)) {
+            (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
+            | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
+                self.close_tab_at(index)
+            }
+            (Some(tabs::Hit::More) | None, None) => false,
+        }
+    }
+
     /// A left-click anywhere in the window.
     ///
     /// Chrome first, because both presentations sit over an edge of the document; only one of the
@@ -10625,14 +10646,7 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 let changed = match button {
                     MouseButton::Left => self.click(x, y),
                     MouseButton::Right => self.popup_context_menu(x, y),
-                    // Middle-click closes, as every editor with tabs does.
-                    MouseButton::Middle => match (self.strip_hit(x, y), self.pane_hit(x, y)) {
-                        (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
-                        | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
-                            self.close_tab_at(index)
-                        }
-                        (Some(tabs::Hit::More) | None, None) => false,
-                    },
+                    MouseButton::Middle => self.middle_click(x, y),
                     _ => false,
                 };
                 if changed {

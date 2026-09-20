@@ -233,11 +233,11 @@ fn the_button_lists_the_hidden_tabs() {
     assert!(editor.click(x, y));
     assert_eq!(editor.menu_kind(), Some(toolbar::Menu::Tabs));
     assert_eq!(editor.menu_tabs(), Some(hidden.as_slice()));
+    // **Exactly below the strip, not merely under it.** `top >= toolbar + strip` was the first
+    // version, and `cargo-mutants` walked through it: `toolbar_height() * STRIP_HEIGHT` is also
+    // below the strip, by a factor of thirty.
     let (_, top) = editor.menu_at().unwrap();
-    assert!(
-        top >= toolbar::HEIGHT + STRIP_HEIGHT,
-        "the list hangs below the strip"
-    );
+    assert_eq!(top, toolbar::HEIGHT + STRIP_HEIGHT + popup::GAP);
 }
 
 /// **Choosing a row shows that tab, and the strip moves to include it.** That is what makes the
@@ -523,5 +523,95 @@ fn a_long_name_in_the_list_stops_at_the_panels_padding() {
     assert!(
         last > edge - ADVANCE,
         "the name stops at {last}, short of {edge}"
+    );
+}
+
+/// **A middle-click closes the tab under it, and the overflow button is not a tab** (MDEDIT-181).
+///
+/// The behaviour predates MDEDIT-179; what it did not have was a way in. It was a `match` arm on a
+/// winit `MouseButton`, which no test can construct, so `cargo-mutants` deleted the arm and nothing
+/// failed. `Editor::middle_click` is that arm, moved where a test can call it.
+#[test]
+fn a_middle_click_closes_a_tab_and_the_button_closes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let names = twelve();
+    let mut editor = editor_with(&dir, &names);
+    let open = editor.workspace().tabs().len();
+
+    // On the button: a list to open, not a tab to close.
+    let (x, y) = on_more(&editor);
+    assert!(!editor.middle_click(x, y), "the button closed something");
+    assert_eq!(editor.workspace().tabs().len(), open);
+
+    // On a tab: gone.
+    let first = editor.tab_rects()[0];
+    assert!(editor.middle_click(first.x + first.width / 2.0, y));
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+
+    // Past the last tab, where the strip is empty: nothing.
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert!(
+        !editor.middle_click(WIDTH - 1.0, y),
+        "empty strip closed a tab"
+    );
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+}
+
+/// The same from the pane, which is the other presentation of the same tabs.
+#[test]
+fn a_middle_click_closes_a_row_in_the_pane() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    editor.toggle_chrome();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let open = editor.workspace().tabs().len();
+
+    let row = editor.row_rects()[1];
+    let middle = toolbar::HEIGHT + row.y + mdedit_app::pane::ROW_HEIGHT / 2.0;
+    assert!(editor.middle_click(mdedit_app::pane::PANE_WIDTH / 2.0, middle));
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+}
+
+/// **Exactly enough room is enough** (MDEDIT-181).
+///
+/// Three comparisons decide the strip — whether a tab fits, whether the walk back to the active tab
+/// takes one more, and how far forward the run goes — and each is a `<=` that `cargo-mutants` turns
+/// into a `<`. Every other fixture here sizes its tabs so the boundary is never reached, so all
+/// three survived. A tab that ends exactly on the edge is what tells them apart.
+///
+/// The arithmetic, once: a name of `NAME` px makes a tab `NAME + 2 * 12 + 20 + 18` = 100 px wide, so
+/// three of them are 300, and a strip of `300 + MORE_WIDTH` leaves a budget of exactly 300.
+#[test]
+fn a_tab_that_fits_exactly_fits() {
+    const NAME: f32 = 38.0;
+    const TAB: f32 = 100.0;
+    let exact = |index: usize| {
+        let _ = index;
+        NAME
+    };
+
+    // Three tabs, three tabs' worth of strip: nothing hidden, and no button.
+    let fits = tabs::overflowing(3, None, TAB * 3.0, exact);
+    assert_eq!(fits.tabs.len(), 3, "{:?}", fits.tabs);
+    assert!(fits.hidden.is_empty(), "{:?}", fits.hidden);
+
+    // Overflowing, with a budget of exactly three tabs: the run forward takes all three.
+    let forward = tabs::overflowing(5, Some(0), TAB * 3.0 + tabs::MORE_WIDTH, exact);
+    assert_eq!(
+        forward
+            .tabs
+            .iter()
+            .map(|rect| rect.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "the third tab ends exactly on the budget",
+    );
+
+    // And walking back from the last tab takes the two before it, the second of them exactly.
+    let back = tabs::overflowing(5, Some(4), TAB * 3.0 + tabs::MORE_WIDTH, exact);
+    assert_eq!(
+        back.tabs.iter().map(|rect| rect.index).collect::<Vec<_>>(),
+        vec![2, 3, 4],
+        "the tab that fits exactly was left off",
     );
 }
