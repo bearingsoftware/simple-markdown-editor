@@ -1,18 +1,23 @@
 //! The built frame, through the real font stack (MDEDIT-133).
 //!
-//! Every other test of a frame in this crate draws through `stub::Grid`, whose glyphs are all eight
-//! pixels wide, whose rows are all twenty tall, and which answers every question about a font by
+//! Nearly every frame test in this crate draws through `stub::Grid`, whose glyphs are all eight
+//! pixels wide and whose rows are all twenty tall — it answers every question about a font by
 //! construction. Three of the five defects the toolbar wave shipped were cases where **the stub
-//! itself was the lie**: a bar that overflowed a 900 px window, a blank page that drew no caret
-//! because the real backend returns no rows for empty input, and buttons that did not fit.
+//! itself was the lie**: a bar that overflowed a 900 px window, buttons that did not fit, and a
+//! blank page that drew no caret because the real backend returns no rows for empty input.
 //!
-//! **The rule that keeps this from becoming a forty-seventh copy of the stub tests: only assertions
-//! whose answer depends on real font metrics live here.** A test that would pass identically on the
-//! stub belongs with the stub, which is faster, deterministic and correct for everything else.
+//! A handful of other files already ask the real engine for one question each — `icons.rs` for
+//! whether Windows has a glyph at a code point, `table_metrics.rs` for column widths, and a
+//! Windows-only test apiece in `quotes.rs`, `images.rs` and `thematic_break.rs`. This is the file
+//! for the **frame as a whole**.
 //!
-//! **Relations, never magnitudes.** "Inside the window", "left of", "on the same row" — never "is
-//! 844.0 px", because a font update moves every advance in the file. `icons.rs` set that pattern and
-//! this follows it.
+//! **The rule that keeps it from becoming another copy of the stub tests: only assertions whose
+//! answer depends on real font metrics live here.** A test that would pass identically on the stub
+//! belongs with the stub, which is faster, deterministic and correct for everything else.
+//!
+//! **Relations, never magnitudes.** "Inside the window", "past the last button", "on the same row" —
+//! never "is 844.0 px", because a font update moves every advance in the file. `icons.rs` set that
+//! pattern and this follows it.
 //!
 //! Windows-only, like `icons.rs`: `mdedit-text-dwrite` compiles to nothing elsewhere, and there is
 //! no DirectWrite to ask.
@@ -25,18 +30,20 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::content::ContentRect;
 use mdedit_app::editor::Editor;
 use mdedit_app::gpu::QuadInstance;
 use mdedit_app::status;
 use mdedit_app::toolbar;
-use mdedit_app::view::Theme;
+use mdedit_app::view::{Rgba, Theme};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 use mdedit_text_dwrite::DirectWriteText;
 
-/// The default window, from `Window::default_attributes` in `editor.rs`.
+/// The window `Window::default_attributes` asks for — `editor.rs`'s `LogicalSize::new(900.0, 700.0)`
+/// — so what these tests measure is the window a fresh install opens.
 const WIDTH: f32 = 900.0;
-const HEIGHT: f32 = 600.0;
+const HEIGHT: f32 = 700.0;
 
 /// A solid quad has the atlas's single opaque texel; a glyph has a real region.
 const SOLID: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
@@ -46,6 +53,7 @@ fn editor(source: &str) -> Editor<DirectWriteText> {
     Editor::new(source, engine)
 }
 
+/// Every glyph drawn, as `[x, y, width, height]`.
 fn glyphs(quads: &[QuadInstance]) -> Vec<[f32; 4]> {
     quads
         .iter()
@@ -54,38 +62,50 @@ fn glyphs(quads: &[QuadInstance]) -> Vec<[f32; 4]> {
         .collect()
 }
 
-/// The quads drawn in `colour`, whatever they are.
-fn in_colour(quads: &[QuadInstance], colour: mdedit_app::view::Rgba) -> Vec<[f32; 4]> {
-    let colour = [colour.r, colour.g, colour.b, colour.a];
+/// The carets drawn inside the document's own rectangle.
+///
+/// **Bounded by the content rectangle, not by colour alone.** `Theme::dark` gives `caret` and
+/// `tab_modified` the same value, so a colour match would count the dot on a modified tab as a
+/// caret — passing here only because these fixtures open no files, which is a condition no reader
+/// of the assertion would know about.
+fn carets(quads: &[QuadInstance], content: ContentRect) -> Vec<[f32; 4]> {
+    let caret = Theme::default().caret;
+    let caret = [caret.r, caret.g, caret.b, caret.a];
     quads
         .iter()
-        .filter(|quad| quad.colour == colour)
+        .filter(|quad| quad.colour == caret && content.contains(quad.rect[0], quad.rect[1]))
         .map(|quad| quad.rect)
         .collect()
 }
 
-/// **A blank page has a caret** (MDEDIT-81), and only the real backend can say so.
+/// **A blank page has a caret, asked of the backend that had the defect** (MDEDIT-81).
 ///
-/// `DirectWriteText::layout` returns `Layout::default()` — no rows at all — for input with nothing
-/// in it, and everything downstream is keyed off rows. The stub fabricated a row for the same input,
-/// so every test of a new document passed while File → New shipped a page with nowhere to type. The
-/// repair is in `lay_out_chunk`; this is the test that would have caught its absence.
+/// `DirectWriteText::layout` returns `Layout::default()` for empty input — no rows at all — and
+/// everything the renderer draws is keyed off rows, so File → New shipped a page with nowhere to
+/// type. `blank_page.rs` covers the repair, and covers it **on the stub**, whose empty-input
+/// behaviour is a deliberate copy of this backend's. This is the copy checked against the original:
+/// if DirectWrite's answer for empty input ever changes, or the stub's imitation of it drifts, every
+/// headless test in that file goes on passing and this one does not.
 #[test]
 fn a_blank_page_has_a_caret() {
-    let quads = editor("").build_frame(WIDTH, HEIGHT, 1.0);
-    let carets = in_colour(&quads, Theme::default().caret);
+    let mut editor = editor("");
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let drawn = carets(&quads, editor.content_rect());
 
-    assert_eq!(carets.len(), 1, "a blank page drew {carets:?}");
-    assert!(carets[0][3] > 0.0, "the caret has no height: {carets:?}");
+    assert_eq!(drawn.len(), 1, "a blank page drew {drawn:?}");
+    assert!(drawn[0][3] > 0.0, "the caret has no height: {drawn:?}");
 }
 
-/// **Every button the bar drew is inside the window**, measured on the frame rather than on
-/// `toolbar::overflowing`'s arithmetic — which is what `icons.rs` already checks, and which a stub
-/// eight pixels to a glyph cannot falsify. A button that fell off the right-hand end is the defect
-/// MDEDIT-116 shipped, at a window width nobody had measured with the real font.
+/// **Every button's glyph is inside the window**, which is what the rects cannot say.
 ///
-/// **The narrow window is the one that can fail.** At the default 900 px the bar has room to spare,
-/// so it fits however badly the overflow rule is written; at 500 px it fits only if the rule works.
+/// `toolbar::overflowing` reserves room for `More` and stops at the edge, so `ButtonRect::right()`
+/// is inside the window by construction whatever the font does — asserting that is asserting
+/// arithmetic. What the arithmetic does not know is how wide the **glyph** inside a button is, and
+/// that is the number the real font supplies: MDEDIT-116's defect was three buttons off the end of a
+/// 900 px window because a stub eight pixels to a glyph said they fitted.
+///
+/// **The narrow window is the one that can fail.** At the default width the bar has room to spare,
+/// so it fits however badly the rule is written; at 500 px it fits only if the rule works.
 #[test]
 fn every_button_falls_inside_the_window() {
     for width in [WIDTH, 500.0] {
@@ -98,60 +118,93 @@ fn every_button_falls_inside_the_window() {
             "{width} px drew {} buttons",
             buttons.len()
         );
-        for button in buttons {
-            assert!(
-                button.right() <= width,
-                "{width} px: {:?} ends at {}, past the window",
-                button.action,
-                button.right()
-            );
-        }
-
-        // And the faces inside them: a glyph wider than its button is what the rects cannot say.
         let last = buttons.last().unwrap().right();
-        let in_the_bar = glyphs(&quads)
+
+        let in_the_bar: Vec<[f32; 4]> = glyphs(&quads)
             .into_iter()
-            .filter(|rect| rect[1] < toolbar::HEIGHT);
+            .filter(|rect| rect[1] < toolbar::HEIGHT)
+            .collect();
+        assert!(
+            in_the_bar.len() >= buttons.len(),
+            "{width} px: {} buttons drew {} glyphs",
+            buttons.len(),
+            in_the_bar.len()
+        );
         for rect in in_the_bar {
+            let right = rect[0] + rect[2];
             assert!(
-                rect[0] + rect[2] <= width,
-                "{width} px: a button's glyph reaches {}, past the window",
-                rect[0] + rect[2]
+                right <= width,
+                "{width} px: a button's glyph reaches {right}, past the window"
             );
             assert!(
-                rect[0] < last,
-                "{width} px: a glyph is drawn past the last button"
+                right <= last,
+                "{width} px: a glyph reaches {right}, past the last button's {last}"
             );
         }
     }
 }
 
-/// **Wrapped text stays inside the content rectangle**, which is the general form of the defect
-/// MDEDIT-92 found one instance of. Where a line breaks is the text engine's answer, and the stub
-/// breaks at a character boundary it can predict; this asks the engine that ships.
+/// **Text stays inside the content rectangle's column.**
+///
+/// Where a line breaks is the text engine's answer — the stub breaks at a character boundary the
+/// test could predict — so this is the general form of MDEDIT-92's defect: ink outside the column it
+/// belongs to. The document is three hundred paragraphs so that every row on screen is a wrapped
+/// one, which is where a width mistake shows.
+///
+/// **The body's own colour, below the bar, is what tells its glyphs from the chrome's.** The status
+/// bar draws in `marker` and `status_error`, so nothing it draws is confused for the document; the
+/// toolbar *does* draw a label in `theme.text`, which is why the filter takes the bar's height into
+/// account as well. Counting glyphs by position alone was the first version, and it could not work:
+/// the status bar says more about a long document than about an empty one, so the count differs for
+/// a reason that is not a defect.
+///
+/// **Downwards there is nothing to assert, and finding that out is worth writing down.** The last
+/// row on screen is drawn in full and the chrome paints over what hangs below it — painter's order
+/// is the whole of the answer (`docs/decisions/chrome.md`) — so a hard bottom edge is not true of
+/// the product. A version of this bounded the overhang at one row instead, and three separate
+/// mutations could not make it fail: off-screen rows are not drawn because off-screen chunks are
+/// never laid out, which `blocks.rs` and `scroll.rs` already assert on the stub. An assertion that
+/// cannot fail is worse than no assertion, so the vertical claim here is only the top edge.
 #[test]
 fn nothing_is_drawn_outside_the_content_rect() {
     let long = "The quick brown fox jumps over the lazy dog. ".repeat(20);
-    let mut editor = editor(&format!("{long}\n\n{long}\n"));
+    let paragraphs = format!("{long}\n\n").repeat(150);
+
+    let mut editor = editor(&paragraphs);
     let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
     let content = editor.content_rect();
+    let right = content.left_edge() + content.width();
+    let bottom = content.top_edge() + content.height();
+    assert!(
+        bottom <= HEIGHT - status::BAR_HEIGHT,
+        "the content rectangle overlaps the status bar"
+    );
 
-    let document_rows = glyphs(&quads)
-        .into_iter()
-        .filter(|rect| rect[1] >= toolbar::HEIGHT && rect[1] < HEIGHT - status::BAR_HEIGHT);
+    let body = Theme::default().text;
+    let body = [body.r, body.g, body.b, body.a];
     let mut seen = 0;
-    for rect in document_rows {
+    let below_the_bar = quads
+        .iter()
+        .filter(|quad| quad.colour == body && quad.rect[1] >= toolbar::HEIGHT);
+    for quad in below_the_bar {
+        let [x, y, width, _] = quad.rect;
+        // **The ink's right edge**, against the column's. Its left edge is not asserted against the
+        // margin: a glyph with a negative left side bearing legitimately puts ink left of the pen,
+        // so the honest question is whether any of the glyph is inside the column at all.
         assert!(
-            rect[0] >= content.left_edge(),
-            "a glyph at {} is left of the content rect at {}",
-            rect[0],
+            x + width <= right,
+            "a glyph reaches {}, past the content rect's right edge at {right}",
+            x + width
+        );
+        assert!(
+            x + width > content.left_edge(),
+            "a glyph at {x} is entirely left of the content rect at {}",
             content.left_edge()
         );
         assert!(
-            rect[0] + rect[2] <= content.left_edge() + content.width(),
-            "a glyph reaches {}, past the content rect's right edge at {}",
-            rect[0] + rect[2],
-            content.left_edge() + content.width()
+            y >= content.top_edge(),
+            "a glyph at {y} is above the column's top edge at {}",
+            content.top_edge()
         );
         seen += 1;
     }
@@ -182,9 +235,9 @@ fn a_click_lands_on_the_row_it_looks_like() {
             .document_mut()
             .set_selection(Selection::caret(ByteOffset::new(start)));
         let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
-        let carets = in_colour(&quads, Theme::default().caret);
-        assert_eq!(carets.len(), 1, "line {line} drew {carets:?}");
-        let [x, top, _, height] = carets[0];
+        let drawn = carets(&quads, editor.content_rect());
+        assert_eq!(drawn.len(), 1, "line {line} drew {drawn:?}");
+        let [x, top, _, height] = drawn[0];
 
         assert!(editor.click_at(x + 1.0, top + height / 2.0));
         let (landed, column) = editor
@@ -193,4 +246,15 @@ fn a_click_lands_on_the_row_it_looks_like() {
         assert_eq!(landed.get(), line, "a click on line {line}'s own row");
         assert_eq!(column.get(), 0, "at the column the caret was drawn at");
     }
+}
+
+/// Keeps the `Rgba` import honest: the theme collision the caret filter exists for.
+#[test]
+fn the_dark_theme_draws_a_caret_and_a_modified_tab_in_one_colour() {
+    let dark = Theme::dark();
+    let same: fn(Rgba, Rgba) -> bool = |a, b| a.r == b.r && a.g == b.g && a.b == b.b;
+    assert!(
+        same(dark.caret, dark.tab_modified),
+        "if these ever differ, `carets` can go back to matching on colour alone"
+    );
 }

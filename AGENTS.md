@@ -146,10 +146,12 @@ sentence above closes the question.
 frame on WARP, asserting ink. **Add to it rather than assuming rendering is unreachable.** What it
 still cannot see is whether the result *looks* right — see `docs/build-and-test.md`.
 
-**`icons.rs` and `geometry.rs` are the two files that ask the real font** (MDEDIT-92, MDEDIT-133),
-Windows-only. An assertion goes there **only if real metrics are what answer it** — three of the
-toolbar wave's five defects were cases where the stub itself was the lie — and it asserts a relation,
-never a magnitude, because a font update moves every advance in the file.
+**Some tests ask the real font instead of the stub**, all Windows-only: `icons.rs` (MDEDIT-92) for
+what is in a font, `table_metrics.rs` for column widths, `geometry.rs` (MDEDIT-133) for the frame as
+a whole, and a test apiece in `quotes.rs`, `images.rs` and `thematic_break.rs`. An assertion goes
+there **only if real metrics are what answer it** — three of the toolbar wave's five defects were
+cases where the stub itself was the lie — and it asserts a relation, never a magnitude, because a
+font update moves every advance in the file.
 
 **`mdedit-app`'s integration tests are one binary**, `crates/app/tests/main.rs` (MDEDIT-182): each
 binary is a full link of the editor, and seventy-five of them made every mutant cost minutes. **A new

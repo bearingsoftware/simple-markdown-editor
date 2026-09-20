@@ -187,17 +187,27 @@ defects come from — five in the toolbar wave alone, every one with a green sui
 of those were cases where the headless test stub *itself* was the lie.
 
 `crates/app/tests/icons.rs` asks the real font stack rather than the stub, and it exists because
-measurement needs no window. **`geometry.rs` is the other one** (MDEDIT-133): it drives an
-`Editor<DirectWriteText>` through `build_frame` and asserts what only real metrics can answer — that
-a blank page draws a caret (the MDEDIT-81 shape, which the stub hid by fabricating a row for empty
-input), that every button fits a window the bar has no room to spare in, that wrapped text stays
-inside the content rectangle, and that a click lands on the row the caret says it is on.
+measurement needs no window. So do `table_metrics.rs` and a Windows-only test apiece in `quotes.rs`,
+`images.rs` and `thematic_break.rs`, each for one question. **`geometry.rs` is the one for the frame
+as a whole** (MDEDIT-133): it drives an `Editor<DirectWriteText>` through `build_frame` and asserts
+what only real metrics answer — that every button's **glyph** fits a window the bar has no room to
+spare in, that text stays inside the content rectangle on both axes, and that a click lands on the
+row the caret was drawn on. Its blank-page test is the odd one: `blank_page.rs` covers MDEDIT-81 on
+the stub, whose empty-input behaviour is a deliberate copy of DirectWrite's, and this is the copy
+checked against the original.
 
-**The rule that keeps both files from becoming another copy of the stub tests: an assertion belongs
-here only if its answer depends on real font metrics.** A test that would pass identically on the
-stub goes with the stub, which is faster and deterministic. And **relations, never magnitudes** — a
-font update moves every advance in the file, so "inside the window" and "on the same row" are the
-only assertions that keep meaning.
+**The rule that keeps these from becoming another copy of the stub tests: an assertion belongs there
+only if its answer depends on real font metrics.** A test that would pass identically on the stub
+goes with the stub, which is faster and deterministic. And **relations, never magnitudes** — a font
+update moves every advance in the file, so "inside the window" and "on the same row" are the
+assertions that keep meaning.
+
+Two traps, both found reviewing MDEDIT-133 and both from a real font not being a grid. **Rows cannot
+be found by grouping glyphs on their top edge**, because every letter's ink starts at a different
+height; the caret is a full row tall, so it is the ruler. And **an assertion that cannot fail is
+worse than none**: `ButtonRect::right()` is inside the window by construction whatever the font does,
+so the test that means anything is about the glyph inside the button, at a width where the bar has no
+room to spare.
 
 **Whether *rendering* needs one was MDEDIT-123, and the answer is no** — measured on a hosted runner,
 which turns out to offer no hardware adapter at all and does not need to. `Editor` is generic over
