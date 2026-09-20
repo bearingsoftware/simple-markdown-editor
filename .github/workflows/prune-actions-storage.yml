@@ -1,0 +1,80 @@
+# MDEDIT-185: Actions storage hygiene, matching secure-repo, joule-genie and
+# personal-health-agent (SECREPO-345 / JG-170).
+#
+# Daily sweep + on-PR-close + manual dispatch. Even with retention-days on
+# every upload-artifact, GitHub recalculates the storage-quota counter only
+# every 6-12 hours, so freshly-expired artifacts can keep the org over quota
+# and block new uploads. This repo was the only active one without the sweep,
+# which is why mutants-report copies at 90-day retention were still present
+# from August when FINCH-350 found the org at 100% of its Free-plan quota.
+name: prune-actions-storage
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  pull_request:
+    types: [closed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete artifacts older than 7 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '7 days ago' +%s)
+          deleted=0
+          # Read from a file rather than a pipe: a `while` on the right of a pipe
+          # runs in a subshell, so the count would be lost on every iteration.
+          gh api "/repos/${REPO}/actions/artifacts" --paginate \
+            -q '.artifacts[] | "\(.id) \(.created_at)"' > /tmp/artifacts.txt
+          while read -r id created; do
+            created_ts=$(date -u -d "$created" +%s)
+            if [ "$created_ts" -lt "$cutoff" ]; then
+              gh api --method DELETE "/repos/${REPO}/actions/artifacts/${id}" >/dev/null
+              deleted=$((deleted + 1))
+              echo "deleted artifact $id (created $created)"
+            fi
+          done < /tmp/artifacts.txt
+          echo "deleted $deleted artifacts"
+
+      - name: Delete caches for closed PR branch
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -euo pipefail
+          gh api "/repos/${REPO}/actions/caches?ref=${REF}&per_page=100" --paginate \
+            -q '.actions_caches[].id' > /tmp/caches.txt
+          while read -r id; do
+            gh api --method DELETE "/repos/${REPO}/actions/caches/${id}" >/dev/null
+            echo "deleted cache $id"
+          done < /tmp/caches.txt
+
+      - name: Delete caches older than 7 days
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cutoff=$(date -u -d '7 days ago' +%s)
+          gh api "/repos/${REPO}/actions/caches?per_page=100" --paginate \
+            -q '.actions_caches[] | "\(.id) \(.last_accessed_at)"' > /tmp/caches.txt
+          while read -r id last; do
+            last_ts=$(date -u -d "$last" +%s)
+            if [ "$last_ts" -lt "$cutoff" ]; then
+              gh api --method DELETE "/repos/${REPO}/actions/caches/${id}" >/dev/null
+              echo "deleted cache $id (last accessed $last)"
+            fi
+          done < /tmp/caches.txt
