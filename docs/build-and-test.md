@@ -186,8 +186,18 @@ Hit-testing and *appearance* are still verified by hand on Windows, and that is 
 defects come from — five in the toolbar wave alone, every one with a green suite behind it, and three
 of those were cases where the headless test stub *itself* was the lie.
 
-`crates/app/tests/icons.rs` is the one file that asks the real font stack rather than the stub, and it
-exists because measurement needs no window.
+`crates/app/tests/icons.rs` asks the real font stack rather than the stub, and it exists because
+measurement needs no window. **`geometry.rs` is the other one** (MDEDIT-133): it drives an
+`Editor<DirectWriteText>` through `build_frame` and asserts what only real metrics can answer — that
+a blank page draws a caret (the MDEDIT-81 shape, which the stub hid by fabricating a row for empty
+input), that every button fits a window the bar has no room to spare in, that wrapped text stays
+inside the content rectangle, and that a click lands on the row the caret says it is on.
+
+**The rule that keeps both files from becoming another copy of the stub tests: an assertion belongs
+here only if its answer depends on real font metrics.** A test that would pass identically on the
+stub goes with the stub, which is faster and deterministic. And **relations, never magnitudes** — a
+font update moves every advance in the file, so "inside the window" and "on the same row" are the
+only assertions that keep meaning.
 
 **Whether *rendering* needs one was MDEDIT-123, and the answer is no** — measured on a hosted runner,
 which turns out to offer no hardware adapter at all and does not need to. `Editor` is generic over
