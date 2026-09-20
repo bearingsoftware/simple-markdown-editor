@@ -694,3 +694,62 @@ fn a_wrapped_quote_inside_an_item_reaches_no_further_right_than_the_items_own_te
         "the quote in the item reached {quoted}, past the item's own text at {unquoted}"
     );
 }
+
+#[test]
+fn a_paragraph_before_a_list_in_a_quote_is_not_part_of_it() {
+    // The other side of `a_paragraph_after_a_list_in_a_quote_is_not_hung_as_an_item`, and the one
+    // that exercises snapping a list's start back to its own line: every other fixture starts its
+    // list on the quote's first line, where there is no earlier newline to find.
+    // **The item wraps**, because that is the only way to see it was laid out as an item at all: a
+    // list that fell through to plain quoted lines still draws its bullet at the quote's indent,
+    // and only a continuation row can say whether anything hangs. `item_text_left` cannot be used
+    // here — it reads row zero, which is the paragraph.
+    let source = format!("> before\n> - {}\n", "word ".repeat(60));
+    let starts = document_row_starts(&source);
+
+    assert!(starts.len() >= 3, "the item should wrap: {starts:?}");
+    assert_eq!(
+        starts[0],
+        margin() + STEP,
+        "the paragraph is at the quote's indent"
+    );
+    assert_eq!(starts[1], margin() + STEP, "and the bullet is too");
+    assert!(
+        starts[2..]
+            .iter()
+            .all(|x| *x == margin() + STEP + 2.0 * ADVANCE),
+        "the item's wrapped rows do not hang under its own text: {starts:?}",
+    );
+    // **And no row was invented between them.** Cutting the piece at the newline rather than after
+    // it leaves that newline at the head of the list, which draws a blank row nobody asked for —
+    // invisible to an assertion about where a row *starts*.
+    assert_eq!(
+        document_row_y(&source, 1) - document_row_y(&source, 0),
+        LINE_HEIGHT,
+        "a blank row was drawn between the paragraph and the item",
+    );
+}
+
+#[test]
+fn a_list_at_the_start_of_a_quote_draws_no_blank_row_before_it() {
+    // The piece before the list is empty there, and an empty piece laid out as lines comes back as
+    // one repaired row — a blank line above the first item that nothing in the document asks for.
+    let source = "> - item\n> - two\n";
+    let starts = document_row_starts(source);
+
+    assert_eq!(starts.len(), 2, "{starts:?}");
+    // **The blank row is above the first item, so the spacing between rows cannot see it**: it
+    // moves both down by the same line, and the difference is unchanged. What catches it is where
+    // the first row sits, against a quote that has no list in it at all — so this is the assertion
+    // that kills the mutant, and the one below it only says the two items are adjacent.
+    assert_eq!(
+        document_row_y(source, 0),
+        document_row_y("> quoted\n", 0),
+        "the first item is a row lower than a quote's first row, so something was drawn above it",
+    );
+    assert_eq!(
+        document_row_y(source, 1) - document_row_y(source, 0),
+        LINE_HEIGHT,
+        "the two items are not on adjacent rows",
+    );
+}

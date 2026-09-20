@@ -618,3 +618,21 @@ fn a_break_straight_after_a_change_of_depth_is_at_its_own_depth() {
         "drawn at the deeper quote's indent"
     );
 }
+
+#[test]
+fn a_break_in_a_quote_in_a_list_item_hangs_from_both() {
+    // Two indents at once: the item's marker and the quote's bar. Nothing else here nests them, and
+    // the break's rule is the only thing that can say which of the two was applied.
+    let with = "- item\n\n  > a\n  >\n  > ---\n  >\n  > b\n";
+    let without = "- item\n\n  > a\n  >\n  > b\n";
+    let rules = added(with, without);
+    assert_eq!(rules.len(), 1, "{rules:?}");
+
+    // `- ` draws as `• `, so the item's text is two advances past the margin, and the quote steps
+    // one further in again. Both indents, added — which is what the rule is here to prove.
+    let item_text = MARGIN + 2.0 * stub::ADVANCE;
+    assert_eq!(rules[0][0], item_text + mdedit_app::quote::STEP);
+
+    // And it is where the quoted text starts, which is the same claim from the other side.
+    assert_eq!(rules[0][0], last_rows_text_left(&frame(with), 0));
+}
