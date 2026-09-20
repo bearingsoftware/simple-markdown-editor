@@ -6211,6 +6211,41 @@ impl<T: TextLayout> Editor<T> {
         true
     }
 
+    /// A middle-click anywhere in the window: it closes the tab under the pointer, as every editor
+    /// with tabs does, and does nothing anywhere else.
+    ///
+    /// **Here rather than in the event handler so that a test can reach it** (MDEDIT-181). It used
+    /// to be a `match` arm on a winit `MouseButton`, which no test can construct, and deleting that
+    /// arm outright failed nothing: `cargo-mutants` found it on #173. The left-click path was
+    /// already split out for the same reason, which is what [`click`](Self::click) says.
+    ///
+    /// The strip and the pane are asked in that order for the reason `click` gives — only one of the
+    /// two is ever showing. The overflow button (MDEDIT-179) closes nothing: it is not a tab, and a
+    /// middle-click on it should no more close something than one on the empty strip beside it.
+    ///
+    /// **A dialog or an open list stops it, which `click`'s own order says and this used to skip.**
+    /// A modal swallows a click even where it has no control (MDEDIT-129), and closing a tab under
+    /// one is worse than letting a caret through: `close_tab_at` activates another document, and the
+    /// dialog then acts on a file the user never opened it against. Nothing is dismissed here,
+    /// though — a middle-click is not how either is cancelled, and inventing that is not this
+    /// method's business.
+    pub fn middle_click(&mut self, x: f32, y: f32) -> bool {
+        if self.dialog.is_some() || self.open_menu.is_some() {
+            return false;
+        }
+        match (self.strip_hit(x, y), self.pane_hit(x, y)) {
+            (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
+            | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
+                // The pointer was on chrome, so the click run ends — a tab closed between two
+                // clicks in the document must not make them a double-click, which is the rule
+                // `click` follows for every piece of chrome it hits.
+                self.clicks.reset();
+                self.close_tab_at(index)
+            }
+            (Some(tabs::Hit::More) | None, None) => false,
+        }
+    }
+
     /// A left-click anywhere in the window.
     ///
     /// Chrome first, because both presentations sit over an edge of the document; only one of the
@@ -10625,14 +10660,7 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 let changed = match button {
                     MouseButton::Left => self.click(x, y),
                     MouseButton::Right => self.popup_context_menu(x, y),
-                    // Middle-click closes, as every editor with tabs does.
-                    MouseButton::Middle => match (self.strip_hit(x, y), self.pane_hit(x, y)) {
-                        (Some(tabs::Hit::Select(index) | tabs::Hit::Close(index)), _)
-                        | (_, Some(pane::Hit::Select(index) | pane::Hit::Close(index))) => {
-                            self.close_tab_at(index)
-                        }
-                        (Some(tabs::Hit::More) | None, None) => false,
-                    },
+                    MouseButton::Middle => self.middle_click(x, y),
                     _ => false,
                 };
                 if changed {

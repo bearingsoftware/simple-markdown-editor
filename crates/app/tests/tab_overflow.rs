@@ -233,11 +233,11 @@ fn the_button_lists_the_hidden_tabs() {
     assert!(editor.click(x, y));
     assert_eq!(editor.menu_kind(), Some(toolbar::Menu::Tabs));
     assert_eq!(editor.menu_tabs(), Some(hidden.as_slice()));
+    // **Exactly below the strip, not merely under it.** `top >= toolbar + strip` was the first
+    // version, and `cargo-mutants` walked through it: `toolbar_height() * STRIP_HEIGHT` is also
+    // below the strip, by a factor of thirty.
     let (_, top) = editor.menu_at().unwrap();
-    assert!(
-        top >= toolbar::HEIGHT + STRIP_HEIGHT,
-        "the list hangs below the strip"
-    );
+    assert_eq!(top, toolbar::HEIGHT + STRIP_HEIGHT + popup::GAP);
 }
 
 /// **Choosing a row shows that tab, and the strip moves to include it.** That is what makes the
@@ -523,5 +523,181 @@ fn a_long_name_in_the_list_stops_at_the_panels_padding() {
     assert!(
         last > edge - ADVANCE,
         "the name stops at {last}, short of {edge}"
+    );
+}
+
+/// **A middle-click closes the tab under it, and the overflow button is not a tab** (MDEDIT-181).
+///
+/// The behaviour predates MDEDIT-179; what it did not have was a way in. It was a `match` arm on a
+/// winit `MouseButton`, which no test can construct, so `cargo-mutants` deleted the arm and nothing
+/// failed. `Editor::middle_click` is that arm, moved where a test can call it.
+#[test]
+fn a_middle_click_closes_a_tab_and_the_button_closes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let names = twelve();
+    let mut editor = editor_with(&dir, &names);
+    let open = editor.workspace().tabs().len();
+
+    // On the button: a list to open, not a tab to close.
+    let (x, y) = on_more(&editor);
+    assert!(!editor.middle_click(x, y), "the button closed something");
+    assert_eq!(editor.workspace().tabs().len(), open);
+
+    // **On a tab that is not the active one**, and named, because a count cannot tell "the tab under
+    // the pointer" from "whichever tab was active": `editor_with` activates the first, so closing
+    // that one would pass against a `close_tab_at(0)` that ignores where the pointer was.
+    let third = editor.tab_rects()[2];
+    let doomed = editor.workspace().tabs()[third.index].display_name();
+    assert_eq!(editor.workspace().active(), Some(0), "the first is active");
+    assert!(editor.middle_click(third.x + third.width / 2.0, y));
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+    assert!(
+        !editor
+            .workspace()
+            .tabs()
+            .iter()
+            .any(|tab| tab.display_name() == doomed),
+        "{doomed} is still open, so something else was closed",
+    );
+
+    // Past the last tab, where the strip is empty: nothing.
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert!(
+        !editor.middle_click(WIDTH - 1.0, y),
+        "empty strip closed a tab"
+    );
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+}
+
+/// The same from the pane, which is the other presentation of the same tabs.
+#[test]
+fn a_middle_click_closes_a_row_in_the_pane() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    editor.toggle_chrome();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let open = editor.workspace().tabs().len();
+
+    let row = editor.row_rects()[1];
+    let doomed = editor.workspace().tabs()[row.index].display_name();
+    let middle = toolbar::HEIGHT + row.y + mdedit_app::pane::ROW_HEIGHT / 2.0;
+    assert!(editor.middle_click(mdedit_app::pane::PANE_WIDTH / 2.0, middle));
+    assert_eq!(editor.workspace().tabs().len(), open - 1);
+    assert!(
+        !editor
+            .workspace()
+            .tabs()
+            .iter()
+            .any(|tab| tab.display_name() == doomed),
+        "{doomed} is still open, so another row was closed",
+    );
+}
+
+/// **A modal stops it** (MDEDIT-129's rule, which this path used to skip). Closing a tab under a
+/// dialog activates another document, and the dialog then acts on a file the user never opened it
+/// against; under an open list it is the same argument one layer down.
+#[test]
+fn a_middle_click_under_a_dialog_or_a_list_closes_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    let open = editor.workspace().tabs().len();
+    let first = editor.tab_rects()[1];
+    let (more_x, y) = on_more(&editor);
+    let on_a_tab = first.x + first.width / 2.0;
+
+    // The strip's own list, opened from its button.
+    editor.click(more_x, y);
+    assert!(editor.menu_tabs().is_some(), "the list is open");
+    assert!(!editor.middle_click(on_a_tab, y), "closed under a list");
+    assert_eq!(editor.workspace().tabs().len(), open);
+
+    // Clicking the button again closes it, as clicking an open menu's own button does.
+    editor.click(more_x, y);
+    assert!(editor.menu_tabs().is_none(), "the list is closed again");
+
+    // And a dialog, which is modal.
+    editor.link();
+    assert!(!editor.middle_click(on_a_tab, y), "closed under a dialog");
+    assert_eq!(editor.workspace().tabs().len(), open);
+}
+
+/// **Exactly enough room is enough** (MDEDIT-181).
+///
+/// Three comparisons decide the strip — whether a tab fits, whether the walk back to the active tab
+/// takes one more, and how far forward the run goes — and each is a `<=` that `cargo-mutants` turns
+/// into a `<`. Every other fixture here sizes its tabs so the boundary is never reached, so all
+/// three survived. A tab that ends exactly on the edge is what tells them apart.
+///
+/// The arithmetic, once: a name of `NAME` px makes a tab `NAME + 2 * 12 + 20 + 18` = 100 px wide, so
+/// three of them are 300, and a strip of `300 + MORE_WIDTH` leaves a budget of exactly 300.
+#[test]
+fn a_tab_that_fits_exactly_fits() {
+    const NAME: f32 = 38.0;
+    const TAB: f32 = 100.0;
+    let exact = |index: usize| {
+        let _ = index;
+        NAME
+    };
+
+    // Three tabs, three tabs' worth of strip: nothing hidden, and no button.
+    let fits = tabs::overflowing(3, None, TAB * 3.0, exact);
+    assert_eq!(fits.tabs.len(), 3, "{:?}", fits.tabs);
+    assert!(fits.hidden.is_empty(), "{:?}", fits.hidden);
+
+    // Overflowing, with a budget of exactly three tabs: the run forward takes all three.
+    let forward = tabs::overflowing(5, Some(0), TAB * 3.0 + tabs::MORE_WIDTH, exact);
+    assert_eq!(
+        forward
+            .tabs
+            .iter()
+            .map(|rect| rect.index)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2],
+        "the third tab ends exactly on the budget",
+    );
+
+    // And walking back from the last tab takes the two before it, the second of them exactly.
+    let back = tabs::overflowing(5, Some(4), TAB * 3.0 + tabs::MORE_WIDTH, exact);
+    assert_eq!(
+        back.tabs.iter().map(|rect| rect.index).collect::<Vec<_>>(),
+        vec![2, 3, 4],
+        "the tab that fits exactly was left off",
+    );
+}
+
+/// **Closing a tab ends the click run**, as landing on any other piece of chrome does.
+///
+/// `click` resets the run whenever the pointer hits chrome, so that a click on a tab between two
+/// clicks in the document does not make them a double-click. Middle-click closes a tab — the very
+/// case that rule describes — and did not reset, so the click after it selected a word in a
+/// document the user had just switched away from.
+#[test]
+fn closing_a_tab_ends_the_click_run() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with(&dir, &twelve());
+    let (_, strip_y) = on_more(&editor);
+    let third = editor.tab_rects()[2];
+    // Inside the first word of the document, well clear of the chrome.
+    let in_the_word = (
+        MARGIN + stub::ADVANCE,
+        toolbar::HEIGHT + STRIP_HEIGHT + MARGIN + stub::LINE_HEIGHT / 2.0,
+    );
+
+    editor.click(in_the_word.0, in_the_word.1);
+    assert!(
+        editor.document().selection().span().is_empty(),
+        "the first click selects nothing"
+    );
+    assert!(editor.middle_click(third.x + third.width / 2.0, strip_y));
+    editor.click(in_the_word.0, in_the_word.1);
+
+    assert!(
+        editor.document().selection().span().is_empty(),
+        "the click after a closed tab counted as the second of a double-click, and selected {:?}",
+        editor
+            .document()
+            .selection()
+            .span()
+            .slice(&editor.document().to_string()),
     );
 }
