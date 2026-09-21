@@ -3729,6 +3729,17 @@ impl<T: TextLayout> Editor<T> {
         self.follow_caret = true;
     }
 
+    /// The glyph atlas the last frame's quads address.
+    ///
+    /// Public for the same reason [`build_frame`](Self::build_frame) is, one step further along: a
+    /// test that draws those quads has to upload the texture they were packed into, and packing is
+    /// this editor's, not the renderer's (MDEDIT-134). Read-only, so nothing outside can pack into
+    /// it — the quads and the atlas would then disagree about where a glyph is.
+    #[must_use]
+    pub fn atlas(&self) -> &Atlas {
+        &self.atlas
+    }
+
     /// Lays the document out and turns it into quads.
     ///
     /// `width` and `height` are the window's, in physical pixels. Public so a headless test can
