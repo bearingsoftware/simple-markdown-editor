@@ -47,6 +47,14 @@
 //! is not everything. Widening `Renderer` so its non-surface half can be built headlessly would
 //! close the rest, and is not attempted here.
 //!
+//! # The mutants job cannot see any of this
+//!
+//! It runs on the Linux pool, where this file is `cfg`-ed out entirely — so every mutant in the code
+//! only these tests cover is reported as a survivor. `Editor::atlas` replaced with an empty atlas is
+//! the first (on #182): killed here, missed there. **Reproduce a survivor in that region on Windows
+//! before writing a test for it**, or the test will be written for a mutant that was already dead.
+//! The same goes for `icons.rs` and `geometry.rs`.
+//!
 //! # It has to be able to fail for the reason it exists
 //!
 //! MDEDIT-146's by-hand check ran twice and passed twice **without ever drawing a picture**, because
