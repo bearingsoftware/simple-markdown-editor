@@ -22,6 +22,11 @@
 //! replica — and draws one frame into an offscreen texture. It then asserts that ink landed where
 //! each pipeline was told to draw.
 //!
+//! **And then the editor's own frame** (MDEDIT-134). The quads above are this file's; those are
+//! `Editor::build_frame`'s, drawn against the atlas the editor packed — the two halves that have to
+//! agree about where a glyph is, and the half a stub can never check. The fixture is the blank page
+//! MDEDIT-81 was about, where the caret is the only mark on it.
+//!
 //! It is **not** a screenshot test. Nothing here is golden, no hash is committed and no reference
 //! image exists. MDEDIT-123 found the pixels were byte-identical across two machines and said
 //! plainly that this is evidence rather than a guarantee — a Windows update that reships a font
@@ -44,6 +49,10 @@
 
 #![cfg(windows)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use mdedit_app::editor::Editor;
+use mdedit_app::view::Theme;
+use mdedit_text_dwrite::DirectWriteText;
 
 use mdedit_app::gpu::{
     ATLAS_SIZE, Atlas, QuadInstance, SHADER, create_atlas_parts, create_bind_layout,
@@ -104,12 +113,12 @@ impl Harness {
     }
 
     /// An `Rgba8Unorm` target, matching the non-sRGB surface `Renderer::new` deliberately picks.
-    fn target(&self) -> wgpu::Texture {
+    fn target(&self, width: u32, height: u32) -> wgpu::Texture {
         self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"),
             size: wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
@@ -122,12 +131,12 @@ impl Harness {
     }
 
     /// The frame's pixels, without the row padding a copy imposes.
-    fn read_back(&self, target: &wgpu::Texture) -> Vec<u8> {
+    fn read_back(&self, target: &wgpu::Texture, width: u32, height: u32) -> Vec<u8> {
         // `bytes_per_row` must be a multiple of 256 for a texture-to-buffer copy.
-        let row = (WIDTH * 4).div_ceil(256) * 256;
+        let row = (width * 4).div_ceil(256) * 256;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
-            size: u64::from(row * HEIGHT),
+            size: u64::from(row * height),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -147,12 +156,12 @@ impl Harness {
                 layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(row),
-                    rows_per_image: Some(HEIGHT),
+                    rows_per_image: Some(height),
                 },
             },
             wgpu::Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -165,10 +174,10 @@ impl Harness {
             .expect("the queue drains");
 
         let mapped = slice.get_mapped_range().expect("the buffer maps");
-        let mut pixels = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
-        for y in 0..HEIGHT {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
             let start = (y * row) as usize;
-            pixels.extend_from_slice(&mapped[start..start + (WIDTH * 4) as usize]);
+            pixels.extend_from_slice(&mapped[start..start + (width * 4) as usize]);
         }
         drop(mapped);
         buffer.unmap();
@@ -177,8 +186,8 @@ impl Harness {
 }
 
 /// The pixel at `(x, y)`, as RGBA.
-fn pixel(pixels: &[u8], x: u32, y: u32) -> [u8; 4] {
-    let at = ((y * WIDTH + x) * 4) as usize;
+fn pixel(pixels: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
+    let at = ((y * width + x) * 4) as usize;
     [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
 }
 
@@ -378,6 +387,159 @@ fn build(harness: &Harness) -> Built {
     }
 }
 
+/// The window the editor's own frame is drawn at. Small, because WARP rasterises on the CPU, and
+/// still tall enough for the bar, a row of text and the status bar.
+const EDITOR_WIDTH: u32 = 240;
+const EDITOR_HEIGHT: u32 = 160;
+
+/// A quad's colour as eight bits a channel.
+fn bytes_of(colour: [f32; 4]) -> [u8; 4] {
+    colour.map(|channel| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a quad's channel is 0..=1, so this lands in 0..=255"
+        )]
+        {
+            (channel * 255.0).round() as u8
+        }
+    })
+}
+
+/// A theme colour as eight bits a channel.
+///
+/// **Near, not equal.** A pixel does not come back as these bytes — the background reads `[10, 9,
+/// 15]` where the theme says `[22, 24, 38]` — so every comparison against one of these is
+/// [`nearer`], as the picture assertions above already are. Which colour a pixel resolves to is the
+/// property; how the channels land is the rasteriser's business.
+fn bytes(colour: mdedit_app::view::Rgba) -> [u8; 4] {
+    [colour.r, colour.g, colour.b, colour.a].map(|channel| {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a theme channel is 0..=1, so this lands in 0..=255"
+        )]
+        {
+            (channel * 255.0).round() as u8
+        }
+    })
+}
+
+/// The editor's own frame, drawn through the glyph pipeline into `target` (MDEDIT-134).
+///
+/// **The quads and the atlas both come from the editor**, which is the whole of the point: the
+/// glyphs a frame addresses were packed by `Editor`, and a test that packed its own would be
+/// asserting against a texture the product never draws. Pictures are not involved — a document with
+/// no image in it emits no picture quads — so this is the quad pipeline alone.
+fn draw_editor_frame(
+    harness: &Harness,
+    target: &wgpu::Texture,
+    quads: &[QuadInstance],
+    atlas: &Atlas,
+) {
+    let (device, queue) = (&harness.device, &harness.queue);
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("editor quads"),
+        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+    });
+    let bind_layout = create_bind_layout(device);
+    let (atlas_texture, atlas_sampler) = create_atlas_parts(device);
+    let pipeline = create_pipeline(
+        device,
+        &shader,
+        &bind_layout,
+        format,
+        ("vs_main", "fs_main"),
+    );
+
+    let globals = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("globals"),
+        size: 16,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "viewport and atlas dimensions are far below f32's exact-integer limit"
+    )]
+    queue.write_buffer(
+        &globals,
+        0,
+        bytemuck::cast_slice(&[
+            EDITOR_WIDTH as f32,
+            EDITOR_HEIGHT as f32,
+            ATLAS_SIZE as f32,
+            ATLAS_SIZE as f32,
+        ]),
+    );
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &atlas_texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        atlas.pixels(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(ATLAS_SIZE),
+            rows_per_image: Some(ATLAS_SIZE),
+        },
+        wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: 1,
+        },
+    );
+
+    let binding = make_bind_group(
+        device,
+        &bind_layout,
+        &globals,
+        &atlas_texture,
+        &atlas_sampler,
+    );
+    let instances = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("editor instances"),
+        size: size_of_val(quads) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&instances, 0, bytemuck::cast_slice(quads));
+
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("editor frame"),
+    });
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("editor quads"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(BACKGROUND),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &binding, &[]);
+        pass.set_vertex_buffer(0, instances.slice(..));
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a frame's quads are thousands at most"
+        )]
+        pass.draw(0..4, 0..quads.len() as u32);
+    }
+    queue.submit([encoder.finish()]);
+}
 #[test]
 fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
     let harness = Harness::new();
@@ -391,7 +553,7 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
         picture_instances,
     } = build(&harness);
 
-    let target = harness.target();
+    let target = harness.target(WIDTH, HEIGHT);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("frame"),
@@ -427,16 +589,16 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
     }
     queue.submit([encoder.finish()]);
 
-    let pixels = harness.read_back(&target);
+    let pixels = harness.read_back(&target, WIDTH, HEIGHT);
 
     // **Ink, not survival.** Reaching here having drawn nothing is the failure mode that let
     // MDEDIT-146 through by hand, so each pipeline's own region is checked.
     //
     // The picture quad spans x 0..32, so a quarter and three quarters across it are the centres of
     // its two texels — the points a `Linear` sampler resolves to pure colours rather than a blend.
-    let picture_left = pixel(&pixels, 8, 16);
-    let picture_right = pixel(&pixels, 24, 16);
-    let from_glyphs = pixel(&pixels, 48, 16);
+    let picture_left = pixel(&pixels, WIDTH, 8, 16);
+    let picture_right = pixel(&pixels, WIDTH, 24, 16);
+    let from_glyphs = pixel(&pixels, WIDTH, 48, 16);
 
     assert!(
         nearer(picture_left, LEFT_TEXEL, BACKGROUND_RGBA),
@@ -462,5 +624,56 @@ fn both_pipelines_build_and_draw_on_a_device_with_no_window() {
     assert_ne!(
         picture_left, from_glyphs,
         "both regions are identical, so neither pipeline is distinguishable from the clear"
+    );
+    the_editors_own_frame_has_ink_where_its_caret_is(&harness);
+}
+
+/// The second half of the one test (MDEDIT-134): the editor's own quads, against its own atlas.
+///
+/// A function rather than a `#[test]` of its own, for the reason the module docs give — nextest
+/// gives every test its own process and the driver compiles the shader on each process's first
+/// draw, at ~550 ms against ~2.5 ms a frame after it.
+fn the_editors_own_frame_has_ink_where_its_caret_is(harness: &Harness) {
+    let mut editor = Editor::new(
+        "",
+        DirectWriteText::new().expect("DirectWrite is available on any supported Windows"),
+    );
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "a window a few hundred pixels across is exact in f32"
+    )]
+    let frame = editor.build_frame(EDITOR_WIDTH as f32, EDITOR_HEIGHT as f32, 1.0);
+    let caret_colour = bytes(Theme::default().caret);
+    let caret = frame
+        .iter()
+        .find(|quad| bytes_of(quad.colour) == caret_colour)
+        .copied()
+        .expect("a blank page draws a caret (MDEDIT-81)");
+
+    let target = harness.target(EDITOR_WIDTH, EDITOR_HEIGHT);
+    draw_editor_frame(harness, &target, &frame, editor.atlas());
+    let drawn = harness.read_back(&target, EDITOR_WIDTH, EDITOR_HEIGHT);
+
+    // The caret's own middle, and a point on the page well away from it.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the caret's rect is inside a window a few hundred pixels across"
+    )]
+    let (caret_x, caret_y) = (
+        (caret.rect[0] + caret.rect[2] / 2.0) as u32,
+        (caret.rect[1] + caret.rect[3] / 2.0) as u32,
+    );
+    let on_the_caret = pixel(&drawn, EDITOR_WIDTH, caret_x, caret_y);
+    let beside_it = pixel(&drawn, EDITOR_WIDTH, caret_x + 40, caret_y);
+    let page = bytes(Theme::default().background);
+
+    assert!(
+        nearer(on_the_caret, caret_colour, page),
+        "no ink where the caret is: {on_the_caret:?}, wanted {caret_colour:?}"
+    );
+    assert!(
+        nearer(beside_it, page, caret_colour),
+        "the page beside the caret is not the background: {beside_it:?}, wanted {page:?}"
     );
 }
