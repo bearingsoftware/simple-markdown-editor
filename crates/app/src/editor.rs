@@ -3880,7 +3880,7 @@ impl<T: TextLayout> Editor<T> {
         // Anything added here goes after the document too, or it will be drawn on.
         quads.append(&mut self.build_tab_strip(width, scale));
         self.draw_toolbar(&mut quads, width, scale);
-        self.draw_find(&mut quads, width, scale);
+        self.draw_find(&mut quads, scale);
         self.draw_pane(&mut quads, height, scale);
         self.draw_status_bar(&mut quads, width, height, scale);
         self.draw_scrollbar(&mut quads, width, scale);
@@ -5338,8 +5338,13 @@ impl<T: TextLayout> Editor<T> {
         // `inner_size` reports — accounting for it here would take it off twice and leave a strip of
         // the document permanently below the fold.
         Insets {
-            // The bars sit below the strip and above the document, so the three add.
-            top: self.strip_height() + self.toolbar_height() + self.find_height(),
+            // The strip and the formatting bar sit above the document, so the two add.
+            //
+            // **The find bar is deliberately not a third** (MDEDIT-177). It floats over the text at
+            // the top right, so opening it, closing it, or turning Replace on takes no height and
+            // moves no line — which is the whole of that ticket, and the reason the term the code
+            // used to add here is gone rather than zero.
+            top: self.strip_height() + self.toolbar_height(),
             // The pane and the gutter both take from the left, and they add rather than compete —
             // which is exactly the arithmetic `ContentRect` exists to keep in one place.
             left: self.pane_width() + self.gutter_width(),
@@ -6123,8 +6128,12 @@ impl<T: TextLayout> Editor<T> {
     /// the content already gets; an arm apiece would be branches no test could tell from their
     /// absence. **The scrollbar is outside it too**, which its own doc comment does not say: it
     /// overlays the *window's* right margin rather than the text, so a point on the bar is already
-    /// outside the content. What is left is the dialog and the open list, which are drawn over the
-    /// text, and the find bar, which is outside the content and still needs an I-beam on its fields.
+    /// outside the content. What is left is the dialog, the open list and the find panel — all
+    /// three drawn over the text, and the last of them with fields that want the I-beam.
+    ///
+    /// The find panel joined that list on MDEDIT-177 and had not needed an arm before it: while the
+    /// bar was a band above the document it was outside [`ContentRect`] like the rest of the chrome,
+    /// and the arrow fell out of the same `contains` check. Floating is what makes it a question.
     ///
     /// A gesture in progress outranks the pixel underneath: a selection being dragged keeps the
     /// I-beam wherever the pointer goes, and a held scrollbar thumb keeps the arrow, because what
@@ -6159,9 +6168,8 @@ impl<T: TextLayout> Editor<T> {
             return Pointer::Arrow;
         }
         if let Some(layout) = self.find_layout.as_ref() {
-            let inside = y - (self.strip_height() + self.toolbar_height());
-            if (0.0..find::height(layout.mode)).contains(&inside) {
-                return match layout.over_field(x, inside) {
+            if layout.contains(x, y) {
+                return match layout.over_field(x, y) {
                     Some(_) => Pointer::Text,
                     None => Pointer::Arrow,
                 };
@@ -7257,9 +7265,6 @@ impl<T: TextLayout> Editor<T> {
     /// Ctrl+F over a highlighted word and is the difference between the chord being useful and being
     /// a box you then have to type into. Multi-line selections come in flattened rather than
     /// refused — see [`Field::set_text`](crate::field::Field::set_text).
-    ///
-    /// The bar takes room out of the content rect, so every cached layout width is now wrong. Cleared
-    /// rather than chased, exactly as the pane and the formatting bar do it.
     pub fn open_find(&mut self) -> bool {
         self.open_bar(find::Mode::Find)
     }
@@ -7296,8 +7301,11 @@ impl<T: TextLayout> Editor<T> {
             None => self.find.active_mut().select_all(),
         }
         self.find_focused = true;
-        self.layouts.clear();
-        self.heights.clear();
+        // **No cache clear, since MDEDIT-177.** The panel floats, so the wrapping width is the same
+        // width it was a moment ago and every cached layout is still the right one. It used to take
+        // height out of the content rect, and a bar that changed the rect made every chunk's layout
+        // stale — so opening Find re-laid out the whole visible document, which is what a cache
+        // keyed on width is for avoiding.
         true
     }
 
@@ -7311,8 +7319,7 @@ impl<T: TextLayout> Editor<T> {
         self.find_open = false;
         self.find_focused = false;
         self.find_layout = None;
-        self.layouts.clear();
-        self.heights.clear();
+        // Nothing to clear here either, and for the reason `open_bar` gives.
         true
     }
 
@@ -7521,17 +7528,42 @@ impl<T: TextLayout> Editor<T> {
         self.active_document_id().unwrap_or(u64::MAX)
     }
 
-    /// Height the find bar occupies, which is nothing when it is closed and two rows for Replace.
-    fn find_height(&self) -> f32 {
-        if self.find_open {
-            find::height(self.find.mode)
-        } else {
-            0.0
+    /// Where the floating panel's top-left corner goes, in device-independent pixels (MDEDIT-177).
+    ///
+    /// **Top right of the document, and it moves out of the caret's way.** Top right is the
+    /// convention — VS Code, Chrome and Word all put it there — and the right is where a
+    /// left-to-right reader's eye is least often. It stops at the content's right edge rather than
+    /// the window's, so it never covers the scrollbar; the scrollbar overlays the window's right
+    /// margin, which is outside [`ContentRect`], and a panel over the thumb would be a panel the
+    /// scrollbar's own hit test wins from underneath.
+    ///
+    /// **The one case where it moves is the caret behind it**, which is the case the ticket's
+    /// acceptance names: the match you have just navigated to is selected, so the caret is on it,
+    /// and a panel over the thing you were looking for is worse than one on the wrong side. VS Code
+    /// shifts its widget left for the same reason. It shifts only when the left actually helps — in
+    /// a window too narrow for the panel to move anywhere the two overlap whatever is chosen, and
+    /// the convention is the better of two bad answers.
+    fn find_origin(&self, panel_width: f32, panel_height: f32) -> (f32, f32) {
+        let top = self.content.top_edge();
+        let left_edge = self.content.left_edge();
+        let right = (left_edge + self.content.width() - panel_width).max(left_edge);
+        let clear = |left: f32| match self.caret_area {
+            Some((x, y, height)) => {
+                x + CARET_WIDTH <= left
+                    || x >= left + panel_width
+                    || y + height <= top
+                    || y >= top + panel_height
+            }
+            None => true,
+        };
+        match (clear(right), clear(left_edge)) {
+            (false, true) => (left_edge, top),
+            _ => (right, top),
         }
     }
 
-    /// Draws the find bar below whatever chrome is above it, and remembers where its parts went.
-    fn draw_find(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
+    /// Draws the find panel over the top right of the document, and remembers where its parts went.
+    fn draw_find(&mut self, quads: &mut Vec<QuadInstance>, scale: f32) {
         self.find_layout = None;
         if !self.find_open {
             return;
@@ -7563,13 +7595,31 @@ impl<T: TextLayout> Editor<T> {
             .and_then(|text| self.lay_out_label(text, style));
         let count_width = count_label.as_ref().map_or(0.0, |label| label.width);
 
-        let logical_width = width / scale;
-        let layout = find::layout(mode, logical_width, count_width, &widths);
-        let top = self.strip_height() + self.toolbar_height();
+        let panel_width = find::width(mode).min(self.content.width());
+        let panel_height = find::height(mode);
+        let (left, top) = self.find_origin(panel_width, panel_height);
+        let layout = find::layout(mode, (left, top), panel_width, count_width, &widths);
 
+        // A border and then the panel inside it, as an open list draws itself: over prose a panel
+        // with no edge reads as a bite taken out of the text. The docked bar never needed one — it
+        // sat on the chrome, where the document's background *was* the edge.
         quads.push(Self::solid(
-            [0.0, top * scale, width, find::height(mode) * scale],
-            self.theme.strip,
+            [
+                (left - 1.0) * scale,
+                (top - 1.0) * scale,
+                (panel_width + 2.0) * scale,
+                (panel_height + 2.0) * scale,
+            ],
+            self.theme.line,
+        ));
+        quads.push(Self::solid(
+            [
+                left * scale,
+                top * scale,
+                panel_width * scale,
+                panel_height * scale,
+            ],
+            self.theme.panel,
         ));
 
         // The offset from a row's top to the text's baseline, taken as a number rather than as a
@@ -7587,6 +7637,9 @@ impl<T: TextLayout> Editor<T> {
         .into_iter()
         .flatten()
         {
+            // The layout's parts are measured from the panel's corner, so everything drawn from
+            // here down is placed relative to it. See `find::Layout`.
+            let box_ = (left + box_.0, box_.1);
             quads.push(Self::solid(
                 [
                     box_.0 * scale,
@@ -7609,7 +7662,7 @@ impl<T: TextLayout> Editor<T> {
 
         if let Some(label) = count_label {
             let where_ = LabelAt {
-                x: layout.count,
+                x: left + layout.count,
                 baseline: baseline_of(0.0),
                 scale,
                 colour: self.theme.marker,
@@ -7617,12 +7670,31 @@ impl<T: TextLayout> Editor<T> {
             self.draw_label_glyphs(quads, &label.glyphs, where_);
         }
 
+        self.draw_find_buttons(quads, &layout, baseline_drop, scale);
+        self.find_layout = Some(layout);
+    }
+
+    /// Draws the panel's buttons: the lit ground under Match Case when it is on, then each glyph
+    /// centred in its cell.
+    ///
+    /// Its own method because [`draw_find`](Self::draw_find) was over the line limit with it inline,
+    /// and this is the part of the panel that has nothing to do with where the panel is — every
+    /// rect it needs is already in the layout, measured from the panel's corner, and `baseline_drop`
+    /// is the panel's first row's baseline.
+    fn draw_find_buttons(
+        &mut self,
+        quads: &mut Vec<QuadInstance>,
+        layout: &find::Layout,
+        baseline_drop: f32,
+        scale: f32,
+    ) {
+        let (left, top) = layout.origin;
         let case = self.find.case_sensitive;
         for rect in &layout.buttons.clone() {
             if rect.button == find::Button::Case && case {
                 quads.push(Self::solid(
                     [
-                        rect.x * scale,
+                        (left + rect.x) * scale,
                         (top + rect.y + 3.0) * scale,
                         rect.width * scale,
                         (find::HEIGHT - 6.0) * scale,
@@ -7634,16 +7706,14 @@ impl<T: TextLayout> Editor<T> {
                 continue;
             };
             let where_ = LabelAt {
-                x: rect.x + (rect.width - label.width) / 2.0,
-                baseline: baseline_of(rect.y),
+                x: left + rect.x + (rect.width - label.width) / 2.0,
+                baseline: baseline_drop + rect.y,
                 scale,
                 colour: self.theme.text,
             };
             let glyphs = label.glyphs.clone();
             self.draw_label_glyphs(quads, &glyphs, where_);
         }
-
-        self.find_layout = Some(layout);
     }
 
     /// Draws what has been typed into the field, its selection, and its caret.
@@ -7745,18 +7815,16 @@ impl<T: TextLayout> Editor<T> {
         let Some(layout) = self.find_layout.clone() else {
             return false;
         };
-        let top = self.strip_height() + self.toolbar_height();
-        let inside = y - top;
-        if !(0.0..find::height(layout.mode)).contains(&inside) {
+        if !layout.contains(x, y) {
             return false;
         }
 
-        if let Some(which) = layout.over_field(x, inside) {
+        if let Some(which) = layout.over_field(x, y) {
             self.find_focused = true;
             self.find.focus = which;
             return true;
         }
-        match layout.hit_test(x, inside) {
+        match layout.hit_test(x, y) {
             Some(find::Button::Case) => {
                 self.toggle_find_case();
             }

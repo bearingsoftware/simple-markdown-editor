@@ -221,8 +221,25 @@ fn widths(mode: find::Mode) -> Vec<f32> {
         .collect()
 }
 
+/// Where the panel is put for these, and **deliberately not the window's corner** (MDEDIT-177).
+///
+/// Its parts are measured from its own corner and its hit tests take window coordinates, so the
+/// conversion between the two is a thing that can be dropped. At an origin of zero the two spaces
+/// are the same space and dropping it would pass every test below.
+const ORIGIN: (f32, f32) = (120.0, 40.0);
+
 fn laid_out(mode: find::Mode, width: f32, count: f32) -> find::Layout {
-    find::layout(mode, width, count, &widths(mode))
+    find::layout(mode, ORIGIN, width, count, &widths(mode))
+}
+
+/// A hit test on a point given in the panel's own coordinates, as everything in [`find::Layout`] is.
+fn hit(layout: &find::Layout, x: f32, y: f32) -> Option<Button> {
+    layout.hit_test(ORIGIN.0 + x, ORIGIN.1 + y)
+}
+
+/// The same for the fields.
+fn field_at(layout: &find::Layout, x: f32, y: f32) -> Option<find::Focus> {
+    layout.over_field(ORIGIN.0 + x, ORIGIN.1 + y)
 }
 
 #[test]
@@ -269,10 +286,7 @@ fn a_click_lands_on_the_button_under_it() {
     let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     for rect in &layout.buttons {
         let middle = rect.x + rect.width / 2.0;
-        assert_eq!(
-            layout.hit_test(middle, find::HEIGHT / 2.0),
-            Some(rect.button)
-        );
+        assert_eq!(hit(&layout, middle, find::HEIGHT / 2.0), Some(rect.button));
     }
 }
 
@@ -280,8 +294,55 @@ fn a_click_lands_on_the_button_under_it() {
 fn a_click_above_or_below_the_bar_hits_nothing() {
     let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     let middle = layout.buttons[0].x + 1.0;
-    assert_eq!(layout.hit_test(middle, -1.0), None);
-    assert_eq!(layout.hit_test(middle, find::HEIGHT), None);
+    assert_eq!(hit(&layout, middle, -1.0), None);
+    assert_eq!(hit(&layout, middle, find::HEIGHT), None);
+}
+
+/// The panel is opaque (MDEDIT-177): every point on it belongs to it, including the background
+/// between two controls, and no point off it does. What stops a click on the panel reaching the
+/// document it now floats over.
+#[test]
+fn the_panel_owns_its_rectangle_and_nothing_outside_it() {
+    let layout = laid_out(find::Mode::Find, 380.0, 50.0);
+    let (left, top) = layout.origin;
+    assert!(layout.contains(left, top), "its own corner is on it");
+    assert!(
+        layout.contains(left + layout.width - 0.5, top + layout.height() - 0.5),
+        "and so is the far corner",
+    );
+    for off in [
+        (left - 0.5, top + 1.0),
+        (left + layout.width, top + 1.0),
+        (left + 1.0, top - 0.5),
+        (left + 1.0, top + layout.height()),
+    ] {
+        assert!(!layout.contains(off.0, off.1), "{off:?} is off the panel");
+    }
+}
+
+/// A floating panel is as wide as it was laid out for and as tall as its mode, which is what
+/// [`find::Layout::contains`] measures against — the window's width is no longer either of them.
+#[test]
+fn the_panel_is_its_own_size() {
+    let layout = laid_out(find::Mode::Find, 380.0, 50.0);
+    assert_eq!(layout.width, 380.0);
+    assert_eq!(layout.height(), find::HEIGHT);
+    assert_eq!(
+        laid_out(find::Mode::Replace, 380.0, 50.0).height(),
+        find::HEIGHT * 2.0,
+    );
+}
+
+/// Go to Line holds a line number and a close button, so it asks for less room than a search that
+/// counts its matches and walks them.
+#[test]
+fn go_to_line_wants_a_narrower_panel_than_find() {
+    assert!(find::width(find::Mode::GoTo) < find::width(find::Mode::Find));
+    assert_eq!(
+        find::width(find::Mode::Replace),
+        find::width(find::Mode::Find),
+        "replace is the same panel with a second row",
+    );
 }
 
 #[test]
@@ -289,10 +350,10 @@ fn a_click_in_the_text_box_is_not_a_button() {
     let layout = laid_out(find::Mode::Find, 800.0, 50.0);
     let inside = layout.field.0 + 1.0;
     assert_eq!(
-        layout.over_field(inside, find::HEIGHT / 2.0),
+        field_at(&layout, inside, find::HEIGHT / 2.0),
         Some(find::Focus::Primary)
     );
-    assert_eq!(layout.hit_test(inside, find::HEIGHT / 2.0), None);
+    assert_eq!(hit(&layout, inside, find::HEIGHT / 2.0), None);
 }
 
 #[test]
@@ -341,12 +402,12 @@ fn the_second_row_gets_its_own_field() {
     let replace = layout.replace.expect("a replacement box");
     assert!(replace.1 > 0.0);
     assert_eq!(
-        layout.over_field(replace.0 + 1.0, find::HEIGHT + 4.0),
+        field_at(&layout, replace.0 + 1.0, find::HEIGHT + 4.0),
         Some(find::Focus::Secondary)
     );
     // And the row above it is still the search term, not the replacement.
     assert_eq!(
-        layout.over_field(replace.0 + 1.0, 4.0),
+        field_at(&layout, replace.0 + 1.0, 4.0),
         Some(find::Focus::Primary)
     );
 }
@@ -367,10 +428,10 @@ fn a_second_row_button_is_not_hit_from_the_first() {
         .expect("on the bar");
     let middle = rect.x + rect.width / 2.0;
     assert_eq!(
-        layout.hit_test(middle, find::HEIGHT + 4.0),
+        hit(&layout, middle, find::HEIGHT + 4.0),
         Some(Button::ReplaceAll)
     );
-    assert_ne!(layout.hit_test(middle, 4.0), Some(Button::ReplaceAll));
+    assert_ne!(hit(&layout, middle, 4.0), Some(Button::ReplaceAll));
 }
 
 #[test]
