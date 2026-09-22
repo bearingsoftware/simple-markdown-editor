@@ -269,6 +269,43 @@ pub fn width(mode: Mode) -> f32 {
 /// Space at the bar's edges and between its parts.
 const PADDING: f32 = 6.0;
 
+/// The narrowest panel `mode` can be drawn in without a button falling off it (MDEDIT-177).
+///
+/// **A floor, not a preference.** [`layout`] packs each row's buttons against the right edge and
+/// floors their left at [`PADDING`], so in a panel narrower than this the last cells run past the
+/// panel's own width — and since [`Layout::local`] rejects a point outside that width, they would be
+/// *drawn* over the document and answer no click. Close being unpressable is the case that matters:
+/// Esc still shuts the bar, but a button you can see and cannot press is a defect either way.
+///
+/// It was not a question while the bar spanned the window: the width it was laid out in was the
+/// window's, and a window that narrow has no room for the document either.
+///
+/// `widths` is what [`layout`] takes, and measured for the same reason.
+#[must_use]
+pub fn least_width(mode: Mode, widths: &[f32]) -> f32 {
+    let widest_row = (0..2)
+        .map(|row| {
+            buttons(mode)
+                .iter()
+                .enumerate()
+                .filter(|(_, button)| button.row() == row)
+                .map(|(at, _)| cell(widths, at))
+                .sum::<f32>()
+        })
+        .fold(0.0_f32, f32::max);
+    widest_row + PADDING * 2.0
+}
+
+/// How wide the cell for the button at `index` is.
+///
+/// Never narrower than the symbols' width, so the four on the first row line up as a row of squares,
+/// and never narrower than what the glyph measured — two of them are words.
+fn cell(widths: &[f32], index: usize) -> f32 {
+    widths
+        .get(index)
+        .map_or(BUTTON, |measured| (measured + PADDING * 2.0).max(BUTTON))
+}
+
 /// The narrowest a button may be. Wider ones are measured — see [`layout`].
 const BUTTON: f32 = 24.0;
 
@@ -352,14 +389,15 @@ pub fn buttons(mode: Mode) -> &'static [Button] {
     }
 }
 
-/// Where a button landed.
+/// Where a button landed, **in the panel's coordinates** — both edges are measured from
+/// [`Layout::origin`], not from the window's corner. See [`Layout`] for why.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonRect {
     /// Which button.
     pub button: Button,
-    /// Left edge, from the window's.
+    /// Left edge, from the panel's.
     pub x: f32,
-    /// Top edge, from the bar's.
+    /// Top edge, from the panel's.
     pub y: f32,
     /// How wide.
     pub width: f32,
@@ -477,11 +515,7 @@ pub fn layout(
     widths: &[f32],
 ) -> Layout {
     let all = buttons(mode);
-    let cell = |index: usize| {
-        widths
-            .get(index)
-            .map_or(BUTTON, |measured| (measured + PADDING * 2.0).max(BUTTON))
-    };
+    let cell = |index: usize| cell(widths, index);
 
     let mut rects = Vec::with_capacity(all.len());
     // Where each row's leftmost button starts, which is also where that row's field has to stop.

@@ -2946,9 +2946,9 @@ impl<T: TextLayout> Editor<T> {
         let tooltip_gone = self.dismiss_panels();
 
         // **The dialog takes every key, before anything else looks at one** (MDEDIT-129). It is the
-        // only modal surface in the editor: the find bar shares the keyboard with the document and
-        // says so by taking a strip of the window, and this takes it outright and says so by dimming
-        // what is behind it. Above F3 as well, because a modal panel that let a find shortcut
+        // only modal surface in the editor: the find panel shares the keyboard with the document and
+        // takes only the clicks on itself, and this takes both outright and says so by dimming what
+        // is behind it. Above F3 as well, because a modal panel that let a find shortcut
         // through would be a panel the document could scroll out from under.
         if self.dialog.is_some() {
             return self.dialog_key(event) || tooltip_gone;
@@ -3915,8 +3915,9 @@ impl<T: TextLayout> Editor<T> {
     /// Draws the modal dialog, and the dim over everything behind it (MDEDIT-129).
     ///
     /// **The dim is the modality**, not decoration. It is the only thing on screen saying that the
-    /// document is not taking keys — the find bar announces itself by taking a strip of the window,
-    /// and a panel floating over unchanged text does not announce anything.
+    /// document is not taking keys. The find panel floats over unchanged text too (MDEDIT-177) and
+    /// says what it is with a border and a panel colour — which is enough for a surface that takes
+    /// only its own clicks, and is not enough for one that takes every click in the window.
     ///
     /// Drawn after every other piece of chrome including the tooltip, which is what makes it the
     /// topmost thing; `click` asks about it first, which is the same z-order read the other way.
@@ -6338,6 +6339,18 @@ impl<T: TextLayout> Editor<T> {
     /// Separate from showing the menu because the menu is a native popup that cannot be driven by a
     /// test, and this rule can be.
     pub fn right_click_at(&mut self, x: f32, y: f32) -> bool {
+        // **The find panel first, because it is the one piece of chrome inside the content rect**
+        // (MDEDIT-177). While the bar was a band above the document, `contains` below declined a
+        // right-click on it for free; a panel that floats is inside the rect, so without this a
+        // right-click on the search field placed the caret in the text *underneath* the panel,
+        // collapsed the current match's selection and popped the document's menu over the panel.
+        if self
+            .find_layout
+            .as_ref()
+            .is_some_and(|layout| layout.contains(x, y))
+        {
+            return false;
+        }
         // Chrome has no context menu of its own yet, and a document menu popping up over the tab
         // strip would be worse than nothing. Deliberately not the same as the left-button chain:
         // there is nothing here for the scrollbar or the strip to do.
@@ -7595,7 +7608,12 @@ impl<T: TextLayout> Editor<T> {
             .and_then(|text| self.lay_out_label(text, style));
         let count_width = count_label.as_ref().map_or(0.0, |label| label.width);
 
-        let panel_width = find::width(mode).min(self.content.width());
+        // Wanted, then what there is room for — and then a floor, because a panel narrower than its
+        // own buttons draws them over the document where no click can reach them. See
+        // `find::least_width`.
+        let panel_width = find::width(mode)
+            .min(self.content.width())
+            .max(find::least_width(mode, &widths));
         let panel_height = find::height(mode);
         let (left, top) = self.find_origin(panel_width, panel_height);
         let layout = find::layout(mode, (left, top), panel_width, count_width, &widths);
@@ -7690,7 +7708,10 @@ impl<T: TextLayout> Editor<T> {
     ) {
         let (left, top) = layout.origin;
         let case = self.find.case_sensitive;
-        for rect in &layout.buttons.clone() {
+        // Not cloned, unlike when this was inline in `draw_find`: `layout` is a parameter now rather
+        // than a local of the same `&mut self` borrow, so the loop borrows nothing its body touches.
+        // It is a heap allocation a frame, on the path the latency harness measures.
+        for rect in &layout.buttons {
             if rect.button == find::Button::Case && case {
                 quads.push(Self::solid(
                     [

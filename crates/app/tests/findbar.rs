@@ -302,6 +302,54 @@ fn caret_x(editor: &mut Editor<Grid>) -> f32 {
     f32::from_bits(*xs.last().expect("the document draws a caret"))
 }
 
+/// **A panel never narrower than its own buttons**, however little room the window leaves.
+///
+/// Found in the review of #183. The panel's width is clamped to the content's, and `layout` floors
+/// each row's leftmost button at the padding — so in a window narrow enough, the last cells ran past
+/// the panel's right edge. They were still *drawn*, since `draw_find_buttons` places them from the
+/// panel's corner, and `Layout::contains` rejected them, so Close was visible and unpressable and
+/// the click went into the document instead. It never arose while the bar was laid out in the
+/// window's own width.
+#[test]
+fn a_narrow_window_keeps_every_button_on_the_panel() {
+    let mut editor = editor("alpha\n");
+    editor.apply_chord("f", false);
+    // Narrower than the four buttons need, which is what the floor is for.
+    let _ = editor.build_frame(120.0, HEIGHT, 1.0);
+
+    let layout = panel(&editor);
+    for rect in &layout.buttons {
+        let (x, y) = (
+            layout.origin.0 + rect.x + rect.width / 2.0,
+            layout.origin.1 + rect.y + find::HEIGHT / 2.0,
+        );
+        assert!(
+            layout.contains(x, y),
+            "{:?} is off the panel: cell at {} of {} wide",
+            rect.button,
+            rect.x,
+            layout.width,
+        );
+        assert_eq!(
+            layout.hit_test(x, y),
+            Some(rect.button),
+            "{:?} answers no click",
+            rect.button,
+        );
+    }
+    assert!(editor.find_open());
+    let close = layout
+        .buttons
+        .iter()
+        .find(|rect| rect.button == find::Button::Close)
+        .expect("find has a close button");
+    editor.click(
+        layout.origin.0 + close.x + close.width / 2.0,
+        layout.origin.1 + find::HEIGHT / 2.0,
+    );
+    assert!(!editor.find_open(), "Close should still close it");
+}
+
 /// The drift test, inverted by MDEDIT-177. A panel that floats must leave the click where it was:
 /// the *same* window point is the same byte with the bar open as without it.
 #[test]

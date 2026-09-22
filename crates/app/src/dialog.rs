@@ -21,7 +21,9 @@
 //!
 //! The document dims behind it. A panel that takes the keyboard while the text behind it looks
 //! ordinary is the thing a non-modal panel gets wrong, and this editor has exactly one other
-//! keyboard-taking surface — the find bar — which announces itself by taking a strip of the window.
+//! keyboard-taking surface — the find panel, which floats over the text as well (MDEDIT-177) and
+//! announces itself with a border and a panel colour. That is the right weight for a surface that
+//! leaves the rest of the window alone; this one does not, so it dims.
 //!
 //! `Esc` cancels, `Enter` accepts, `Tab` and `Shift+Tab` move between fields.
 
