@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_app::editor::Editor;
+use mdedit_app::find;
 use mdedit_app::pointer::Pointer;
 use mdedit_app::toolbar;
 use mdedit_session::Workspace;
@@ -120,11 +121,12 @@ fn over_the_find_bar_a_field_is_an_i_beam_and_a_button_is_not() {
     editor.build_frame(WIDTH, HEIGHT, 1.0);
     let layout = editor.find_layout().expect("the bar is laid out").clone();
 
-    // The bar sits under the formatting bar, and its own rects are measured from its top edge.
-    let top = toolbar::HEIGHT;
+    // The panel floats over the document's top right, and its own rects are measured from its
+    // corner rather than from the window's (MDEDIT-177).
+    let (left, top) = layout.origin;
     let (field_x, field_width) = layout.field;
     assert_eq!(
-        pointer_at(&editor, (field_x + field_width / 2.0, top + 4.0)),
+        pointer_at(&editor, (left + field_x + field_width / 2.0, top + 4.0)),
         Pointer::Text,
     );
 
@@ -132,32 +134,44 @@ fn over_the_find_bar_a_field_is_an_i_beam_and_a_button_is_not() {
     assert_eq!(
         pointer_at(
             &editor,
-            (button.x + button.width / 2.0, top + button.y + 4.0)
+            (left + button.x + button.width / 2.0, top + button.y + 4.0)
         ),
         Pointer::Arrow,
     );
 }
 
-/// **With the find bar open, the document below it is still text.** That is what says the bar's band
-/// is measured *from* its top rather than scaled by it: the mutants job on #170 turned `y - top` into
-/// `y / top` and every other test here still passed, because a probe a few pixels into the bar is
-/// inside the band either way. A point far below it is not.
+/// **With the find bar open, the document around it is still text.** That is what says the panel's
+/// rectangle is measured *from* its corner rather than scaled by it: the mutants job on #170 turned
+/// `y - top` into `y / top` and every other test here still passed, because a probe a few pixels
+/// into the bar is inside the band either way. A point well clear of it is not.
+///
+/// Both probes matter since MDEDIT-177. The panel no longer spans the window, so a point at its own
+/// height but off to its left is document — which it never was while the bar was a band.
 #[test]
-fn with_the_find_bar_open_the_text_below_it_is_an_i_beam() {
+fn with_the_find_bar_open_the_text_around_it_is_an_i_beam() {
     let mut editor = editor("prose\nmore prose\nand more again\n");
     editor.open_find();
     editor.build_frame(WIDTH, HEIGHT, 1.0);
 
-    // Clear of the field's own column as well as below the bar: a scaled `y` lands every point
-    // inside the band, and there it is the *x* that decides field from button.
     let layout = editor.find_layout().expect("the bar is laid out").clone();
-    let (field_x, field_width) = layout.field;
-    let at = (field_x + field_width + 40.0, HEIGHT / 2.0);
-    assert!(
-        editor.content_rect().contains(at.0, at.1),
-        "the probe must be in the document, well below the bar: {at:?}",
-    );
-    assert_eq!(pointer_at(&editor, at), Pointer::Text);
+    let (left, top) = layout.origin;
+    for at in [
+        // Below the panel, in the panel's own column.
+        (left + layout.width / 2.0, HEIGHT / 2.0),
+        // Beside it, on the panel's own rows.
+        (left - 20.0, top + find::HEIGHT / 2.0),
+    ] {
+        assert!(
+            editor.content_rect().contains(at.0, at.1),
+            "the probe must be in the document: {at:?}",
+        );
+        assert!(
+            !layout.contains(at.0, at.1),
+            "and off the panel: {at:?}, which is at {:?}",
+            layout.origin,
+        );
+        assert_eq!(pointer_at(&editor, at), Pointer::Text);
+    }
 }
 
 /// A file pane takes width from the document rather than overlaying it, and its rows are controls.

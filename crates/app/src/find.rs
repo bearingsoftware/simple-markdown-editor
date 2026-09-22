@@ -250,8 +250,61 @@ pub fn height(mode: Mode) -> f32 {
     }
 }
 
+/// How wide the panel wants to be in `mode`, before the room it has is taken into account
+/// (MDEDIT-177).
+///
+/// A number rather than a measurement, and that is the point of it: the panel floats over the text,
+/// so a width computed from its contents would change as the count went from "3 of 17" to "10 of
+/// 17" and the panel would breathe while you navigated. The layout below already gives way
+/// gracefully when the room is less than this — the count goes first, then the field takes its
+/// space — so a fixed want plus a clamp is the whole of the sizing.
+///
+/// Go to Line is narrower because it is a line number and a close button, and a panel three times
+/// the width of what it holds reads as an unfinished one.
+#[must_use]
+pub fn width(mode: Mode) -> f32 {
+    if mode == Mode::GoTo { 220.0 } else { 380.0 }
+}
+
 /// Space at the bar's edges and between its parts.
 const PADDING: f32 = 6.0;
+
+/// The narrowest panel `mode` can be drawn in without a button falling off it (MDEDIT-177).
+///
+/// **A floor, not a preference.** [`layout`] packs each row's buttons against the right edge and
+/// floors their left at [`PADDING`], so in a panel narrower than this the last cells run past the
+/// panel's own width — and since [`Layout::local`] rejects a point outside that width, they would be
+/// *drawn* over the document and answer no click. Close being unpressable is the case that matters:
+/// Esc still shuts the bar, but a button you can see and cannot press is a defect either way.
+///
+/// It was not a question while the bar spanned the window: the width it was laid out in was the
+/// window's, and a window that narrow has no room for the document either.
+///
+/// `widths` is what [`layout`] takes, and measured for the same reason.
+#[must_use]
+pub fn least_width(mode: Mode, widths: &[f32]) -> f32 {
+    let widest_row = (0..2)
+        .map(|row| {
+            buttons(mode)
+                .iter()
+                .enumerate()
+                .filter(|(_, button)| button.row() == row)
+                .map(|(at, _)| cell(widths, at))
+                .sum::<f32>()
+        })
+        .fold(0.0_f32, f32::max);
+    widest_row + PADDING * 2.0
+}
+
+/// How wide the cell for the button at `index` is.
+///
+/// Never narrower than the symbols' width, so the four on the first row line up as a row of squares,
+/// and never narrower than what the glyph measured — two of them are words.
+fn cell(widths: &[f32], index: usize) -> f32 {
+    widths
+        .get(index)
+        .map_or(BUTTON, |measured| (measured + PADDING * 2.0).max(BUTTON))
+}
 
 /// The narrowest a button may be. Wider ones are measured — see [`layout`].
 const BUTTON: f32 = 24.0;
@@ -336,14 +389,15 @@ pub fn buttons(mode: Mode) -> &'static [Button] {
     }
 }
 
-/// Where a button landed.
+/// Where a button landed, **in the panel's coordinates** — both edges are measured from
+/// [`Layout::origin`], not from the window's corner. See [`Layout`] for why.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonRect {
     /// Which button.
     pub button: Button,
-    /// Left edge, from the window's.
+    /// Left edge, from the panel's.
     pub x: f32,
-    /// Top edge, from the bar's.
+    /// Top edge, from the panel's.
     pub y: f32,
     /// How wide.
     pub width: f32,
@@ -357,11 +411,24 @@ impl ButtonRect {
     }
 }
 
-/// Where every part of the bar goes, in device-independent pixels from the window's left edge.
+/// Where every part of the panel goes, in device-independent pixels **from the panel's top-left
+/// corner** — [`origin`](Self::origin) is where that corner is in the window.
+///
+/// # Why the parts are not in window coordinates
+///
+/// They were, until MDEDIT-177: the bar spanned the window and its left edge was the window's, so
+/// the only conversion anyone needed was the vertical one, and every caller did that subtraction
+/// itself. A panel that floats has an origin on both axes and it moves — so the subtraction is done
+/// here, once, by [`over_field`](Self::over_field) and [`hit_test`](Self::hit_test), which take
+/// window coordinates. The same argument `ContentRect` makes for the document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     /// What it was laid out for.
     pub mode: Mode,
+    /// Where the panel's top-left corner is in the window.
+    pub origin: (f32, f32),
+    /// How wide the panel is. Its height is [`height`]`(mode)`.
+    pub width: f32,
     /// The first row's text box: left edge, then width.
     pub field: (f32, f32),
     /// The second row's, in [`Mode::Replace`] only.
@@ -373,9 +440,34 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Which field a point in the bar is over, `y` measured from the bar's top edge.
+    /// How tall the panel is.
+    #[must_use]
+    pub fn height(&self) -> f32 {
+        height(self.mode)
+    }
+
+    /// Whether a window point is on the panel at all.
+    ///
+    /// What makes the panel opaque to clicks (MDEDIT-177). It floats over the document now, so a
+    /// point between two of its controls is still the panel's — and a caller that asked only
+    /// `hit_test` would let that click put the caret in the text underneath, which is the mistake
+    /// every piece of chrome in this editor has made once.
+    #[must_use]
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        self.local(x, y).is_some()
+    }
+
+    /// A window point in the panel's own coordinates, or `None` when it is not on the panel.
+    fn local(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let (left, top) = self.origin;
+        let (x, y) = (x - left, y - top);
+        ((0.0..self.width).contains(&x) && (0.0..self.height()).contains(&y)).then_some((x, y))
+    }
+
+    /// Which field a window point is over.
     #[must_use]
     pub fn over_field(&self, x: f32, y: f32) -> Option<Focus> {
+        let (x, y) = self.local(x, y)?;
         let inside = |box_: (f32, f32)| x >= box_.0 && x < box_.0 + box_.1;
         if (0.0..HEIGHT).contains(&y) && inside(self.field) {
             return Some(Focus::Primary);
@@ -388,9 +480,10 @@ impl Layout {
         }
     }
 
-    /// Which button a point in the bar is over, `y` measured from the bar's top edge.
+    /// Which button a window point is over.
     #[must_use]
     pub fn hit_test(&self, x: f32, y: f32) -> Option<Button> {
+        let (x, y) = self.local(x, y)?;
         self.buttons
             .iter()
             .find(|rect| rect.contains(x, y))
@@ -398,7 +491,10 @@ impl Layout {
     }
 }
 
-/// Works out where the bar's parts go in a window `width` wide.
+/// Works out where the panel's parts go, given where it sits and how wide it is.
+///
+/// `origin` is the panel's top-left corner in the window; everything computed here is measured from
+/// it, and `width` is the panel's rather than the window's (MDEDIT-177).
 ///
 /// `widths` is how wide each of [`buttons`]`(mode)`'s glyphs measured, in the same order. Measured
 /// rather than assumed because two of them are words: "Replace" at a fixed 24 pixels would be a
@@ -411,13 +507,15 @@ impl Layout {
 /// which it takes the count's space too: a bar too narrow to say "3 of 17" is still a bar you can
 /// type in.
 #[must_use]
-pub fn layout(mode: Mode, width: f32, count_width: f32, widths: &[f32]) -> Layout {
+pub fn layout(
+    mode: Mode,
+    origin: (f32, f32),
+    width: f32,
+    count_width: f32,
+    widths: &[f32],
+) -> Layout {
     let all = buttons(mode);
-    let cell = |index: usize| {
-        widths
-            .get(index)
-            .map_or(BUTTON, |measured| (measured + PADDING * 2.0).max(BUTTON))
-    };
+    let cell = |index: usize| cell(widths, index);
 
     let mut rects = Vec::with_capacity(all.len());
     // Where each row's leftmost button starts, which is also where that row's field has to stop.
@@ -459,6 +557,8 @@ pub fn layout(mode: Mode, width: f32, count_width: f32, widths: &[f32]) -> Layou
 
     Layout {
         mode,
+        origin,
+        width,
         field,
         replace,
         count,

@@ -6,9 +6,9 @@
 //!
 //! - a key goes to exactly one of the two things that take text, and it is the right one;
 //! - a chord still reaches the document while the search box has the caret;
-//! - the bar takes its height out of the document and gives it back, and a click below it lands on
-//!   the byte it would have without it — the drift test that MDEDIT-52 needed and MDEDIT-39 is
-//!   named after;
+//! - the panel takes **no** height out of the document, and a click beside it lands on the byte it
+//!   would have without it — the drift test that MDEDIT-52 needed and MDEDIT-39 is named after,
+//!   which MDEDIT-177 turned from "a bar's height lower" into "exactly where it was";
 //! - navigation moves the *selection*, so the reveal and the highlight both follow for free.
 
 #![allow(
@@ -50,14 +50,20 @@ fn search(editor: &mut Editor<Grid>, needle: &str) {
     frame(editor);
 }
 
-/// Halfway down the find bar, in window coordinates.
+/// The panel's layout, which is only there once a frame has been drawn with the bar open.
+fn panel(editor: &Editor<Grid>) -> find::Layout {
+    editor.find_layout().expect("the bar was drawn").clone()
+}
+
+/// A point on the panel, given in the panel's own coordinates (MDEDIT-177).
 ///
-/// Asked of the content rect rather than assumed to be at the top of the window: there is a
-/// formatting bar above it, and a tab strip above that when a workspace is open. A test that
-/// hardcoded a y would be testing the chrome stack rather than the find bar, and would break every
-/// time something else was added to it.
-fn bar_y(editor: &Editor<Grid>) -> f32 {
-    editor.content_rect().top_edge() - MARGIN - find::HEIGHT / 2.0
+/// Asked of the layout rather than computed from the chrome stack: the panel floats over the
+/// document at the top right now, so where it is depends on the content rect and on where the caret
+/// is, and a test that worked either out itself would be asserting against its own copy of the
+/// arithmetic.
+fn on_panel(editor: &Editor<Grid>, x: f32, y: f32) -> (f32, f32) {
+    let (left, top) = panel(editor).origin;
+    (left + x, top + y)
 }
 
 /// Just inside the document, below every band of chrome.
@@ -148,19 +154,33 @@ fn closing_an_already_closed_bar_says_so() {
     assert!(!editor.close_find(), "nothing to close");
 }
 
-// ---- the room it takes ----
+// ---- the room it takes, which is none ----
 
+/// MDEDIT-177's acceptance, on the geometry: the panel floats, so the document does not move when
+/// it opens, when Replace adds a second row, or when it closes.
+///
+/// Was the opposite test until then — the bar was a band of chrome and this asserted that the
+/// document started exactly a bar lower. The line you are reading moving under your eyes at the
+/// moment you go looking for it is what that cost.
 #[test]
-fn the_bar_takes_its_height_out_of_the_document_and_gives_it_back() {
+fn opening_the_bar_does_not_move_the_document() {
     let mut editor = editor("alpha\n");
     let before = editor.content_rect().top_edge();
 
     editor.apply_chord("f", false);
     frame(&mut editor);
     assert_eq!(
-        editor.content_rect().top_edge() - before,
-        find::HEIGHT,
-        "the document should start exactly a bar lower"
+        editor.content_rect().top_edge(),
+        before,
+        "the document should not have moved"
+    );
+
+    editor.open_replace();
+    frame(&mut editor);
+    assert_eq!(
+        editor.content_rect().top_edge(),
+        before,
+        "nor when the panel grew a second row"
     );
 
     editor.close_find();
@@ -168,10 +188,172 @@ fn the_bar_takes_its_height_out_of_the_document_and_gives_it_back() {
     assert_eq!(editor.content_rect().top_edge(), before);
 }
 
-/// The drift test. Chrome above the document must move what is below it, not draw over it — a click
-/// that lands on a different byte with the bar open is the failure `ContentRect` exists to stop.
+/// The same claim about what is drawn rather than about the rect: every row stays where it was.
+///
+/// The rect is what the rows are placed from, so this cannot fail while the test above passes —
+/// which is the point of having it. It is the assertion a future bar that reached around
+/// `ContentRect` would break, and `top_edge` alone would not notice.
 #[test]
-fn a_click_below_the_bar_lands_on_the_byte_it_would_have() {
+fn opening_the_bar_leaves_every_row_where_it_was() {
+    let mut editor = editor("alpha beta gamma\nsecond line here\nthird line as well\n");
+    let before = rows(&mut editor);
+    assert!(before.len() >= 3, "three lines should draw three rows");
+
+    editor.apply_chord("f", false);
+    assert_eq!(rows(&mut editor), before, "opening Find moved a row");
+
+    editor.open_replace();
+    assert_eq!(rows(&mut editor), before, "Replace moved a row");
+
+    editor.close_find();
+    assert_eq!(rows(&mut editor), before, "closing moved a row");
+}
+
+/// The tops of the document's glyph rows, as `tests/lists.rs` reads them.
+///
+/// The panel's own glyphs are excluded by taking the text colour only — the fields and the buttons
+/// draw in it too, but they draw at the panel's rows, which would otherwise appear and disappear
+/// from this list as the bar opens and closes and say a row had moved when none had.
+fn rows(editor: &mut Editor<Grid>) -> Vec<u32> {
+    let text = Theme::default().text;
+    let wanted = [text.r, text.g, text.b, text.a];
+    // Drawn first and asked afterwards: the layout is what the frame just decided, and reading it
+    // beforehand gets the *previous* frame's — which on the frame that opens the bar is `None`, so
+    // the filter below would let every one of the panel's own glyphs through.
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let panel = editor.find_layout().cloned();
+    let mut tops: Vec<u32> = quads
+        .iter()
+        .filter(|quad| quad.colour == wanted)
+        .filter(|quad| {
+            panel
+                .as_ref()
+                .is_none_or(|layout| !layout.contains(quad.rect[0], quad.rect[1]))
+        })
+        .map(|quad| quad.rect[1].to_bits())
+        .collect();
+    tops.sort_unstable();
+    tops.dedup();
+    tops
+}
+
+/// Top right of the document, which is where every editor puts it — and inside the content rather
+/// than over the chrome above it or the scrollbar beside it.
+#[test]
+fn the_panel_floats_at_the_top_right_of_the_document() {
+    let mut editor = editor("alpha\n");
+    search(&mut editor, "alpha");
+    let layout = panel(&editor);
+    let content = editor.content_rect();
+    let (left, top) = layout.origin;
+
+    assert_eq!(top, content.top_edge(), "it starts where the document does");
+    assert_eq!(
+        left + layout.width,
+        content.left_edge() + content.width(),
+        "and ends where the document does, so it never covers the scrollbar",
+    );
+    assert!(
+        left > content.left_edge(),
+        "a panel that reached the left edge would be a band again: {left}",
+    );
+}
+
+/// **The panel gets out of the caret's way** — the acceptance's "the current match is never hidden
+/// behind it", since navigating to a match selects it and puts the caret on it.
+///
+/// A match at the end of the first line is exactly the case: top right is where the panel wants to
+/// sit and where that match is.
+#[test]
+fn the_panel_moves_left_when_the_caret_is_behind_it() {
+    let line = format!("{}needle\n", "x ".repeat(60));
+    let mut editor = editor(&line);
+    caret_at(&mut editor, 0);
+    frame(&mut editor);
+    let right = panel_origin_after(&mut editor, 0);
+
+    let end = line.trim_end_matches('\n').len();
+    let moved = panel_origin_after(&mut editor, end);
+    assert!(
+        moved.0 < right.0,
+        "the panel should have moved left off the caret: {moved:?} against {right:?}",
+    );
+    assert_eq!(moved.1, right.1, "and not up or down");
+    assert!(
+        !panel(&editor).contains(caret_x(&mut editor), moved.1 + find::HEIGHT / 2.0),
+        "the caret should be clear of it now",
+    );
+}
+
+/// Where the panel ends up with the caret at `offset`, the bar open and a frame drawn.
+fn panel_origin_after(editor: &mut Editor<Grid>, offset: usize) -> (f32, f32) {
+    caret_at(editor, offset);
+    if !editor.find_open() {
+        editor.apply_chord("f", false);
+    }
+    frame(editor);
+    panel(editor).origin
+}
+
+/// Where the document's caret was drawn, which is the rightmost of the two carets on screen when
+/// the caret is at the end of a long line.
+fn caret_x(editor: &mut Editor<Grid>) -> f32 {
+    let xs = caret_xs(editor);
+    f32::from_bits(*xs.last().expect("the document draws a caret"))
+}
+
+/// **A panel never narrower than its own buttons**, however little room the window leaves.
+///
+/// Found in the review of #183. The panel's width is clamped to the content's, and `layout` floors
+/// each row's leftmost button at the padding — so in a window narrow enough, the last cells ran past
+/// the panel's right edge. They were still *drawn*, since `draw_find_buttons` places them from the
+/// panel's corner, and `Layout::contains` rejected them, so Close was visible and unpressable and
+/// the click went into the document instead. It never arose while the bar was laid out in the
+/// window's own width.
+#[test]
+fn a_narrow_window_keeps_every_button_on_the_panel() {
+    let mut editor = editor("alpha\n");
+    editor.apply_chord("f", false);
+    // Narrower than the four buttons need, which is what the floor is for.
+    let _ = editor.build_frame(120.0, HEIGHT, 1.0);
+
+    let layout = panel(&editor);
+    for rect in &layout.buttons {
+        let (x, y) = (
+            layout.origin.0 + rect.x + rect.width / 2.0,
+            layout.origin.1 + rect.y + find::HEIGHT / 2.0,
+        );
+        assert!(
+            layout.contains(x, y),
+            "{:?} is off the panel: cell at {} of {} wide",
+            rect.button,
+            rect.x,
+            layout.width,
+        );
+        assert_eq!(
+            layout.hit_test(x, y),
+            Some(rect.button),
+            "{:?} answers no click",
+            rect.button,
+        );
+    }
+    assert!(editor.find_open());
+    let close = layout
+        .buttons
+        .iter()
+        .find(|rect| rect.button == find::Button::Close)
+        .expect("find has a close button");
+    editor.click(
+        layout.origin.0 + close.x + close.width / 2.0,
+        layout.origin.1 + find::HEIGHT / 2.0,
+    );
+    assert!(!editor.find_open(), "Close should still close it");
+}
+
+/// The drift test, inverted by MDEDIT-177. A panel that floats must leave the click where it was:
+/// the *same* window point is the same byte with the bar open as without it.
+#[test]
+fn a_click_below_the_panel_lands_on_the_byte_it_would_have() {
     let mut editor = editor("alpha beta gamma\nsecond line here\n");
     let point = (MARGIN + 30.0, MARGIN + 4.0);
     editor.click(point.0, point.1);
@@ -179,7 +361,11 @@ fn a_click_below_the_bar_lands_on_the_byte_it_would_have() {
 
     editor.apply_chord("f", false);
     frame(&mut editor);
-    editor.click(point.0, point.1 + find::HEIGHT);
+    assert!(
+        !panel(&editor).contains(point.0, point.1),
+        "the probe has to be off the panel, or it is not a click in the document",
+    );
+    editor.click(point.0, point.1);
     assert_eq!(editor.document().selection().head(), without);
 }
 
@@ -354,8 +540,9 @@ fn clicking_the_box_takes_focus_back_to_it() {
     editor.click(MARGIN + 20.0, text_y(&editor));
     assert!(!editor.find_focused());
 
-    let layout = editor.find_layout().expect("the bar was drawn").clone();
-    editor.click(layout.field.0 + 4.0, bar_y(&editor));
+    let field = panel(&editor).field;
+    let (x, y) = on_panel(&editor, field.0 + 4.0, find::HEIGHT / 2.0);
+    editor.click(x, y);
     assert!(editor.find_focused());
 }
 
@@ -366,8 +553,7 @@ fn clicking_next_moves_the_selection() {
     let mut editor = editor("alpha beta alpha\n");
     caret_at(&mut editor, 0);
     search(&mut editor, "alpha");
-    let x = button_x(&editor, find::Button::Next);
-    let y = bar_y(&editor);
+    let (x, y) = button_point(&editor, find::Button::Next);
     editor.click(x, y);
     assert_eq!(selected(&editor), (0, 5));
 }
@@ -376,8 +562,7 @@ fn clicking_next_moves_the_selection() {
 fn clicking_close_closes_it() {
     let mut editor = editor("alpha\n");
     search(&mut editor, "alpha");
-    let x = button_x(&editor, find::Button::Close);
-    let y = bar_y(&editor);
+    let (x, y) = button_point(&editor, find::Button::Close);
     editor.click(x, y);
     assert!(!editor.find_open());
 }
@@ -387,36 +572,41 @@ fn clicking_the_case_button_toggles_it() {
     let mut editor = editor("Alpha alpha\n");
     search(&mut editor, "alpha");
     assert_eq!(editor.find_bar().unwrap().matches().len(), 2);
-    let x = button_x(&editor, find::Button::Case);
-    let y = bar_y(&editor);
+    let (x, y) = button_point(&editor, find::Button::Case);
     editor.click(x, y);
     frame(&mut editor);
     assert_eq!(editor.find_bar().unwrap().matches().len(), 1);
 }
 
-/// The gap between two buttons is still the bar. A click there reaching the document underneath is
-/// the mistake every piece of chrome in this editor has made once.
+/// The gap between two buttons is still the panel. A click there reaching the document underneath
+/// is the mistake every piece of chrome in this editor has made once — and since MDEDIT-177 what it
+/// would reach is *directly* underneath rather than a band below, so it would land on the text the
+/// panel is covering.
 #[test]
 fn a_click_between_two_buttons_does_not_reach_the_document() {
     let mut editor = editor("alpha beta gamma\n");
     search(&mut editor, "alpha");
     caret_at(&mut editor, 3);
-    let layout = editor.find_layout().expect("the bar was drawn").clone();
-    // Between the count and the first button: bar background, and nothing else.
-    let gap = layout.buttons[0].x - 2.0;
-    let y = bar_y(&editor);
-    assert!(editor.click(gap, y));
+    // Between the count and the first button: panel background, and nothing else.
+    let gap = panel(&editor).buttons[0].x - 2.0;
+    let (x, y) = on_panel(&editor, gap, find::HEIGHT / 2.0);
+    assert!(editor.click(x, y));
     assert_eq!(editor.document().selection().head().get(), 3);
 }
 
-fn button_x(editor: &Editor<Grid>, button: find::Button) -> f32 {
-    let layout = editor.find_layout().expect("the bar was drawn");
+/// The middle of a button, in window coordinates.
+fn button_point(editor: &Editor<Grid>, button: find::Button) -> (f32, f32) {
+    let layout = panel(editor);
     let rect = layout
         .buttons
         .iter()
         .find(|rect| rect.button == button)
         .unwrap_or_else(|| panic!("{button:?} should be on the bar"));
-    rect.x + rect.width / 2.0
+    on_panel(
+        editor,
+        rect.x + rect.width / 2.0,
+        rect.y + find::HEIGHT / 2.0,
+    )
 }
 
 // ---- more than one document ----

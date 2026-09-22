@@ -62,7 +62,7 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 
   **The formatting bar's answer, chosen over wrapping.** Wrapping onto more rows would have made
   the strip's height depend on the window and on how many files are open, and every one of the
-  content rect, the find bar, MDEDIT-121's tooltip and the scrollbar reads that height as a constant.
+  content rect, MDEDIT-121's tooltip and the scrollbar reads that height as a constant.
   `tabs::overflowing` is `toolbar::overflowing` (MDEDIT-116) for tabs: the room for the button is
   reserved only when it is needed, and what is drawn and what is listed come from one call so a tab
   cannot end up in neither. The list is `popup`'s, as `toolbar::Menu::Tabs`, so it is drawn, hovered
@@ -91,9 +91,10 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **outside `ContentRect`**, the bar because it overlays the window's right margin rather than the
   text. Every point outside the content is already the arrow, so an arm apiece would be branches no
   test could tell from their absence. Both facts were found by mutating the arms one at a time: four
-  survived, which is what said they were redundant rather than untested. What is left is the dialog
-  and the open list, drawn over the text, and the find bar, outside the content and still wanting an
-  I-beam on its fields.
+  survived, which is what said they were redundant rather than untested. What is left is the dialog,
+  the open list and the find panel — all three drawn over the text, and the last of them wanting an
+  I-beam on its fields. The find bar was in that list for a different reason until MDEDIT-177: it was
+  *outside* the content, and only its fields needed an arm. Floating made its whole rectangle one.
 
   **A gesture outranks the pixel underneath.** Dragging a selection keeps the I-beam wherever the
   pointer goes and a held scrollbar thumb keeps the arrow, because mid-drag what the pointer is doing
@@ -175,8 +176,10 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   second door, never a second implementation*.
 
   **The dim is the modality**, not decoration. This editor's only other keyboard-taking surface is
-  the find bar, which announces itself by taking a strip of the window; a panel floating over
-  unchanged text announces nothing. `dialog_key` is checked above F3 and above the find bar, and a
+  the find bar, which announced itself by taking a strip of the window — and since MDEDIT-177 floats
+  over unchanged text like the dialog does, with a border and a panel colour doing the announcing
+  instead. The difference the dim is for is that a dialog takes *every* click and the find panel
+  takes only its own. `dialog_key` is checked above F3 and above the find bar, and a
   chord that is not the field's own is *dropped* rather than performed — Ctrl+S with a dialog up
   should not save.
 
@@ -348,6 +351,35 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **`rows` counts the header**, in the picker, in the caption and in `Document::insert_table`. Three
   lit squares mean three rows of table, one of which is the header the delimiter sits under — a
   picker whose smallest offer is two rows lies about its own top-left square.
+- **The find bar floats over the text instead of pushing it down.** MDEDIT-177. It was a full-width
+  strip between the formatting bar and the document, and its height was a term in `Editor::insets` —
+  so opening it moved every line down 30 px, Replace moved them 30 more, and closing moved them
+  back. The line you are reading moved under your eyes at the one moment you were looking hard at
+  it. Now it is a panel at the top right of `ContentRect`, and the term is **gone** from the insets
+  rather than zero.
+
+  **Three things fell out of the move, and each is the reason for a rule:**
+
+  - *The panel owns a rectangle, so the rectangle is where the hit testing lives.* `find::Layout`
+    carries an `origin` and its parts are measured from it; `contains`, `over_field` and `hit_test`
+    take window coordinates and convert once. Every caller used to subtract the chrome height
+    itself, which was sound only while the bar's left edge was the window's.
+  - *Opaque, including its own background.* A click between two of its controls is the panel's. It
+    was already swallowed when the bar was chrome; now what it would otherwise reach is the text the
+    panel is sitting on, which the user cannot even see.
+  - *No layout-cache clear on open or close.* The cache is keyed by wrapping width, the panel does
+    not change the width, so every cached chunk is still right. The docked bar changed the content
+    rect, so opening Find re-laid out the whole visible document — the cost a width-keyed cache
+    exists to avoid.
+
+  **It moves out of the caret's way**, left, when the caret is behind it — VS Code's answer.
+  Navigating to a match selects it, so the caret is *on* the thing you were looking for, and a panel
+  over that is worse than a panel on the wrong side. It shifts only when the left actually helps: in
+  a window too narrow for the panel to move anywhere it stays where the convention puts it.
+
+  **It stops at the content's right edge**, so it never covers the scrollbar — which overlays the
+  window's right margin, outside the content, and would win the click from underneath anyway.
+
 - **There is a find bar, and the text field is the part that did not exist before.** MDEDIT-44. Until
   it, the document was the only thing in this editor that took a keystroke; `crates/app/src/field.rs`
   is the other one, and Replace, Go to Line and every future dialog-ish thing are meant to reuse it

@@ -57,20 +57,31 @@ fn caret_at(editor: &mut Editor<Grid>, offset: usize) {
 
 /// Halfway down a row of the find bar, in window coordinates. Asked of the content rect rather than
 /// assumed, because there is a formatting bar above it.
-fn row_y(editor: &Editor<Grid>, row: f32) -> f32 {
-    let bar_top =
-        editor.content_rect().top_edge() - MARGIN - find::height(editor.find_bar().unwrap().mode);
-    bar_top + row + find::HEIGHT / 2.0
+fn panel(editor: &Editor<Grid>) -> find::Layout {
+    editor.find_layout().expect("the bar was drawn").clone()
 }
 
-fn button_x(editor: &Editor<Grid>, button: find::Button) -> f32 {
-    let layout = editor.find_layout().expect("the bar was drawn");
+/// A point on the panel, given in the panel's own coordinates — where it floats is the layout's to
+/// say since MDEDIT-177, not something a test works out from the chrome above the document.
+fn on_panel(editor: &Editor<Grid>, x: f32, y: f32) -> (f32, f32) {
+    let (left, top) = panel(editor).origin;
+    (left + x, top + y)
+}
+
+/// The middle of a row of the panel, at `x` from its left edge.
+fn row_point(editor: &Editor<Grid>, row: f32, x: f32) -> (f32, f32) {
+    on_panel(editor, x, row + find::HEIGHT / 2.0)
+}
+
+/// The middle of a button, in window coordinates. Its own row comes with it.
+fn button_point(editor: &Editor<Grid>, button: find::Button) -> (f32, f32) {
+    let layout = panel(editor);
     let rect = layout
         .buttons
         .iter()
         .find(|rect| rect.button == button)
         .unwrap_or_else(|| panic!("{button:?} should be on the bar"));
-    rect.x + rect.width / 2.0
+    row_point(editor, rect.y, rect.x + rect.width / 2.0)
 }
 
 // ---- opening ----
@@ -84,23 +95,34 @@ fn ctrl_h_opens_the_bar_with_two_fields() {
     assert!(editor.find_layout().unwrap().replace.is_some());
 }
 
+/// Replace is one row taller than Find, and that second row grows **over** the document rather than
+/// pushing it down (MDEDIT-177).
+///
+/// Until then this asserted the opposite half of it — that the content started a row lower — which
+/// is what made switching to Replace shift every line on screen by thirty pixels while you were
+/// looking at one of them.
 #[test]
-fn replace_is_two_rows_of_the_documents_height() {
+fn replace_is_a_row_taller_than_find_and_the_document_does_not_move() {
     let mut editor = editor("alpha\n");
     let plain = editor.content_rect().top_edge();
 
     editor.apply_chord("f", false);
     frame(&mut editor);
-    let finding = editor.content_rect().top_edge();
+    let finding = panel(&editor).height();
+    assert_eq!(editor.content_rect().top_edge(), plain);
 
     editor.apply_chord("h", false);
     frame(&mut editor);
     assert_eq!(
-        editor.content_rect().top_edge() - finding,
+        panel(&editor).height() - finding,
         find::HEIGHT,
         "replace should be exactly one row taller than find"
     );
-    assert_eq!(finding - plain, find::HEIGHT);
+    assert_eq!(
+        editor.content_rect().top_edge(),
+        plain,
+        "and the document should not have moved for either of them"
+    );
 }
 
 #[test]
@@ -266,8 +288,7 @@ fn the_count_is_right_after_a_replace_all() {
 fn clicking_replace_all_replaces_them_all() {
     let mut editor = editor("alpha beta alpha\n");
     replacing(&mut editor, "alpha", "delta");
-    let x = button_x(&editor, find::Button::ReplaceAll);
-    let y = row_y(&editor, find::HEIGHT);
+    let (x, y) = button_point(&editor, find::Button::ReplaceAll);
     assert!(editor.click(x, y));
     assert_eq!(editor.document().to_string(), "delta beta delta\n");
 }
@@ -279,8 +300,7 @@ fn clicking_replace_replaces_one() {
     replacing(&mut editor, "alpha", "delta");
     editor.find_next();
 
-    let x = button_x(&editor, find::Button::Replace);
-    let y = row_y(&editor, find::HEIGHT);
+    let (x, y) = button_point(&editor, find::Button::Replace);
     assert!(editor.click(x, y));
     assert_eq!(editor.document().to_string(), "delta beta alpha\n");
 }
@@ -292,8 +312,9 @@ fn a_click_on_the_second_row_is_not_a_click_on_the_first() {
     caret_at(&mut editor, 0);
     replacing(&mut editor, "alpha", "delta");
 
-    let close = button_x(&editor, find::Button::Close);
-    assert!(editor.click(close, row_y(&editor, find::HEIGHT)));
+    let close = button_point(&editor, find::Button::Close).0;
+    let second = row_point(&editor, find::HEIGHT, 0.0).1;
+    assert!(editor.click(close, second));
     assert!(
         editor.find_open(),
         "the second row must not reach the Close button above it"
@@ -305,18 +326,20 @@ fn clicking_the_second_field_focuses_it() {
     let mut editor = editor("alpha\n");
     replacing(&mut editor, "alpha", "delta");
     // Put focus back on the first row the way a user would.
-    let layout = editor.find_layout().unwrap().clone();
-    editor.click(layout.field.0 + 4.0, row_y(&editor, 0.0));
+    let layout = panel(&editor);
+    let (x, y) = row_point(&editor, 0.0, layout.field.0 + 4.0);
+    editor.click(x, y);
     assert_eq!(editor.find_bar().unwrap().focus, find::Focus::Primary);
 
     let replace = layout.replace.expect("a replacement box");
-    editor.click(replace.0 + 4.0, row_y(&editor, find::HEIGHT));
+    let (x, y) = row_point(&editor, find::HEIGHT, replace.0 + 4.0);
+    editor.click(x, y);
     assert_eq!(editor.find_bar().unwrap().focus, find::Focus::Secondary);
 }
 
-/// The drift test again, for a bar that is now two rows tall.
+/// The drift test again, for the taller panel: two rows of it over the document still move nothing.
 #[test]
-fn a_click_below_a_two_row_bar_lands_on_the_byte_it_would_have() {
+fn a_click_beside_a_two_row_panel_lands_on_the_byte_it_would_have() {
     let mut editor = editor("alpha beta gamma\nsecond line here\n");
     let point = (MARGIN + 30.0, MARGIN + 4.0);
     editor.click(point.0, point.1);
@@ -324,7 +347,11 @@ fn a_click_below_a_two_row_bar_lands_on_the_byte_it_would_have() {
 
     editor.apply_chord("h", false);
     frame(&mut editor);
-    editor.click(point.0, point.1 + find::HEIGHT * 2.0);
+    assert!(
+        !panel(&editor).contains(point.0, point.1),
+        "the probe has to be off the panel, or it is not a click in the document",
+    );
+    editor.click(point.0, point.1);
     assert_eq!(editor.document().selection().head(), without);
 }
 

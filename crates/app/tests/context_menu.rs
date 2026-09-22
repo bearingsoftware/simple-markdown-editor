@@ -13,6 +13,7 @@
 use mdedit_app::clipboard::Clipboard;
 use mdedit_app::content::Offset;
 use mdedit_app::editor::Editor;
+use mdedit_app::find;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
@@ -140,6 +141,45 @@ fn a_right_click_on_chrome_shows_nothing() {
     assert!(
         !editor.right_click_at(5.0, 2.0),
         "above the document is not the document"
+    );
+}
+
+/// **The find panel is the one piece of chrome inside the content rect** (MDEDIT-177), so it needs
+/// an arm of its own here that the bands above the document never did.
+///
+/// Found in the review of #183. Right-clicking the search field to paste a term placed the caret in
+/// the text *underneath* the panel, collapsed the current match's selection, and popped the
+/// document's menu over the panel — because this path asked `ContentRect::contains` alone, which was
+/// a sound question only while the bar sat outside the rect.
+#[test]
+fn a_right_click_on_the_find_panel_is_not_a_right_click_in_the_document() {
+    let mut editor = editor("hello world\n");
+    select(&mut editor, 0, 5);
+    editor.open_find();
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let layout = editor.find_layout().expect("the panel was drawn").clone();
+    let (left, top) = layout.origin;
+    let field = layout.field;
+    let on_the_field = (left + field.0 + 4.0, top + find::HEIGHT / 2.0);
+    assert!(
+        editor
+            .content_rect()
+            .contains(on_the_field.0, on_the_field.1),
+        "the point has to be inside the content, or this asserts nothing new",
+    );
+
+    assert!(
+        !editor.right_click_at(on_the_field.0, on_the_field.1),
+        "the panel has no context menu, and the document's is not its",
+    );
+    assert_eq!(
+        (
+            editor.document().selection().span().start().get(),
+            editor.document().selection().span().end().get()
+        ),
+        (0, 5),
+        "and the selection under it must not have been collapsed",
     );
 }
 
