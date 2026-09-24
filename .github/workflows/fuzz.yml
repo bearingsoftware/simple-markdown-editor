@@ -32,7 +32,7 @@ env:
 jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
-    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    runs-on: [self-hosted, Linux, X64, general]
     # **`markers_segment` reports rather than blocks, and only until upstream fixes MDEDIT-114.**
     #
     # `pulldown-cmark` 0.13.4 panics on documents this target reaches in about two minutes, and the
