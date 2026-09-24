@@ -51,7 +51,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            runner: [self-hosted, Linux, X64, proxmox, general]
+            runner: [self-hosted, Linux, X64, general]
             # The whole suite, because this one is free.
             everything: true
           - os: windows-latest
@@ -119,7 +119,7 @@ jobs:
 
   msrv:
     name: MSRV
-    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    runs-on: [self-hosted, Linux, X64, general]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.87.0
@@ -134,7 +134,7 @@ jobs:
 
   deny:
     name: cargo-deny
-    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    runs-on: [self-hosted, Linux, X64, general]
     steps:
       - uses: actions/checkout@v4
       # The Docker action brought its own Rust; nothing else does. Without this the job dies on

@@ -81,7 +81,15 @@ env:
 jobs:
   plan:
     name: cargo-mutants (plan)
-    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    # **No `proxmox` label, deliberately (FINCH-326).** The general pool spans two hosts: rack's
+    # twelve LXC runners and giant's eight. Only rack carries `proxmox`, so naming it here did not
+    # express a requirement — it silently pinned every shard below to rack, which is where this
+    # workflow's cost lands hardest. A shard rebuilds the tree per mutant in `$TMPDIR`, about
+    # 89.8 GB at up to 391 MB/s, and on rack `$TMPDIR` is the runner's rootfs on the one SATA SSD
+    # every runner and every database shares. giant puts the workspace and `$TMPDIR` on a 16 GiB
+    # tmpfs instead, so the same writes never reach a disk. Nothing in this job needs a Proxmox
+    # guest: it compiles Rust, reads no internal host and holds no secret.
+    runs-on: [self-hosted, Linux, X64, general]
     # It reports; it does not block. Same rule as the shards below.
     continue-on-error: true
     timeout-minutes: 20
@@ -221,7 +229,7 @@ jobs:
     needs: plan
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
-    runs-on: [self-hosted, Linux, X64, proxmox, general]
+    runs-on: [self-hosted, Linux, X64, general]
     # A trial. It reports; it does not block.
     continue-on-error: true
     # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job

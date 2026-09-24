@@ -28,6 +28,13 @@ concurrency:
 jobs:
   status:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # **`proxmox` is load-bearing here, unlike the other workflows in this repo (FINCH-326).**
+    # The steps below POST to the status board at 192.168.1.23, an internal host. Only rack's
+    # runners carry `proxmox`, and their path to the LAN is the reliable one; giant's pool reaches
+    # internal hosts too, but intermittently loses them under load — several runners at once, with
+    # no change in between (FINCH-381, open). A dropped report reads as "this project stopped
+    # reporting", which is the one failure this workflow exists to prevent. Drop the label once
+    # FINCH-381 is closed, not before.
     runs-on: [self-hosted, Linux, X64, proxmox, general]
     steps:
       - uses: actions/checkout@v4
