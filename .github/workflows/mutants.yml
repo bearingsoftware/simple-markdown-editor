@@ -71,6 +71,18 @@ env:
   # **The cost those numbers were measured at is gone (MDEDIT-182).** `mdedit-app`'s tests are one
   # binary now and mutants build without debug info, which took a mutant's rebuild from 135 s to 7 s
   # on one machine. Left at fifteen until a run here measures the new cost — see build-and-test.md.
+  #
+  # **A run here has now measured it (MDEDIT-186).** Run 36305543827, a dispatch of #183+#184's
+  # diff: 135 mutants, 6 shards, 22-23 mutants each against a budget sized for 15, and every shard
+  # finished in 2.6-3.2 minutes — one reported `22 mutants tested in 3m: 7 missed, 15 caught`. That
+  # is roughly 8 s a mutant against the ~90 s these fifteen were chosen for, and it is nowhere near
+  # the 40-minute budget.
+  #
+  # **Still fifteen, and the reason is no longer cost.** `MUTANTS_MAX_SHARDS` below makes 6 x 15 a
+  # deliberate 90-mutant ceiling: past it the workflow tells you to split the pull request rather
+  # than take six more runners off a shared pool. Raising this number raises that ceiling with it —
+  # 45 would make it 270 — so it trades a norm about pull request size, not runner minutes. Change
+  # it when that norm is what you mean to change.
   MUTANTS_PER_SHARD: 15
   # **A decision, not arithmetic.** Six shards of fifteen is 90 mutants; past that a shard still says
   # it ran out of time, because the answer to a diff that large is to split the pull request rather
@@ -84,11 +96,18 @@ jobs:
     # **No `proxmox` label, deliberately (FINCH-326).** The general pool spans two hosts: rack's
     # twelve LXC runners and giant's eight. Only rack carries `proxmox`, so naming it here did not
     # express a requirement — it silently pinned every shard below to rack, which is where this
-    # workflow's cost lands hardest. A shard rebuilds the tree per mutant in `$TMPDIR`, about
-    # 89.8 GB at up to 391 MB/s, and on rack `$TMPDIR` is the runner's rootfs on the one SATA SSD
-    # every runner and every database shares. giant puts the workspace and `$TMPDIR` on a 16 GiB
-    # tmpfs instead, so the same writes never reach a disk. Nothing in this job needs a Proxmox
-    # guest: it compiles Rust, reads no internal host and holds no secret.
+    # workflow's cost lands hardest. A shard rebuilds the tree per mutant in `$TMPDIR`, and on rack
+    # `$TMPDIR` is the runner's rootfs on the one SATA SSD every runner and every database shares.
+    # giant puts the workspace and `$TMPDIR` on a 16 GiB tmpfs instead, so the same writes never
+    # reach a disk. Nothing in this job needs a Proxmox guest: it compiles Rust, reads no internal
+    # host and holds no secret.
+    #
+    # **The cost that made this urgent is gone, and the reason still holds.** FINCH-331 measured a
+    # shard at 89.8 GB and 391 MB/s on 2026-09-19; MDEDIT-182 landed after that and a re-measure on
+    # 2026-09-27 (run 36305543827, 135 mutants over 6 shards) put a shard at ~1.7 GiB, peaking at
+    # 684 MiB of giant's tmpfs. Roughly 50x less. Keep the label off anyway: a shard on rack still
+    # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
+    # from the old number — see proxmox FINCH-400.
     runs-on: [self-hosted, Linux, X64, general]
     # It reports; it does not block. Same rule as the shards below.
     continue-on-error: true
