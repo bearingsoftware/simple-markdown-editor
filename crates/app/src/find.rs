@@ -272,8 +272,8 @@ const PADDING: f32 = 6.0;
 /// The narrowest panel `mode` can be drawn in without a button falling off it (MDEDIT-177).
 ///
 /// **A floor, not a preference.** [`layout`] packs each row's buttons against the right edge and
-/// floors their left at [`PADDING`], so in a panel narrower than this the last cells run past the
-/// panel's own width — and since [`Layout::local`] rejects a point outside that width, they would be
+/// floors their left at the padding, so in a panel narrower than this the last cells run past the
+/// panel's own width — and since a point outside that width is not on the panel, they would be
 /// *drawn* over the document and answer no click. Close being unpressable is the case that matters:
 /// Esc still shuts the bar, but a button you can see and cannot press is a defect either way.
 ///

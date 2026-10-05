@@ -27,6 +27,27 @@ so every GitHub-hosted minute is billed and Windows bills at twice the Linux rat
 run on the self-hosted Linux box does; the Windows leg stays hosted because there is no self-hosted
 Windows runner and dropping it is not an option.
 
+## The toolchain is pinned, and two jobs override the pin on purpose
+
+`rust-toolchain.toml` names the version everything here builds and lints with. Before it, CI asked
+for `dtolnay/rust-toolchain@stable` and the version deciding whether a PR could merge was whatever
+had been released that week — so clippy 1.99 adding a lint inside `all` turned `-D warnings` into
+forty-one errors across nineteen files, in a repository nobody had pushed to for a fortnight. Every
+open PR went red, including one that added four lines of JSON and no Rust (FINCH-431, PR #186).
+
+The pin does not stop a lint arriving. It makes it arrive **in a commit of ours**, as one PR's job,
+instead of under an unrelated PR whose author has to work out that the failure is not theirs.
+
+**An explicit `cargo +toolchain` overrides the file, and two jobs depend on that.** The MSRV job runs
+`cargo +1.87.0 check`, and fuzzing runs `cargo +nightly fuzz run`. Both said a bare `cargo` until the
+pin landed, and a bare `cargo` now obeys the file from any directory in the repository — which would
+have left the MSRV job installing 1.87.0, checking against stable, and passing. **An MSRV job that
+has silently stopped checking the MSRV is worse than none**, because the green check still claims the
+floor is covered. Anything added to CI that means a version other than the pin says so outright.
+
+Moving the pin is a PR of its own with the whole suite run against the new version. `renovate.json`
+manages that file, which is the point of pinning rather than chasing.
+
 ## Two checks that are easy to skip and expensive to miss
 
 **MSRV.** `cargo +1.87.0 check --all-features`. The local toolchain is newer and will happily accept
