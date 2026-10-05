@@ -130,7 +130,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-targets: false
-      - run: cargo check --all-features
+      # **`+1.87.0` explicitly, and that is load-bearing since `rust-toolchain.toml` exists.** The
+      # file pins the repository to stable, and a bare `cargo` here would obey it — so this job would
+      # have installed 1.87.0, ignored it, checked against stable and passed. An MSRV job that
+      # silently stops checking the MSRV is worse than no MSRV job, because the badge still says it
+      # is covered. An explicit `+toolchain` overrides the file, which is the whole reason the pin is
+      # safe to add.
+      - run: cargo +1.87.0 check --all-features
 
   deny:
     name: cargo-deny

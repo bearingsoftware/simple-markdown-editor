@@ -68,6 +68,10 @@ jobs:
       - uses: actions/checkout@v4
 
       # `cargo fuzz` needs nightly. Nothing else in this repo does, and nothing stable builds here.
+      #
+      # Installing it is no longer enough on its own: `rust-toolchain.toml` pins the repository to
+      # stable, and a bare `cargo fuzz` obeys that file wherever it is run from — so the run below
+      # says `+nightly` outright and dies on a missing nightly rather than on `-Z` under stable.
       - uses: dtolnay/rust-toolchain@nightly
       # Saved on `main` only, for the reason in `ci.yml` (MDEDIT-132). The weekly schedule runs
       # against `main` too, so the long runs still refresh it.
@@ -107,7 +111,7 @@ jobs:
         # so the crashing input is kept either way.
         run: |
           set +e
-          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
             -max_total_time=${{ github.event_name == 'schedule' && 1800 || 300 }} \
             -max_len=16384
           status=$?
