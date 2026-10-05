@@ -1,0 +1,27 @@
+# The toolchain this repository builds and lints with, pinned.
+#
+# # Why a pin
+#
+# CI asks for `dtolnay/rust-toolchain@stable`, so until now the version that decided whether a PR
+# was mergeable was whatever had been released that week. Clippy 1.99 added a lint inside `all`,
+# `-D warnings` made it an error, and every open PR in the repository went red — including one that
+# added four lines of JSON and touched no Rust at all (FINCH-431, PR #186). Nothing of ours had
+# changed; the floor had moved.
+#
+# A pin does not stop the lint arriving. It makes it arrive **in a commit**, where it is one PR's
+# job to deal with, rather than under an unrelated one whose author then has to work out that the
+# failure is not theirs.
+#
+# # What it does not pin
+#
+# An explicit `cargo +toolchain` overrides this file, which is what the two jobs that need a
+# different version already use: MSRV checks with `+1.87.0` (`rust-version` in `Cargo.toml`, and the
+# number this must never silently fall below), and fuzzing needs nightly. Both keep working.
+#
+# # Moving it
+#
+# Deliberately, in a PR of its own, with the full suite run against the new version — `renovate.json`
+# manages this file once PR #186 lands, which is the point of pinning rather than chasing.
+[toolchain]
+channel = "1.99.0"
+components = ["clippy", "rustfmt"]

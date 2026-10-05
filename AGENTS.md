@@ -132,6 +132,10 @@ cargo +1.87.0 check --all-features                            # MSRV (raised fro
 cargo check --target x86_64-unknown-linux-gnu --all-features  # Windows-only code creeps in easily
 ```
 
+**The toolchain is pinned in `rust-toolchain.toml`**, so a clippy release cannot red an unrelated PR;
+the two commands above that mean a different version say `+1.87.0` and `+nightly` outright, because a
+bare `cargo` obeys the pin. See [`docs/build-and-test.md`](docs/build-and-test.md).
+
 Both of the last two are easy to skip and expensive to miss. **CI cannot open a window**, so
 rendering and hit-testing are verified by hand on Windows — which is where this project's defects
 actually come from.

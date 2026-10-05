@@ -87,6 +87,20 @@ mem_forget = "deny"
 await_holding_lock = "deny"
 lossy_float_literal = "deny"
 
+# The one departure from the baseline's set, and it is about what the replacement reads like rather
+# than about the rule. `assert_is_empty` landed in clippy 1.99 inside `all`, so `-D warnings` turned
+# forty-one `assert!(thing.is_empty())` across nineteen files into errors overnight — in a repository
+# nobody had pushed to for a fortnight, which is how CI came to be red with no change of ours.
+#
+# Its suggestion is `assert_eq!(analysis.segments, [] as [Segment; 0])`: the item type spelled out at
+# every site, and the type imported where it was not needed before. The lint's own reason — show the
+# value on failure — is the right instinct and is better served here by a message, which this
+# codebase's asserts carry anyway. So the lint is off and the habit stays.
+#
+# **Raise it in `bearingsoftware/code-standards` rather than copying this block.** Every repository
+# on the baseline hits this the first time its CI sees clippy 1.99.
+assert_is_empty = "allow"
+
 # Overflow wraps silently in release by default, so the panic that catches a bad offset in tests
 # would be absent in production. standards/rust.md requires turning it back on.
 #
