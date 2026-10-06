@@ -664,15 +664,13 @@ impl Bar {
     pub fn press(&mut self, press: &crate::field::Press, shift: bool) -> bool {
         let digits_only = self.mode == Mode::GoTo;
         let field = self.active_mut();
-        if digits_only {
-            if let crate::field::Press::Text(text) = press {
-                let kept: String = text.chars().filter(char::is_ascii_digit).collect();
-                if kept.is_empty() {
-                    return false;
-                }
-                field.insert(&kept);
-                return true;
+        if digits_only && let crate::field::Press::Text(text) = press {
+            let kept: String = text.chars().filter(char::is_ascii_digit).collect();
+            if kept.is_empty() {
+                return false;
             }
+            field.insert(&kept);
+            return true;
         }
         field.apply(press, shift)
     }
