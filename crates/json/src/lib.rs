@@ -371,13 +371,14 @@ impl<'a> Lexer<'a> {
         if start >= end {
             return;
         }
-        if let Some(last) = self.segments.last_mut() {
-            if last.kind() == kind && last.span().end().get() == start {
-                *last = last
-                    .clone()
-                    .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
-                return;
-            }
+        if let Some(last) = self.segments.last_mut()
+            && last.kind() == kind
+            && last.span().end().get() == start
+        {
+            *last = last
+                .clone()
+                .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
+            return;
         }
         self.segments.push(Segment::new(
             ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),

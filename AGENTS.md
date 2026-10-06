@@ -128,12 +128,12 @@ cargo test --all-features --doc    # nextest does not run doctests, so this is t
 cargo doc --no-deps --all-features # broken intra-doc links are denied, and CI runs this
 cargo deny check                   # licences + advisories
 
-cargo +1.87.0 check --all-features                            # MSRV (raised from 1.85 by wgpu 30)
+cargo +1.90.0 check --all-features                            # MSRV (raised from 1.87 by muda 0.21)
 cargo check --target x86_64-unknown-linux-gnu --all-features  # Windows-only code creeps in easily
 ```
 
 **The toolchain is pinned in `rust-toolchain.toml`**, so a clippy release cannot red an unrelated PR;
-the two commands above that mean a different version say `+1.87.0` and `+nightly` outright, because a
+the two commands above that mean a different version say `+1.90.0` and `+nightly` outright, because a
 bare `cargo` obeys the pin. See [`docs/build-and-test.md`](docs/build-and-test.md).
 
 Both of the last two are easy to skip and expensive to miss. **CI cannot open a window**, so

@@ -164,20 +164,20 @@ impl History {
         // the present.
         self.redo.clear();
 
-        // Written without a let-chain on purpose: those stabilised in Rust 1.88 and the workspace
-        // floor is 1.87. The decision is computed first so the immutable borrow of the last edit
-        // ends before the group is pushed to.
-        if !self.barrier {
-            if let Some(group) = self.undo.last_mut() {
-                let joins = group
-                    .edits
-                    .last()
-                    .is_some_and(|previous| continues(previous, &edit));
-                if joins {
-                    group.edits.push(edit);
-                    group.selection_after = after;
-                    return;
-                }
+        // **`joins` is computed before anything is pushed**, so the immutable borrow of the last
+        // edit ends before the group is mutated. That is the shape to keep; the outer nesting this
+        // used to have was only the 1.87 floor forbidding a let-chain (MDEDIT-189 raised it).
+        if !self.barrier
+            && let Some(group) = self.undo.last_mut()
+        {
+            let joins = group
+                .edits
+                .last()
+                .is_some_and(|previous| continues(previous, &edit));
+            if joins {
+                group.edits.push(edit);
+                group.selection_after = after;
+                return;
             }
         }
 

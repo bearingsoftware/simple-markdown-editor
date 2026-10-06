@@ -95,12 +95,13 @@ pub enum EditError {
 /// wrongly, but "the same answer as parsing the lot" is the property this is all judged against, and
 /// a seam is a difference.
 fn push_merged(out: &mut Vec<Segment>, segment: Segment) {
-    if let Some(last) = out.last_mut() {
-        if last.kind() == segment.kind() && last.span().end() == segment.span().start() {
-            let joined = ByteSpan::new(last.span().start(), segment.span().end());
-            *last = segment.moved_to(joined);
-            return;
-        }
+    if let Some(last) = out.last_mut()
+        && last.kind() == segment.kind()
+        && last.span().end() == segment.span().start()
+    {
+        let joined = ByteSpan::new(last.span().start(), segment.span().end());
+        *last = segment.moved_to(joined);
+        return;
     }
     out.push(segment);
 }

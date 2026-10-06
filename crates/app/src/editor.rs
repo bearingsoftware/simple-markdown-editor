@@ -1464,10 +1464,10 @@ impl<T: TextLayout> Editor<T> {
     /// It arrives at all only because nothing calls winit's `with_theme`: a window built with a
     /// preferred theme is never sent this event, which would be a quiet way to lose live switching.
     fn follow_system_appearance(&mut self) {
-        if self.system_appearance_changed() {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+        if self.system_appearance_changed()
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
         }
     }
 
@@ -1542,10 +1542,8 @@ impl<T: TextLayout> Editor<T> {
         // event alone cannot be relied on — see `follow_system_appearance` — and coming back to the
         // window is exactly when somebody who has just flipped Windows' setting is looking at it.
         let repaint = self.check_disk() | self.system_appearance_changed();
-        if repaint {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+        if repaint && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 
@@ -1944,10 +1942,10 @@ impl<T: TextLayout> Editor<T> {
                 crate::log_error!(
                     "{name} changed on disk; keeping the file rather than the stored edit"
                 );
-                if let Some(store) = self.snapshots.as_mut() {
-                    if let Err(error) = store.forget(entry.id) {
-                        crate::log_error!("could not remove the stored edit: {error}");
-                    }
+                if let Some(store) = self.snapshots.as_mut()
+                    && let Err(error) = store.forget(entry.id)
+                {
+                    crate::log_error!("could not remove the stored edit: {error}");
                 }
                 false
             }
@@ -2144,19 +2142,19 @@ impl<T: TextLayout> Editor<T> {
         // Only when saving over the tab's *own* file: Save As to a different path is not this
         // situation, and a Save As onto an existing file is an overwrite the user just chose in a
         // dialog that asked.
-        if self.workspace.active_path() == Some(path) {
-            if let Some(index) = self.workspace.active() {
-                match self.check_one(index, Conflicting::Saving) {
-                    Checked::Nothing | Checked::Overwrite => {}
-                    Checked::Reloaded => {
-                        // The buffer now holds what is on disk, so there is nothing left to write —
-                        // and writing would put the discarded edits back.
-                        self.layouts.clear();
-                        self.heights.clear();
-                        return false;
-                    }
-                    Checked::KeptMine => return false,
+        if self.workspace.active_path() == Some(path)
+            && let Some(index) = self.workspace.active()
+        {
+            match self.check_one(index, Conflicting::Saving) {
+                Checked::Nothing | Checked::Overwrite => {}
+                Checked::Reloaded => {
+                    // The buffer now holds what is on disk, so there is nothing left to write —
+                    // and writing would put the discarded edits back.
+                    self.layouts.clear();
+                    self.heights.clear();
+                    return false;
                 }
+                Checked::KeptMine => return false,
             }
         }
 
@@ -2303,11 +2301,12 @@ impl<T: TextLayout> Editor<T> {
     /// [`mdedit_menu_win::set_window_icon`], which is where the Win32 call belongs.
     fn set_window_icon(window: &Window) {
         // Getting the handle is safe; only using it is not, and that lives in the platform crate.
-        // Nested rather than a let-chain: those stabilised in 1.88 and this crate's floor is 1.87.
-        if let Ok(handle) = window.window_handle() {
-            if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                mdedit_menu_win::set_window_icon(win32.hwnd.get());
-            }
+        // A let-chain, which the floor allows as of MDEDIT-189 — it was two nested `if let`s and a
+        // comment explaining why it had to be.
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            mdedit_menu_win::set_window_icon(win32.hwnd.get());
         }
     }
 
@@ -2329,12 +2328,12 @@ impl<T: TextLayout> Editor<T> {
 
         // Getting the handle is safe; only attaching to it is not, and that lives in the platform
         // crate where `AGENTS.md` permits it.
-        if let Ok(handle) = window.window_handle() {
-            if let RawWindowHandle::Win32(win32) = handle.as_raw() {
-                // In the editor's palette, not Windows' — MDEDIT-79. They are the same by default
-                // and deliberately not the same when the config pins one.
-                menu.attach(win32.hwnd.get(), self.appearance == view::Appearance::Dark);
-            }
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            // In the editor's palette, not Windows' — MDEDIT-79. They are the same by default
+            // and deliberately not the same when the config pins one.
+            menu.attach(win32.hwnd.get(), self.appearance == view::Appearance::Dark);
         }
         self.menu = Some(menu);
         // The encoding submenus are empty until told what to list, and the list is `mdedit-file`'s
@@ -2774,10 +2773,10 @@ impl<T: TextLayout> Editor<T> {
             return;
         };
         self.snapshotted.remove(&id);
-        if let Some(store) = self.snapshots.as_mut() {
-            if let Err(error) = store.forget(id) {
-                crate::log_error!("could not remove a stored buffer: {error}");
-            }
+        if let Some(store) = self.snapshots.as_mut()
+            && let Err(error) = store.forget(id)
+        {
+            crate::log_error!("could not remove a stored buffer: {error}");
         }
     }
 
@@ -3334,14 +3333,13 @@ impl<T: TextLayout> Editor<T> {
             open.prefill(kind.text(), &existing);
         }
 
-        if kind == dialog::Kind::Link {
-            if let Some(url) = self
+        if kind == dialog::Kind::Link
+            && let Some(url) = self
                 .clipboard
                 .read()
                 .filter(|text| format::looks_like_url(text))
-            {
-                open.prefill(kind.destination(), url.trim());
-            }
+        {
+            open.prefill(kind.destination(), url.trim());
         }
 
         // The first empty field, so the caret starts where there is something to type. With a URL
@@ -3797,12 +3795,10 @@ impl<T: TextLayout> Editor<T> {
 
         self.hold_anchor(&frame, visible);
         let following = self.follow_caret;
-        if following {
-            if let Some((index, caret)) = self.caret_position(&frame) {
-                let caret_top = frame.tops[index] + caret.top;
-                self.scroll
-                    .reveal(caret_top, caret_top + caret.height, frame.content, visible);
-            }
+        if following && let Some((index, caret)) = self.caret_position(&frame) {
+            let caret_top = frame.tops[index] + caret.top;
+            self.scroll
+                .reveal(caret_top, caret_top + caret.height, frame.content, visible);
         }
         self.follow_caret = false;
         // Editing and resizing both change what there is to scroll through, so the offset from the
@@ -3826,15 +3822,16 @@ impl<T: TextLayout> Editor<T> {
         // width of zero and did nothing at all: typing at the end of a long line left the caret off
         // the right edge. A little margin either side, so the caret does not sit hard against the
         // edge with nothing after it to read.
-        if following && !self.wrap {
-            if let Some((_, caret)) = self.caret_position(&frame) {
-                self.pan.reveal(
-                    (caret.x - PAN_MARGIN).max(0.0),
-                    caret.x + PAN_MARGIN,
-                    self.widest,
-                    content.width(),
-                );
-            }
+        if following
+            && !self.wrap
+            && let Some((_, caret)) = self.caret_position(&frame)
+        {
+            self.pan.reveal(
+                (caret.x - PAN_MARGIN).max(0.0),
+                caret.x + PAN_MARGIN,
+                self.widest,
+                content.width(),
+            );
         }
         // Re-clamped against what is now known to be the widest measured row, which may have grown
         // this frame as more chunks were laid out. Same shape as the vertical clamp above, and the
@@ -4376,13 +4373,13 @@ impl<T: TextLayout> Editor<T> {
             };
             {
                 let glyph = face;
-                if !self.toolbar_labels.contains_key(&glyph) {
-                    if let Some(label) = self.lay_out_label(&glyph, style) {
-                        // Only kept when it resolved. A `.notdef` box in a list that also has words
-                        // is worse than a blank column, and the words carry the row regardless.
-                        if !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()) {
-                            self.toolbar_labels.insert(glyph.clone(), label);
-                        }
+                if !self.toolbar_labels.contains_key(&glyph)
+                    && let Some(label) = self.lay_out_label(&glyph, style)
+                {
+                    // Only kept when it resolved. A `.notdef` box in a list that also has words
+                    // is worse than a blank column, and the words carry the row regardless.
+                    if !label.glyphs.iter().any(|g| g.key.glyph.is_notdef()) {
+                        self.toolbar_labels.insert(glyph.clone(), label);
                     }
                 }
                 if let Some(label) = self.toolbar_labels.get(&glyph) {
@@ -4407,10 +4404,10 @@ impl<T: TextLayout> Editor<T> {
             let Some(text) = popup::text_for(action) else {
                 continue;
             };
-            if !self.toolbar_labels.contains_key(&text) {
-                if let Some(label) = self.lay_out_label(&text, text_style) {
-                    self.toolbar_labels.insert(text.clone(), label);
-                }
+            if !self.toolbar_labels.contains_key(&text)
+                && let Some(label) = self.lay_out_label(&text, text_style)
+            {
+                self.toolbar_labels.insert(text.clone(), label);
             }
             let Some(label) = self.toolbar_labels.get(&text) else {
                 continue;
@@ -4475,10 +4472,10 @@ impl<T: TextLayout> Editor<T> {
             |(row, column)| popup::grid::caption(row + 1, column + 1),
         );
         let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
-        if !self.toolbar_labels.contains_key(&caption) {
-            if let Some(label) = self.lay_out_label(&caption, style) {
-                self.toolbar_labels.insert(caption.clone(), label);
-            }
+        if !self.toolbar_labels.contains_key(&caption)
+            && let Some(label) = self.lay_out_label(&caption, style)
+        {
+            self.toolbar_labels.insert(caption.clone(), label);
         }
         let Some(label) = self.toolbar_labels.get(&caption) else {
             return;
@@ -4943,10 +4940,10 @@ impl<T: TextLayout> Editor<T> {
 
     /// Lays a status-bar string out if it has changed, and returns its width.
     fn status_label(&mut self, slot: usize, text: &str, style: TextStyle) -> f32 {
-        if let Some(label) = &self.status_labels[slot] {
-            if label.text == text {
-                return label.width;
-            }
+        if let Some(label) = &self.status_labels[slot]
+            && label.text == text
+        {
+            return label.width;
         }
 
         let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
@@ -6192,13 +6189,13 @@ impl<T: TextLayout> Editor<T> {
         if self.open_menu.is_some() {
             return Pointer::Arrow;
         }
-        if let Some(layout) = self.find_layout.as_ref() {
-            if layout.contains(x, y) {
-                return match layout.over_field(x, y) {
-                    Some(_) => Pointer::Text,
-                    None => Pointer::Arrow,
-                };
-            }
+        if let Some(layout) = self.find_layout.as_ref()
+            && layout.contains(x, y)
+        {
+            return match layout.over_field(x, y) {
+                Some(_) => Pointer::Text,
+                None => Pointer::Arrow,
+            };
         }
         // Everything else the chrome owns is outside the content: the bar and the strip above it,
         // the pane beside it, the status bar below, and the gutter — which is left of the text and
@@ -6511,10 +6508,10 @@ impl<T: TextLayout> Editor<T> {
             return;
         }
 
-        if self.hover(point.0, point.1) {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+        if self.hover(point.0, point.1)
+            && let Some(window) = self.window.as_ref()
+        {
+            window.request_redraw();
         }
     }
 
@@ -6837,10 +6834,10 @@ impl<T: TextLayout> Editor<T> {
             let Some(text) = popup::text_for(*action) else {
                 continue;
             };
-            if !self.toolbar_labels.contains_key(&text) {
-                if let Some(label) = self.lay_out_label(&text, style) {
-                    self.toolbar_labels.insert(text.clone(), label);
-                }
+            if !self.toolbar_labels.contains_key(&text)
+                && let Some(label) = self.lay_out_label(&text, style)
+            {
+                self.toolbar_labels.insert(text.clone(), label);
             }
             if let Some(label) = self.toolbar_labels.get(&text) {
                 widest = widest.max(label.width);
@@ -7614,10 +7611,10 @@ impl<T: TextLayout> Editor<T> {
         let mut widths = Vec::with_capacity(find::buttons(mode).len());
         for button in find::buttons(mode) {
             let glyph = button.glyph().to_owned();
-            if !self.toolbar_labels.contains_key(&glyph) {
-                if let Some(label) = self.lay_out_label(&glyph, style) {
-                    self.toolbar_labels.insert(glyph.clone(), label);
-                }
+            if !self.toolbar_labels.contains_key(&glyph)
+                && let Some(label) = self.lay_out_label(&glyph, style)
+            {
+                self.toolbar_labels.insert(glyph.clone(), label);
             }
             widths.push(self.toolbar_labels.get(&glyph).map_or(0.0, |l| l.width));
         }
@@ -8171,13 +8168,13 @@ impl<T: TextLayout> Editor<T> {
         // (MDEDIT-142). It needs no z-order of its own: `click` has asked every panel before reaching
         // here, so a box is only pressed where nothing is drawn over it. Shift still extends a
         // selection, which is what it means everywhere else in the text.
-        if !self.modifiers.shift_key() {
-            if let Some(task) = self.task_box_at_point(x, y) {
-                // Not part of a run: a second press on the box unticks it rather than selecting a
-                // word, and a click in the text after it is a first click.
-                self.clicks.reset();
-                return self.document_mut().toggle_task(task);
-            }
+        if !self.modifiers.shift_key()
+            && let Some(task) = self.task_box_at_point(x, y)
+        {
+            // Not part of a run: a second press on the box unticks it rather than selecting a
+            // word, and a click in the text after it is a first click.
+            self.clicks.reset();
+            return self.document_mut().toggle_task(task);
         }
 
         let Some(offset) = self.offset_at_point(x, y) else {
@@ -9800,7 +9797,8 @@ impl<T: TextLayout> Editor<T> {
 
         // The `!`, to the left of the number rather than in place of a digit: the numbers stay in
         // their column, so a flagged line does not push its neighbours' digits out of line.
-        // Not a let-chain: they stabilised in 1.88 and this crate's floor is 1.87.
+        // Not a let-chain, and the floor is no longer the reason (MDEDIT-189): the `let … else`
+        // inside **returns**, which abandons the whole mark rather than falling past this `if`.
         if let Some(flagged) = marked {
             let (key, bang_advance) = flagged.bang;
             let Some(entry) = self.entry_for(key, at.scale) else {
@@ -10572,10 +10570,10 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             Wake::Pictures => {
                 // Only if something actually landed: a wake whose answers a previous one already
                 // collected must not cost a frame (MDEDIT-156).
-                if self.absorb_pictures() {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if self.absorb_pictures()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
                 }
                 return;
             }
@@ -10622,10 +10620,8 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
         }
         self.reschedule(event_loop);
 
-        if redraw {
-            if let Some(window) = self.window.as_ref() {
-                window.request_redraw();
-            }
+        if redraw && let Some(window) = self.window.as_ref() {
+            window.request_redraw();
         }
     }
 
@@ -10709,10 +10705,10 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             // tooltip raised on the last button before the pointer left the window stays up over an
             // editor nobody is pointing at.
             WindowEvent::CursorLeft { .. } => {
-                if self.dismiss_panels() {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if self.dismiss_panels()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -10745,17 +10741,15 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                     MouseButton::Middle => self.middle_click(x, y),
                     _ => false,
                 };
-                if changed {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if changed && let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
                 }
             }
             WindowEvent::Ime(ime) => {
-                if self.handle_ime(ime) {
-                    if let Some(window) = self.window.as_ref() {
-                        window.request_redraw();
-                    }
+                if self.handle_ime(ime)
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
