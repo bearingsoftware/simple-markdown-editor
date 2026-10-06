@@ -309,8 +309,6 @@ fn panel_origin_after(editor: &mut Editor<Grid>, offset: usize) -> (f32, f32) {
     panel(editor).origin
 }
 
-/// Where the document's caret was drawn, which is the rightmost of the two carets on screen when
-/// the caret is at the end of a long line.
 /// Where the **document's** caret was drawn, as `(x, y)`.
 ///
 /// The search box draws a caret too, so the one that is on the panel is excluded by the panel's own

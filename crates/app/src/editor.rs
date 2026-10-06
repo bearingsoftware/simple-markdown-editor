@@ -235,6 +235,14 @@ struct Row<'a> {
     chunk: blocks::Chunk,
     /// The whole document's text, which is what chunk spans index into.
     text: &'a str,
+    /// What bytes each of the chunk's rows covers, as offsets into the chunk's own text.
+    ///
+    /// **`hit` is the one authority on this** (MDEDIT-183). Three places used to count newlines to
+    /// answer it, and two of them were still wrong after the caret was fixed: a selection
+    /// highlighted a continuation row of the line above, and the whitespace marks on every row after
+    /// a wrap were placed against the wrong bytes. Computed once per chunk and handed down, which is
+    /// also what keeps it off the per-row path.
+    rows: &'a [(usize, usize)],
     /// Which row of the chunk's layout.
     index: usize,
     /// Where the row's top edge is, in document coordinates.
@@ -242,6 +250,22 @@ struct Row<'a> {
     height: f32,
     /// Where the chunk's top edge is, which is what layout positions are relative to.
     chunk_top: f32,
+}
+
+impl Row<'_> {
+    /// Where this row's text sits in the buffer, from `hit`'s mapping.
+    ///
+    /// Falls back to the chunk's own span for a row the mapping does not have, which cannot happen
+    /// for a row being drawn — the mapping covers every line of the layout — and is a clamp rather
+    /// than a panic if it ever does.
+    fn bytes(&self) -> (usize, usize) {
+        let base = self.chunk.span.start().get();
+        self.rows
+            .get(self.index)
+            .map_or((base, self.chunk.span.end().get()), |&(start, end)| {
+                (base + start, base + end)
+            })
+    }
 }
 
 /// One whitespace mark, laid out once so it can be stamped wherever it is needed.
@@ -7974,13 +7998,7 @@ impl<T: TextLayout> Editor<T> {
         let index = frame.tops.partition_point(|top| *top <= y).checked_sub(1)?;
         let chunk = *frame.chunks.get(index)?;
         let cached = self.chunk_layout(frame, index)?;
-        let target = hit::Chunk {
-            layout: &cached.layout,
-            text: chunk.span.slice(&frame.text),
-            start: chunk.span.start(),
-            base: ByteOffset::new(cached.base),
-            grid: cached.grid.as_ref(),
-        };
+        let target = cached.as_hit(chunk, &frame.text);
         let at = hit::substitute_at(&target, cached.drawn_lines(), y - frame.tops[index], x)?;
         self.document().task_box_at(at).map(ByteSpan::start)
     }
@@ -8003,13 +8021,7 @@ impl<T: TextLayout> Editor<T> {
         let chunk = frame.chunks[index];
         let cached = self.chunk_layout(frame, index)?;
 
-        let target = hit::Chunk {
-            layout: &cached.layout,
-            text: chunk.span.slice(&frame.text),
-            start: chunk.span.start(),
-            base: ByteOffset::new(cached.base),
-            grid: cached.grid.as_ref(),
-        };
+        let target = cached.as_hit(chunk, &frame.text);
         Some(hit::offset_at(
             &target,
             cached.drawn_lines(),
@@ -8030,13 +8042,7 @@ impl<T: TextLayout> Editor<T> {
         let chunk = frame.chunks[index];
         let cached = self.chunk_layout(frame, index)?;
 
-        let target = hit::Chunk {
-            layout: &cached.layout,
-            text: chunk.span.slice(&frame.text),
-            start: chunk.span.start(),
-            base: ByteOffset::new(cached.base),
-            grid: cached.grid.as_ref(),
-        };
+        let target = cached.as_hit(chunk, &frame.text);
         let (row, x) = cached.place_of(&target, caret)?;
         Some((index, row, x))
     }
@@ -8061,13 +8067,7 @@ impl<T: TextLayout> Editor<T> {
         };
 
         let chunk = frame.chunks[index];
-        let target = hit::Chunk {
-            layout: &cached.layout,
-            text: chunk.span.slice(&frame.text),
-            start: chunk.span.start(),
-            base: ByteOffset::new(cached.base),
-            grid: cached.grid.as_ref(),
-        };
+        let target = cached.as_hit(chunk, &frame.text);
         let row_top = frame.tops[index] + hit::row_top(&target, row);
         let height = cached
             .layout
@@ -8105,33 +8105,19 @@ impl<T: TextLayout> Editor<T> {
     /// A row wholly inside the selection runs to the end of its text plus a little, so that a
     /// selection spanning lines reads as covering the line breaks rather than as a ragged stack of
     /// separate highlights.
-    fn row_selection(
-        cached: &Cached,
-        chunk: blocks::Chunk,
-        text: &str,
-        row: usize,
-        selected: ByteSpan,
-    ) -> Option<(f32, f32)> {
-        let line = cached.layout.lines.get(row)?;
+    fn row_selection(row: Row<'_>, selected: ByteSpan) -> Option<(f32, f32)> {
+        let Row { cached, index, .. } = row;
+        let line = cached.layout.lines.get(index)?;
         let rebase = |offset: ByteOffset| {
-            ByteOffset::new(chunk.span.start().get() + offset.get().saturating_sub(cached.base))
+            ByteOffset::new(row.chunk.span.start().get() + offset.get().saturating_sub(cached.base))
         };
 
-        // Where this row's text sits in the buffer. Wrapping adds rows without adding newlines, so
-        // a wrapped row's bounds are the whole source line's — the highlight is then a little
-        // generous on a wrapped line, which is better than absent.
-        let body = chunk.span.slice(text);
-        let base = chunk.span.start().get();
-        let row_start = base
-            + body
-                .split_inclusive('\n')
-                .take(row)
-                .map(str::len)
-                .sum::<usize>();
-        let row_end = row_start
-            + body[row_start - base..]
-                .find('\n')
-                .unwrap_or(body.len() - (row_start - base));
+        // Where this row's text sits in the buffer, asked of `hit`'s mapping (MDEDIT-183). It used
+        // to count newlines here, which made a wrapped row's bounds the whole source line's — and
+        // the comment called that "a little generous". It was not generous, it was the wrong row: a
+        // selection on the line *after* a wrap was drawn on a continuation row of the line above,
+        // because row 1 is that line's continuation rather than source line 1.
+        let (row_start, row_end) = row.bytes();
 
         if selected.end().get() <= row_start || selected.start().get() > row_end {
             return None;
@@ -8440,19 +8426,13 @@ impl<T: TextLayout> Editor<T> {
             } else {
                 Vec::new()
             };
-            // And what is wrong with this chunk (MDEDIT-76). Filtered rather than binary-searched
-            // because MDEDIT-47 caps the list at 200: nobody is fixing the 201st, so the whole list
-            // is shorter than one screen of matches and a scan of it costs nothing.
-            //
-            // From `diagnostics()`, which is empty while an edit is newer than the check — so an
-            // edit takes the squiggles away and the idle timer brings them back, with no hook on any
-            // edit path. Nothing here re-runs the check.
-            let wrong: Vec<ByteSpan> = self
-                .diagnostics()
-                .iter()
-                .filter(|diagnostic| touches(diagnostic.span, chunk.span))
-                .map(|diagnostic| diagnostic.span)
-                .collect();
+            let wrong = self.diagnostics_touching(chunk.span);
+            // What bytes each row covers, from `hit` and **once per chunk** (MDEDIT-183). Every
+            // consumer below takes it off `Row`: the selection, the find highlights, the squiggles
+            // and the whitespace marks each used to work it out again from a newline count, which is
+            // both the defect this fixes and, at one count per row per span, the slowest way to get
+            // the wrong answer.
+            let row_bytes = cached.as_hit(chunk, &frame.text).row_bytes();
             let mut row_top = chunk_top;
             self.draw_chunk_ground(quads, &cached, chunk, chunk_top, at);
             // The breaks inside a quote or list (MDEDIT-168), by the source line each is on.
@@ -8504,6 +8484,7 @@ impl<T: TextLayout> Editor<T> {
                     cached: &cached,
                     chunk,
                     text: &frame.text,
+                    rows: &row_bytes,
                     index: row,
                     top: top_of_row,
                     height: line.height,
@@ -8629,9 +8610,7 @@ impl<T: TextLayout> Editor<T> {
         at: Placement,
     ) {
         for span in wrong {
-            let Some((from, to)) =
-                Self::row_selection(row.cached, row.chunk, row.text, row.index, *span)
-            else {
+            let Some((from, to)) = Self::row_selection(row, *span) else {
                 continue;
             };
             if to <= from {
@@ -8831,6 +8810,23 @@ impl<T: TextLayout> Editor<T> {
     /// Asked once per chunk, and matched to a row by the same `line_of_row` the gutter uses: a
     /// wrapped row above a break only ever adds rows, so the break's row is the one its line starts
     /// on.
+    /// What is wrong with the bytes in `span` (MDEDIT-76), for the squiggles on one chunk's rows.
+    ///
+    /// Filtered rather than binary-searched because MDEDIT-47 caps the list at 200: nobody is fixing
+    /// the 201st, so the whole list is shorter than one screen of matches and a scan of it costs
+    /// nothing.
+    ///
+    /// From [`diagnostics`](Self::diagnostics), which is empty while an edit is newer than the check
+    /// — so an edit takes the squiggles away and the idle timer brings them back, with no hook on
+    /// any edit path. Nothing here re-runs the check.
+    fn diagnostics_touching(&self, span: ByteSpan) -> Vec<ByteSpan> {
+        self.diagnostics()
+            .iter()
+            .filter(|diagnostic| touches(diagnostic.span, span))
+            .map(|diagnostic| diagnostic.span)
+            .collect()
+    }
+
     fn nested_break_lines(&self, cached: &Cached, chunk: blocks::Chunk) -> Vec<(usize, f32)> {
         cached
             .breaks
@@ -9023,10 +9019,7 @@ impl<T: TextLayout> Editor<T> {
 
                 (view::ending_at(row.text, after), pen)
             }
-            None => (
-                view::ending_at(row.text, Self::row_start(row.chunk, row.text, row.index)),
-                0.0,
-            ),
+            None => (view::ending_at(row.text, Self::row_start(row)), 0.0),
         };
         let Some(ending) = ending else {
             return;
@@ -9084,7 +9077,7 @@ impl<T: TextLayout> Editor<T> {
         let baseline = line.baseline + chunk_top;
         let mut glyphs = line.glyphs.iter().peekable();
         let mut pen = 0.0_f32;
-        let mut offset = Self::row_start(row.chunk, row.text, row.index);
+        let mut offset = Self::row_start(row);
 
         while let Some(character) = row.text.get(offset..).and_then(|rest| rest.chars().next()) {
             // A glyph may cover several characters — a ligature does — so anything already behind
@@ -9148,18 +9141,17 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Where a row's text starts in the buffer, for a row with no glyphs to ask.
+    /// Where a row's text starts in the buffer.
     ///
-    /// The same arithmetic `row_selection` does, and wrong in the same way for a wrapped row — but a
-    /// wrapped row is never empty, and this is only reached for one that is.
-    fn row_start(chunk: blocks::Chunk, text: &str, row: usize) -> usize {
-        let body = chunk.span.slice(text);
-        chunk.span.start().get()
-            + body
-                .split_inclusive('\n')
-                .take(row)
-                .map(str::len)
-                .sum::<usize>()
+    /// **Was its own newline count, and its defence was false** (MDEDIT-183). It claimed to be
+    /// reached only for a row with no glyphs, where being wrong about wrapping would not matter —
+    /// but `draw_row_marks` calls it for *every* row, as the offset its character walk starts from.
+    /// On any row after a wrap the count returned the next line's start, so the walk paired this
+    /// row's glyphs with another line's bytes, exited immediately, and left every tab and control
+    /// character after the first wrapped row unmarked. That is the defect MDEDIT-124 was raised for,
+    /// reintroduced one function away from its own test.
+    fn row_start(row: Row<'_>) -> usize {
+        row.bytes().0
     }
 
     /// Puts one mark on screen at a document position.
@@ -9559,9 +9551,7 @@ impl<T: TextLayout> Editor<T> {
         if selected.is_empty() {
             return;
         }
-        let Some((from, to)) =
-            Self::row_selection(row.cached, row.chunk, row.text, row.index, selected)
-        else {
+        let Some((from, to)) = Self::row_selection(row, selected) else {
             return;
         };
         let (x, y) = at.content.to_window(from, row.top, at.offset);
@@ -9590,9 +9580,7 @@ impl<T: TextLayout> Editor<T> {
         at: Placement,
     ) {
         for span in found {
-            let Some((from, to)) =
-                Self::row_selection(row.cached, row.chunk, row.text, row.index, *span)
-            else {
+            let Some((from, to)) = Self::row_selection(row, *span) else {
                 continue;
             };
             let (x, y) = at.content.to_window(from, row.top, at.offset);
@@ -10433,13 +10421,7 @@ impl<T: TextLayout> Editor<T> {
         // from `hit`. This counted its own newlines until MDEDIT-126, which was a third copy of the
         // rule that a visual row is a source line — and a grid is the one layout that breaks it, so
         // the caret sat on the trailing empty row for every table row below the header.
-        let target = hit::Chunk {
-            layout: &cached.layout,
-            text: chunk.span.slice(&frame.text),
-            start: chunk.span.start(),
-            base: ByteOffset::new(cached.base),
-            grid: cached.grid.as_ref(),
-        };
+        let target = cached.as_hit(chunk, &frame.text);
         let (row, x) = cached.place_of(&target, caret)?;
         let line = cached.layout.lines.get(row)?;
         let top: f32 = cached.layout.lines[..row].iter().map(|l| l.height).sum();
@@ -11161,6 +11143,21 @@ impl Cached {
             .find(|band| top >= band.top && top < band.top + band.height)
             .map_or(x, |band| band.x + quote::indent(band.depth));
         Some((row, indent))
+    }
+
+    /// This chunk as [`hit`] sees it: its layout, its bytes, and where both sit.
+    ///
+    /// Six call sites built this literal, identically, which is one more copy than a struct with a
+    /// rule in it should have — and the rule is exactly the one MDEDIT-183 found in three places at
+    /// once. `text` is the document's, since a chunk span indexes into it.
+    fn as_hit<'a>(&'a self, chunk: blocks::Chunk, text: &'a str) -> hit::Chunk<'a> {
+        hit::Chunk {
+            layout: &self.layout,
+            text: chunk.span.slice(text),
+            start: chunk.span.start(),
+            base: ByteOffset::new(self.base),
+            grid: self.grid.as_ref(),
+        }
     }
 
     /// How many of the laid-out lines this chunk actually draws.

@@ -435,3 +435,42 @@ fn cell_width_is_the_right_edge_of_its_last_glyph() {
     assert_eq!(table::cell_width(&cell(42.0)), 42.0);
     assert_eq!(table::cell_width(&Layout::default()), 0.0);
 }
+
+/// **What the grid's row spans are still for** (MDEDIT-183, from the review of #199).
+///
+/// `a_click_below_the_header_lands_in_the_row_it_was_aimed_at` lost its control when `hit` started
+/// mapping rows through the glyphs, because glyph sources get a *dropped* row right on their own.
+/// `Chunk::row_span` reads `grid.rows`, and nothing was left that could tell it from the fallback —
+/// a mutant returning `None` from it survived the whole suite.
+///
+/// A body row whose every cell is empty is the case that cannot be answered any other way: the row
+/// has no glyphs at all, so the fallback calls it the line after the row above — which is the
+/// *delimiter* line — and the caret has nowhere to go in a row the user can see.
+#[test]
+fn a_row_with_no_glyphs_at_all_still_owns_its_bytes() {
+    let source = "| a | b |\n| --- | --- |\n|  |  |\n";
+    let (cells, boxes, grid) = grid_of(source);
+    let empty_row = cells[1][0].end();
+
+    let chunk = hit::Chunk {
+        layout: &grid,
+        text: source,
+        start: ByteOffset::ZERO,
+        base: ByteOffset::ZERO,
+        grid: Some(&boxes),
+    };
+    let (row, _) = hit::place_of(&chunk, 2, empty_row).expect("the empty row is a place");
+    assert_eq!(row, 1, "the body row is visual row 1");
+
+    // Without the spans there is nothing to find it by: the row draws no glyphs, so the fallback
+    // takes it for the delimiter line, whose bytes are nowhere near these.
+    let counted = hit::Chunk {
+        grid: None,
+        ..chunk
+    };
+    assert_ne!(
+        hit::place_of(&counted, 2, empty_row).map(|(row, _)| row),
+        Some(1),
+        "this is the case only `grid.rows` can answer",
+    );
+}

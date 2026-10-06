@@ -115,15 +115,19 @@ impl Chunk<'_> {
     /// source line ends at that line's last byte, so a caret at the end of the line belongs there
     /// rather than nowhere. The boundaries in between are where the wrap put them: a continuation
     /// row starts at its own first glyph.
-    fn row_bytes(&self) -> Vec<(usize, usize)> {
+    pub(crate) fn row_bytes(&self) -> Vec<(usize, usize)> {
         let rows = self.layout.lines.len();
         let lines = self.line_spans();
         let last_line = lines.len().saturating_sub(1);
 
+        // Each row's first glyph, taken once. Asked twice per row otherwise — a row needs its own
+        // and its successor's — and each ask walks into the layout.
+        let starts: Vec<Option<usize>> = (0..rows).map(|row| self.glyph_start(row)).collect();
+
         // Which source line each row belongs to.
         let mut line_of: Vec<usize> = Vec::with_capacity(rows);
-        for row in 0..rows {
-            let line = match self.glyph_start(row) {
+        for start in &starts {
+            let line = match *start {
                 Some(at) => lines.partition_point(|(_, end)| *end < at),
                 // A row with no glyphs is a blank source line, and blank lines do not wrap — so it
                 // is the line after the one above it. Row 0 is the chunk's own first line.
@@ -144,12 +148,12 @@ impl Chunk<'_> {
                 let start = if first_of_line {
                     line_start
                 } else {
-                    self.glyph_start(row).unwrap_or(line_start)
+                    starts[row].unwrap_or(line_start)
                 };
                 let end = if last_of_line {
                     line_end
                 } else {
-                    self.glyph_start(row + 1).unwrap_or(line_end)
+                    starts[row + 1].unwrap_or(line_end)
                 };
                 (start, end.max(start))
             })
@@ -157,6 +161,12 @@ impl Chunk<'_> {
     }
 
     /// Where visual line `row` ends, not counting its newline.
+    ///
+    /// Builds the whole row map to read one row of it, which is deliberate: the alternative is a
+    /// second implementation of the rule for one row, and three copies of this rule is what
+    /// MDEDIT-183 was. It is reached once per click that lands past a row's last glyph, where a map
+    /// of the one chunk under the pointer is not worth avoiding. **The draw path does not come
+    /// through here** — `draw_chunks` builds the map once per chunk and hands it down on `Row`.
     fn line_end(&self, row: usize) -> usize {
         self.row_bytes()
             .get(row)

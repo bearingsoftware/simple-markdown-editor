@@ -25,6 +25,23 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   above, which *is* that boundary. Hard line ends are unaffected — a newline separates them, so only
   one row holds each.
 
+  **Known gap: a click in the whitespace right of a wrapped row draws the caret at the start of the
+  next row.** The *byte* is right — measured, clicking past the end of row 0 of a wrapped paragraph
+  now gives the end of that row's text, where before this ticket it gave the end of the **whole
+  paragraph** — but which of the two rows the boundary is shown on is a question only affinity can
+  answer, and the selection head does not carry one. VS Code and Notepad++ keep it on the earlier row
+  by remembering the gesture. **The fix is an affinity bit, not a different tie-break**: the other
+  choice makes Up skip a row, which is a worse defect in a more common gesture. MDEDIT-188.
+
+  **Three places counted newlines, not one.** Fixing the caret left two live copies, both found in
+  the review of #199 and both fixed here: `row_selection` drew a selection on the line after a wrap
+  as a highlight on a continuation row of the line *above* it, and `row_start` — whose doc claimed it
+  was only reached for a glyph-less row, where wrapping could not matter — is called by
+  `draw_row_marks` for every row, so every tab and control character after the first wrapped row went
+  unmarked. That last one is MDEDIT-124's defect reintroduced one function away from its own test.
+  The mapping is now computed **once per chunk** in `draw_chunks` and handed down on `Row`, which is
+  both the fix and cheaper than the count it replaces.
+
   **It made the grid's own override redundant for rows with glyphs**, which cost a test its control:
   `a_click_below_the_header_lands_in_the_row_it_was_aimed_at` used to assert that the same chunk with
   `grid: None` placed the offset nowhere. It now places it correctly, because glyph sources tell the

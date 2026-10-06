@@ -273,3 +273,75 @@ fn the_caret_sits_on_the_line_after_a_hard_break_in_a_wrapped_paragraph() {
         "the caret is not on the row the line after the break is drawn on",
     );
 }
+
+/// Which document rows carry a quad of `colour`, counting from the first row.
+///
+/// Bounded to the rows the document actually draws, because the status bar and the formatting bar
+/// paint in some of the same colours — the marker colour most of all — and a row of chrome counted
+/// as a row of the document is how these probes lie.
+fn rows_with(editor: &mut Editor<Grid>, colour: [f32; 4], rows: usize) -> Vec<i64> {
+    let top = editor.content_rect().top_edge();
+    #[allow(clippy::cast_precision_loss, reason = "a row count in a 600 px window")]
+    let bottom = LINE_HEIGHT.mul_add(rows as f32, top);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a row index under a hundred"
+    )]
+    let mut found: Vec<i64> = editor
+        .build_frame(WIDTH, HEIGHT, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == colour)
+        .filter(|quad| (top..bottom).contains(&quad.rect[1]))
+        .map(|quad| ((quad.rect[1] - top) / LINE_HEIGHT).floor() as i64)
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// **The selection highlight was the second copy of the rule** (MDEDIT-183, found in the review of
+/// #199). `row_selection` counted newlines of its own, so selecting the item after a wrap drew the
+/// highlight on a continuation row of the item *above* it — row 1 of ten, for text on row 8.
+#[test]
+fn a_selection_after_a_wrap_is_highlighted_on_its_own_row() {
+    let source = format!("- {}\n- middle\n- last\n", long());
+    let mut editor = editor(&source);
+    let rows = drawn_rows(&mut editor);
+    let at = source.find("middle").expect("the item is there");
+    editor.document_mut().set_selection(Selection::new(
+        ByteOffset::new(at),
+        ByteOffset::new(at + "middle".len()),
+    ));
+
+    let selection = Theme::default().selection;
+    let colour = [selection.r, selection.g, selection.b, selection.a];
+    assert_eq!(
+        rows_with(&mut editor, colour, rows),
+        vec![row(rows - 2)],
+        "the highlight is not on the row the selected text is drawn on",
+    );
+}
+
+/// **The whitespace marks were the third** (MDEDIT-183, same review). `row_start` claimed it was
+/// only reached for a row with no glyphs, where wrapping could not matter. `draw_row_marks` calls it
+/// for every row as the offset its character walk starts from, so after the first wrap the walk
+/// paired this row's glyphs with the next line's bytes and marked nothing — the defect MDEDIT-124
+/// was raised for, one function away from its own test.
+#[test]
+fn whitespace_marks_are_drawn_on_every_row_after_a_wrap() {
+    // Spaces on every row, since the long line is words.
+    let source = format!("{}\n\tsecond\n", long());
+    let mut editor = editor(&source);
+    editor.toggle_whitespace();
+    let rows = drawn_rows(&mut editor);
+    assert!(rows >= 3, "the first line has to wrap: {rows} rows");
+
+    let marker = Theme::default().marker;
+    let colour = [marker.r, marker.g, marker.b, marker.a];
+    let found = rows_with(&mut editor, colour, rows);
+    let every: Vec<i64> = (0..rows).map(row).collect();
+    assert_eq!(
+        found, every,
+        "every row of this document has whitespace on it, so every row should be marked",
+    );
+}
