@@ -138,7 +138,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   somebody wants one is a language picker, which is a UI decision rather than a sniffing one.
 - **`.yaml` and `.yml` open highlighted too, from a hand-written lexer — and the parser decision is
   evidenced, so read `crates/yaml/src/lib.rs` before proposing a crate for it.** Measured 2026-07-31:
-  `syntect` **fails MSRV 1.87** (`plist` and `time` need 1.88); `tree-sitter` passes but is a C
+  `syntect` **failed MSRV 1.87** (`plist` and `time` need 1.88) — **that ground has gone, the floor
+  is 1.90 as of MDEDIT-189, and MDEDIT-190 is where syntect is reconsidered for fenced code**;
+  `tree-sitter` passes but is a C
   parser at a file-parsing trust boundary, which is the CVE class this project's language choice
   exists to remove; and a real YAML parser (`saphyr-parser`) **failed 3 of 4** mid-edit documents —
   a half-typed flow sequence, inconsistent indentation, and a tab — which is what a file being

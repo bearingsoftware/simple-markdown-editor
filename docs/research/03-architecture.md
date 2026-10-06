@@ -324,6 +324,15 @@ Two caveats:
   about half the speed, absurdly slow in debug builds, and *drops some syntaxes
   entirely*.
 
+  **The C dependency does block it, or at least outranks this preference, and
+  that was not noticed when this was written.** Oniguruma is C, a fence's
+  contents are untrusted file contents, and `AGENTS.md` rejects a C parser at a
+  file-parsing trust boundary — it is the stated reason `tree-sitter` lost the
+  YAML decision. So the two rules in this repository disagree, the trust
+  boundary wins on precedent, and `fancy-regex`'s cost has to be measured rather
+  than accepted from the sentence above. **MDEDIT-190** decides it with
+  evidence.
+
 Also cache `SyntaxReference` lookups — `SyntaxSet` search is a linear scan.
 
 Measured syntect numbers (its own README, the only concrete highlighting figures
