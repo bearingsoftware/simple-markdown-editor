@@ -160,10 +160,20 @@ fn a_rows_span_runs_from_its_first_cell_to_its_last() {
     assert_eq!(boxes.cells, cells, "and every cell is carried too");
 }
 
-/// **The second bug the first manual look found.** `hit` finds a row's bytes by counting newlines,
-/// which works because wrapping only ever *adds* rows. A grid is the one layout that **drops** one —
-/// the delimiter row draws as nothing — so visual row 1 is source line 2, and without the mapping
-/// the caret cannot be placed anywhere below the header.
+/// **The second bug the first manual look found.** A grid is the one layout that **drops** a source
+/// line — the delimiter row draws as nothing — so visual row 1 is source line 2, and the caret could
+/// not be placed anywhere below the header.
+///
+/// **Its control is gone, and deliberately** (MDEDIT-183). This used to assert that the same chunk
+/// with `grid: None` placed the offset on *no* row, which was the bug it was written against: `hit`
+/// counted newlines, and a layout that drops a row defeats a count. `hit` now maps rows to source
+/// lines through the glyphs, which gets a dropped row right for the same reason it gets a wrapped
+/// one right — so the no-mapping chunk answers `(1, 10.0)` too, and an assertion that it answers
+/// nothing would be asserting the old defect rather than this ticket's rule.
+///
+/// What the grid's spans are still needed for is the case the glyphs cannot speak to: a cell with
+/// **no glyphs in it at all**. That is `an_empty_cell_can_be_clicked_into`, and it fails without
+/// them.
 #[test]
 fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
     let (cells, boxes, grid) = grid_of(TABLE);
@@ -177,17 +187,7 @@ fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
         grid: Some(&boxes),
     };
     let (row, _) = hit::place_of(&chunk, 2, body).expect("the body row owns its own bytes");
-    assert_eq!(row, 1);
-
-    // The same chunk without the mapping is the bug, so this test cannot pass vacuously.
-    let counted = hit::Chunk {
-        grid: None,
-        ..chunk
-    };
-    assert!(
-        hit::place_of(&counted, 2, body).is_none(),
-        "counting newlines puts the body row's bytes on no visual row at all"
-    );
+    assert_eq!(row, 1, "the body row is visual row 1, not source line 2");
 }
 
 /// Clicking past the last column lands at the end of *that* row's text. Counting newlines would put
@@ -434,4 +434,43 @@ fn a_row_with_missing_cells_is_placed_and_not_a_panic() {
 fn cell_width_is_the_right_edge_of_its_last_glyph() {
     assert_eq!(table::cell_width(&cell(42.0)), 42.0);
     assert_eq!(table::cell_width(&Layout::default()), 0.0);
+}
+
+/// **What the grid's row spans are still for** (MDEDIT-183, from the review of #199).
+///
+/// `a_click_below_the_header_lands_in_the_row_it_was_aimed_at` lost its control when `hit` started
+/// mapping rows through the glyphs, because glyph sources get a *dropped* row right on their own.
+/// `Chunk::row_span` reads `grid.rows`, and nothing was left that could tell it from the fallback —
+/// a mutant returning `None` from it survived the whole suite.
+///
+/// A body row whose every cell is empty is the case that cannot be answered any other way: the row
+/// has no glyphs at all, so the fallback calls it the line after the row above — which is the
+/// *delimiter* line — and the caret has nowhere to go in a row the user can see.
+#[test]
+fn a_row_with_no_glyphs_at_all_still_owns_its_bytes() {
+    let source = "| a | b |\n| --- | --- |\n|  |  |\n";
+    let (cells, boxes, grid) = grid_of(source);
+    let empty_row = cells[1][0].end();
+
+    let chunk = hit::Chunk {
+        layout: &grid,
+        text: source,
+        start: ByteOffset::ZERO,
+        base: ByteOffset::ZERO,
+        grid: Some(&boxes),
+    };
+    let (row, _) = hit::place_of(&chunk, 2, empty_row).expect("the empty row is a place");
+    assert_eq!(row, 1, "the body row is visual row 1");
+
+    // Without the spans there is nothing to find it by: the row draws no glyphs, so the fallback
+    // takes it for the delimiter line, whose bytes are nowhere near these.
+    let counted = hit::Chunk {
+        grid: None,
+        ..chunk
+    };
+    assert_ne!(
+        hit::place_of(&counted, 2, empty_row).map(|(row, _)| row),
+        Some(1),
+        "this is the case only `grid.rows` can answer",
+    );
 }

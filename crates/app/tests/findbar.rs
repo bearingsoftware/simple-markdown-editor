@@ -264,23 +264,37 @@ fn the_panel_floats_at_the_top_right_of_the_document() {
 ///
 /// A match at the end of the first line is exactly the case: top right is where the panel wants to
 /// sit and where that match is.
+///
+/// **The line must not wrap** (MDEDIT-183). It did, and this test passed for the wrong reason: the
+/// caret in a wrapped line was drawn on the chunk's *first* row, hard against the right edge where
+/// the panel sits, so the avoidance fired whatever the fix did. With the row mapping corrected the
+/// caret went where it belongs — the last wrapped row, well below the panel — and nothing was behind
+/// it to avoid. A single short row puts the caret under the panel for the reason the test claims.
 #[test]
 fn the_panel_moves_left_when_the_caret_is_behind_it() {
-    let line = format!("{}needle\n", "x ".repeat(60));
+    let line = format!("{}needle\n", "x".repeat(70));
     let mut editor = editor(&line);
-    caret_at(&mut editor, 0);
-    frame(&mut editor);
     let right = panel_origin_after(&mut editor, 0);
 
     let end = line.trim_end_matches('\n').len();
     let moved = panel_origin_after(&mut editor, end);
+    // The fixture's own precondition, asserted rather than assumed: the caret has to be where a
+    // right-aligned panel would cover it, or the avoidance has nothing to get out of the way of.
+    let caret = caret_point(&mut editor);
+    let width = panel(&editor).width;
+    assert!(
+        (right.0..right.0 + width).contains(&caret.0)
+            && (right.1..right.1 + find::HEIGHT).contains(&caret.1),
+        "the caret at {caret:?} is not behind a panel at {right:?}, so this tests nothing",
+    );
+
     assert!(
         moved.0 < right.0,
         "the panel should have moved left off the caret: {moved:?} against {right:?}",
     );
     assert_eq!(moved.1, right.1, "and not up or down");
     assert!(
-        !panel(&editor).contains(caret_x(&mut editor), moved.1 + find::HEIGHT / 2.0),
+        !panel(&editor).contains(caret.0, caret.1),
         "the caret should be clear of it now",
     );
 }
@@ -295,11 +309,31 @@ fn panel_origin_after(editor: &mut Editor<Grid>, offset: usize) -> (f32, f32) {
     panel(editor).origin
 }
 
-/// Where the document's caret was drawn, which is the rightmost of the two carets on screen when
-/// the caret is at the end of a long line.
-fn caret_x(editor: &mut Editor<Grid>) -> f32 {
-    let xs = caret_xs(editor);
-    f32::from_bits(*xs.last().expect("the document draws a caret"))
+/// Where the **document's** caret was drawn, as `(x, y)`.
+///
+/// The search box draws a caret too, so the one that is on the panel is excluded by the panel's own
+/// rectangle rather than by guessing which is further right.
+fn caret_point(editor: &mut Editor<Grid>) -> (f32, f32) {
+    let caret = Theme::default().caret;
+    let wanted = [caret.r, caret.g, caret.b, caret.a];
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let layout = editor.find_layout().cloned();
+    let points: Vec<(f32, f32)> = quads
+        .iter()
+        .filter(|quad| quad.colour == wanted && quad.rect[3] > quad.rect[2])
+        .map(|quad| (quad.rect[0], quad.rect[1]))
+        .filter(|&(x, y)| {
+            layout
+                .as_ref()
+                .is_none_or(|layout| !layout.contains(x, y + find::HEIGHT / 2.0))
+        })
+        .collect();
+    assert_eq!(
+        points.len(),
+        1,
+        "expected one caret outside the panel, got {points:?}"
+    );
+    points[0]
 }
 
 /// **A panel never narrower than its own buttons**, however little room the window leaves.
