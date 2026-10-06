@@ -489,14 +489,14 @@ fn add_view_toggles(
         "&Plain Markup",
         true,
         false,
-        Some(Accelerator::new(Some(Modifiers::CONTROL), Code::Slash)),
+        Some(Accelerator::new(Modifiers::CONTROL, Code::Slash)),
     );
     let file_pane = CheckMenuItem::new(
         "&File Pane",
         true,
         false,
         Some(Accelerator::new(
-            Some(Modifiers::CONTROL | Modifiers::SHIFT),
+            Modifiers::CONTROL | Modifiers::SHIFT,
             Code::KeyE,
         )),
     );
@@ -593,7 +593,7 @@ fn add_items(menus: &Menus<'_>, commands: &mut HashMap<MenuId, Command>) -> Opti
         .chain(edit_items(menus.edit))
         .chain(view_and_help_items(menus.view, menus.tools, menus.help));
     for (menu, label, command, chord) in items {
-        let accelerator = chord.map(|(modifiers, code)| Accelerator::new(Some(modifiers), code));
+        let accelerator = chord.map(|(modifiers, code)| Accelerator::new(modifiers, code));
         let item = MenuItem::new(label, true, accelerator);
         commands.insert(item.id().clone(), command);
         menu.append(&item).ok()?;
