@@ -102,6 +102,7 @@ mod view_menu;
 mod whitespace;
 mod wrap;
 mod wrap_cost;
+mod wrapped_caret;
 mod xml;
 mod zoom;
 

@@ -64,41 +64,103 @@ impl Chunk<'_> {
         Some((at(span.start()), at(span.end())))
     }
 
-    /// Where visual line `row` starts, as an offset into [`text`](Self::text).
-    ///
-    /// Visual, so a wrapped line has no newline of its own to count. Wrapping only ever *adds*
-    /// rows, so counting newlines finds the right byte for every row up to the number of newlines
-    /// and the end of the text past that — which is what a caller clicking below the last line
-    /// should get anyway. A layout that *drops* a row instead says so through
-    /// [`rows`](Self::rows), which then answers ahead of the count.
-    fn line_start(&self, row: usize) -> usize {
-        if let Some((start, _)) = self.row_span(row) {
-            return start;
-        }
-        if row == 0 {
-            return 0;
-        }
-        let mut seen = 0;
+    /// Every source line in [`text`](Self::text), as `(start, end)` with the newline excluded.
+    fn line_spans(&self) -> Vec<(usize, usize)> {
+        let mut spans = Vec::new();
+        let mut start = 0;
         for (index, byte) in self.text.bytes().enumerate() {
             if byte == b'\n' {
-                seen += 1;
-                if seen == row {
-                    return index + 1;
-                }
+                spans.push((start, index));
+                start = index + 1;
             }
         }
-        self.text.len()
+        spans.push((start, self.text.len()));
+        spans
+    }
+
+    /// Where a row's first glyph came from, as an offset into [`text`](Self::text).
+    fn glyph_start(&self, row: usize) -> Option<usize> {
+        let glyph = self.layout.lines.get(row)?.glyphs.first()?;
+        Some(
+            glyph
+                .source
+                .start()
+                .get()
+                .saturating_sub(self.base.get())
+                .min(self.text.len()),
+        )
+    }
+
+    /// The bytes each visual row covers, as offsets into [`text`](Self::text) (MDEDIT-183).
+    ///
+    /// # Why this is not newline counting
+    ///
+    /// It was, and the argument was that wrapping only ever *adds* rows. It does — but it adds them
+    /// **in the middle**. In `- long…\n- next\n` where the first item wraps to nine rows, `next` is
+    /// row 9, and counting newlines made row 1 its answer: the caret for every line after a wrap was
+    /// drawn as many rows too high as the wrap had added, and in a wrapped paragraph — one source
+    /// line, several rows — row 0 answered for all of it.
+    ///
+    /// So the mapping comes from the layout, which is the only thing that knows where the breaks
+    /// fell. **A row with glyphs knows its line from its first glyph's source**; a row with none is
+    /// the line after the row above it, which is the rule `Editor::line_of_row` already uses to
+    /// decide what a glyph-less row is for. MDEDIT-126 solved the mirror image of this — a grid
+    /// *drops* a row — by handing over its own spans, and [`row_span`](Self::row_span) stays the
+    /// override it was.
+    ///
+    /// # Where a row begins and ends
+    ///
+    /// The **first** row of a source line starts at that line's first byte, so a caret in a
+    /// concealed marker still belongs to the row the marker was dropped from. The **last** row of a
+    /// source line ends at that line's last byte, so a caret at the end of the line belongs there
+    /// rather than nowhere. The boundaries in between are where the wrap put them: a continuation
+    /// row starts at its own first glyph.
+    fn row_bytes(&self) -> Vec<(usize, usize)> {
+        let rows = self.layout.lines.len();
+        let lines = self.line_spans();
+        let last_line = lines.len().saturating_sub(1);
+
+        // Which source line each row belongs to.
+        let mut line_of: Vec<usize> = Vec::with_capacity(rows);
+        for row in 0..rows {
+            let line = match self.glyph_start(row) {
+                Some(at) => lines.partition_point(|(_, end)| *end < at),
+                // A row with no glyphs is a blank source line, and blank lines do not wrap — so it
+                // is the line after the one above it. Row 0 is the chunk's own first line.
+                None => line_of.last().map_or(0, |previous| previous + 1),
+            };
+            line_of.push(line.min(last_line));
+        }
+
+        (0..rows)
+            .map(|row| {
+                if let Some(span) = self.row_span(row) {
+                    return span;
+                }
+                let line = line_of[row];
+                let (line_start, line_end) = lines[line];
+                let first_of_line = row == 0 || line_of[row - 1] != line;
+                let last_of_line = row + 1 >= rows || line_of[row + 1] != line;
+                let start = if first_of_line {
+                    line_start
+                } else {
+                    self.glyph_start(row).unwrap_or(line_start)
+                };
+                let end = if last_of_line {
+                    line_end
+                } else {
+                    self.glyph_start(row + 1).unwrap_or(line_end)
+                };
+                (start, end.max(start))
+            })
+            .collect()
     }
 
     /// Where visual line `row` ends, not counting its newline.
     fn line_end(&self, row: usize) -> usize {
-        if let Some((_, end)) = self.row_span(row) {
-            return end;
-        }
-        let from = self.line_start(row);
-        self.text[from..]
-            .find('\n')
-            .map_or(self.text.len(), |at| from + at)
+        self.row_bytes()
+            .get(row)
+            .map_or(self.text.len(), |&(_, end)| end)
     }
 }
 
@@ -215,13 +277,22 @@ pub fn substitute_at(chunk: &Chunk<'_>, drawn: usize, y: f32, x: f32) -> Option<
 #[must_use]
 pub fn place_of(chunk: &Chunk<'_>, drawn: usize, offset: ByteOffset) -> Option<(usize, f32)> {
     let rows = rows(chunk, drawn);
-    for row in 0..rows {
-        let start = chunk.start.get() + chunk.line_start(row);
-        let end = chunk.start.get() + chunk.line_end(row);
-        if offset.get() < start || offset.get() > end {
-            continue;
-        }
+    let bytes = chunk.row_bytes();
+    // **The last row that holds the offset, not the first** (MDEDIT-183). One byte lies on two rows
+    // wherever a line wrapped: the end of a row and the start of its continuation are the same
+    // offset, and there is no affinity here to tell which the caret arrived from. The continuation
+    // is the right answer for the one gesture that can tell the difference — Up onto a wrapped row
+    // aims at that row's left edge, which *is* the boundary, and preferring the earlier row sent it
+    // a row further than it asked and made Up skip a row. Hard line ends are unaffected: a line's
+    // last byte and the next line's first are separated by the newline, so only one row holds each.
+    let row = (0..rows).rev().find(|&row| {
+        let (from, to) = bytes.get(row).copied().unwrap_or((0, chunk.text.len()));
+        let start = chunk.start.get() + from;
+        let end = chunk.start.get() + to;
+        (start..=end).contains(&offset.get())
+    })?;
 
+    {
         let line = chunk.layout.lines.get(row)?;
         let x = line
             .glyphs
@@ -252,9 +323,8 @@ pub fn place_of(chunk: &Chunk<'_>, drawn: usize, offset: ByteOffset) -> Option<(
                 }
             }
         }
-        return Some((row, x));
+        Some((row, x))
     }
-    None
 }
 
 /// Where the top of visual line `row` is, measured from the top of the chunk.

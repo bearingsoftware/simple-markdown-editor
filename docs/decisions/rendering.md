@@ -5,6 +5,41 @@ The two palettes and the roles in them, how Markdown syntax is concealed and col
 Decisions and known gaps, one entry each, mostly named for the ticket that produced them. Moved
 out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why and for the rest.
 
+- **A row's bytes come from the layout, not from counting newlines.** MDEDIT-183. `hit.rs` found
+  visual row *r*'s bytes by counting *r* newlines, defended by "wrapping only ever **adds** rows".
+  It adds them — **in the middle**. Once a line in a chunk has wrapped, row 1 is that line's
+  continuation rather than source line 1, so the caret for every later line was drawn as many rows
+  too high as the wrap had added, and in a wrapped paragraph — one source line, many rows — row 0
+  answered for the whole thing. Found while testing MDEDIT-168 and raised rather than fixed inline.
+
+  **The mapping is glyph-based**, which is the same repair MDEDIT-126 made from the other side: a row
+  with glyphs knows its line from its first glyph's source, and a row with none is the line after the
+  row above it — the rule `Editor::line_of_row` already used to decide what a glyph-less row is for,
+  and the reason MDEDIT-168's nested rules landed correctly while the caret on the same line did not.
+  A line's **first** row starts at that line's first byte, so a caret in a concealed marker still
+  belongs to the row the marker was dropped from; its **last** row ends at the line's last byte.
+
+  **One byte can be on two rows, and the later one wins.** The end of a wrapped row and the start of
+  its continuation are the same offset, and there is no caret affinity here to tell which the caret
+  arrived from. Preferring the earlier row made Up skip a row: Up aims at the left edge of the row
+  above, which *is* that boundary. Hard line ends are unaffected — a newline separates them, so only
+  one row holds each.
+
+  **It made the grid's own override redundant for rows with glyphs**, which cost a test its control:
+  `a_click_below_the_header_lands_in_the_row_it_was_aimed_at` used to assert that the same chunk with
+  `grid: None` placed the offset nowhere. It now places it correctly, because glyph sources tell the
+  truth about a dropped row as readily as about a wrapped one. The grid's spans are still load-bearing
+  for the case glyphs cannot speak to — **a cell with no glyphs in it** — which is
+  `an_empty_cell_can_be_clicked_into`, and that was checked rather than assumed before the control
+  was removed.
+
+  **What the tests needed to be worth having**, both found by hand-mutation: a list of **three**
+  items rather than two, because with two the line after the wrap is the last line and a mapping that
+  merely clamps to the last source line lands on it by accident; and row probes measured from the
+  **content rect** rather than from a glyph's top, since a glyph sits an ascent below its row's top
+  and `glyph_top + LINE_HEIGHT / 2` is in the row below. The second mistake made the first version of
+  these tests look like a click regression that was not there.
+
 - **A table is drawn as a grid, and it needed no second architecture to do it.** MDEDIT-126.
   `AGENTS.md` had promised a *model-backed block widget* since before there was a renderer, on the
   reasoning that "pure decoration over a linear character stream cannot do 2D layout". The reasoning
@@ -47,8 +82,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   pointer: `place_of` puts the caret at the cell's own left edge when no glyph in it can say where.
 
   **Hit-testing was the one consumer that did not survive untouched**, and the first manual look is
-  what found it. `hit.rs` finds a row's bytes by counting newlines, which is sound everywhere else
-  because wrapping only ever *adds* visual rows. A grid is the one layout that **drops** a source
+  what found it. `hit.rs` found a row's bytes by counting newlines, which was held to be sound
+  everywhere else because wrapping only ever *adds* visual rows — **and that argument was wrong, as
+  MDEDIT-183 found; see its entry.** A grid is the one layout that **drops** a source
   line — the delimiter row draws as nothing — so visual row 1 is source line 2, `place_of` matched no
   row, and the caret could not be placed anywhere below the header. A grid therefore hands `hit` its
   row spans (`table::row_spans`) and the newline count stays the fallback for everything else. That
@@ -208,8 +244,11 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   a boundary.
 
   **`hit` needs nothing from this.** A table hands it row spans because a grid *drops* a source line;
-  this drops none — wrapping only ever adds rows — so counting newlines stays correct. Checked rather
-  than argued: `a_click_on_a_wrapped_row_lands_on_the_byte_under_it`.
+  this drops none. Checked rather than argued:
+  `a_click_on_a_wrapped_row_lands_on_the_byte_under_it` — and it is still true, because a click on a
+  row with text resolves through the glyphs' own sources rather than through the row mapping. **The
+  rest of that argument — "so counting newlines stays correct" — was false, and MDEDIT-183 is where
+  it broke:** the caret in this very case was drawn on the wrong row.
 
   The row-count invariant is the one to keep: a list that does not wrap must assemble to **the same
   number of rows as the linear layout it replaces**, asserted against that layout rather than against
