@@ -713,7 +713,9 @@ impl TextLayout for DirectWriteText {
         .map_err(|e| platform_err("CreateAlphaTexture", &e))?;
 
         let coverage = subpixel
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|rgb| {
                 // u16 accumulator: three u8s sum to at most 765, which overflows a u8.
                 let sum = u16::from(rgb[0]) + u16::from(rgb[1]) + u16::from(rgb[2]);

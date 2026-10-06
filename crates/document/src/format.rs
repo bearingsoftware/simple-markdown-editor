@@ -543,19 +543,19 @@ fn leading_marker(rest: &str) -> String {
         return format!("{hashes} ");
     }
 
-    if let Some(after) = rest.strip_prefix(['-', '*', '+']) {
-        if after.starts_with(' ') {
-            return rest[..2].to_owned();
-        }
+    if let Some(after) = rest.strip_prefix(['-', '*', '+'])
+        && after.starts_with(' ')
+    {
+        return rest[..2].to_owned();
     }
 
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() {
         let after = &rest[digits.len()..];
-        if let Some(tail) = after.strip_prefix(['.', ')']) {
-            if tail.starts_with(' ') {
-                return rest[..digits.len() + 2].to_owned();
-            }
+        if let Some(tail) = after.strip_prefix(['.', ')'])
+            && tail.starts_with(' ')
+        {
+            return rest[..digits.len() + 2].to_owned();
         }
     }
 
@@ -762,10 +762,10 @@ fn line_body(line: &str) -> &str {
 /// Called before applying a new one, which is what makes bullet → ordered → task a *swap* rather
 /// than a stack of prefixes.
 fn strip_block_marker(parts: &mut Parts) {
-    if is_list(&parts.marker) {
-        if let Some(len) = checkbox_len(&parts.content) {
-            parts.content.drain(..len);
-        }
+    if is_list(&parts.marker)
+        && let Some(len) = checkbox_len(&parts.content)
+    {
+        parts.content.drain(..len);
     }
     parts.marker.clear();
 }
