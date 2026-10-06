@@ -21,7 +21,7 @@ repository.workspace = true
 # USER32 rather than ComCtl32, so what is lost is nothing a menu bar draws with. `rfd` keeps the
 # feature because only the binary links it, and the binary has the manifest.
 [target.'cfg(windows)'.dependencies]
-muda = { version = "0.19", default-features = false }
+muda = { version = "0.21", default-features = false }
 
 # For the two undocumented uxtheme ordinals that make popup menus dark — see `dark.rs`. Pinned to the
 # range muda already requires so the tree holds one copy of it rather than two.
