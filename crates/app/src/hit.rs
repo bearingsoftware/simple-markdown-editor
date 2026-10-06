@@ -222,24 +222,24 @@ pub fn offset_in_row(chunk: &Chunk<'_>, row: usize, x: f32) -> ByteOffset {
     // and would carry a click past it into whichever column has text next. Every pixel of the table
     // belongs to a column, so the column is what a point addresses and the glyphs within it decide
     // only where in the cell the caret goes.
-    if let Some(grid) = chunk.grid {
-        if let Some(cell) = grid.cells.get(row).and_then(|cells| {
+    if let Some(grid) = chunk.grid
+        && let Some(cell) = grid.cells.get(row).and_then(|cells| {
             let column = grid.column_at(x);
             cells.get(column.min(cells.len().saturating_sub(1)))
-        }) {
-            let inside = |glyph: &&mdedit_text::PositionedGlyph| {
-                glyph.source.start().get() >= cell.start().get()
-                    && glyph.source.start().get() < cell.end().get()
-            };
-            for glyph in line.glyphs.iter().filter(inside) {
-                if x < glyph.pos.x + glyph.advance / 2.0 {
-                    return chunk.rebase(glyph.source.start());
-                }
+        })
+    {
+        let inside = |glyph: &&mdedit_text::PositionedGlyph| {
+            glyph.source.start().get() >= cell.start().get()
+                && glyph.source.start().get() < cell.end().get()
+        };
+        for glyph in line.glyphs.iter().filter(inside) {
+            if x < glyph.pos.x + glyph.advance / 2.0 {
+                return chunk.rebase(glyph.source.start());
             }
-            // Past this cell's last glyph, or a cell with none at all — a freshly inserted one. The
-            // caret goes to the end of the cell's own text, which is where typing appends.
-            return chunk.rebase(cell.end());
         }
+        // Past this cell's last glyph, or a cell with none at all — a freshly inserted one. The
+        // caret goes to the end of the cell's own text, which is where typing appends.
+        return chunk.rebase(cell.end());
     }
 
     for glyph in &line.glyphs {
@@ -319,18 +319,18 @@ pub fn place_of(chunk: &Chunk<'_>, drawn: usize, offset: ByteOffset) -> Option<(
         // **An empty cell has no glyph to hang the caret on**, and the fallbacks above would put it
         // at the end of the row or against the table's left edge — both of them somewhere the caret
         // is not. The cell's own box says where it goes.
-        if let Some(grid) = chunk.grid {
-            if let Some((cell_row, column)) = grid.cell_of(ByteOffset::new(
+        if let Some(grid) = chunk.grid
+            && let Some((cell_row, column)) = grid.cell_of(ByteOffset::new(
                 chunk.base.get() + offset.get().saturating_sub(chunk.start.get()),
-            )) {
-                let cell = grid.cells[cell_row][column];
-                let empty = !line.glyphs.iter().any(|glyph| {
-                    glyph.source.start().get() >= cell.start().get()
-                        && glyph.source.start().get() < cell.end().get()
-                });
-                if cell_row == row && empty {
-                    return Some((row, grid.text_left(column)));
-                }
+            ))
+        {
+            let cell = grid.cells[cell_row][column];
+            let empty = !line.glyphs.iter().any(|glyph| {
+                glyph.source.start().get() >= cell.start().get()
+                    && glyph.source.start().get() < cell.end().get()
+            });
+            if cell_row == row && empty {
+                return Some((row, grid.text_left(column)));
             }
         }
         Some((row, x))

@@ -39,9 +39,9 @@ The pin does not stop a lint arriving. It makes it arrive **in a commit of ours*
 instead of under an unrelated PR whose author has to work out that the failure is not theirs.
 
 **An explicit `cargo +toolchain` overrides the file, and two jobs depend on that.** The MSRV job runs
-`cargo +1.87.0 check`, and fuzzing runs `cargo +nightly fuzz run`. Both said a bare `cargo` until the
+`cargo +1.90.0 check`, and fuzzing runs `cargo +nightly fuzz run`. Both said a bare `cargo` until the
 pin landed, and a bare `cargo` now obeys the file from any directory in the repository — which would
-have left the MSRV job installing 1.87.0, checking against stable, and passing. **An MSRV job that
+have left the MSRV job installing 1.90.0, checking against stable, and passing. **An MSRV job that
 has silently stopped checking the MSRV is worse than none**, because the green check still claims the
 floor is covered. Anything added to CI that means a version other than the pin says so outright.
 
@@ -50,8 +50,15 @@ manages that file, which is the point of pinning rather than chasing.
 
 ## Two checks that are easy to skip and expensive to miss
 
-**MSRV.** `cargo +1.87.0 check --all-features`. The local toolchain is newer and will happily accept
-things the floor rejects. Let-chains are the trap — they stabilised in 1.88.
+**MSRV.** `cargo +1.90.0 check --all-features`. The local toolchain is newer and will happily accept
+things the floor rejects — a stabilised API or syntax is the usual trap, and let-chains were it while
+the floor was 1.87.
+
+**A dependency can push the floor up without asking.** MDEDIT-189: a *patch* bump of `encoding_rs`
+wanted 1.88 and `muda` 0.21 wanted 1.90, so the floor moved from 1.87 to 1.90 to take them. The
+number lives in four places — `rust-version` in `Cargo.toml`, `msrv` in `clippy.toml`, the CI job's
+toolchain and its `cargo +<version> check`, and the command list in `AGENTS.md` — and all four move
+together or the job stops meaning anything.
 
 **The Linux target.** `cargo check --target x86_64-unknown-linux-gnu --all-features`. Windows is the
 only platform anything *runs* on, so it is easy to add a dependency or a `cfg` that only compiles

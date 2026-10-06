@@ -156,14 +156,14 @@ impl<'a> Lexer<'a> {
     fn text(&mut self) {
         let mut run = self.at;
         while self.at < self.bytes.len() && self.bytes[self.at] != b'<' {
-            if self.bytes[self.at] == b'&' {
-                if let Some(end) = self.entity(self.at) {
-                    self.push(run, self.at, SegmentKind::Content);
-                    self.push(self.at, end, SegmentKind::Token(Token::Literal));
-                    self.at = end;
-                    run = end;
-                    continue;
-                }
+            if self.bytes[self.at] == b'&'
+                && let Some(end) = self.entity(self.at)
+            {
+                self.push(run, self.at, SegmentKind::Content);
+                self.push(self.at, end, SegmentKind::Token(Token::Literal));
+                self.at = end;
+                run = end;
+                continue;
             }
             self.at += 1;
         }
@@ -391,14 +391,14 @@ impl<'a> Lexer<'a> {
                 self.at += 1;
                 break;
             }
-            if byte == b'&' {
-                if let Some(end) = self.entity(self.at) {
-                    self.push(run, self.at, SegmentKind::Token(Token::String));
-                    self.push(self.at, end, SegmentKind::Token(Token::Literal));
-                    self.at = end;
-                    run = end;
-                    continue;
-                }
+            if byte == b'&'
+                && let Some(end) = self.entity(self.at)
+            {
+                self.push(run, self.at, SegmentKind::Token(Token::String));
+                self.push(self.at, end, SegmentKind::Token(Token::Literal));
+                self.at = end;
+                run = end;
+                continue;
             }
             // A newline ends an unclosed value. XML allows one inside a value and nobody writes one;
             // an opening quote with no closer is a keystroke, and without this the rest of the file
@@ -513,13 +513,14 @@ impl<'a> Lexer<'a> {
         if start >= end {
             return;
         }
-        if let Some(last) = self.segments.last_mut() {
-            if last.kind() == kind && last.span().end().get() == start {
-                *last = last
-                    .clone()
-                    .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
-                return;
-            }
+        if let Some(last) = self.segments.last_mut()
+            && last.kind() == kind
+            && last.span().end().get() == start
+        {
+            *last = last
+                .clone()
+                .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
+            return;
         }
         self.segments.push(Segment::new(
             ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),

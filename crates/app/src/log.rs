@@ -97,11 +97,11 @@ pub fn write(message: &str) {
     eprintln!("{message}");
     let line = format!("{} {message}\n", stamp());
 
-    if let Some(sink) = SINK.get() {
-        if let Ok(mut sink) = sink.lock() {
-            let _ = sink.file.write_all(line.as_bytes());
-            let _ = sink.file.flush();
-        }
+    if let Some(sink) = SINK.get()
+        && let Ok(mut sink) = sink.lock()
+    {
+        let _ = sink.file.write_all(line.as_bytes());
+        let _ = sink.file.flush();
     }
 }
 

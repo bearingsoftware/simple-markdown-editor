@@ -230,10 +230,10 @@ fn wind_down<T: mdedit_text::TextLayout>(
     editor: &mut Editor<T>,
     session_path: Option<&std::path::Path>,
 ) {
-    if let Some(path) = session_path {
-        if !editor.workspace().tabs().is_empty() {
-            editor.save_session_on_exit(path);
-        }
+    if let Some(path) = session_path
+        && !editor.workspace().tabs().is_empty()
+    {
+        editor.save_session_on_exit(path);
     }
 }
 
@@ -479,10 +479,10 @@ fn main() {
         // One extra session write per launch. The file is handles rather than content, so it is
         // cheap, and it has the side benefit that the session on disk always describes the tabs that
         // are actually open.
-        if let Some(path) = session_path.as_deref() {
-            if !editor.workspace().tabs().is_empty() {
-                editor.save_session(path);
-            }
+        if let Some(path) = session_path.as_deref()
+            && !editor.workspace().tabs().is_empty()
+        {
+            editor.save_session(path);
         }
 
         // Opening from Explorer or a terminal is how most people start this editor, and it does not

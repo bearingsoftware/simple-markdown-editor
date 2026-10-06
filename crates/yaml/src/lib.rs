@@ -3,7 +3,8 @@
 //! # The parser decision, and the evidence for it
 //!
 //! MDEDIT-31 required this to be decided with evidence rather than assumed. Four options were
-//! measured on 2026-07-31, against Rust 1.87 — this project's MSRV.
+//! measured on 2026-07-31, against Rust 1.87 — the project's MSRV at the time, raised to 1.90 by
+//! MDEDIT-189.
 //!
 //! **A real YAML parser is disqualified by error tolerance**, the same way `serde_json` was for JSON.
 //! `saphyr-parser` was run over four inputs: valid YAML, a half-typed document, one with inconsistent
@@ -12,10 +13,14 @@
 //! pathological; they are what a file looks like while it is being written, which is most of the time
 //! anybody is looking at it.
 //!
-//! **`syntect` cannot be used at all**: it fails this project's MSRV. `plist` and `time`, both in its
-//! tree, require 1.88. Using it would mean raising `rust-version`, which is its own decision and not
-//! one to take as a side effect of highlighting YAML. Worth revisiting when the floor moves, since
-//! `AGENTS.md` already names syntect for code fences and it would then pay for itself twice.
+//! **`syntect` was disqualified on the MSRV, and that ground has since gone.** `plist` and `time`,
+//! both in its tree, required 1.88 against a floor of 1.87, and raising `rust-version` was not a
+//! decision to take as a side effect of highlighting YAML. **The floor is 1.90 as of MDEDIT-189**,
+//! taken for `muda` and `encoding_rs`, so the objection recorded here no longer holds — and
+//! `AGENTS.md` already names syntect for code fences, where it would pay for itself twice. What it
+//! was *not* measured against is error tolerance on a half-typed file, which is what disqualified
+//! the real parser above and is the question to ask before adopting it. Nothing here has changed its
+//! mind; the blocker has merely stopped being the MSRV.
 //!
 //! **`tree-sitter` passes the MSRV check** — 20 dependencies, a 42-second cold build — and is
 //! rejected on a different ground. It is a C parser, and `AGENTS.md` is explicit that file parsing is
@@ -509,13 +514,14 @@ impl<'a> Lexer<'a> {
         if start >= end {
             return;
         }
-        if let Some(last) = self.segments.last_mut() {
-            if last.kind() == kind && last.span().end().get() == start {
-                *last = last
-                    .clone()
-                    .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
-                return;
-            }
+        if let Some(last) = self.segments.last_mut()
+            && last.kind() == kind
+            && last.span().end().get() == start
+        {
+            *last = last
+                .clone()
+                .moved_to(ByteSpan::new(last.span().start(), ByteOffset::new(end)));
+            return;
         }
         self.segments.push(Segment::new(
             ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),

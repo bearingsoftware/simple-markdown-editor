@@ -287,11 +287,11 @@ impl Settings {
         let Ok(json) = serde_json::to_vec_pretty(&serde_json::Value::Object(merged.clone())) else {
             return false;
         };
-        if let Some(directory) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(directory) {
-                crate::log_error!("could not create {}: {error}", directory.display());
-                return false;
-            }
+        if let Some(directory) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(directory)
+        {
+            crate::log_error!("could not create {}: {error}", directory.display());
+            return false;
         }
 
         // Temp then rename, as the session and snapshot files are: a crash mid-write must leave the
