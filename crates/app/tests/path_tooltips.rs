@@ -486,16 +486,59 @@ fn the_elisions_drop_the_middle_and_keep_both_ends() {
         Some(format!("{head}…{}plan.md", std::path::MAIN_SEPARATOR).as_str()),
         "and the shortest keeps the root and the file name",
     );
-    for (shorter, longer) in said.iter().skip(1).zip(said.iter()) {
+    for candidate in said.iter().skip(1) {
         assert!(
-            shorter.len() < longer.len(),
-            "each candidate is shorter than the last: {longer:?} then {shorter:?}",
-        );
-        assert!(
-            shorter.ends_with("plan.md") && shorter.starts_with(&head),
-            "and keeps both ends: {shorter:?}",
+            candidate.ends_with("plan.md") && candidate.starts_with(&head),
+            "every candidate keeps both ends: {candidate:?}",
         );
     }
+    // Shrinking is asserted from the *second* candidate on, not the first. Every candidate past
+    // that point carries the same single ellipsis and one fewer component, so it is strictly
+    // shorter; the step from the whole path to the first elision is not, because `…` can be longer
+    // than the component it replaces. `a_one_character_folder_makes_an_elision_longer` is that case.
+    for (shorter, longer) in said.iter().skip(2).zip(said.iter().skip(1)) {
+        assert!(
+            shorter.len() < longer.len(),
+            "each elision is shorter than the last: {longer:?} then {shorter:?}",
+        );
+    }
+}
+
+/// **The list is ordered by elisions, not by width**, and this is the case that tells them apart.
+///
+/// Dropping a one-character folder replaces it with an ellipsis, which is three bytes and — in a
+/// proportional font — several ems. So the "shorter" candidate is longer. It costs nothing, because
+/// `tooltip_line` measures every candidate and returns the first that *fits* rather than trusting
+/// the order; this test exists so that a later reader who adds such an assumption finds it red
+/// instead of finding a panel drawn off the window.
+#[test]
+fn a_one_character_folder_makes_an_elision_longer() {
+    let path = rooted(&["a", "Documents and Settings", "plan.md"]);
+    let said = tooltip::elisions(&path);
+
+    assert_eq!(said[0], path.display().to_string());
+    assert!(
+        said[1].len() > said[0].len(),
+        "the first elision is longer than the whole path: {:?} then {:?}",
+        said[0],
+        said[1],
+    );
+}
+
+/// **The whole path is reported exactly as stored, not normalised** — the same string
+/// `Editor::tooltip_text` answers with, so the panel and the accessor cannot disagree about the
+/// hover they are both describing.
+///
+/// `Path::components` drops `.` and doubled separators and re-joins with the platform's own
+/// separator, so rebuilding the longest candidate from it would quietly rewrite the path.
+/// `session::path::validate` has nothing to say about separators — it checks the device prefix,
+/// absoluteness, `..` and is-a-file — and the session file is untrusted input, so a tab really can
+/// hold a path spelled this way.
+#[test]
+#[cfg(windows)]
+fn the_whole_path_is_not_quietly_normalised() {
+    let path = PathBuf::from("C:/Users/craig//./plan.md");
+    assert_eq!(tooltip::elisions(&path)[0], path.display().to_string());
 }
 
 /// **A path with nothing in the middle gets no ellipsis.** One candidate, because there is nothing

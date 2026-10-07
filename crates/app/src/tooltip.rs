@@ -61,7 +61,8 @@ pub fn place(width: f32, centre: f32, below: f32, right_edge: f32) -> (f32, f32)
     (x, below + GAP)
 }
 
-/// Ways to write `path`, longest first, for a panel that has to fit in a window (MDEDIT-173).
+/// Ways to write `path`, fewest elisions first, for a panel that has to fit in a window
+/// (MDEDIT-173).
 ///
 /// # Why the middle goes and not the end
 ///
@@ -82,6 +83,16 @@ pub fn place(width: f32, centre: f32, below: f32, right_edge: f32) -> (f32, f32)
 /// The caller measures each in turn and draws the first that fits, which is why this returns the
 /// candidates rather than a width: measuring needs a text engine, and this module deliberately has
 /// none.
+///
+/// # "Fewest elisions", not "widest"
+///
+/// Each candidate holds one fewer component than the last, but that is not the same as being
+/// narrower, because `…` can be wider than what it replaces: `C:\a\Documents and Settings\plan.md`
+/// *grows* when `a` goes. The inversion is confined to the first step — every candidate after it
+/// carries the same single ellipsis, so from there the order is strictly decreasing — and it costs
+/// nothing but a wasted measurement, because the caller measures every candidate and returns on the
+/// first that fits rather than reasoning about the order. **Do not add a width-ordering assumption
+/// to that loop on the strength of this list.**
 ///
 /// The last candidate still has a head, an ellipsis and a file name, so it can itself be too wide in
 /// a very narrow window. That is left to `place`, whose rule is that a panel wider than the window
@@ -111,8 +122,16 @@ pub fn elisions(path: &Path) -> Vec<String> {
         .collect();
 
     let joined = |parts: &[String]| parts.join(std::path::MAIN_SEPARATOR_STR);
-    let full = format!("{head}{}", joined(&rest));
-    let mut candidates = vec![full];
+    // The whole path is taken as the caller already reports it — `Path::display` — and *not*
+    // rebuilt from the components above, which would quietly normalise it. `Components` drops `.`
+    // and doubled separators and re-joins with the platform's own separator, so a path written
+    // `C:/Users/craig//./plan.md` would come back `C:\Users\craig\plan.md`: a different string from
+    // the one `Editor::tooltip_text` answers with, for the same hover. `session::path::validate`
+    // accepts that spelling — it checks the device prefix, absoluteness, `..` and is-a-file, and
+    // nothing about separators — and the session file is untrusted input, so it is reachable rather
+    // than theoretical. The elided candidates are normalised and cannot help being: an ellipsis is
+    // spliced between components, so there is nothing else to splice it into.
+    let mut candidates = vec![path.display().to_string()];
 
     // One candidate per interior component dropped, the last keeping only the file name. A path with
     // nothing interior — `C:\plan.md` — produces no elisions at all, which is the point: there is

@@ -930,8 +930,6 @@ pub struct Editor<T: TextLayout> {
     tooltip: Option<Hovered>,
     /// Each tooltip's line, laid out once. The eighth cache of this kind — see `set_zoom`.
     tooltip_labels: HashMap<String, Label>,
-    /// Which tabs the last frame could not draw the whole name of, and which pane rows.
-    ///
     /// When the pointer will have rested long enough, if it is resting.
     ///
     /// One of the two deadlines the loop's single next-wake-up has to serve. See
@@ -4481,14 +4479,6 @@ impl<T: TextLayout> Editor<T> {
         self.draw_label_glyphs(quads, &glyphs, where_);
     }
 
-    /// Draws the panel that says what the hovered button does.
-    ///
-    /// Its line is laid out **once** and kept, like every other piece of chrome text here — the
-    /// eighth cache of that kind, and `set_zoom` clears it with the rest.
-    ///
-    /// **Never hit-tested.** There is no `click_tooltip`, deliberately: the panel hangs over the
-    /// document, and a click landing on it has to reach the text underneath. "It is only a tooltip"
-    /// is exactly how a control ends up unpressable.
     /// What the panel will actually say, laid out and in the label cache when this returns.
     ///
     /// A button's tooltip is a few words and is drawn as it is. **A path can be wider than the
@@ -4504,6 +4494,12 @@ impl<T: TextLayout> Editor<T> {
     /// Measuring costs a layout per candidate, once, on a hover that has already waited out the
     /// 400 ms dwell — and the cache is keyed by the string, so the frames after this one measure
     /// nothing.
+    ///
+    /// **The candidates that did not fit stay in the cache on purpose.** `draw_tooltip` calls this
+    /// on *every* frame a panel is showing, so evicting them would re-lay-out each loser once a
+    /// frame for as long as the pointer rests — recurring frame time, against a p99 the performance
+    /// targets treat as a commitment, to save memory that is already bounded: at most one label per
+    /// interior component per tab hovered since the last `set_zoom`.
     fn tooltip_line(&mut self, over: Hovered, full: String, available: f32) -> String {
         // The candidates are worked out first, so the measuring below borrows `self` alone: a button
         // has one candidate and a path has one per interior component.
@@ -4536,6 +4532,15 @@ impl<T: TextLayout> Editor<T> {
         full
     }
 
+    /// Draws the panel that says what the hovered button does, or where the hovered file is.
+    ///
+    /// Its line is laid out **once** and kept, like every other piece of chrome text here — the
+    /// eighth cache of that kind, and `set_zoom` clears it with the rest. Which line that is comes
+    /// from [`tooltip_line`](Self::tooltip_line), because a path may not fit the window.
+    ///
+    /// **Never hit-tested.** There is no `click_tooltip`, deliberately: the panel hangs over the
+    /// document, and a click landing on it has to reach the text underneath. "It is only a tooltip"
+    /// is exactly how a control ends up unpressable.
     fn draw_tooltip(&mut self, quads: &mut Vec<QuadInstance>, width: f32, scale: f32) {
         let Some(over) = self.tooltip else {
             return;
@@ -6585,10 +6590,10 @@ impl<T: TextLayout> Editor<T> {
 
     /// What is under `(x, y)` that has something to say, if anything.
     ///
-    /// **A tab or a row only counts when its name did not fit.** That is MDEDIT-121's one rule, and
-    /// it is the reason this is not simply the hit test the click path uses: whether to offer a
-    /// panel depends on a measurement the last frame made, not on what is under the pointer. A
-    /// tooltip repeating a name that is already fully on screen is noise.
+    /// **A tab or a row counts when it has a file behind it** — see [`has_path`](Self::has_path),
+    /// which is where the reasoning for that lives and what it replaced (MDEDIT-173). This is still
+    /// not simply the hit test the click path uses, because two things under the pointer are
+    /// deliberately silent: the overflow button, and a tab with nothing saved.
     fn hoverable(&self, x: f32, y: f32) -> Option<Hovered> {
         if !self.toolbar_buttons.is_empty() && (0.0..toolbar::HEIGHT).contains(&y) {
             return toolbar::hit_test(&self.toolbar_buttons, x, y).map(Hovered::Button);
@@ -6681,23 +6686,22 @@ impl<T: TextLayout> Editor<T> {
 
     /// The line the showing tooltip reads, if one is showing.
     ///
-    /// A button's is its own description; a tab's or a row's is the file name the strip or the pane
-    /// could not draw in full.
+    /// A button's is its own description; **a tab's or a row's is its file's path, not its name**
+    /// (MDEDIT-173), so two open files called `README.md` in different folders are told apart
+    /// without opening either.
+    ///
+    /// The *whole* path, whatever the window's width. What is drawn may be shorter — a deep path has
+    /// its middle elided to fit, see [`tooltip::elisions`] — and that is the drawing's business
+    /// rather than this answer's.
+    ///
+    /// **Reported as stored, with nothing asked of the filesystem.** A tab restored from a session
+    /// whose file has since moved or been deleted still shows the path it was opened from, which is
+    /// the useful fact when the file is missing; and a hover is the last place that should be
+    /// touching the disk.
     #[must_use]
     pub fn tooltip_text(&self) -> Option<String> {
         match self.tooltip? {
             Hovered::Button(action) => Some(action.tooltip()),
-            // **The path, not the name** (MDEDIT-173): two open files called `README.md` in
-            // different folders are told apart without opening either.
-            //
-            // The *whole* path, whatever the window's width. What is drawn may be shorter — a deep
-            // path has its middle elided to fit, see `tooltip::elisions` — and that is the drawing's
-            // business rather than this answer's.
-            //
-            // **Reported as stored, with nothing asked of the filesystem.** A tab restored from a
-            // session whose file has since moved or been deleted still shows the path it was opened
-            // from, which is the useful fact when the file is missing; and a hover is the last place
-            // that should be touching the disk.
             Hovered::Tab(index) | Hovered::Row(index) => self
                 .workspace
                 .tabs()
