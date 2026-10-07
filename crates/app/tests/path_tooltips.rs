@@ -455,6 +455,20 @@ fn a_tabs_panel_is_placed_under_its_tab() {
 
 // ---- a path too wide for the window ----
 
+/// An absolute path the running platform's own `Path` parses as one: a drive on Windows, `/`
+/// elsewhere.
+///
+/// **The elision is platform-agnostic and is tested on both**, which is why this exists rather than
+/// a `#[cfg(windows)]`. A hardcoded `C:\…` is not absolute on Linux — `C:` is read as an ordinary
+/// directory with no prefix component — so the head these tests talk about would be empty and
+/// `C:/plan.md` would gain an ellipsis it should not have. That is how the first version of these
+/// two failed on the Linux runner, and it also took the mutants job down with a red baseline.
+fn rooted(parts: &[&str]) -> PathBuf {
+    let mut path = PathBuf::from(if cfg!(windows) { "C:\\" } else { "/" });
+    path.extend(parts);
+    path
+}
+
 /// The candidates, in order, with nothing measured: the whole path first, then one interior
 /// component dropped at a time, keeping the head and the tail.
 ///
@@ -462,17 +476,15 @@ fn a_tabs_panel_is_placed_under_its_tab() {
 /// which folder and which file — so it is the middle that goes.
 #[test]
 fn the_elisions_drop_the_middle_and_keep_both_ends() {
-    let separator = std::path::MAIN_SEPARATOR;
-    let path = PathBuf::from(format!(
-        "C:{separator}Users{separator}craig{separator}work{separator}notes{separator}plan.md"
-    ));
+    let path = rooted(&["Users", "craig", "work", "notes", "plan.md"]);
+    let head = rooted(&[]).display().to_string();
     let said = tooltip::elisions(&path);
 
     assert_eq!(said[0], path.display().to_string(), "the whole path first");
     assert_eq!(
         said.last().map(String::as_str),
-        Some(format!("C:{separator}…{separator}plan.md").as_str()),
-        "and the shortest keeps the drive and the file name",
+        Some(format!("{head}…{}plan.md", std::path::MAIN_SEPARATOR).as_str()),
+        "and the shortest keeps the root and the file name",
     );
     for (shorter, longer) in said.iter().skip(1).zip(said.iter()) {
         assert!(
@@ -480,7 +492,7 @@ fn the_elisions_drop_the_middle_and_keep_both_ends() {
             "each candidate is shorter than the last: {longer:?} then {shorter:?}",
         );
         assert!(
-            shorter.ends_with("plan.md") && shorter.starts_with("C:"),
+            shorter.ends_with("plan.md") && shorter.starts_with(&head),
             "and keeps both ends: {shorter:?}",
         );
     }
@@ -490,7 +502,7 @@ fn the_elisions_drop_the_middle_and_keep_both_ends() {
 /// to lose — and an ellipsis would claim there was something there.
 #[test]
 fn a_path_at_the_root_has_nothing_to_elide() {
-    let path = PathBuf::from(format!("C:{}plan.md", std::path::MAIN_SEPARATOR));
+    let path = rooted(&["plan.md"]);
     assert_eq!(tooltip::elisions(&path), vec![path.display().to_string()]);
 }
 
