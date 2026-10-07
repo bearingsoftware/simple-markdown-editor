@@ -930,15 +930,6 @@ pub struct Editor<T: TextLayout> {
     tooltip: Option<Hovered>,
     /// Each tooltip's line, laid out once. The eighth cache of this kind — see `set_zoom`.
     tooltip_labels: HashMap<String, Label>,
-    /// Which tabs the last frame could not draw the whole name of, and which pane rows.
-    ///
-    /// **A measurement, not a property of the name.** Whether a name fits depends on the width the
-    /// strip gave that tab, which depends on how many tabs there are — so this is recorded as the
-    /// frame draws rather than computed when asked. MDEDIT-121's one rule is that a row which is
-    /// *not* truncated says nothing, and this is what answers that.
-    truncated_tabs: Vec<usize>,
-    /// The pane's half of [`truncated_tabs`](Self::truncated_tabs).
-    truncated_rows: Vec<usize>,
     /// When the pointer will have rested long enough, if it is resting.
     ///
     /// One of the two deadlines the loop's single next-wake-up has to serve. See
@@ -1262,8 +1253,6 @@ impl<T: TextLayout> Editor<T> {
             window_height: 0.0,
             hovered: None,
             tooltip: None,
-            truncated_tabs: Vec::new(),
-            truncated_rows: Vec::new(),
             tooltip_labels: HashMap::new(),
             dwell_at: None,
             reconcile_at: None,
@@ -4490,10 +4479,64 @@ impl<T: TextLayout> Editor<T> {
         self.draw_label_glyphs(quads, &glyphs, where_);
     }
 
-    /// Draws the panel that says what the hovered button does.
+    /// What the panel will actually say, laid out and in the label cache when this returns.
+    ///
+    /// A button's tooltip is a few words and is drawn as it is. **A path can be wider than the
+    /// window**, and `tooltip::place` clamps a panel to the edge without shortening it, so a deep
+    /// path would be drawn off the screen (MDEDIT-173). The candidates come from
+    /// [`tooltip::elisions`] longest first, and this takes the first that fits — measuring each,
+    /// because only the text engine knows how wide a string is.
+    ///
+    /// **It stops at the last candidate rather than failing**: in a window too narrow even for
+    /// `C:\…\plan.md` the shortest is drawn and `place` keeps its left edge, which is the rule that
+    /// module already follows for a panel wider than its window.
+    ///
+    /// Measuring costs a layout per candidate, once, on a hover that has already waited out the
+    /// 400 ms dwell — and the cache is keyed by the string, so the frames after this one measure
+    /// nothing.
+    ///
+    /// **The candidates that did not fit stay in the cache on purpose.** `draw_tooltip` calls this
+    /// on *every* frame a panel is showing, so evicting them would re-lay-out each loser once a
+    /// frame for as long as the pointer rests — recurring frame time, against a p99 the performance
+    /// targets treat as a commitment, to save memory that is already bounded: at most one label per
+    /// interior component per tab hovered since the last `set_zoom`.
+    fn tooltip_line(&mut self, over: Hovered, full: String, available: f32) -> String {
+        // The candidates are worked out first, so the measuring below borrows `self` alone: a button
+        // has one candidate and a path has one per interior component.
+        let candidates = match over {
+            Hovered::Tab(index) | Hovered::Row(index) => self
+                .workspace
+                .tabs()
+                .get(index)
+                .and_then(mdedit_session::Tab::path)
+                .map_or_else(|| vec![full.clone()], tooltip::elisions),
+            Hovered::Button(_) => vec![full.clone()],
+        };
+
+        let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
+        let last = candidates.len().saturating_sub(1);
+        for (at, candidate) in candidates.into_iter().enumerate() {
+            if !self.tooltip_labels.contains_key(&candidate)
+                && let Some(label) = self.lay_out_label(&candidate, style)
+            {
+                self.tooltip_labels.insert(candidate.clone(), label);
+            }
+            let fits = self
+                .tooltip_labels
+                .get(&candidate)
+                .is_some_and(|label| tooltip::width_of(label.width) <= available);
+            if fits || at == last {
+                return candidate;
+            }
+        }
+        full
+    }
+
+    /// Draws the panel that says what the hovered button does, or where the hovered file is.
     ///
     /// Its line is laid out **once** and kept, like every other piece of chrome text here — the
-    /// eighth cache of that kind, and `set_zoom` clears it with the rest.
+    /// eighth cache of that kind, and `set_zoom` clears it with the rest. Which line that is comes
+    /// from [`tooltip_line`](Self::tooltip_line), because a path may not fit the window.
     ///
     /// **Never hit-tested.** There is no `click_tooltip`, deliberately: the panel hangs over the
     /// document, and a click landing on it has to reach the text underneath. "It is only a tooltip"
@@ -4512,12 +4555,7 @@ impl<T: TextLayout> Editor<T> {
         let Some(line) = self.tooltip_text() else {
             return;
         };
-        if !self.tooltip_labels.contains_key(&line) {
-            let style = TextStyle::body(self.theme.body_size * TOOLBAR_TEXT);
-            if let Some(label) = self.lay_out_label(&line, style) {
-                self.tooltip_labels.insert(line.clone(), label);
-            }
-        }
+        let line = self.tooltip_line(over, line, width / scale);
         let Some(label) = self.tooltip_labels.get(&line) else {
             return;
         };
@@ -5540,7 +5578,6 @@ impl<T: TextLayout> Editor<T> {
                 })
             },
         );
-        self.truncated_tabs.clear();
         // A list of hidden tabs that no longer matches what is hidden — the window was widened, a
         // tab closed, another became active — is offering the wrong files. The toolbar's overflow
         // closes for the same reason, and closing is the only honest answer here too.
@@ -5688,7 +5725,7 @@ impl<T: TextLayout> Editor<T> {
         );
 
         if let Some(name) = name {
-            let clipped = self.draw_label(
+            self.draw_label(
                 quads,
                 name,
                 label_style,
@@ -5698,9 +5735,6 @@ impl<T: TextLayout> Editor<T> {
                 scale,
                 rect.label_width(),
             );
-            if clipped {
-                self.truncated_tabs.push(rect.index);
-            }
         }
     }
 
@@ -5709,10 +5743,11 @@ impl<T: TextLayout> Editor<T> {
     /// `baseline` is in window pixels, so the same call serves the strip at the top and the status
     /// bar at the bottom.
     ///
-    /// **Returns whether anything was clipped off**, which is what MDEDIT-121's tooltip needs and is
-    /// only knowable here: whether a name fits depends on the width the strip gave that tab, and the
-    /// glyphs have already been laid out at this point. Most callers have nothing to do with the
-    /// answer and drop it.
+    /// It used to **return whether anything was clipped off**, because MDEDIT-121's rule was that
+    /// only a truncated tab or row got a tooltip, and whether a name fitted is knowable only here —
+    /// it depends on the width the strip gave that tab, and the glyphs are laid out by this point.
+    /// MDEDIT-173 retired that rule: every tab with a file behind it shows its path, so nothing
+    /// asked any more and the answer went with the two lists that carried it.
     #[allow(clippy::too_many_arguments, reason = "a draw call needs its geometry")]
     fn draw_label(
         &mut self,
@@ -5724,19 +5759,17 @@ impl<T: TextLayout> Editor<T> {
         colour: Rgba,
         scale: f32,
         max_width: f32,
-    ) -> bool {
+    ) {
         let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
         let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
-            return false;
+            return;
         };
 
-        let mut clipped = false;
         let glyphs: Vec<_> = layout.glyphs().copied().collect();
         for glyph in glyphs {
             if glyph.pos.x > max_width {
                 // Truncated rather than ellipsised: an ellipsis needs its own measurement pass and
                 // buys little at this size.
-                clipped = true;
                 break;
             }
             let Some(entry) = self.entry_for(glyph.key, scale) else {
@@ -5753,7 +5786,6 @@ impl<T: TextLayout> Editor<T> {
                 colour: [colour.r, colour.g, colour.b, colour.a],
             });
         }
-        clipped
     }
 
     /// Draws the file pane down the left, and remembers where its rows landed.
@@ -5763,7 +5795,6 @@ impl<T: TextLayout> Editor<T> {
     /// the seam.
     fn draw_pane(&mut self, quads: &mut Vec<QuadInstance>, height: f32, scale: f32) {
         self.row_rects.clear();
-        self.truncated_rows.clear();
         if self.chrome != Chrome::Pane || self.workspace.tabs().is_empty() {
             return;
         }
@@ -5853,7 +5884,7 @@ impl<T: TextLayout> Editor<T> {
                 pane::ICON_WIDTH,
             );
 
-            let clipped = self.draw_row_label(
+            self.draw_row_label(
                 quads,
                 &name,
                 style,
@@ -5867,9 +5898,6 @@ impl<T: TextLayout> Editor<T> {
                 scale,
                 rect.label_width(),
             );
-            if clipped {
-                self.truncated_rows.push(rect.index);
-            }
         }
     }
 
@@ -5986,13 +6014,13 @@ impl<T: TextLayout> Editor<T> {
         colour: Rgba,
         scale: f32,
         max_width: f32,
-    ) -> bool {
+    ) {
         let label = if let Some(label) = self.row_labels.remove(text) {
             label
         } else {
             let run = StyledRun::from_buffer(text, style, ByteSpan::empty_at(ByteOffset::ZERO));
             let Ok(layout) = self.text.layout(&[run], f32::MAX) else {
-                return false;
+                return;
             };
             let glyphs: Vec<_> = layout.glyphs().copied().collect();
             let width = glyphs
@@ -6006,14 +6034,12 @@ impl<T: TextLayout> Editor<T> {
             }
         };
 
-        let mut clipped = false;
         for glyph in &label.glyphs {
             if glyph.pos.x > max_width {
                 // Truncated rather than ellipsised, as the strip's labels are: file names are longer
-                // than a row is wide, and an ellipsis needs its own measurement pass. **Whether it
-                // happened is the answer MDEDIT-121's tooltip wants**, and this is the only place
-                // that knows it.
-                clipped = true;
+                // than a row is wide, and an ellipsis needs its own measurement pass. Whether it
+                // happened was the answer MDEDIT-121's tooltip wanted; MDEDIT-173 retired that rule,
+                // so nothing asks and nothing is returned.
                 break;
             }
             let Some(entry) = self.entry_for(glyph.key, scale) else {
@@ -6032,7 +6058,6 @@ impl<T: TextLayout> Editor<T> {
         }
 
         self.row_labels.insert(label.text.clone(), label);
-        clipped
     }
 
     /// Scrolls the file pane's list. Returns whether it moved.
@@ -6565,10 +6590,10 @@ impl<T: TextLayout> Editor<T> {
 
     /// What is under `(x, y)` that has something to say, if anything.
     ///
-    /// **A tab or a row only counts when its name did not fit.** That is MDEDIT-121's one rule, and
-    /// it is the reason this is not simply the hit test the click path uses: whether to offer a
-    /// panel depends on a measurement the last frame made, not on what is under the pointer. A
-    /// tooltip repeating a name that is already fully on screen is noise.
+    /// **A tab or a row counts when it has a file behind it** — see [`has_path`](Self::has_path),
+    /// which is where the reasoning for that lives and what it replaced (MDEDIT-173). This is still
+    /// not simply the hit test the click path uses, because two things under the pointer are
+    /// deliberately silent: the overflow button, and a tab with nothing saved.
     fn hoverable(&self, x: f32, y: f32) -> Option<Hovered> {
         if !self.toolbar_buttons.is_empty() && (0.0..toolbar::HEIGHT).contains(&y) {
             return toolbar::hit_test(&self.toolbar_buttons, x, y).map(Hovered::Button);
@@ -6579,18 +6604,31 @@ impl<T: TextLayout> Editor<T> {
             let (tabs::Hit::Select(index) | tabs::Hit::Close(index)) = hit else {
                 return None;
             };
-            return self
-                .truncated_tabs
-                .contains(&index)
-                .then_some(Hovered::Tab(index));
+            return self.has_path(index).then_some(Hovered::Tab(index));
         }
         if let Some(pane::Hit::Select(index) | pane::Hit::Close(index)) = self.pane_hit(x, y) {
-            return self
-                .truncated_rows
-                .contains(&index)
-                .then_some(Hovered::Row(index));
+            return self.has_path(index).then_some(Hovered::Row(index));
         }
         None
+    }
+
+    /// Whether tab `index` has a file behind it, which is what it takes to have a path to show.
+    ///
+    /// **This replaced MDEDIT-121's rule, and the replacement is the ticket** (MDEDIT-173). A tab or
+    /// row used to be hoverable only when its name had not fitted, on the ground that a tooltip
+    /// repeating what is already on screen is noise. A *path* is not a repeat — it adds where the
+    /// file is, and it subsumes the truncated-name case because a path ends in the name. So the
+    /// measurement of what fitted stopped being consulted here, and the two lists that carried it
+    /// from the last frame went with it.
+    ///
+    /// An untitled buffer has no path and gets nothing. The alternative was a panel saying it has not
+    /// been saved, which tells the reader what the tab already says — `Untitled 1` — and is the kind
+    /// of noise the rule above was written against.
+    fn has_path(&self, index: usize) -> bool {
+        self.workspace
+            .tabs()
+            .get(index)
+            .is_some_and(|tab| tab.path().is_some())
     }
 
     /// Which row of the open list the pointer is over, if any.
@@ -6648,8 +6686,18 @@ impl<T: TextLayout> Editor<T> {
 
     /// The line the showing tooltip reads, if one is showing.
     ///
-    /// A button's is its own description; a tab's or a row's is the file name the strip or the pane
-    /// could not draw in full.
+    /// A button's is its own description; **a tab's or a row's is its file's path, not its name**
+    /// (MDEDIT-173), so two open files called `README.md` in different folders are told apart
+    /// without opening either.
+    ///
+    /// The *whole* path, whatever the window's width. What is drawn may be shorter — a deep path has
+    /// its middle elided to fit, see [`tooltip::elisions`] — and that is the drawing's business
+    /// rather than this answer's.
+    ///
+    /// **Reported as stored, with nothing asked of the filesystem.** A tab restored from a session
+    /// whose file has since moved or been deleted still shows the path it was opened from, which is
+    /// the useful fact when the file is missing; and a hover is the last place that should be
+    /// touching the disk.
     #[must_use]
     pub fn tooltip_text(&self) -> Option<String> {
         match self.tooltip? {
@@ -6658,7 +6706,8 @@ impl<T: TextLayout> Editor<T> {
                 .workspace
                 .tabs()
                 .get(index)
-                .map(mdedit_session::Tab::display_name),
+                .and_then(mdedit_session::Tab::path)
+                .map(|path| path.display().to_string()),
         }
     }
 

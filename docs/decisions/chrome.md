@@ -485,22 +485,57 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   *not modified*, carrying its own text as its record of disk, because a reference document asking to
   be saved on the way out is a nuisance rather than a safeguard. It is never written to the session —
   it can be regenerated, and a stale copy of a reference is worse than none.
-- **A pane row truncates its name; it does not ellipsise it. It does now say the whole of it on
+- **A pane row truncates its name; it does not ellipsise it. It says its file's full path on
   hover.** MDEDIT-28's plan asked for eliding with the full name on hover, and got half: truncation
   is what the tab strip already does and what this matches, an ellipsis needs its own measurement
   pass, and a tooltip needed a hover affordance that did not exist. MDEDIT-85 built that affordance
   and **MDEDIT-121 is the other half**, for tabs as well as rows.
 
-  **The rule that makes it different from the bar's tooltips**: a name that *fits* says nothing. Item
-  1 of MDEDIT-85 was "explain a control", which is true of a button whatever its width; this is "show
-  what did not fit", so whether to offer a panel depends on a measurement rather than on what is
-  under the pointer. A panel repeating a name already fully on screen is noise.
+  **MDEDIT-121's rule was that a name which *fits* says nothing** — a panel repeating a name already
+  fully on screen is noise — so whether to offer one depended on a measurement rather than on what
+  was under the pointer, and the measurement was recorded as the frame drew: `draw_label` returned
+  whether it had clipped and the two loops kept a list of which tabs and rows were truncated.
 
-  **That measurement is recorded as the frame draws, not computed when asked.** Whether a name fits
-  depends on the width the strip gave that tab and on the glyphs the engine produced for it, neither
-  of which exists before a frame — so `draw_label` returns whether it clipped, and the two loops keep
-  a list. An editor that has not drawn a frame knows of no truncated tab, which is what
-  `nothing_is_truncated_until_a_frame_has_drawn` pins.
+  **MDEDIT-173 retired all of that**, and it is worth reading the two together, because the second
+  ticket is the first one's rule being reversed on its own terms. A tab now shows its file's **full
+  path**, and a path is not a repeat of the name: it adds where the file is, which no width of tab
+  can show. It also subsumes the truncated case, since a path ends in the name. So the measurement
+  stopped being consulted, the two lists went, and `draw_label` and `draw_row_label` stopped
+  returning a bool nobody read.
+
+  What replaced it is having a file at all: an untitled buffer has no path and gets no panel. A panel
+  saying it has not been saved would tell the reader what the tab already says — `Untitled 1` — which
+  is the same noise MDEDIT-121's rule was written against, reappearing as its opposite.
+
+  **A path can be wider than the window, and `tooltip::place` cannot shorten one.** Deep paths are
+  ordinary on Windows, so `tooltip::elisions` offers the path with one interior component dropped at
+  a time — `C:\Users\craig\work\notes\plan.md`, then `C:\…\work\notes\plan.md`, down to
+  `C:\…\plan.md` — and the renderer measures each and draws the first that fits. **Both ends are the
+  informative parts**: the drive says which volume, the last components say which folder and which
+  file, and the long run of middle directories is what nobody reads. A path with nothing interior
+  gets no ellipsis, because there is nothing in the middle to lose.
+
+  Two things about that are only true because a hand-mutation said so. Making the renderer always
+  take the *shortest* candidate passed every test in the file, because they asserted the panel fitted
+  and that `tooltip_text` was the whole path, and nothing asserted it showed what it had room for —
+  `a_path_that_fits_is_drawn_whole` and `a_deep_path_keeps_as_much_as_fits` are that gap. And the
+  width they measure is the panel's **ground, found by its colour**: the hairline edge is drawn a
+  pixel proud on each side, so the widest quad the hover adds is the border and is two pixels out.
+
+  **The verbatim prefix needs no handling, and that is upstream's doing.** A canonicalised Windows
+  path can carry `\\?\`, which should never be shown to a person — but no such path reaches a tab:
+  `mdedit_session::path::validate` rejects a path beginning with two separators, and
+  `from_command_line` uses `std::path::absolute` rather than `std::fs::canonicalize` on Windows
+  *precisely* so the prefix is never created. Stripping one here would be unreachable code implying
+  that invariant does not exist.
+
+  **Nothing is asked of the filesystem.** A tab whose file has been moved or deleted still shows the
+  path it was opened from, which is the useful fact when the file is missing — and a hover is the
+  last place that should be making a syscall.
+
+  One test outlived its reason rather than its usefulness: `nothing_is_truncated_until_a_frame_has_drawn`
+  is now `nothing_is_hoverable_until_a_frame_has_drawn`. Truncation is no longer the frame's secret,
+  but where a tab *is* still is, so the panel still cannot appear before one has drawn.
 
   `Hovered` replaced the bare `Action` the hover state used to be: a button, a tab or a row. A tab's
   panel hangs below the strip and a row's below **that row** — a pane is as tall as the window, so a
