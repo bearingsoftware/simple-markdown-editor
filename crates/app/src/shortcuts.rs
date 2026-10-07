@@ -90,6 +90,11 @@ pub const ALL: &[Group] = &[
                 "Ctrl+1 … Ctrl+6",
                 "Heading level — press the same level again to clear it",
             ),
+            key(
+                "Ctrl+Enter",
+                "Tick or untick the task on the caret's line. Across a selection, ticks them all \
+                 unless they all are",
+            ),
         ],
     },
     Group {

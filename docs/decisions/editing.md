@@ -29,3 +29,28 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
+- **Ctrl+Enter ticks the task on the caret's line.** MDEDIT-175. MDEDIT-142 made a box pressable,
+  and in preview that left the mouse as the only way to tick one: the caret steps over the bullet
+  and the box as one concealed run, so it cannot stand in `[ ]` to type the `x`. Obsidian's binding
+  for the same thing. `Document::toggle_selected_tasks` writes the byte between the brackets, as a
+  press on the box does, and puts the selection back, so the caret never moves.
+
+  **A selection applies uniformly, as `set_block` does**: any unticked box means tick them all, and
+  only when every one is ticked does a press untick them. Toggling each turns "three done, one not"
+  into the reverse, and leaves no press that reliably finishes a list. A box already in the state
+  asked for is not written, so `[X]` keeps its capital. One press is one undo step, however many
+  boxes.
+
+  **A line with no box is left alone.** Obsidian makes it a task; this does not, so the chord only
+  ever changes a box's state and never what a line is. The Task button already makes a task. The
+  boxes are the parse's, so `[ ]` in a code block is not ticked, and plain markup works the same,
+  because concealment is how a box is drawn, not whether there is one.
+
+  **No menu item.** Bold, italic and the heading levels have none either. The Formatting group of
+  the shortcuts reference is where this is written down, and `tests/shortcuts.rs` holds the two
+  together. **Ctrl+Shift+Enter is left unbound** on purpose: it is "insert a line above" in VS Code
+  and Word, and a chord nobody has claimed is cheaper to keep free than to take back.
+
+  `handle_chord` hands Enter on to `apply_chord` as `"\n"`, as it hands Tab on as `"\t"`, so a test
+  can press it. That one mapping stays a manual check, because a test cannot construct the winit
+  `KeyEvent` it reads.

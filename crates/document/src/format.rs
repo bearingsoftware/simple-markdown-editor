@@ -42,7 +42,7 @@
 //! in that direction is that one press takes off exactly one construct, which is property-tested
 //! against the parse (MDEDIT-98).
 
-use mdedit_language::{BlockKind, Marker, SegmentKind};
+use mdedit_language::{BlockKind, Marker, Segment, SegmentKind};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 
 use crate::{Document, Selection};
@@ -669,6 +669,81 @@ impl Document {
         self.rewrite_lines(&lines, &rewritten)
     }
 
+    /// Ticks the task on every line the caret or selection touches, or unticks them if they are all
+    /// ticked (MDEDIT-175). Returns whether there was a task to change.
+    ///
+    /// The keyboard's way to do what pressing a box does. In preview the caret cannot stand in
+    /// `[ ]` — the bullet and the box are one concealed run it steps over — so without this a task
+    /// can only be ticked with the mouse, or by switching to plain markup and typing the `x`.
+    ///
+    /// # Mixed selections apply uniformly
+    ///
+    /// The rule [`set_block`](Self::set_block) follows, for the same reason: if **any** selected box
+    /// is unticked, every one is ticked; only when all of them already are does a press untick them.
+    /// Toggling each would turn "three done, one not" into "one done, three not", which is a
+    /// shuffle nobody asked for, and it would leave no press that reliably finishes a list.
+    ///
+    /// # One byte per box, and only the boxes that change
+    ///
+    /// The byte between the brackets, exactly as [`toggle_task`](Self::toggle_task) writes it, so
+    /// nothing else about a line is rewritten. A box already in the state asked for is not written
+    /// at all — ticking `[X]` along with `[ ]` leaves its capital alone rather than re-spelling it.
+    /// All of it in one transaction, so one press is one Ctrl+Z, and the selection is put back
+    /// because none of this is a click in the text.
+    ///
+    /// # A line with no box is left alone
+    ///
+    /// Obsidian makes such a line a task. This does not, so the chord only ever changes a box's state
+    /// and never what a line *is* — making a task is the toolbar's Task button, which already exists.
+    /// A selection over prose and tasks ticks the tasks; one over prose alone does nothing.
+    ///
+    /// The boxes are the parse's, not a pattern over the text, so `[ ]` in a code block or after
+    /// prose is not a task and is not touched. That is also why it works in plain markup: concealment
+    /// is how a box is drawn, not whether there is one.
+    pub fn toggle_selected_tasks(&mut self) -> bool {
+        let boxes: Vec<ByteSpan> = self
+            .selected_lines()
+            .into_iter()
+            .filter_map(|line| self.task_box_in(line))
+            .map(state_of)
+            .collect();
+        if boxes.is_empty() {
+            return false;
+        }
+
+        let ticked = |doc: &Self, state: ByteSpan| doc.text.byte(state.start().get()) != b' ';
+        let ticking = boxes.iter().any(|&state| !ticked(self, state));
+
+        let selection = self.selection;
+        self.transact(|doc| {
+            // Backwards, because a transaction reorders nothing. Every edit here is one byte for one
+            // byte, so the order cannot actually move an offset — but that is an accident of today's
+            // replacement, and the rule costs nothing to keep.
+            for &state in boxes.iter().rev() {
+                if ticked(doc, state) != ticking {
+                    let _ = doc.replace(state, if ticking { "x" } else { " " });
+                }
+            }
+            doc.set_selection(selection);
+        });
+        true
+    }
+
+    /// The task box on `line`, if it has one.
+    ///
+    /// A source line holds at most one: GFM allows a box only first in a list item's content, and a
+    /// line opens at most one item however deeply it nests. So the first is the only.
+    fn task_box_in(&self, line: ByteSpan) -> Option<ByteSpan> {
+        let first = self
+            .segments
+            .partition_point(|segment| segment.span().end() <= line.start());
+        self.segments[first..]
+            .iter()
+            .take_while(|segment| segment.span().start() < line.end())
+            .find(|segment| segment.kind() == SegmentKind::Marker(Marker::TaskMarker))
+            .map(Segment::span)
+    }
+
     /// The source lines the caret or selection touches, in order.
     ///
     /// A selection ending exactly at the start of a line does not include that line — otherwise
@@ -1111,4 +1186,10 @@ impl Document {
             .to_string();
         split_line(&text)
     }
+}
+
+/// The one byte of a task box that says whether it is ticked: the one between `[` and `]`.
+fn state_of(task: ByteSpan) -> ByteSpan {
+    let at = task.start().get() + 1;
+    ByteSpan::new(ByteOffset::new(at), ByteOffset::new(at + 1))
 }

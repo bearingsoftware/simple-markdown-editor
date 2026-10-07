@@ -83,3 +83,140 @@ fn ticking_keeps_the_caret_and_undoes_in_one_step() {
     assert_eq!(doc.to_string(), "- [ ] a\nprose\n");
     assert_eq!(doc.selection(), caret);
 }
+
+// ---- ticking from the keyboard (MDEDIT-175) ----
+
+/// A document on `source` with `selection` set, after one Ctrl+Enter.
+fn pressed(source: &str, selection: Selection) -> (bool, Document) {
+    let mut doc = Document::from(source);
+    doc.set_selection(selection);
+    let acted = doc.toggle_selected_tasks();
+    (acted, doc)
+}
+
+/// A selection from `anchor` to `head`, as byte offsets.
+fn span(anchor: usize, head: usize) -> Selection {
+    Selection::new(ByteOffset::new(anchor), ByteOffset::new(head))
+}
+
+/// The acceptance criterion, taken literally: **anywhere** on the line — on the bullet, in the box,
+/// in the text, at the end — flips the box, changes that one byte, and leaves the caret alone.
+#[test]
+fn a_caret_anywhere_on_a_tasks_line_flips_its_box() {
+    for (source, expected) in [
+        ("- [ ] a\nprose\n", "- [x] a\nprose\n"),
+        ("1. [x] b\nprose\n", "1. [ ] b\nprose\n"),
+        ("> - [ ] c\nprose\n", "> - [x] c\nprose\n"),
+    ] {
+        let line_end = source.find('\n').unwrap();
+        for offset in 0..=line_end {
+            let caret = Selection::caret(ByteOffset::new(offset));
+            let (acted, doc) = pressed(source, caret);
+            assert!(acted, "{source:?} at {offset}");
+            assert_eq!(doc.to_string(), expected, "{source:?} at {offset}");
+            assert_eq!(doc.selection(), caret, "{source:?} at {offset}");
+        }
+    }
+}
+
+/// The line is the caret's, not the one after it — which is the box a search that did not stop at
+/// the line's end would find first.
+#[test]
+fn a_line_with_no_task_changes_nothing_even_above_one() {
+    let source = "prose\n- [ ] a\n";
+    for offset in 0..=5 {
+        let (acted, doc) = pressed(source, Selection::caret(ByteOffset::new(offset)));
+        assert!(!acted, "at {offset}");
+        assert_eq!(doc.to_string(), source, "at {offset}");
+    }
+}
+
+/// Nothing changed, so there is nothing to undo — a press on prose must not leave an empty step that
+/// the next Ctrl+Z spends itself on.
+#[test]
+fn a_press_that_changes_nothing_records_nothing() {
+    let (acted, mut doc) = pressed("just prose\n", Selection::caret(ByteOffset::new(3)));
+    assert!(!acted);
+    assert!(!doc.undo());
+}
+
+#[test]
+fn one_undo_restores_the_byte_and_the_caret() {
+    let source = "- [ ] a\n- [ ] b\n";
+    let caret = Selection::caret(ByteOffset::new(12));
+    let (_, mut doc) = pressed(source, caret);
+    assert_eq!(doc.to_string(), "- [ ] a\n- [x] b\n");
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), source);
+    assert_eq!(doc.selection(), caret);
+}
+
+/// The mixed-selection rule: any unticked box means tick them all. Toggling each would have given
+/// `[ ] [x] [ ]`.
+#[test]
+fn a_mixed_selection_ticks_every_box() {
+    let source = "- [x] a\n- [ ] b\n- [x] c\n";
+    let (acted, doc) = pressed(source, span(0, source.len()));
+    assert!(acted);
+    assert_eq!(doc.to_string(), "- [x] a\n- [x] b\n- [x] c\n");
+}
+
+/// And only when every one is ticked does a press untick them, so a second press is the way back.
+#[test]
+fn a_selection_of_ticked_boxes_unticks_them_all() {
+    let source = "- [x] a\n- [X] b\n";
+    let (acted, doc) = pressed(source, span(0, source.len()));
+    assert!(acted);
+    assert_eq!(doc.to_string(), "- [ ] a\n- [ ] b\n");
+}
+
+/// A box already in the state asked for is not written. `[X]` stays capital — rewriting it to `[x]`
+/// would be the editor re-spelling a byte nobody asked it to touch.
+#[test]
+fn ticking_leaves_an_already_ticked_box_byte_for_byte() {
+    let source = "- [X] a\n- [ ] b\n";
+    let (_, doc) = pressed(source, span(0, source.len()));
+    assert_eq!(doc.to_string(), "- [X] a\n- [x] b\n");
+}
+
+/// However many boxes, one press is one step back.
+#[test]
+fn a_selection_undoes_in_one_step() {
+    let source = "- [ ] a\n- [ ] b\n- [ ] c\n";
+    let selection = span(2, 20);
+    let (_, mut doc) = pressed(source, selection);
+    assert_eq!(doc.to_string(), "- [x] a\n- [x] b\n- [x] c\n");
+    assert_eq!(doc.selection(), selection);
+
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), source);
+    assert_eq!(doc.selection(), selection);
+}
+
+/// Prose in the selection is passed over rather than made a task.
+#[test]
+fn a_selection_over_prose_and_tasks_ticks_only_the_tasks() {
+    let source = "intro\n- [ ] a\nmiddle\n- [ ] b\n";
+    let (acted, doc) = pressed(source, span(0, source.len()));
+    assert!(acted);
+    assert_eq!(doc.to_string(), "intro\n- [x] a\nmiddle\n- [x] b\n");
+}
+
+/// The rule `set_block` keeps: a selection that ends at the very start of a line has not taken
+/// that line, or selecting one whole line by its newline would tick two.
+#[test]
+fn a_selection_ending_at_a_lines_start_leaves_that_line() {
+    let source = "- [ ] a\n- [ ] b\n";
+    let (_, doc) = pressed(source, span(0, 8));
+    assert_eq!(doc.to_string(), "- [x] a\n- [ ] b\n");
+}
+
+/// The boxes are the parse's. `[ ]` in a fence is code, and code is not ticked.
+#[test]
+fn brackets_in_a_code_block_are_not_a_task() {
+    let source = "```\n- [ ] a\n```\n";
+    let (acted, doc) = pressed(source, span(0, source.len()));
+    assert!(!acted);
+    assert_eq!(doc.to_string(), source);
+}

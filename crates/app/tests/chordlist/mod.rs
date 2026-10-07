@@ -30,7 +30,8 @@ const fn chord(label: &'static str, presses: &'static [(&'static str, bool)]) ->
 }
 
 /// Ctrl+Tab is a named key too, but unlike Ctrl+Home it is passed on to `apply_chord` as `"\t"` —
-/// so it is pressable from a test, and MDEDIT-101 made sure it is pressed.
+/// so it is pressable from a test, and MDEDIT-101 made sure it is pressed. Ctrl+Enter is passed on
+/// as `"\n"` for the same reason (MDEDIT-175).
 pub const CHORDS: &[Chord] = &[
     chord("Ctrl+N", &[("n", false), ("N", true)]),
     chord("Ctrl+O", &[("o", false), ("O", true)]),
@@ -57,6 +58,7 @@ pub const CHORDS: &[Chord] = &[
     chord("Ctrl+H", &[("h", false), ("H", true)]),
     chord("Ctrl+G", &[("g", false), ("G", true)]),
     chord("Ctrl+1 … Ctrl+6", &[("1", false), ("6", false)]),
+    chord("Ctrl+Enter", &[("\n", false)]),
     chord(
         "Ctrl+= / Ctrl+-",
         &[("=", false), ("+", true), ("-", false)],
