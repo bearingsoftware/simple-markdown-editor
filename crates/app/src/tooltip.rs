@@ -23,6 +23,7 @@
 //! bar its names and its keyboard reach, and this module must not be taken as having paid that
 //! debt. What it does help is anybody who cannot remember what `❝` means.
 
+use std::path::{Component, Path};
 use std::time::Duration;
 
 /// How long the pointer must rest before a panel appears.
@@ -58,4 +59,70 @@ pub fn width_of(text_width: f32) -> f32 {
 pub fn place(width: f32, centre: f32, below: f32, right_edge: f32) -> (f32, f32) {
     let x = (centre - width / 2.0).min(right_edge - width).max(0.0);
     (x, below + GAP)
+}
+
+/// Ways to write `path`, longest first, for a panel that has to fit in a window (MDEDIT-173).
+///
+/// # Why the middle goes and not the end
+///
+/// A tab's tooltip is its file's full path, and deep paths are ordinary on Windows — `place` clamps a
+/// panel to the window's edge but cannot shorten one, so a path wider than the window would be drawn
+/// off it. **Both ends of a path are the informative parts**: the drive says which volume, the last
+/// components say which folder and which file, and it is the long run of middle directories that
+/// nobody is reading. So the first interior component goes, then the next, and so on:
+///
+/// ```text
+/// C:\Users\craig\work\notes\plan.md
+/// C:\…\craig\work\notes\plan.md
+/// C:\…\work\notes\plan.md
+/// C:\…\notes\plan.md
+/// C:\…\plan.md
+/// ```
+///
+/// The caller measures each in turn and draws the first that fits, which is why this returns the
+/// candidates rather than a width: measuring needs a text engine, and this module deliberately has
+/// none.
+///
+/// The last candidate still has a head, an ellipsis and a file name, so it can itself be too wide in
+/// a very narrow window. That is left to `place`, whose rule is that a panel wider than the window
+/// keeps its left edge — text clipped at the right is readable from its start.
+///
+/// # The verbatim prefix is not handled here, because it cannot arrive
+///
+/// A canonicalised Windows path can carry `\\?\`, and showing that to a person would be wrong. No
+/// such path reaches a tab: `mdedit_session::path::validate` **rejects** a path beginning with two
+/// separators, and `from_command_line` uses `std::path::absolute` rather than
+/// `std::fs::canonicalize` on Windows *precisely* so the prefix is never created — its own comment
+/// says that canonicalising "would make every legitimate path look like a device path". Stripping a
+/// prefix here would be unreachable code implying that invariant does not exist.
+#[must_use]
+pub fn elisions(path: &Path) -> Vec<String> {
+    // The head is the drive and its root — `C:\` — and is kept by every candidate. A relative path
+    // has no head, which is fine: it simply starts at its first interior component.
+    let head: String = path
+        .components()
+        .take_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let rest: Vec<String> = path
+        .components()
+        .skip_while(|part| matches!(part, Component::Prefix(_) | Component::RootDir))
+        .map(|part| part.as_os_str().to_string_lossy().into_owned())
+        .collect();
+
+    let joined = |parts: &[String]| parts.join(std::path::MAIN_SEPARATOR_STR);
+    let full = format!("{head}{}", joined(&rest));
+    let mut candidates = vec![full];
+
+    // One candidate per interior component dropped, the last keeping only the file name. A path with
+    // nothing interior — `C:\plan.md` — produces no elisions at all, which is the point: there is
+    // nothing in the middle to lose, and an ellipsis would claim there was.
+    for dropped in 1..rest.len() {
+        candidates.push(format!(
+            "{head}…{}{}",
+            std::path::MAIN_SEPARATOR,
+            joined(&rest[dropped..])
+        ));
+    }
+    candidates
 }
