@@ -18,7 +18,7 @@
 
 use mdedit_app::{hit, table};
 use mdedit_document::Document;
-use mdedit_offsets::{ByteOffset, ByteSpan, LayoutPos};
+use mdedit_offsets::{Affinity, ByteOffset, ByteSpan, LayoutPos};
 use mdedit_text::{FontId, FontSize, GlyphId, GlyphKey, Layout, LayoutLine, PositionedGlyph};
 
 const TABLE: &str = "| Keys | Does |\n| --- | --- |\n| Ctrl+B | Bold |\n";
@@ -186,7 +186,8 @@ fn a_click_below_the_header_lands_in_the_row_it_was_aimed_at() {
         base: ByteOffset::ZERO,
         grid: Some(&boxes),
     };
-    let (row, _) = hit::place_of(&chunk, 2, body).expect("the body row owns its own bytes");
+    let (row, _) = hit::place_of(&chunk, 2, body, Affinity::Downstream)
+        .expect("the body row owns its own bytes");
     assert_eq!(row, 1, "the body row is visual row 1, not source line 2");
 }
 
@@ -232,7 +233,8 @@ fn an_empty_cell_can_be_clicked_into() {
     );
 
     // And the caret it puts there has somewhere to be drawn.
-    let (row, x) = hit::place_of(&chunk, 2, cells[0][1].end()).expect("the empty cell is a place");
+    let (row, x) = hit::place_of(&chunk, 2, cells[0][1].end(), Affinity::Downstream)
+        .expect("the empty cell is a place");
     assert_eq!(row, 0);
     assert_eq!(x, middle, "at the empty cell's own left edge");
 }
@@ -459,7 +461,8 @@ fn a_row_with_no_glyphs_at_all_still_owns_its_bytes() {
         base: ByteOffset::ZERO,
         grid: Some(&boxes),
     };
-    let (row, _) = hit::place_of(&chunk, 2, empty_row).expect("the empty row is a place");
+    let (row, _) = hit::place_of(&chunk, 2, empty_row, Affinity::Downstream)
+        .expect("the empty row is a place");
     assert_eq!(row, 1, "the body row is visual row 1");
 
     // Without the spans there is nothing to find it by: the row draws no glyphs, so the fallback
@@ -469,7 +472,7 @@ fn a_row_with_no_glyphs_at_all_still_owns_its_bytes() {
         ..chunk
     };
     assert_ne!(
-        hit::place_of(&counted, 2, empty_row).map(|(row, _)| row),
+        hit::place_of(&counted, 2, empty_row, Affinity::Downstream).map(|(row, _)| row),
         Some(1),
         "this is the case only `grid.rows` can answer",
     );

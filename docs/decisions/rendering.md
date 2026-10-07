@@ -19,19 +19,43 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   A line's **first** row starts at that line's first byte, so a caret in a concealed marker still
   belongs to the row the marker was dropped from; its **last** row ends at the line's last byte.
 
-  **One byte can be on two rows, and the later one wins.** The end of a wrapped row and the start of
-  its continuation are the same offset, and there is no caret affinity here to tell which the caret
-  arrived from. Preferring the earlier row made Up skip a row: Up aims at the left edge of the row
-  above, which *is* that boundary. Hard line ends are unaffected — a newline separates them, so only
-  one row holds each.
+  **One byte can be on two rows, and without an affinity the later one wins.** The end of a wrapped
+  row and the start of its continuation are the same offset. Preferring the earlier row made Up skip
+  a row: Up aims at the left edge of the row above, which *is* that boundary. Hard line ends are
+  unaffected — a newline separates them, so only one row holds each. **MDEDIT-188 added the affinity
+  and this is now the default rather than the only answer**; see the entry below.
 
-  **Known gap: a click in the whitespace right of a wrapped row draws the caret at the start of the
-  next row.** The *byte* is right — measured, clicking past the end of row 0 of a wrapped paragraph
-  now gives the end of that row's text, where before this ticket it gave the end of the **whole
-  paragraph** — but which of the two rows the boundary is shown on is a question only affinity can
-  answer, and the selection head does not carry one. VS Code and Notepad++ keep it on the earlier row
-  by remembering the gesture. **The fix is an affinity bit, not a different tie-break**: the other
-  choice makes Up skip a row, which is a worse defect in a more common gesture. MDEDIT-188.
+- **The caret carries an affinity, and only two gestures set it.** MDEDIT-188, raised from the review
+  of #199. A click in the whitespace right of a wrapped row drew the caret at the start of the *next*
+  row. The byte was already right — MDEDIT-183 had fixed that, and before it the same click gave the
+  end of the whole paragraph — so what was wrong was only which of the two rows drew it, and no
+  amount of re-choosing a tie-break could fix it: the two gestures that reach the boundary byte want
+  opposite rows, and an offset cannot tell them apart.
+
+  `Selection`'s head now carries an `Affinity` — `Downstream` (the row that *starts* here, the
+  default and what the editor did everywhere before) or `Upstream` (the row that *ends* here). It is
+  in the type's `PartialEq`, deliberately: two carets on one byte either side of a wrap are drawn in
+  different places, so they are not the same caret, and `set_selection` should end an undo group when
+  the caret crosses between them.
+
+  **Only a point gesture sets `Upstream`** — a click or a drag past a row's last glyph, and the Up or
+  Down that aims at such a place. `hit::offset_at` returns it alongside the offset because only a
+  point knows which row it was on, and the test for it is a single condition: *the next drawn row
+  starts at this offset too*. That is exactly a soft wrap. "And the offset is this row's end" looks
+  like a second condition and is not — `offset_in_row` can only answer with a byte of the row it was
+  asked about — so asserting it would have been a branch no test could red. A clamp to the drawn row
+  count went the same way, and for the same reason.
+
+  **It fixed a second gesture the ticket did not mention.** Up and Down aim from where `caret_place`
+  says the caret is, so while a caret at a boundary was always placed on the *later* row, Down out of
+  it started a row below where the caret appeared and skipped one. Both motions now read the affinity,
+  and the two tests that pin them are the ones a mutation of `caret_place` alone still reds.
+
+  Still carried by this: **`Home` and `End` do not go to a row or a line at all** — both go to the
+  ends of the *document*, identical to `Ctrl+Home` and `Ctrl+End`. MDEDIT-188's acceptance assumed
+  otherwise and named `End` as a gesture that would set the affinity; it cannot, because there is
+  nothing to set it from. Raised separately rather than folded in, since row-wise `Home`/`End` has
+  its own decisions to make. MDEDIT-192.
 
   **Three places counted newlines, not one.** Fixing the caret left two live copies, both found in
   the review of #199 and both fixed here: `row_selection` drew a selection on the line after a wrap

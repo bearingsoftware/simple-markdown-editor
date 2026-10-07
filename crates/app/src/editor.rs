@@ -20,7 +20,7 @@ use mdedit_document::{Document, Selection};
 use mdedit_image::Picture;
 use mdedit_language::Diagnostic;
 use mdedit_markers::BlockKind;
-use mdedit_offsets::{ByteOffset, ByteSpan};
+use mdedit_offsets::{Affinity, ByteOffset, ByteSpan};
 use mdedit_session::Workspace;
 use mdedit_session::recent::Recent;
 use mdedit_text::{FontFamily, GlyphKey, Layout, StyledRun, TextLayout, TextStyle};
@@ -6403,7 +6403,7 @@ impl<T: TextLayout> Editor<T> {
         if !self.content.contains(x, y) {
             return false;
         }
-        let Some(offset) = self.offset_at_point(x, y) else {
+        let Some(offset) = self.offset_only_at_point(x, y) else {
             return false;
         };
 
@@ -8018,19 +8018,23 @@ impl<T: TextLayout> Editor<T> {
     /// `x` and `y` are in device-independent pixels from the window's corner. Returns `None` before
     /// the first frame, when there is nothing to hit-test against and guessing would be worse than
     /// doing nothing.
-    fn offset_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
+    fn offset_at_point(&self, x: f32, y: f32) -> Option<(ByteOffset, Affinity)> {
         // The same rectangle the glyphs were placed with, run backwards. Neither side computes an
         // offset of its own, so the two cannot drift apart.
         let (x, y) = self.content.to_document(x, y, self.viewport_offset());
-        let offset = self.offset_in_document(x, y)?;
+        let (offset, affinity) = self.offset_in_document(x, y)?;
         // **A task's box is not a caret position** (MDEDIT-142). A point on it addresses its `[`,
         // which in preview sits between concealed markers — the bullet and the box — so typing there
         // would write into the list's syntax and break the item. Past them is the nearest place a
         // caret can be. Plain mode draws the brackets as they are, and before one is fine.
+        //
+        // The affinity goes with it: this is a *different* offset from the one the point addressed,
+        // moved forward past concealed syntax, so what row the point was on says nothing about which
+        // row this one belongs to.
         if self.mode == view::Mode::Preview && self.document().task_box_at(offset).is_some() {
-            return Some(self.past_concealed(offset));
+            return Some((self.past_concealed(offset), Affinity::Downstream));
         }
-        Some(offset)
+        Some((offset, affinity))
     }
 
     /// The task box drawn under a point in the window, as the offset of its `[`.
@@ -8049,14 +8053,16 @@ impl<T: TextLayout> Editor<T> {
         self.document().task_box_at(at).map(ByteSpan::start)
     }
 
-    /// The byte at a point in the document's own coordinates.
-    fn offset_in_document(&self, x: f32, y: f32) -> Option<ByteOffset> {
+    /// The byte at a point in the document's own coordinates, and the row that point was on.
+    ///
+    /// The [`Affinity`] rides along because only a point knows it — see [`hit::offset_at`].
+    fn offset_in_document(&self, x: f32, y: f32) -> Option<(ByteOffset, Affinity)> {
         let frame = self.last_frame.as_ref()?;
         if frame.chunks.is_empty() {
             return None;
         }
         if y < 0.0 {
-            return Some(ByteOffset::ZERO);
+            return Some((ByteOffset::ZERO, Affinity::Downstream));
         }
 
         let index = frame
@@ -8076,10 +8082,16 @@ impl<T: TextLayout> Editor<T> {
         ))
     }
 
+    /// The byte a point addresses, when the caller has no use for which row addressed it.
+    fn offset_only_at_point(&self, x: f32, y: f32) -> Option<ByteOffset> {
+        self.offset_at_point(x, y).map(|(offset, _)| offset)
+    }
+
     /// Which chunk and visual line the caret is on, and how far along it.
     fn caret_place(&self) -> Option<(usize, usize, f32)> {
         let frame = self.last_frame.as_ref()?;
-        let caret = self.document().selection().head();
+        let selection = self.document().selection();
+        let caret = selection.head();
         let index = frame
             .chunks
             .iter()
@@ -8089,7 +8101,7 @@ impl<T: TextLayout> Editor<T> {
         let cached = self.chunk_layout(frame, index)?;
 
         let target = cached.as_hit(chunk, &frame.text);
-        let (row, x) = cached.place_of(&target, caret)?;
+        let (row, x) = cached.place_of(&target, caret, selection.affinity())?;
         Some((index, row, x))
     }
 
@@ -8125,24 +8137,37 @@ impl<T: TextLayout> Editor<T> {
         let edge = if down { row_top + height } else { row_top };
         // A hair past the boundary, so the answer is the neighbouring row whatever its height.
         let step = if down { 0.5 } else { -0.5 };
-        let Some(offset) = self.offset_in_document(aim, edge + step) else {
+        // **The affinity comes from the aimed-at row, not from the row being left** (MDEDIT-188).
+        // This is a point gesture like a click: aiming past the end of a wrapped row lands on that
+        // row's last byte and must stay drawn there, or Down out of it would appear not to move.
+        let Some((offset, affinity)) = self.offset_in_document(aim, edge + step) else {
             return false;
         };
 
-        self.select(offset, extend);
+        self.select_with(offset, extend, affinity);
         // Restored after `select` clears it: this is the one motion that keeps its column.
         self.desired_x = Some(aim);
         true
     }
 
     /// Puts the caret at `offset`, or drags the selection to it.
+    ///
+    /// The caret gets no affinity, which is [`Affinity::Downstream`] — right for every gesture that
+    /// names an offset without knowing which visual row it meant. A gesture that *does* know calls
+    /// [`select_with`](Self::select_with); there are only the ones driven by a point.
     fn select(&mut self, offset: ByteOffset, extend: bool) {
+        self.select_with(offset, extend, Affinity::Downstream);
+    }
+
+    /// Puts the caret at `offset` on the row `affinity` names, or drags the selection to it.
+    fn select_with(&mut self, offset: ByteOffset, extend: bool, affinity: Affinity) {
         let selection = if extend {
             Selection::new(self.document().selection().anchor(), offset)
         } else {
             Selection::caret(offset)
         };
-        self.document_mut().set_selection(selection);
+        self.document_mut()
+            .set_selection(selection.with_affinity(affinity));
         self.desired_x = None;
     }
 
@@ -8226,7 +8251,7 @@ impl<T: TextLayout> Editor<T> {
             return self.document_mut().toggle_task(task);
         }
 
-        let Some(offset) = self.offset_at_point(x, y) else {
+        let Some((offset, affinity)) = self.offset_at_point(x, y) else {
             return false;
         };
 
@@ -8237,7 +8262,7 @@ impl<T: TextLayout> Editor<T> {
             self.clicks.reset();
             self.granularity = Granularity::Character;
             self.anchor_span = None;
-            self.select(offset, true);
+            self.select_with(offset, true, affinity);
             self.dragging = true;
             return true;
         }
@@ -8249,7 +8274,11 @@ impl<T: TextLayout> Editor<T> {
         match self.granularity {
             // Unchanged from before this existed, deliberately: a slow click must behave exactly as
             // it always did, and the counting wraps the old path rather than replacing it.
-            Granularity::Character => self.select(offset, false),
+            Granularity::Character => self.select_with(offset, false, affinity),
+            // A word or a line is a *span*, and its head is the unit's end rather than the byte
+            // under the pointer — so which row the pointer was on says nothing about it. The one
+            // place a word can end on a wrap boundary is where the wrap fell mid-word, and there the
+            // selection visibly covers both rows, which answers the question the affinity would.
             Granularity::Word | Granularity::Line => self.select_span(span),
         }
         self.dragging = true;
@@ -8263,14 +8292,17 @@ impl<T: TextLayout> Editor<T> {
     /// out, and the part people notice immediately, because dragging out of the word they just
     /// double-clicked otherwise snaps back to a character selection.
     pub fn drag_to(&mut self, x: f32, y: f32) -> bool {
-        let Some(offset) = self.offset_at_point(x, y) else {
+        let Some((offset, affinity)) = self.offset_at_point(x, y) else {
             return false;
         };
         let Some(anchor) = self
             .anchor_span
             .filter(|_| !matches!(self.granularity, Granularity::Character))
         else {
-            self.select(offset, true);
+            // Character granularity, so the head is the byte under the pointer and the affinity
+            // applies exactly as it does to a click. The word and line arms below take a unit's
+            // end instead, and no row said where that is.
+            self.select_with(offset, true, affinity);
             return true;
         };
 
@@ -10452,7 +10484,8 @@ impl<T: TextLayout> Editor<T> {
     /// The line is found by counting newlines rather than by hunting for a glyph, so a caret on a
     /// blank line lands on the blank line instead of jumping to the next thing with ink on it.
     fn caret_position(&self, frame: &Frame) -> Option<(usize, CaretRect)> {
-        let caret = self.document().selection().head();
+        let selection = self.document().selection();
+        let caret = selection.head();
         let index = frame
             .chunks
             .iter()
@@ -10469,7 +10502,7 @@ impl<T: TextLayout> Editor<T> {
         // rule that a visual row is a source line — and a grid is the one layout that breaks it, so
         // the caret sat on the trailing empty row for every table row below the header.
         let target = cached.as_hit(chunk, &frame.text);
-        let (row, x) = cached.place_of(&target, caret)?;
+        let (row, x) = cached.place_of(&target, caret, selection.affinity())?;
         let line = cached.layout.lines.get(row)?;
         let top: f32 = cached.layout.lines[..row].iter().map(|l| l.height).sum();
 
@@ -11169,8 +11202,13 @@ impl Cached {
     ///
     /// Both callers — where the caret is drawn and where up and down aim from — come through here,
     /// so they cannot disagree about it.
-    fn place_of(&self, target: &hit::Chunk<'_>, offset: ByteOffset) -> Option<(usize, f32)> {
-        let (row, x) = hit::place_of(target, self.drawn_lines(), offset)?;
+    fn place_of(
+        &self,
+        target: &hit::Chunk<'_>,
+        offset: ByteOffset,
+        affinity: Affinity,
+    ) -> Option<(usize, f32)> {
+        let (row, x) = hit::place_of(target, self.drawn_lines(), offset, affinity)?;
         let blank = self
             .layout
             .lines
