@@ -62,6 +62,46 @@ impl fmt::Display for ByteOffset {
     }
 }
 
+/// Which of two visual rows a caret at a wrap boundary belongs to (MDEDIT-188).
+///
+/// # Why a byte offset is not enough to draw a caret
+///
+/// Where a line soft-wraps, the end of one visual row and the start of its continuation are the
+/// **same byte**. A [`ByteOffset`] alone cannot say which of the two a caret is on, so something has
+/// to break the tie, and the two gestures that reach that byte want opposite answers:
+///
+/// - clicking in the empty space right of the first row means *the end of that row*;
+/// - pressing Up from the row below aims at the continuation's left edge, which **is** the boundary,
+///   and means *the start of the continuation*.
+///
+/// Before this existed the later row always won (MDEDIT-183), because the alternative made Up skip a
+/// row — the better of two wrong answers, and the ticket said so. This is the third option: the
+/// gestures that know which row they came from say so, and the ones that cannot leave it
+/// [`Downstream`](Self::Downstream).
+///
+/// **A hard line ending never needs this.** A line's last byte and the next line's first are
+/// separated by the newline, so only one row holds each, and both variants give the same row.
+///
+/// # The names
+///
+/// Upstream and downstream rather than left and right: the distinction is which side of the break
+/// the caret arrived from, and in a right-to-left run "left" would name the wrong one. The HTML
+/// selection APIs use the same pair for the same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Affinity {
+    /// The caret belongs to the row that **starts** at this offset.
+    ///
+    /// The default, and what every gesture that cannot tell the difference gets: typing, Left and
+    /// Right, and anything that simply names an offset. It is also what the editor did everywhere
+    /// before affinity existed, so a caret with no opinion is drawn exactly where it used to be.
+    #[default]
+    Downstream,
+    /// The caret belongs to the row that **ends** at this offset.
+    ///
+    /// Set only by a gesture that addressed that row: a click or drag past its last glyph.
+    Upstream,
+}
+
 /// A character position in the rope.
 ///
 /// `ropey` addresses by character, this workspace addresses by byte. This type exists so the two

@@ -13,7 +13,7 @@
 //! No GPU or window types. The caller supplies a laid-out chunk and a point inside it; this decides
 //! which byte that is.
 
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{Affinity, ByteOffset};
 use mdedit_text::Layout;
 
 use crate::table::Grid;
@@ -197,14 +197,62 @@ pub fn row_at(chunk: &Chunk<'_>, drawn: usize, y: f32) -> usize {
     rows.saturating_sub(1)
 }
 
-/// The byte a point addresses, in buffer coordinates.
+/// The byte a point addresses, in buffer coordinates, and which row addressed it.
 ///
 /// `y` is measured from the top of the chunk and `x` from its left edge, both in
 /// device-independent pixels.
+///
+/// **The [`Affinity`] is the whole reason this returns a pair** (MDEDIT-188). A click in the empty
+/// space right of a wrapped row resolves to the byte where the wrap fell, which is also the first
+/// byte of the continuation — so the offset alone would have the caret drawn a row below the row
+/// that was clicked. A point knows which row it was on; nothing downstream of here does.
 #[must_use]
-pub fn offset_at(chunk: &Chunk<'_>, drawn: usize, y: f32, x: f32) -> ByteOffset {
+pub fn offset_at(chunk: &Chunk<'_>, drawn: usize, y: f32, x: f32) -> (ByteOffset, Affinity) {
     let row = row_at(chunk, drawn, y);
-    offset_in_row(chunk, row, x)
+    let offset = offset_in_row(chunk, row, x);
+    (offset, affinity_in_row(chunk, row, offset))
+}
+
+/// Whether a caret put at `offset` by a gesture on `row` belongs to that row rather than the next.
+///
+/// [`Upstream`](Affinity::Upstream) exactly when **the next drawn row also starts at this offset**,
+/// which is precisely a soft wrap, and is the only place the question has two answers:
+///
+/// - at a hard line ending the newline sits between the two rows' bytes, so the next row starts one
+///   byte *past* the furthest this row can reach;
+/// - anywhere inside a row's text the next row starts later still.
+///
+/// One test, not two, and the reason is worth stating because "the offset is where this row ends"
+/// looks like a second condition and is not: [`offset_in_row`] can only answer with a byte of the
+/// row it was asked about — a glyph on it, or that row's own end — so an offset the *next* row also
+/// starts at can only be this row's last. Asserting it as well would be a condition that cannot
+/// fail, which is to say a line no test can ever hold to account.
+///
+/// So everywhere the distinction is meaningless this says `Downstream`, and the caret is drawn where
+/// it was drawn before any of this existed.
+///
+/// # The laid-out rows, not the drawn ones
+///
+/// This asks [`row_bytes`](Chunk::row_bytes) about `row + 1` even when `row` is the **last row being
+/// drawn**, and that is deliberate. An affinity records what a gesture meant — "past the end of this
+/// row" — and it is stored on the selection, outliving the frame that produced it. A later frame
+/// that draws more rows should honour it. Clamping to the drawn count here would make the record
+/// depend on how much of the chunk happened to be on screen when the click landed.
+///
+/// It costs nothing either way in the present frame: [`place_of`] only considers drawn rows, and no
+/// row before this one can hold this offset, so `Upstream` and `Downstream` pick the same row while
+/// the next one is undrawn. A guard for it was written first and then removed — it was a branch no
+/// test could ever red, which is the definition of a line that should not be there.
+fn affinity_in_row(chunk: &Chunk<'_>, row: usize, offset: ByteOffset) -> Affinity {
+    let next_starts_here = chunk
+        .row_bytes()
+        .get(row + 1)
+        .is_some_and(|&(start, _)| chunk.start.get() + start == offset.get());
+    if next_starts_here {
+        Affinity::Upstream
+    } else {
+        Affinity::Downstream
+    }
 }
 
 /// The byte at `x` on visual line `row`.
@@ -284,23 +332,38 @@ pub fn substitute_at(chunk: &Chunk<'_>, drawn: usize, y: f32, x: f32) -> Option<
 /// Where `offset` sits: which visual line, and how far along it.
 ///
 /// The `x` is what a caller moving up or down should aim for on the next line.
+///
+/// # Which row, when two of them hold the byte
+///
+/// Wherever a line soft-wrapped, the end of one row and the start of its continuation are the same
+/// offset, so two rows answer and `affinity` picks. MDEDIT-183 had no affinity to consult and always
+/// took the **later** row, because the alternative made Up skip a row — Up onto a wrapped row aims
+/// at that row's left edge, which *is* the boundary, so preferring the earlier row sent the caret a
+/// row further than it asked for. That is still what [`Affinity::Downstream`] does, and it is still
+/// the default; MDEDIT-188 adds the other answer for the gestures that can tell, which is a click or
+/// drag past a row's last glyph.
+///
+/// Hard line ends are unaffected whatever the affinity: a line's last byte and the next line's first
+/// are separated by the newline, so only one row holds each.
 #[must_use]
-pub fn place_of(chunk: &Chunk<'_>, drawn: usize, offset: ByteOffset) -> Option<(usize, f32)> {
+pub fn place_of(
+    chunk: &Chunk<'_>,
+    drawn: usize,
+    offset: ByteOffset,
+    affinity: Affinity,
+) -> Option<(usize, f32)> {
     let rows = rows(chunk, drawn);
     let bytes = chunk.row_bytes();
-    // **The last row that holds the offset, not the first** (MDEDIT-183). One byte lies on two rows
-    // wherever a line wrapped: the end of a row and the start of its continuation are the same
-    // offset, and there is no affinity here to tell which the caret arrived from. The continuation
-    // is the right answer for the one gesture that can tell the difference — Up onto a wrapped row
-    // aims at that row's left edge, which *is* the boundary, and preferring the earlier row sent it
-    // a row further than it asked and made Up skip a row. Hard line ends are unaffected: a line's
-    // last byte and the next line's first are separated by the newline, so only one row holds each.
-    let row = (0..rows).rev().find(|&row| {
+    let holds = |row: usize| {
         let (from, to) = bytes.get(row).copied().unwrap_or((0, chunk.text.len()));
         let start = chunk.start.get() + from;
         let end = chunk.start.get() + to;
         (start..=end).contains(&offset.get())
-    })?;
+    };
+    let row = match affinity {
+        Affinity::Upstream => (0..rows).find(|&row| holds(row)),
+        Affinity::Downstream => (0..rows).rev().find(|&row| holds(row)),
+    }?;
 
     {
         let line = chunk.layout.lines.get(row)?;

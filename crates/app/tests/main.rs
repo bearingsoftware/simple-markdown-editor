@@ -30,6 +30,7 @@ mod stub;
 
 mod blank_page;
 mod blocks;
+mod caret_affinity;
 mod caret_line;
 mod chords;
 mod clipboard;

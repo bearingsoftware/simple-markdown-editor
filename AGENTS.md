@@ -255,9 +255,14 @@ benchmarks and why each job runs where it does.
   are its rows, and `draw_chunks`, `row_selection` and the layout cache all go on working unchanged.
   The model is real — `BlockKind::Table`/`TableRow`/`TableCell` come from the parse — and the second
   draw path and second caret model this rule was bracing for are not. **One thing did give:** `hit.rs`
-  finds a row's bytes by counting newlines, sound only because wrapping *adds* rows, and a grid
-  *drops* one — so a grid hands it the row spans. A mapping, not a second hit test. Read
+  found a row's bytes by counting newlines, sound only because wrapping *adds* rows, and a grid
+  *drops* one — so a grid hands it the row spans. A mapping, not a second hit test. MDEDIT-183 then
+  found that argument wrong for wrapping too, because wrapping adds rows **in the middle**: the
+  mapping now comes from the glyphs, and a grid's spans stay the override they were. Read
   `crates/app/src/table.rs` before proposing one for code fences.
+- **A caret is an offset *and* an affinity** (MDEDIT-188). Where a line wraps, the end of one row and
+  the start of its continuation are one byte, so `Selection`'s head says which row it belongs to.
+  Only a point gesture sets it; everything else gets `Downstream` and is drawn where it always was.
 
 ### Text layer
 

@@ -60,7 +60,7 @@ pub mod table;
 
 use history::History;
 use mdedit_language::{Block, BlockKind, Language, Marker, Segment, SegmentKind};
-use mdedit_offsets::{BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
+use mdedit_offsets::{Affinity, BlockId, ByteOffset, ByteSpan, CharOffset, LineIndex};
 use outline::Heading;
 use ropey::Rope;
 
@@ -1063,10 +1063,22 @@ impl std::fmt::Display for Document {
 /// Offsets are bytes, as everywhere else in this crate. A caret is a selection whose ends coincide;
 /// `anchor` is where the selection started and `head` is where it currently is, so `head` is the end
 /// that moves and the two can be in either order.
+///
+/// # The head carries an affinity, and it is part of the identity
+///
+/// [`Affinity`] says which of two visual rows a head sitting exactly on a soft-wrap boundary belongs
+/// to (MDEDIT-188). It is in `PartialEq` on purpose: two carets on the same byte either side of a
+/// wrap are drawn in different places, so they are not the same caret, and
+/// [`set_selection`](Document::set_selection) should end an undo group when the caret moves from one
+/// to the other — it *did* move, visibly, even though the offset did not.
+///
+/// **It is a property of the head alone.** The anchor's row is never drawn and never aimed from, so
+/// giving it one would be state nothing reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
     anchor: ByteOffset,
     head: ByteOffset,
+    affinity: Affinity,
 }
 
 impl Selection {
@@ -1076,13 +1088,39 @@ impl Selection {
         Self {
             anchor: at,
             head: at,
+            affinity: Affinity::Downstream,
         }
     }
 
     /// A selection from `anchor` to `head`. Either order is valid.
     #[must_use]
     pub fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
-        Self { anchor, head }
+        Self {
+            anchor,
+            head,
+            affinity: Affinity::Downstream,
+        }
+    }
+
+    /// The same selection, with the head on the row that `affinity` names.
+    ///
+    /// A builder rather than an argument to [`caret`](Self::caret) and [`new`](Self::new), because
+    /// nearly every caller has no opinion and should not be made to express one: a gesture that
+    /// cannot tell which row it came from is the common case, and
+    /// [`Downstream`](Affinity::Downstream) is the answer for all of them. Only the two or three
+    /// gestures that *do* know call this.
+    #[must_use]
+    pub fn with_affinity(self, affinity: Affinity) -> Self {
+        Self { affinity, ..self }
+    }
+
+    /// Which of two visual rows the head is on, where a soft wrap makes that ambiguous.
+    ///
+    /// Means nothing anywhere else: at every other offset both variants name the same row. See
+    /// [`Affinity`].
+    #[must_use]
+    pub fn affinity(self) -> Affinity {
+        self.affinity
     }
 
     /// Where the selection started.
