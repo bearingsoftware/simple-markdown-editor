@@ -2821,9 +2821,6 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    /// Applies one key press to the document.
-    ///
-    /// Returns whether anything changed and a redraw is needed.
     /// Applies a Ctrl chord. Returns whether anything changed and a redraw is needed.
     ///
     /// Separate from the rest of the key handling because they are two different things: a chord is
@@ -2847,6 +2844,11 @@ impl<T: TextLayout> Editor<T> {
             // class exactly, a label and a binding disagreeing with nothing to catch it.
             Key::Named(NamedKey::Tab) => {
                 return self.apply_chord("\t", self.modifiers.shift_key());
+            }
+            // Enter is named too, and handed on as `"\n"` for the same reason: so a test can press
+            // it (MDEDIT-175). Until then Ctrl+Enter reached here and was dropped.
+            Key::Named(NamedKey::Enter) => {
+                return self.apply_chord("\n", self.modifiers.shift_key());
             }
             _ => {}
         }
@@ -2892,6 +2894,11 @@ impl<T: TextLayout> Editor<T> {
             "z" | "Z" | "y" | "Y" => self.document_mut().redo(),
             "w" | "W" => self.close_tab(),
             "	" => self.cycle_tab(!shift),
+            // Ctrl+Enter ticks the task on the caret's line (MDEDIT-175): Obsidian's default for the
+            // same thing, and unbound here until now. Not with Shift — Ctrl+Shift+Enter is "insert a
+            // line above" in VS Code and Word, and a chord nobody has claimed is cheaper to keep free
+            // than to take back.
+            "\n" if !shift => self.document_mut().toggle_selected_tasks(),
             "c" | "C" => {
                 self.copy();
                 false
@@ -2947,6 +2954,9 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Applies one key press to the document.
+    ///
+    /// Returns whether anything changed and a redraw is needed.
     fn handle_key(&mut self, event: &KeyEvent) -> bool {
         if event.state != ElementState::Pressed {
             return false;

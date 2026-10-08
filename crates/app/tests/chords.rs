@@ -16,6 +16,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use mdedit_app::editor::Editor;
+use mdedit_app::view::Mode;
+use mdedit_document::Selection;
+use mdedit_offsets::ByteOffset;
 use mdedit_session::Workspace;
 use tempfile::TempDir;
 
@@ -518,4 +521,74 @@ fn caps_lock_does_not_turn_undo_into_redo() {
         "Ctrl+Z with Caps Lock on should undo, not redo: {:?}",
         editor.document().to_string()
     );
+}
+
+// ---- Ctrl+Enter (MDEDIT-175) ----
+
+/// An editor on `source` with the caret at `offset`.
+fn caret_in(source: &str, offset: usize) -> Editor<Grid> {
+    let mut editor = Editor::new(source, Grid::new());
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(offset)));
+    editor
+}
+
+/// Through the real dispatch, in the view a user is in by default. The caret is in the text after
+/// the box, which is where it is in preview — it cannot stand in the box itself.
+#[test]
+fn ctrl_enter_ticks_the_task_on_the_carets_line() {
+    let mut editor = caret_in("- [ ] buy milk\n", 9);
+    assert_eq!(editor.mode(), Mode::Preview);
+
+    assert!(editor.apply_chord("\n", false));
+
+    assert_eq!(editor.document().to_string(), "- [x] buy milk\n");
+    assert_eq!(
+        editor.document().selection(),
+        Selection::caret(ByteOffset::new(9))
+    );
+}
+
+/// The ticket's last criterion: the chord needs no drawn box, so plain markup is no different.
+#[test]
+fn ctrl_enter_ticks_in_plain_markup_too() {
+    let mut editor = caret_in("- [x] done\n", 3);
+    editor.apply_chord("/", false);
+    assert_eq!(editor.mode(), Mode::Plain);
+
+    assert!(editor.apply_chord("\n", false));
+
+    assert_eq!(editor.document().to_string(), "- [ ] done\n");
+}
+
+/// One Ctrl+Z after Ctrl+Enter, both as chords.
+#[test]
+fn ctrl_z_undoes_ctrl_enter() {
+    let mut editor = caret_in("- [ ] a\n", 7);
+    editor.apply_chord("\n", false);
+    editor.apply_chord("z", false);
+
+    assert_eq!(editor.document().to_string(), "- [ ] a\n");
+}
+
+/// Kept free on purpose — see the arm — and a chord that does nothing must say so, or the frame
+/// redraws for nothing.
+#[test]
+fn ctrl_shift_enter_is_not_bound() {
+    let mut editor = caret_in("- [ ] a\n", 7);
+
+    assert!(!editor.apply_chord("\n", true));
+
+    assert_eq!(editor.document().to_string(), "- [ ] a\n");
+}
+
+/// Not "make it a task", as Obsidian does: the chord only ever changes a box's state.
+#[test]
+fn ctrl_enter_on_prose_changes_nothing() {
+    let mut editor = caret_in("just prose\n", 4);
+
+    assert!(!editor.apply_chord("\n", false));
+
+    assert_eq!(editor.document().to_string(), "just prose\n");
 }
