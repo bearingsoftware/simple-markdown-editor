@@ -6995,9 +6995,38 @@ impl<T: TextLayout> Editor<T> {
             });
         }
         match hit.and_then(|row| menu.rows.get(row).copied()) {
-            Some(action) => Some(self.perform(action)),
+            // **A displaced dropdown opens its own panel** (MDEDIT-193). The overflow list holds the
+            // buttons the bar dropped, verbatim, and some of those open a panel rather than edit
+            // anything — so sending every row to `perform` made Headings and Table dead rows, the
+            // list closing on a click that did nothing. Asked through `menu_for`, as the bar asks, so
+            // Table still opens the edit list inside a table and the next button to open a panel is
+            // covered without anyone remembering it here.
+            Some(action) => Some(match self.menu_for(action) {
+                Some(kind) => self.open_in_place_of_overflow(kind),
+                None => self.perform(action),
+            }),
             None => Some(true),
         }
+    }
+
+    /// Opens `kind` where the overflow list just was, under the `More` button that list hung from.
+    ///
+    /// **In place of it, not beside it**: the overflow list is already closed by the time this runs,
+    /// so there is still one panel open at a time, which is the rule every other part of the popup
+    /// code — drawing, hit testing, the pointer — is written against. A nested submenu would have
+    /// been a second open panel and a second z-order for the sake of a narrow window.
+    ///
+    /// Returns true either way: the list closing is itself a change to draw.
+    fn open_in_place_of_overflow(&mut self, kind: toolbar::Menu) -> bool {
+        let more = self
+            .toolbar_buttons
+            .iter()
+            .find(|button| button.action == toolbar::Action::More)
+            .copied();
+        if let Some(more) = more {
+            self.toggle_menu(more, kind);
+        }
+        true
     }
 
     /// Takes the tooltip away, and stops one being on its way.
@@ -7254,7 +7283,7 @@ impl<T: TextLayout> Editor<T> {
         }
 
         if let Some(action) = toolbar::hit_test(&self.toolbar_buttons, x, y - top) {
-            // The two buttons that open a list rather than edit anything. One lookup rather than
+            // The buttons that open a panel rather than edit anything. One lookup rather than
             // two special cases, so a third menu-opener cannot be forgotten here.
             if let Some(kind) = self.menu_for(action) {
                 let button = self
@@ -7298,10 +7327,11 @@ impl<T: TextLayout> Editor<T> {
             }
             toolbar::Action::Paste => self.paste(),
             // **The three that are not a second door.** They open a panel, and `click_toolbar` deals
-            // with them before it gets here — a chord never reaches them, because `Action::chord`
-            // gives them none. Reaching this arm means somebody called `perform` directly with one,
-            // which is a caller bug rather than a user action, so it does nothing rather than
-            // guessing which row, or which size, was meant.
+            // with them before it gets here, as `click_menu` does for one chosen from the overflow
+            // list — a chord never reaches them, because `Action::chord` gives them none. Reaching
+            // this arm means somebody called `perform` directly with one, which is a caller bug
+            // rather than a user action, so it does nothing rather than guessing which row, or which
+            // size, was meant. The overflow list was exactly that caller until MDEDIT-193.
             toolbar::Action::Headings | toolbar::Action::More | toolbar::Action::Table => false,
             // MDEDIT-128. Each answers `false` when the caret is not in a table, or when the edit
             // would leave something that is not one — the header row, the last column — which is

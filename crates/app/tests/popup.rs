@@ -750,3 +750,110 @@ fn the_picker_at_the_right_edge_stays_inside_the_window() {
         "a picker from {x} for {width} runs past 400"
     );
 }
+
+// ---- a dropdown in the overflow list (MDEDIT-193) ----
+
+/// Narrow enough that every button which opens a panel is displaced into the overflow list.
+const NARROWEST: f32 = 300.0;
+
+/// Opens the overflow list at [`NARROWEST`] and chooses `action` from it.
+///
+/// Panics if `action` was not displaced, rather than passing vacuously: a test about choosing a row
+/// that is not there would say nothing at all.
+fn choose_from_overflow(editor: &mut Editor<Grid>, action: Action) -> bool {
+    let (x, y) = centre_of(editor, Action::More);
+    editor.click(x, y);
+    let _ = editor.build_frame(NARROWEST, HEIGHT, 1.0);
+    let rows = editor
+        .menu_rows()
+        .expect("the overflow list should be open")
+        .to_vec();
+    let index = rows
+        .iter()
+        .position(|row| *row == action)
+        .unwrap_or_else(|| panic!("{action:?} should be displaced at {NARROWEST}px: {rows:?}"));
+    let (x, y) = row_centre(editor, index);
+    let acted = editor.click(x, y);
+    let _ = editor.build_frame(NARROWEST, HEIGHT, 1.0);
+    acted
+}
+
+/// **The defect.** Every button that opens a panel opens it from the overflow list too, instead of
+/// closing the list on a click that did nothing.
+///
+/// Driven by `Action::opens`, not by a list kept here, so the next button that opens a panel is
+/// tested the day it is added — which is the shape the defect had: a third kind of row nobody had
+/// thought to try from `More`.
+#[test]
+fn every_button_that_opens_a_panel_opens_it_from_the_overflow() {
+    let openers: Vec<Action> = [toolbar::STANDARD, toolbar::MARKDOWN]
+        .concat()
+        .into_iter()
+        .filter(|action| action.opens().is_some())
+        .collect();
+    assert!(
+        openers.len() >= 2,
+        "Headings and Table at least: {openers:?}"
+    );
+
+    for action in openers {
+        let mut editor = editor("some prose\n", NARROWEST);
+        assert!(choose_from_overflow(&mut editor, action), "{action:?}");
+        assert_eq!(
+            editor.menu_kind(),
+            action.opens(),
+            "{action:?} chosen from the overflow should open its own panel"
+        );
+    }
+}
+
+/// And what it opens works: a level chosen from the heading list reached that way applies.
+#[test]
+fn a_heading_level_chosen_after_the_overflow_applies() {
+    let mut editor = editor("some prose\n", NARROWEST);
+    choose_from_overflow(&mut editor, Action::Headings);
+    let rows = editor
+        .menu_rows()
+        .expect("the heading list should be open")
+        .to_vec();
+    let index = rows
+        .iter()
+        .position(|row| *row == Action::Heading(2))
+        .expect("the list offers H2");
+
+    let (x, y) = row_centre(&editor, index);
+    editor.click(x, y);
+
+    assert_eq!(editor.document().to_string(), "## some prose\n");
+    assert_eq!(editor.menu_kind(), None, "choosing a level closes the list");
+}
+
+/// Asked the way the bar asks, so inside a table Table opens the edit list rather than the size
+/// picker — `menu_for`'s rule, which a lookup of `Action::opens` alone would have lost.
+#[test]
+fn table_from_the_overflow_inside_a_table_opens_the_edit_list() {
+    let mut editor = editor("| a | b |\n| --- | --- |\n| 1 | 2 |\n", NARROWEST);
+    caret_at(&mut editor, 2);
+    let _ = editor.build_frame(NARROWEST, HEIGHT, 1.0);
+
+    choose_from_overflow(&mut editor, Action::Table);
+
+    assert_eq!(editor.menu_kind(), Some(toolbar::Menu::TableEdit));
+}
+
+/// One panel at a time: the overflow list is replaced, not stacked under, and the new one hangs
+/// from the same place.
+#[test]
+fn the_opened_panel_replaces_the_overflow_list_where_it_was() {
+    let mut editor = editor("some prose\n", NARROWEST);
+    let (x, y) = centre_of(&editor, Action::More);
+    editor.click(x, y);
+    let overflow_top = editor.menu_at().expect("open").1;
+    editor.click(x, y);
+    assert_eq!(editor.menu_kind(), None, "a second click on More closes it");
+
+    choose_from_overflow(&mut editor, Action::Headings);
+
+    assert_eq!(editor.menu_kind(), Some(toolbar::Menu::Headings));
+    assert_eq!(editor.menu_at().expect("open").1, overflow_top);
+}

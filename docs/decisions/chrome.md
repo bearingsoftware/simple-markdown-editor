@@ -284,6 +284,17 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   one partition and deriving them separately is how an action ends up in neither.
   `every_button_is_either_drawn_or_in_the_overflow` sweeps the widths and rejoins them.
 
+  **A row in the list does what its button does, including opening a panel** (MDEDIT-193). The list
+  copied displaced buttons verbatim and sent every chosen row to `perform`, which answers `false` for
+  the buttons that open a panel — so Headings and Table chosen from `More` closed the list and did
+  nothing, and in a window that narrow H4–H6 and the table picker had no other way in. Present from
+  the day the overflow shipped, and invisible to `choosing_from_the_overflow_performs_it`, which
+  tried only Link. **The panel opens in place of the list**, hanging from `More` where the list did,
+  so one panel is open at a time as the popup code assumes; a nested submenu would have been a
+  second open panel and a second z-order for a narrow window. It asks `menu_for` as the bar does, so
+  Table inside a table still opens the edit list. The test sweeps `Action::opens()` rather than
+  naming the two, so MDEDIT-144's Lists is covered the day it lands.
+
   **Three heading buttons became one, and that is what paid for MDEDIT-87.** 844px → 776, and Image
   and Table land at 861 against a 900px window — measured in `icons.rs` rather than hoped for, so if
   it stops being true that ticket hears about it first. (861, not the 858 estimated here in advance
