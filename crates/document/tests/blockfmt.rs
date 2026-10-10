@@ -101,8 +101,9 @@ fn converting_between_list_kinds_swaps_the_marker() {
     doc.set_block(Block::Task);
     assert_eq!(doc.to_string(), "1. [ ] one\n2. [ ] two\n");
 
+    // And the box survives the switch back (MDEDIT-144).
     doc.set_block(Block::Bullet);
-    assert_eq!(doc.to_string(), "- one\n- two\n");
+    assert_eq!(doc.to_string(), "- [ ] one\n- [ ] two\n");
 }
 
 // ---- tasks (MDEDIT-142) ----
@@ -154,22 +155,95 @@ fn brackets_opening_a_line_with_no_list_are_not_a_task() {
     }
 }
 
-/// A numbered task is not also a plain numbered item, as a bulleted one is not a plain bullet.
-/// Ordered on it converts it to one rather than clearing it to prose.
+// ---- the kind of list ignores the box (MDEDIT-144) ----
+//
+// These four replace MDEDIT-142's `a_numbered_task_is_not_also_plain_ordered` and
+// `a_task_is_not_also_a_plain_bullet`, which asserted the rule this ticket reversed: a kind switch
+// dropped the box, and Bullet on a bulleted task converted it to a plain bullet.
+
+/// The tick is the user's, so switching kind carries it — and the box's bytes are copied, not
+/// rewritten, so a capital `X` stays a capital `X`.
 #[test]
-fn a_numbered_task_is_not_also_plain_ordered() {
-    let mut doc = all("1. [ ] a task\n");
-    doc.set_block(Block::Ordered);
-    assert_eq!(doc.to_string(), "1. a task\n");
+fn switching_kind_keeps_the_box_and_its_tick() {
+    let mut doc = at("- [X] done\n", 8);
+    assert!(doc.set_block(Block::Ordered));
+    assert_eq!(doc.to_string(), "1. [X] done\n");
+
+    assert!(doc.set_block(Block::Bullet));
+    assert_eq!(doc.to_string(), "- [X] done\n");
 }
 
-/// A task is a bullet with a checkbox, so the two must not both claim the same line.
 #[test]
-fn a_task_is_not_also_a_plain_bullet() {
-    let mut doc = all("- [ ] a task\n");
-    // Invoking Bullet on a task converts it, rather than clearing it as it would a plain bullet.
+fn an_unticked_box_survives_the_switch_too() {
+    let mut doc = at("3. [ ] step\n", 8);
     doc.set_block(Block::Bullet);
-    assert_eq!(doc.to_string(), "- a task\n");
+    assert_eq!(doc.to_string(), "- [ ] step\n");
+}
+
+/// A bulleted task is a bullet, so Bullet on it is the line's own kind and clears the list, box and
+/// all — a box outside a list item is only brackets. Taking off just the box is Task's job.
+#[test]
+fn the_lines_own_kind_clears_a_task_box_and_all() {
+    for (source, what) in [
+        ("- [x] a task\n", Block::Bullet),
+        ("1. [ ] a task\n", Block::Ordered),
+    ] {
+        let mut doc = all(source);
+        assert!(doc.set_block(what), "{source:?}");
+        assert_eq!(doc.to_string(), "a task\n", "{source:?}");
+    }
+}
+
+/// What lights and what clears are one predicate, so a task lights its kind as well as Task.
+#[test]
+fn a_task_carries_its_kind_and_task() {
+    let bullet = at("- [ ] a\n", 6);
+    assert!(bullet.carries(Block::Bullet) && bullet.carries(Block::Task));
+    assert!(!bullet.carries(Block::Ordered));
+
+    let numbered = at("2. [x] b\n", 7);
+    assert!(numbered.carries(Block::Ordered) && numbered.carries(Block::Task));
+    assert!(!numbered.carries(Block::Bullet));
+}
+
+/// A mixed selection of tasks and plain items is made uniform without touching a box: the tasks keep
+/// theirs and the plain items do not gain one.
+#[test]
+fn a_mixed_selection_switches_kind_and_keeps_each_box() {
+    let mut doc = all("- [x] one\n- two\n- [ ] three\n");
+    doc.set_block(Block::Ordered);
+    assert_eq!(doc.to_string(), "1. [x] one\n2. two\n3. [ ] three\n");
+}
+
+/// Joining a bullet list leaves a task that is already a bullet byte for byte.
+#[test]
+fn joining_a_list_leaves_a_bulleted_task_alone() {
+    let mut doc = all("- [X] one\ntwo\n");
+    doc.set_block(Block::Bullet);
+    assert_eq!(doc.to_string(), "- [X] one\n- two\n");
+}
+
+/// Paragraph → bullet → numbered → paragraph comes back to the bytes it started from.
+#[test]
+fn a_kind_switch_round_trips_to_a_paragraph() {
+    let source = "one\ntwo\n";
+    let mut doc = all(source);
+    doc.set_block(Block::Bullet);
+    doc.set_block(Block::Ordered);
+    assert_eq!(doc.to_string(), "1. one\n2. two\n");
+    doc.set_block(Block::Ordered);
+    assert_eq!(doc.to_string(), source);
+}
+
+/// Switching kind is still one press, so it is one undo step — and the undo brings the bullet back
+/// with its box.
+#[test]
+fn a_kind_switch_undoes_in_one_step() {
+    let source = "- [x] one\n- [ ] two\n";
+    let mut doc = all(source);
+    doc.set_block(Block::Ordered);
+    assert!(doc.undo());
+    assert_eq!(doc.to_string(), source);
 }
 
 /// The decision the ticket asked to be stated rather than improvised: half a list is not a thing

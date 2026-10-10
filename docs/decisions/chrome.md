@@ -318,6 +318,37 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Two things found by their own tests rather than by eye: `popup::hit_test` gave the panel's top
   margin to row zero, because the subtraction went negative and the cast to `usize` saturated; and
   the icon column has to clear `PADDING` plus the icon or the words start on top of the picture.
+- **Bullet and Numbered are one Lists button; Task stays its own.** MDEDIT-144, and MDEDIT-116's
+  move a second time. A list item is one kind or the other, so the two are alternatives and belong
+  in one list, as the heading levels do. A task is not a third kind. GFM makes it a list item whose
+  content opens with a box, so `1. [ ] step` is a numbered task, and MDEDIT-142 had already made Task
+  a modifier that keeps a number. The bar now has the same two axes as the format: a kind, and a box.
+
+  **Switching kind keeps the box**, and that reverses MDEDIT-142's rule that Ordered on a task
+  dropped it — see that entry in [rendering](rendering.md). The rule fitted three peer buttons. In a
+  list of list *styles* it silently threw away a tick the user had set, which nothing in the UI
+  suggests. The box's bytes are copied rather than rewritten, so `[X]` stays `[X]`. **The kind
+  ignores the box everywhere**: `Parts::is(Block::Bullet)` answers for `- [ ] a`, so Bullet lights on
+  a task and choosing it there clears the list, box and all, as choosing your own heading level
+  clears it. One predicate still decides both what lights and what clears. The plan had asked for a
+  separate kind query and left `Block::Bullet` alone; that would have made lighting and clearing two
+  pieces of code, which is the drift `carries` exists to prevent. **The accepted cost** is a habit:
+  Bullet on a bulleted task used to leave a plain bullet, and now taking off just the box is Task's
+  job.
+
+  **The face is resolved to an action, not a label.** `face_key` used to swap the heading button's
+  word, which worked because heading faces are letterforms. List faces are icons, and an icon is
+  found from an action, so `Editor::face_action` answers Headings with `Heading(n)` and Lists with
+  `Bullet` or `Ordered`, and `button_face` draws whatever that action draws, including its word on a
+  machine without the font. The cache key is still that action's label, so there is one key per
+  distinct face. **Both faces are 22px on the real font**, so the bar does not move sideways as the
+  caret enters a numbered list; `the_lists_faces_are_one_width` asserts the relation.
+
+  **One button back, not two:** 861px → 827px at 900, so the headroom goes from 39px to 73px. The
+  ticket first said two buttons' worth, which was wrong, because two buttons became one.
+  `icons.rs` now sweeps `toolbar::LISTS` as well as the bar, because `Ordered`'s icon is a face the
+  bar draws while no longer being a button on it. Lists has no chord, and neither Bullet nor Ordered
+  ever had one. Chosen from `More`, it opens its list (MDEDIT-193).
 - **The Table button opens a grid, and a grid is the one panel here that is not a list.** MDEDIT-127.
   MDEDIT-87 shipped that button writing a fixed 2×2 skeleton and it was rejected on sight — a button
   that always writes the same shape is barely better than typing the pipes — so the button came back

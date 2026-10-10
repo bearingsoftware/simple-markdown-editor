@@ -17,10 +17,11 @@
     clippy::float_cmp
 )]
 
+use mdedit_app::editor::Editor;
 use mdedit_app::file_icon::Icon;
 use mdedit_app::toolbar::{self, Action};
 use mdedit_app::view::{Theme, as_styled, build_runs};
-use mdedit_document::Document;
+use mdedit_document::{Document, Selection};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use mdedit_text::{FontFamily, StyledRun, TextLayout, TextStyle};
 use mdedit_text_dwrite::DirectWriteText;
@@ -114,7 +115,7 @@ fn every_icon_the_bar_draws_has_ink() {
     let mut text = engine();
     let mut blank = Vec::new();
 
-    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
+    for action in faces() {
         let Some(icon) = action.icon() else {
             continue;
         };
@@ -131,6 +132,15 @@ fn every_icon_the_bar_draws_has_ink() {
     );
 }
 
+/// Every action whose icon the bar can draw: its buttons, and the faces the Lists button takes.
+///
+/// **Not just the buttons** since MDEDIT-144. Lists draws `Ordered`'s icon inside a numbered list,
+/// and `Ordered` is no longer on the bar, so a sweep of the bar alone would never ask the font for
+/// the face a numbered list shows.
+fn faces() -> Vec<Action> {
+    [toolbar::STANDARD, toolbar::MARKDOWN, toolbar::LISTS].concat()
+}
+
 /// Every code point in the table is really in the font on this machine.
 ///
 /// **Taken from the installed font rather than from a reference page.** A private-use code point is
@@ -142,7 +152,7 @@ fn every_icon_the_bar_asks_for_exists() {
     let mut text = engine();
     let mut missing = Vec::new();
 
-    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
+    for action in faces() {
         let Some(icon) = action.icon() else {
             continue;
         };
@@ -246,6 +256,10 @@ fn all_of_the_buttons_fit_a_default_window() {
 ///
 /// The headroom is the interesting number rather than the pass. One 34px button still fits inside
 /// 39px; the one after it does not, and is the conversation.
+///
+/// **MDEDIT-144 bought one button back**: Bullet and Numbered became Lists, and twenty-one buttons
+/// are 827px again, leaving 73px. The ticket first said two buttons' worth, which was wrong — two
+/// became one.
 #[test]
 fn the_bar_still_fits_with_the_table_button() {
     let mut text = engine();
@@ -412,5 +426,44 @@ fn measure(text: &mut DirectWriteText, action: Action) -> f32 {
                     .sum::<f32>()
             })
             .sum(),
+    }
+}
+
+/// **Both of Lists' faces are the same width** (MDEDIT-144), so the bar does not shift sideways when
+/// the caret walks into a numbered list. Measured, because the two are different glyphs and the
+/// button's width is its face's.
+#[test]
+fn the_lists_faces_are_one_width() {
+    let mut text = engine();
+    let bullet = measure(&mut text, Action::Bullet);
+    let ordered = measure(&mut text, Action::Ordered);
+    assert!(
+        (bullet - ordered).abs() < 0.5,
+        "the bullet face is {bullet:.1}px and the numbered one {ordered:.1}px, so the bar moves \
+         as the caret changes list"
+    );
+    assert_eq!(measure(&mut text, Action::Lists), bullet);
+}
+
+/// **Inside a numbered list, Lists draws the numbered icon** — asked of a real editor on the real
+/// font, because the stub has no icon font and draws each face's word, and `•` and `1.` differ even
+/// when the icon behind them would not. A face keyed right and drawn from the wrong action's icon is
+/// exactly the defect that word hides.
+#[test]
+fn the_lists_button_draws_the_carets_kind_of_icon() {
+    let source = "- a bullet\n\n1. a number\n";
+    let engine = DirectWriteText::new().expect("DirectWrite is available on any supported Windows");
+    let mut editor = Editor::new(source, engine);
+    for (caret, kind) in [(3, Action::Bullet), (source.len() - 3, Action::Ordered)] {
+        editor
+            .document_mut()
+            .set_selection(Selection::caret(ByteOffset::new(caret)));
+        let _ = editor.build_frame(1200.0, 600.0, 1.0);
+        let icon = kind.icon().expect("both kinds have an icon").to_string();
+        assert_eq!(
+            editor.button_face_drawn(Action::Lists),
+            Some(icon.as_str()),
+            "caret at {caret}"
+        );
     }
 }

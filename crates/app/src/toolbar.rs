@@ -118,11 +118,20 @@ pub enum Action {
     /// Only ever on the bar when something was displaced, and it is why nothing is silently lost off
     /// the right-hand end any more.
     More,
+    /// Opens the two kinds of list. **Not an edit.**
+    ///
+    /// MDEDIT-144, and MDEDIT-116's move again: Bullet and Numbered are alternatives — an item is
+    /// one or the other — so two buttons become one that opens a list of both, and its face shows
+    /// the kind the caret is in. [`Task`](Self::Task) is **not** in it, because a task is a
+    /// modifier on an item of either kind rather than a third kind (MDEDIT-142).
+    Lists,
     /// `- ` list.
+    ///
+    /// On the *bar* this is [`Lists`](Self::Lists) since MDEDIT-144; this is a row of its list.
     Bullet,
-    /// `1. ` list.
+    /// `1. ` list. A row of [`Lists`](Self::Lists), as [`Bullet`](Self::Bullet) is.
     Ordered,
-    /// `- [ ] ` list.
+    /// A box on a list item, of whichever kind it already is.
     Task,
     /// `> ` quote.
     Quote,
@@ -210,7 +219,9 @@ impl Action {
             Self::Italic => '\u{E8DB}',
             Self::Strikethrough => '\u{EDE0}',
             Self::Code => '\u{E943}',
-            Self::Bullet => '\u{E8FD}',
+            // Lists' own code point is the bullet's, which is what it draws outside a list. Inside
+            // one it draws the kind it is in — see `Editor::face_action`.
+            Self::Bullet | Self::Lists => '\u{E8FD}',
             Self::Ordered => '\u{E8FE}',
             Self::Task => '\u{E9D5}',
             Self::Quote => '\u{E9D2}',
@@ -289,7 +300,7 @@ impl Action {
             // Only ever drawn if the icon font is missing, in which case an ellipsis is still the
             // right word for it.
             Self::More => "…".to_owned(),
-            Self::Bullet => "•".to_owned(),
+            Self::Bullet | Self::Lists => "•".to_owned(),
             Self::Ordered => "1.".to_owned(),
             // `[x]` and `[]()` rather than ☑ and 🔗: both of those resolve to the emoji font and
             // render as colour glyphs, which look like lit buttons sitting in a monochrome row.
@@ -356,9 +367,12 @@ impl Action {
             }
             Self::Headings => "Heading".to_owned(),
             Self::More => "More".to_owned(),
+            Self::Lists => "List".to_owned(),
             Self::Bullet => "Bullet list".to_owned(),
             Self::Ordered => "Numbered list".to_owned(),
-            Self::Task => "Task list".to_owned(),
+            // "Task", not "Task list", since MDEDIT-144: it is no longer one of three kinds of list
+            // but a box on whichever kind the item is.
+            Self::Task => "Task".to_owned(),
             Self::Quote => "Block quote".to_owned(),
             Self::Fence => "Code block".to_owned(),
             Self::Rule => "Horizontal rule".to_owned(),
@@ -416,6 +430,7 @@ impl Action {
             // on something you reach for often enough to remember.
             | Self::Image
             | Self::Headings
+            | Self::Lists
             | Self::Table
             // Nor the table-edit rows. Nine chords for operations reached from a list that is
             // already one click away, on a bar whose chords are meant to be the ones worth
@@ -464,7 +479,7 @@ impl Action {
                 | Self::Bold
                 | Self::Heading(1)
                 | Self::Headings
-                | Self::Bullet
+                | Self::Lists
                 | Self::Quote
                 // MDEDIT-87. Link opens the insert group rather than closing the block one.
                 | Self::Link
@@ -487,9 +502,9 @@ impl Action {
 
     /// The list this button opens instead of editing anything, if it opens one.
     ///
-    /// **Three buttons on this bar are not a second door to a chord**, which is the rule every other
+    /// **Four buttons on this bar are not a second door to a chord**, which is the rule every other
     /// one follows. They open a panel; what is in the panel are the doors. Answering it here rather
-    /// than with three special cases in the click path is what keeps that path one lookup, and what
+    /// than with four special cases in the click path is what keeps that path one lookup, and what
     /// makes "did this button perform something?" a question with one answer.
     ///
     /// `More`'s rows are not known here — they are whatever [`overflowing`] displaced, which depends
@@ -498,6 +513,7 @@ impl Action {
     pub fn opens(self) -> Option<Menu> {
         match self {
             Self::Headings => Some(Menu::Headings),
+            Self::Lists => Some(Menu::Lists),
             Self::More => Some(Menu::Overflow),
             Self::Table => Some(Menu::TableSize),
             _ => None,
@@ -510,11 +526,13 @@ impl Action {
 pub enum Menu {
     /// Every heading level, one to six.
     Headings,
+    /// Bullet and numbered (MDEDIT-144).
+    Lists,
     /// Whatever did not fit on the bar.
     Overflow,
     /// The rows × columns grid (MDEDIT-127).
     ///
-    /// **The one that is not a list.** The other two are rows of actions and share every piece of
+    /// **The one that is not a list.** The others are rows of actions and share every piece of
     /// [`crate::popup`]'s geometry; this is a grid of cells, and where the difference has to be
     /// handled it is handled by matching on this variant rather than by a panel that is secretly
     /// two things.
@@ -572,6 +590,12 @@ pub const HEADINGS: &[Action] = &[
     Action::Heading(6),
 ];
 
+/// The kinds of list the Lists button offers (MDEDIT-144).
+///
+/// **Two, and Task is not one of them.** Choosing a kind keeps a task's box, and choosing the kind
+/// the line already is removes the list — see `Document::set_block`.
+pub const LISTS: &[Action] = &[Action::Bullet, Action::Ordered];
+
 /// The buttons **every** document gets, whatever its language.
 ///
 /// MDEDIT-84. Before this the bar was Markdown's alone, so a JSON tab had no bar at all — and once
@@ -610,8 +634,9 @@ pub const MARKDOWN: &[Action] = &[
     // One button, six levels, since MDEDIT-116. It was `Heading(1)`, `Heading(2)`, `Heading(3)`,
     // and dropping two of them is what made room for MDEDIT-87's Image and Table.
     Action::Headings,
-    Action::Bullet,
-    Action::Ordered,
+    // One button, two kinds, since MDEDIT-144. Bullet and Ordered were two buttons here, and Task
+    // stays one because it is a modifier on either kind rather than a third.
+    Action::Lists,
     Action::Task,
     Action::Quote,
     Action::Fence,

@@ -262,8 +262,9 @@ fn a_button_does_what_its_chord_does() {
         (Action::Italic, "*prose*\n"),
         // `Heading(2)` is no longer *on* the bar — MDEDIT-116 replaced the three heading buttons
         // with one that opens a list, and the levels are its rows. Reaching one is two clicks, and
-        // `popup.rs` is where that is tested.
-        (Action::Bullet, "- prose\n"),
+        // `popup.rs` is where that is tested. Bullet went the same way in MDEDIT-144, into Lists;
+        // Task stayed a button.
+        (Action::Task, "- [ ] prose\n"),
         (Action::Quote, "> prose\n"),
     ];
 
@@ -382,10 +383,13 @@ fn a_setext_heading_lights_too() {
     assert!(editor.is_lit(Action::Heading(1)));
 }
 
+/// The kind and the modifier light independently (MDEDIT-144). Until then a task lit Task alone —
+/// "a task is not a bullet" — which was right for three peer buttons and wrong for a kind and a box.
 #[test]
 fn the_list_buttons_tell_each_other_apart() {
     let mut bullet = editor("- a bullet\n");
     caret_at(&mut bullet, 5);
+    assert!(bullet.is_lit(Action::Lists));
     assert!(bullet.is_lit(Action::Bullet));
     assert!(!bullet.is_lit(Action::Ordered));
     assert!(!bullet.is_lit(Action::Task), "a bullet is not a task");
@@ -393,15 +397,75 @@ fn the_list_buttons_tell_each_other_apart() {
     let mut task = editor("- [ ] a task\n");
     caret_at(&mut task, 8);
     assert!(task.is_lit(Action::Task));
-    assert!(!task.is_lit(Action::Bullet), "a task is not a bullet");
+    assert!(task.is_lit(Action::Lists), "a task is in a list");
+    assert!(task.is_lit(Action::Bullet), "and its kind is bullet");
+    assert!(!task.is_lit(Action::Ordered));
 
     let mut numbered = editor("1. [ ] a numbered task\n");
     caret_at(&mut numbered, 9);
     assert!(numbered.is_lit(Action::Task), "MDEDIT-142");
-    assert!(
-        !numbered.is_lit(Action::Ordered),
-        "a task is not a plain numbered item"
+    assert!(numbered.is_lit(Action::Lists));
+    assert!(numbered.is_lit(Action::Ordered));
+    assert!(!numbered.is_lit(Action::Bullet));
+
+    let mut prose = editor("just prose\n");
+    caret_at(&mut prose, 4);
+    assert!(!prose.is_lit(Action::Lists));
+}
+
+/// One Lists button where Bullet and Numbered were, with Task straight after it (MDEDIT-144).
+#[test]
+fn the_bar_has_one_lists_button_and_task_beside_it() {
+    let markdown = toolbar::MARKDOWN;
+    assert!(!markdown.contains(&Action::Bullet) && !markdown.contains(&Action::Ordered));
+    let lists = markdown
+        .iter()
+        .position(|action| *action == Action::Lists)
+        .expect("Lists should be on the bar");
+    assert_eq!(markdown.get(lists + 1), Some(&Action::Task));
+    assert_eq!(Action::Lists.opens(), Some(toolbar::Menu::Lists));
+    assert_eq!(
+        Action::Lists.chord(),
+        None,
+        "no chord, as Bullet and Ordered had none"
     );
+}
+
+/// **The face says which kind the caret is in**, the way Headings says which level. This grid has
+/// no icon font, so what is drawn is each face's fallback word: `•` for a bullet, `1.` for a number.
+#[test]
+fn the_lists_face_follows_the_caret() {
+    for (source, caret, face) in [
+        ("just prose\n", 4, "•"),
+        ("- a bullet\n", 5, "•"),
+        ("1. a number\n", 5, "1."),
+        ("3. [x] a numbered task\n", 9, "1."),
+        ("- [ ] a task\n", 8, "•"),
+    ] {
+        let mut editor = editor(source);
+        caret_at(&mut editor, caret);
+        let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+        assert_eq!(
+            editor.button_face_drawn(Action::Lists),
+            Some(face),
+            "{source:?}"
+        );
+    }
+}
+
+/// Moving between kinds changes the face on the next frame without moving anything else: the face
+/// is a cache key, and a stale one would be served for the wrong kind.
+#[test]
+fn the_lists_face_changes_as_the_caret_moves() {
+    let source = "- a bullet\n\n1. a number\n";
+    let mut editor = editor(source);
+    caret_at(&mut editor, 3);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(editor.button_face_drawn(Action::Lists), Some("•"));
+
+    caret_at(&mut editor, source.len() - 3);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(editor.button_face_drawn(Action::Lists), Some("1."));
 }
 
 /// The button, not only the document call behind it: Task on a numbered item keeps the number.

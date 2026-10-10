@@ -225,6 +225,77 @@ fn the_button_that_opened_it_closes_it() {
     assert_eq!(editor.menu_rows(), None);
 }
 
+// ---- the list of lists (MDEDIT-144) ----
+
+/// The index of `action` in the open list.
+fn row_of(editor: &Editor<Grid>, action: Action) -> usize {
+    editor
+        .menu_rows()
+        .expect("a list should be open")
+        .iter()
+        .position(|row| *row == action)
+        .unwrap_or_else(|| panic!("{action:?} should be a row"))
+}
+
+#[test]
+fn the_lists_button_offers_bullet_and_numbered() {
+    let mut editor = editor("prose\n", WIDE);
+    open(&mut editor, Action::Lists);
+    assert_eq!(editor.menu_kind(), Some(toolbar::Menu::Lists));
+    assert_eq!(editor.menu_rows(), Some(toolbar::LISTS));
+    // Words beside the icons, because a bullet and a number are pictures that want a name.
+    assert!(popup::any_text(toolbar::LISTS));
+}
+
+#[test]
+fn choosing_a_kind_applies_it_in_one_undo_step_and_closes() {
+    let mut editor = editor("prose\n", WIDE);
+    caret_at(&mut editor, 2);
+    open(&mut editor, Action::Lists);
+    let (x, y) = row_centre(&editor, row_of(&editor, Action::Ordered));
+    editor.click(x, y);
+
+    assert_eq!(editor.document().to_string(), "1. prose\n");
+    assert_eq!(editor.menu_rows(), None, "and it closed behind itself");
+    assert!(editor.document_mut().undo());
+    assert_eq!(editor.document().to_string(), "prose\n");
+}
+
+/// The acceptance criterion the ticket turned on: switching kind from the list keeps a task's box
+/// and its tick, byte for byte.
+#[test]
+fn switching_kind_from_the_list_keeps_the_box() {
+    let mut editor = editor("- [X] done\n", WIDE);
+    caret_at(&mut editor, 8);
+    open(&mut editor, Action::Lists);
+    let (x, y) = row_centre(&editor, row_of(&editor, Action::Ordered));
+    editor.click(x, y);
+    assert_eq!(editor.document().to_string(), "1. [X] done\n");
+}
+
+/// The kind the line already is, chosen again, removes the list — box and all — as choosing your
+/// own heading level clears it.
+#[test]
+fn choosing_the_lines_own_kind_removes_the_list() {
+    let mut editor = editor("1. [ ] step\n", WIDE);
+    caret_at(&mut editor, 8);
+    open(&mut editor, Action::Lists);
+    assert!(editor.is_lit(Action::Ordered), "its own kind's row is lit");
+    assert!(!editor.is_lit(Action::Bullet));
+    let (x, y) = row_centre(&editor, row_of(&editor, Action::Ordered));
+    editor.click(x, y);
+    assert_eq!(editor.document().to_string(), "step\n");
+}
+
+#[test]
+fn the_lists_button_closes_its_own_list() {
+    let mut editor = editor("prose\n", WIDE);
+    open(&mut editor, Action::Lists);
+    assert!(editor.menu_rows().is_some());
+    open(&mut editor, Action::Lists);
+    assert_eq!(editor.menu_rows(), None);
+}
+
 // ---- the overflow list ----
 
 #[test]
