@@ -55,6 +55,7 @@ mod frame;
 mod frame_cost;
 mod geometry;
 mod gutter;
+mod home_end;
 mod icons;
 mod image_placement;
 mod images;

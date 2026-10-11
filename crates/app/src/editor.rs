@@ -2826,17 +2826,12 @@ impl<T: TextLayout> Editor<T> {
     /// Separate from the rest of the key handling because they are two different things: a chord is
     /// a command, and everything else edits or moves.
     fn handle_chord(&mut self, event: &KeyEvent) -> bool {
-        // Ctrl+Home and Ctrl+End go to the ends of the document, which is where every editor puts
-        // them. The caret moves, so the scroll follows without either arm saying so.
         match &event.logical_key {
             Key::Named(NamedKey::Home) => {
-                self.select(ByteOffset::ZERO, self.modifiers.shift_key());
-                return true;
+                return self.press_document_edge(false, self.modifiers.shift_key());
             }
             Key::Named(NamedKey::End) => {
-                let end = ByteOffset::new(self.document().len_bytes());
-                self.select(end, self.modifiers.shift_key());
-                return true;
+                return self.press_document_edge(true, self.modifiers.shift_key());
             }
             // Tab is a *named* key, not a character — which `find_key`'s own decode already relied
             // on — so the `"\t"` arm below was unreachable from the keyboard and `cycle_tab` could
@@ -3034,15 +3029,10 @@ impl<T: TextLayout> Editor<T> {
             Key::Named(NamedKey::ArrowRight) => self.press_right(extend),
             Key::Named(NamedKey::ArrowUp) => self.move_vertically(false, extend),
             Key::Named(NamedKey::ArrowDown) => self.move_vertically(true, extend),
-            Key::Named(NamedKey::Home) => {
-                self.select(ByteOffset::ZERO, extend);
-                true
-            }
-            Key::Named(NamedKey::End) => {
-                let end = ByteOffset::new(self.document().len_bytes());
-                self.select(end, extend);
-                true
-            }
+            // The row, not the document (MDEDIT-192). Until then these two did what Ctrl+Home and
+            // Ctrl+End do, so two of the four bindings were the same command twice.
+            Key::Named(NamedKey::Home) => self.press_home(extend),
+            Key::Named(NamedKey::End) => self.press_end(extend),
             // Paging moves the view, not the caret — so the caret may end up off screen, and must
             // not be dragged back the moment the frame is built.
             Key::Named(NamedKey::PageUp) => {
@@ -3568,6 +3558,81 @@ impl<T: TextLayout> Editor<T> {
         let target = self.caret_after(self.document().selection().head());
         self.select(target, extend);
         true
+    }
+
+    /// Home, with `extend` for Shift: the start of the **visual row** the caret is on (MDEDIT-192).
+    ///
+    /// Visual rather than source, as Up and Down are: a wrapped paragraph is several rows, and each
+    /// continuation has a start of its own. It is the point gesture a click far left of the row
+    /// would be, so it reaches the row through the same hit test and cannot disagree with one.
+    ///
+    /// **In preview it stops after a concealed marker**, so Home on `- item` or `# Title` lands
+    /// before the text rather than before the syntax. That is not a choice of style: a caret inside
+    /// or before a concealed marker draws at the same x as its far edge, and `past_concealed` is
+    /// the invariant every motion keeps. Plain markup conceals nothing, so there Home reaches the
+    /// row's true start. There is no second press that toggles between the two.
+    ///
+    /// Returns whether the frame needs redrawing, and `false` before the first frame, when there are
+    /// no rows to be on.
+    pub fn press_home(&mut self, extend: bool) -> bool {
+        let Some((offset, _)) = self.caret_row_edge(false) else {
+            return false;
+        };
+        // Asked of the mode, because `past_concealed` is not: the document conceals by language,
+        // and plain markup is a way of drawing it rather than a different parse.
+        let offset = if self.mode == view::Mode::Preview {
+            self.past_concealed(offset)
+        } else {
+            offset
+        };
+        self.select(offset, extend);
+        true
+    }
+
+    /// End, with `extend` for Shift: the end of the visual row the caret is on (MDEDIT-192).
+    ///
+    /// **The caret stays drawn on that row**, which is MDEDIT-188's affinity set from the keyboard.
+    /// Where a line wraps, the end of one row and the start of the next are one byte, and only the
+    /// gesture knows which it meant. A click past the row's end already says `Upstream` there, and
+    /// End is the same point gesture, so typing after End appends to the row it ended.
+    pub fn press_end(&mut self, extend: bool) -> bool {
+        let Some((offset, affinity)) = self.caret_row_edge(true) else {
+            return false;
+        };
+        self.select_with(offset, extend, affinity);
+        true
+    }
+
+    /// Ctrl+Home or Ctrl+End: the start or end of the whole document, with `extend` for Shift.
+    ///
+    /// Where every editor puts them. The caret moves, so the scroll follows without saying so.
+    pub fn press_document_edge(&mut self, end: bool, extend: bool) -> bool {
+        let offset = if end {
+            ByteOffset::new(self.document().len_bytes())
+        } else {
+            ByteOffset::ZERO
+        };
+        self.select(offset, extend);
+        true
+    }
+
+    /// The byte a point beyond the left or right edge of the caret's row addresses, and its affinity.
+    ///
+    /// Aimed at the row's vertical middle, so the hit test cannot pick its neighbour whatever the
+    /// row's height, and at an `x` no glyph can be beyond.
+    fn caret_row_edge(&self, end: bool) -> Option<(ByteOffset, Affinity)> {
+        let (index, row, _) = self.caret_place()?;
+        let frame = self.last_frame.as_ref()?;
+        let cached = self.chunk_layout(frame, index)?;
+        let target = cached.as_hit(frame.chunks[index], &frame.text);
+        let height = cached
+            .layout
+            .lines
+            .get(row)
+            .map_or(self.theme.body_size, |line| line.height);
+        let middle = frame.tops[index] + hit::row_top(&target, row) + height / 2.0;
+        let x = if end { f32::MAX } else { f32::MIN };
+        self.offset_in_document(x, middle)
     }
 
     /// `offset`, moved past any concealed marker it is standing in.
