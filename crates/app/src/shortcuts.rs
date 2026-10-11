@@ -135,7 +135,11 @@ pub const ALL: &[Group] = &[
     Group {
         name: "Moving about",
         shortcuts: &[
-            key("Home / End", "Start or end of the document"),
+            key(
+                "Home / End",
+                "Start or end of the row — a wrapped line has one per row. In preview, Home stops \
+                 after a list bullet or heading mark rather than before it",
+            ),
             key("Ctrl+Home / Ctrl+End", "Start or end of the document"),
             key("Page Up / Page Down", "Scroll a screen, leaving the caret"),
             key("Shift + any motion", "Extend the selection instead"),

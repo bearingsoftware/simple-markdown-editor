@@ -26,6 +26,34 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   could not find it to take away, and a toggle that cannot be un-toggled is not one. The empty pair a
   press with no selection leaves behind *is* matched, textually and narrowly, for the same reason —
   otherwise pressing the chord twice by mistake leaves `****` with no way off but backspace.
+- **Home and End move within the caret's visual row.** MDEDIT-192. Until then both plain keys
+  went to the ends of the document, the same as Ctrl+Home and Ctrl+End, so two of the four bindings
+  were one command twice. No test pressed any of them, and the code was duplicated between
+  `handle_chord` and the plain key handler, which is how they stayed identical without anyone
+  noticing.
+
+  **The visual row, not the source line**, because Up and Down already move by visual row and a
+  wrapped paragraph's continuations each have a start of their own. **Home and End are point
+  gestures**: `press_home` and `press_end` aim beyond the left or right edge of the caret's row,
+  at its vertical middle, through the same hit test a click uses. So End inherits MDEDIT-188's
+  affinity for free. At a soft wrap the row's end is the same byte as the next row's start, and End
+  leaves the caret drawn on the row it ended, which is exactly what a click past that row's end
+  already did.
+
+  **In preview Home stops after a concealed marker, and that is not a style choice.** A caret
+  before `# ` or `- ` draws at the same x as the marker's far edge, and `past_concealed` is the
+  invariant every motion keeps. **Plain markup conceals nothing, so Home reaches column zero
+  there**, and it asks the *mode* to know that, because `past_concealed` does not: the document
+  conceals by language. That asymmetry is what found MDEDIT-194, where the arrow keys in plain
+  markup still treat a marker as one uncrossable step. **No two-press smart Home**, which toggles
+  between the text and the margin. It would be a second definition of a row's start, and nobody had
+  asked for one.
+
+  Ctrl+Home and Ctrl+End are `press_document_edge`, so a test can tell all four apart from one
+  caret. What no test can reach is the line mapping a key to its method, because a winit `KeyEvent`
+  cannot be built outside winit. That line is a check by hand, as Ctrl+Enter's is (MDEDIT-175). One
+  hand-mutation survives as equivalent: Home's aim of `f32::MIN` behaves the same as `0.0`, because
+  document coordinates start at the text's left edge even when the view is panned.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
