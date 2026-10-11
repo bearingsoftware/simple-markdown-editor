@@ -4761,8 +4761,11 @@ impl<T: TextLayout> Editor<T> {
             toolbar::Action::Heading(level) => {
                 self.caret_block_kind() == Some(BlockKind::Heading(level))
             }
+            // A task lights its kind as well as Task since MDEDIT-144: the kind ignores the box.
             toolbar::Action::Bullet => doc.carries(Block::Bullet),
             toolbar::Action::Ordered => doc.carries(Block::Ordered),
+            // Lit in any list, as Headings is in any heading; which kind is the face's job.
+            toolbar::Action::Lists => doc.carries(Block::Bullet) || doc.carries(Block::Ordered),
             toolbar::Action::Task => doc.carries(Block::Task),
             toolbar::Action::Quote => doc.is_quoted(),
             toolbar::Action::Fence => self.caret_block_kind() == Some(BlockKind::CodeBlock),
@@ -5073,19 +5076,36 @@ impl<T: TextLayout> Editor<T> {
     /// layer and looking at what came back is the only way to know, and it is the same oracle
     /// MDEDIT-5's Han test uses. A machine with neither icon font draws the bar it had before this
     /// story rather than twenty-two empty boxes.
-    /// What a button's face is keyed by, which is its label except for the one that is stateful.
+    /// What a button's face is keyed by: the label of the action it draws.
+    fn face_key(&self, action: toolbar::Action) -> String {
+        self.face_action(action).label()
+    }
+
+    /// The action whose face a button draws, which is its own except for the two that are stateful.
     ///
     /// The heading button stands for six levels and says which one the caret is in — `H2` inside a
-    /// level-two heading, `H` outside any. That makes its face depend on the document, so it makes
-    /// its *cache key* depend on the document too, which is fine: there are seven possible faces and
-    /// each is laid out once. Everything else is keyed by its own label and never moves.
-    fn face_key(&self, action: toolbar::Action) -> String {
-        if action != toolbar::Action::Headings {
-            return action.label();
-        }
-        match self.caret_block_kind() {
-            Some(BlockKind::Heading(level)) => toolbar::Action::Heading(level).label(),
-            _ => action.label(),
+    /// level-two heading, `H1` outside any. The list button (MDEDIT-144) stands for two kinds and
+    /// draws the one the caret is in, the bullet outside any list. That makes their faces depend on
+    /// the document, so it makes their *cache keys* depend on it too, which is fine: there are seven
+    /// heading faces and two list faces, and each is laid out once.
+    ///
+    /// **An action, not a label**, since MDEDIT-144. The heading faces are letterforms, so swapping
+    /// the word was enough; the list faces are icons, and an icon is found from an action. Resolving
+    /// to `Bullet` or `Ordered` is what lets [`button_face`](Self::button_face) draw that action's
+    /// icon, and its word on a machine without the font, with no case of its own.
+    fn face_action(&self, action: toolbar::Action) -> toolbar::Action {
+        use mdedit_document::format::Block;
+
+        match action {
+            toolbar::Action::Headings => match self.caret_block_kind() {
+                Some(BlockKind::Heading(level)) => toolbar::Action::Heading(level),
+                _ => action,
+            },
+            toolbar::Action::Lists if self.document().carries(Block::Ordered) => {
+                toolbar::Action::Ordered
+            }
+            toolbar::Action::Lists => toolbar::Action::Bullet,
+            _ => action,
         }
     }
 
@@ -5117,7 +5137,8 @@ impl<T: TextLayout> Editor<T> {
     }
 
     fn button_face(&mut self, action: toolbar::Action) -> Option<String> {
-        let key = self.face_key(action);
+        let action = self.face_action(action);
+        let key = action.label();
         if self.toolbar_labels.contains_key(&key) {
             return Some(key);
         }
@@ -6797,6 +6818,7 @@ impl<T: TextLayout> Editor<T> {
     fn toggle_menu(&mut self, button: toolbar::ButtonRect, kind: toolbar::Menu) -> bool {
         let rows: Vec<toolbar::Action> = match kind {
             toolbar::Menu::Headings => toolbar::HEADINGS.to_vec(),
+            toolbar::Menu::Lists => toolbar::LISTS.to_vec(),
             // **Whatever the bar dropped, taken from the row it drew** rather than recomputed. The
             // two are one partition and deriving them twice is how an action ends up in neither.
             toolbar::Menu::Overflow => self.dropped.clone(),
@@ -7326,13 +7348,16 @@ impl<T: TextLayout> Editor<T> {
                 false
             }
             toolbar::Action::Paste => self.paste(),
-            // **The three that are not a second door.** They open a panel, and `click_toolbar` deals
+            // **The four that are not a second door.** They open a panel, and `click_toolbar` deals
             // with them before it gets here, as `click_menu` does for one chosen from the overflow
             // list — a chord never reaches them, because `Action::chord` gives them none. Reaching
             // this arm means somebody called `perform` directly with one, which is a caller bug
             // rather than a user action, so it does nothing rather than guessing which row, or which
             // size, was meant. The overflow list was exactly that caller until MDEDIT-193.
-            toolbar::Action::Headings | toolbar::Action::More | toolbar::Action::Table => false,
+            toolbar::Action::Headings
+            | toolbar::Action::Lists
+            | toolbar::Action::More
+            | toolbar::Action::Table => false,
             // MDEDIT-128. Each answers `false` when the caret is not in a table, or when the edit
             // would leave something that is not one — the header row, the last column — which is
             // what `Document` refuses rather than what this decides.

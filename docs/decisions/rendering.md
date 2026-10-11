@@ -438,8 +438,15 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   wrote `- `, so this editor could not produce `1. [ ] step`, which GFM allows. A task is a modifier on
   a list item: on a numbered one Task adds or removes the box and keeps the author's number. A bullet
   is only what Task supplies to a line with no list, and goes with the box, so paragraph → task →
-  paragraph stays a round trip. As a bulleted task is not a plain bullet, a numbered task lights Task
-  and not Ordered.
+  paragraph stays a round trip. As a bulleted task is not a plain bullet, a numbered task lit
+  Task and not Ordered, and Ordered on a task dropped its box.
+
+  **That last rule was reversed by MDEDIT-144.** Once Bullet and Numbered became one Lists button
+  beside Task, the bar presented a kind and a modifier, and a kind switch that dropped the modifier
+  silently lost a tick the user had set. So the kind now ignores the box: a numbered task lights
+  Ordered *and* Task, switching kind carries the box byte for byte, and choosing the line's own kind
+  clears the list, box included. The modifier half of this entry, Task keeping a number, is what
+  made the reversal the consistent choice. See MDEDIT-144 in [chrome](chrome.md).
 
   Not done: a keyboard way to tick a box — the caret cannot stand inside `[ ]`, so in preview only
   the mouse can — and a pointer cursor over one, since nothing in the editor sets a cursor shape yet.

@@ -462,11 +462,15 @@ impl Parts {
     fn is(&self, what: Block) -> bool {
         match what {
             Block::Heading(level) => self.marker.trim_end() == "#".repeat(level as usize),
-            // A task is a list item whose content starts with a checkbox, and it is not also the
-            // plain kind of list it is written on — or every task would answer to both.
+            // A task is a list item whose content starts with a checkbox.
             Block::Task => is_list(&self.marker) && checkbox_len(&self.content).is_some(),
-            Block::Bullet => is_bullet(&self.marker) && checkbox_len(&self.content).is_none(),
-            Block::Ordered => is_ordered(&self.marker) && checkbox_len(&self.content).is_none(),
+            // **The kind of list ignores the box** (MDEDIT-144). A task is a modifier on an item,
+            // so `- [ ] a` is a bullet *and* a task: Bullet lights on it, and Bullet on it clears
+            // the list, as it would on `- a`. Until then a task answered to Task alone, which was
+            // right while Bullet, Ordered and Task were three peer buttons and wrong once the bar
+            // offers a kind and a modifier.
+            Block::Bullet => is_bullet(&self.marker),
+            Block::Ordered => is_ordered(&self.marker),
         }
     }
 }
@@ -488,6 +492,14 @@ fn is_ordered(marker: &str) -> bool {
 /// Whether `marker` is either kind of list marker, which is what a task's box can follow.
 fn is_list(marker: &str) -> bool {
     is_bullet(marker) || is_ordered(marker)
+}
+
+/// The task checkbox opening a list item, with its trailing space, exactly as written.
+fn task_box(parts: &Parts) -> Option<String> {
+    if !is_list(&parts.marker) {
+        return None;
+    }
+    checkbox_len(&parts.content).map(|len| parts.content[..len].to_owned())
 }
 
 /// How many bytes of `content` are a task checkbox, if it opens with one.
@@ -609,6 +621,14 @@ impl Document {
                 // which keeps paragraph → task → paragraph a round trip.
                 let numbered = (what == Block::Task && is_ordered(&parts.marker))
                     .then(|| parts.marker.clone());
+                // And so changing the kind keeps the box (MDEDIT-144): `- [x] a` becomes
+                // `1. [x] a`, the box's bytes exactly as they were, so `[X]` is not respelled.
+                // MDEDIT-142 dropped it, which silently lost a tick the user set; taking the box
+                // off is Task's job. Clearing still takes it, since a box outside a list item is
+                // only brackets.
+                let kept = (!clearing && matches!(what, Block::Bullet | Block::Ordered))
+                    .then(|| task_box(&parts))
+                    .flatten();
                 strip_block_marker(&mut parts);
                 if let Some(marker) = &numbered {
                     parts.marker.clone_from(marker);
@@ -621,6 +641,9 @@ impl Document {
                     if what == Block::Task {
                         parts.content = format!("[ ] {}", parts.content);
                     }
+                }
+                if let Some(checkbox) = kept {
+                    parts.content.insert_str(0, &checkbox);
                 }
                 parts.joined()
             })
