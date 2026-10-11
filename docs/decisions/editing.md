@@ -43,9 +43,8 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **In preview Home stops after a concealed marker, and that is not a style choice.** A caret
   before `# ` or `- ` draws at the same x as the marker's far edge, and `past_concealed` is the
   invariant every motion keeps. **Plain markup conceals nothing, so Home reaches column zero
-  there**, and it asks the *mode* to know that, because `past_concealed` does not: the document
-  conceals by language. That asymmetry is what found MDEDIT-194, where the arrow keys in plain
-  markup still treat a marker as one uncrossable step. **No two-press smart Home**, which toggles
+  there**. That asymmetry, Home asking the mode while the arrows did not, is what found
+  MDEDIT-194, below. **No two-press smart Home**, which toggles
   between the text and the margin. It would be a second definition of a row's start, and nobody had
   asked for one.
 
@@ -54,6 +53,21 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   cannot be built outside winit. That line is a check by hand, as Ctrl+Enter's is (MDEDIT-175). One
   hand-mutation survives as equivalent: Home's aim of `f32::MIN` behaves the same as `0.0`, because
   document coordinates start at the text's left edge even when the view is panned.
+- **Plain markup conceals nothing, so the caret goes everywhere in it.** MDEDIT-194. In plain
+  markup Left from byte 2 of `# Title` did nothing and Right from byte 0 jumped to 3, while a click
+  could land between: the keyboard could not reach the markers that `Ctrl+/` exists to let you
+  edit. `Document::concealed_at` answers by **language**, because plain markup is a way of drawing
+  the parse rather than a different one, and every motion asked it regardless of mode.
+
+  **Fixed in `Editor::concealed_at`, the one place every motion, Home, Backspace and Delete ask**,
+  rather than in each caller as MDEDIT-192 first did for Home. In plain markup it answers `None`.
+  The document stays mode-free, as the view mode is the editor's business. **Backspace and Delete
+  take one byte of a marker there, and a link's other half stays.** Taking a marker whole, and its
+  pair with it, is preview's answer to bytes nobody can see, and in plain markup they are seen.
+
+  **Picture spans are dropped in plain markup too**, not left for the next frame to empty. They are
+  what the last frame drew, and an arrow pressed straight after `Ctrl+/` would otherwise step over
+  syntax that is now on screen. A test toggles and walks before another frame to hold that.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.

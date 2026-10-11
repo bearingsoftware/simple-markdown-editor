@@ -3578,13 +3578,8 @@ impl<T: TextLayout> Editor<T> {
         let Some((offset, _)) = self.caret_row_edge(false) else {
             return false;
         };
-        // Asked of the mode, because `past_concealed` is not: the document conceals by language,
-        // and plain markup is a way of drawing it rather than a different parse.
-        let offset = if self.mode == view::Mode::Preview {
-            self.past_concealed(offset)
-        } else {
-            offset
-        };
+        // In plain markup this is the offset itself: `concealed_at` asks the mode.
+        let offset = self.past_concealed(offset);
         self.select(offset, extend);
         true
     }
@@ -3698,7 +3693,19 @@ impl<T: TextLayout> Editor<T> {
     /// panics on one today — the selection tolerates it and the next frame corrects it — but an
     /// out-of-range offset is a loaded gun for whoever next slices with one, and it costs a
     /// comparison to unload.
+    ///
+    /// # Plain markup conceals nothing (MDEDIT-194)
+    ///
+    /// So the answer there is always `None`. `Document::concealed_at` answers by **language** —
+    /// plain markup is a way of drawing the parse, not a different one — and asked unfiltered it
+    /// made every drawn marker an uncrossable step: Left from the `T` of `# Title` did nothing and
+    /// Right from byte 0 jumped to 3, while a click could land between. Plain draws no picture
+    /// either, so the picture spans go too, rather than trusting the last frame to have emptied
+    /// them. Every motion, Home, Backspace and Delete ask here, so one test of the mode covers all.
     fn concealed_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        if self.mode == view::Mode::Plain {
+            return None;
+        }
         let end = self.document().len_bytes();
         self.picture_spans
             .iter()

@@ -694,6 +694,23 @@ fn left_steps_over_a_picture_in_one_press() {
 }
 
 #[test]
+fn in_plain_markup_the_caret_walks_into_a_picture_the_last_frame_drew() {
+    // MDEDIT-194. Plain markup draws no picture, but the spans are what the **last** frame drew, and
+    // that was preview's. Toggling and pressing Right before another frame must not step over a
+    // construct that is now drawn as its syntax, so the mode is asked rather than the frame trusted.
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "Be.\n\n![a](cat.png)\n\nAf.\n");
+    assert_eq!(pictures_of(&mut editor).len(), 1, "setup: preview drew it");
+
+    editor.toggle_mode();
+    let walk = walk_right(&mut editor);
+
+    assert!(walk.contains(&7), "stepped over the alt text: {walk:?}");
+    assert!(walk.contains(&6), "stepped over the `![`: {walk:?}");
+}
+
+#[test]
 fn the_alt_text_of_a_broken_image_is_still_a_caret_stop() {
     // **The control.** The rule is "nothing is drawn there", not "it is an image". A missing file
     // draws its alt text, so the alt text is ordinary editable content and the caret belongs in it.

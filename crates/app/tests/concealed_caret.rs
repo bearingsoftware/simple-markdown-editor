@@ -15,6 +15,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_app::editor::Editor;
+use mdedit_app::view::Mode;
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
 
@@ -319,4 +320,125 @@ fn a_delimiter_run_still_goes_one_marker_at_a_time() {
     let mut editor = editor("**bold** text\n", 2);
     assert!(editor.press_backspace());
     assert_eq!(editor.document().to_string(), "bold** text\n");
+}
+
+// ---- plain markup conceals nothing (MDEDIT-194) ----
+//
+// Everything above is preview's rule. `Ctrl+/` draws every marker, so there each byte is a place the
+// caret may be and each key takes one. Until MDEDIT-194 the document's language-level answer was
+// asked regardless of mode, and the escape hatch for editing a marker could not reach one from the
+// keyboard.
+
+/// The same editor in plain markup.
+fn plain(source: &str, caret: usize) -> Editor<Grid> {
+    let mut editor = editor(source, caret);
+    editor.toggle_mode();
+    assert_eq!(editor.mode(), Mode::Plain);
+    editor
+}
+
+/// Every offset Right visits from `start`, until it stops moving. Bounded, because `press_right`
+/// always reports true and a caret that stops moving would otherwise hang the test.
+fn walk_right(editor: &mut Editor<Grid>) -> Vec<usize> {
+    let mut seen = vec![caret_of(editor)];
+    for _ in 0..64 {
+        editor.press_right(false);
+        let at = caret_of(editor);
+        if seen.last() == Some(&at) {
+            break;
+        }
+        seen.push(at);
+    }
+    seen
+}
+
+/// The ticket's scenario, Right half: from byte 0 of `# Title`, one byte a press.
+#[test]
+fn in_plain_markup_right_steps_into_a_heading_marker() {
+    let mut editor = plain("# Title", 0);
+    editor.press_right(false);
+    assert_eq!(caret_of(&editor), 1, "onto the space, not over `# T`");
+    editor.press_right(false);
+    assert_eq!(caret_of(&editor), 2);
+}
+
+/// The ticket's scenario, Left half: from byte 2 Left reaches the marker rather than staying put.
+#[test]
+fn in_plain_markup_left_steps_back_through_a_heading_marker() {
+    let mut editor = plain("# Title", 3);
+    for expected in [2, 1, 0] {
+        editor.press_left(false);
+        assert_eq!(caret_of(&editor), expected);
+    }
+}
+
+/// Every byte of every kind of marker is a stop, both ways, so no construct is special-cased.
+#[test]
+fn in_plain_markup_every_byte_is_a_caret_stop() {
+    let source = "# H\n\n- [ ] **b** [l](u) `c`\n\n> q\n";
+    let mut editor = plain(source, 0);
+    let forward = walk_right(&mut editor);
+    assert_eq!(forward, (0..=source.len()).collect::<Vec<_>>());
+
+    let mut back = vec![caret_of(&editor)];
+    for _ in 0..source.len() {
+        editor.press_left(false);
+        back.push(caret_of(&editor));
+    }
+    assert_eq!(back, (0..=source.len()).rev().collect::<Vec<_>>());
+}
+
+/// **The control**: the same keys from the same byte in preview still take a marker in one step,
+/// so the test above sees the mode rather than a document that stopped concealing.
+#[test]
+fn preview_still_steps_over_the_marker_plain_steps_into() {
+    let mut preview = editor("# Title", 0);
+    let mut plain = plain("# Title", 0);
+    preview.press_right(false);
+    plain.press_right(false);
+    assert_eq!((caret_of(&preview), caret_of(&plain)), (3, 1));
+}
+
+/// Back to preview, and the marker is one step again: the answer follows the mode as it changes.
+#[test]
+fn toggling_back_to_preview_conceals_the_marker_again() {
+    let mut editor = plain("# Title", 0);
+    editor.toggle_mode();
+    editor.press_right(false);
+    assert_eq!(caret_of(&editor), 3);
+}
+
+/// Shift extends a byte at a time too, so a part of a marker can be selected.
+#[test]
+fn in_plain_markup_shift_selects_part_of_a_marker() {
+    let mut editor = plain("**bold**", 0);
+    editor.press_right(true);
+    let selection = editor.document().selection();
+    assert_eq!((selection.anchor().get(), selection.head().get()), (0, 1));
+}
+
+/// Backspace after a drawn marker takes one byte of it, as it would any other character. Taking the
+/// marker whole is preview's answer to bytes nobody can see, and in plain markup they can be seen.
+#[test]
+fn in_plain_markup_backspace_takes_one_byte_of_a_marker() {
+    let mut editor = plain("# Title", 2);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "#Title");
+    assert_eq!(caret_of(&editor), 1);
+}
+
+#[test]
+fn in_plain_markup_delete_takes_one_byte_of_a_marker() {
+    let mut editor = plain("**bold**", 0);
+    assert!(editor.press_delete());
+    assert_eq!(editor.document().to_string(), "*bold**");
+}
+
+/// Nor is a link's other half taken with it: `delete_marker`'s pairing exists because the stranded
+/// half would appear from nowhere, and in plain markup it was never hidden.
+#[test]
+fn in_plain_markup_backspace_leaves_the_other_half_of_a_link() {
+    let mut editor = plain("[text](https://example.com)", 1);
+    assert!(editor.press_backspace());
+    assert_eq!(editor.document().to_string(), "text](https://example.com)");
 }
