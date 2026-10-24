@@ -3,8 +3,9 @@
 //! These cover the work the event loop does when Windows says the session is ending: flush unsaved
 //! buffers, mark the exit clean, and set the flag the window subclass waits on. They go through
 //! [`wake_for`] and [`Editor::on_session_wake`], the seams the window subclass and the event loop
-//! use. What they do **not** cover is the `WM_QUERYENDSESSION` and `WM_ENDSESSION` handling in `mdedit-menu-win`, because no test can deliver a session-end message;
-//! that is checked by hand with a real log-off.
+//! use. What they do **not** cover is the `WM_QUERYENDSESSION` and `WM_ENDSESSION` handling in
+//! `mdedit-menu-win`, because no test can deliver a session-end message; that is checked by hand
+//! with a real log-off.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
