@@ -7,7 +7,7 @@ publish = false
 description = "Spike (MDEDIT-5): does parley/fontique resolve mixed-script text to real glyphs on this platform?"
 
 [dependencies]
-parley = "0.11"
+parley = "0.12"
 skrifa = "0.48"
 
 # Standalone: kept out of the main workspace so the spike never enters CI.

@@ -23,5 +23,5 @@
 # Deliberately, in a PR of its own, with the full suite run against the new version — `renovate.json`
 # manages this file once PR #186 lands, which is the point of pinning rather than chasing.
 [toolchain]
-channel = "1.99.0"
+channel = "1.99.1"
 components = ["clippy", "rustfmt"]
