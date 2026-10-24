@@ -23,6 +23,9 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
+  # The status board dispatches this when its data for the project goes stale (MDEDIT-195). Without the
+  # trigger every dispatch failed 422 and the project stayed stale.
+  workflow_dispatch:
 
 # A later commit supersedes the one before it, so the one before stops costing money. Without this a
 # branch pushed three times in a minute paid for three full Windows runs, two of which nobody would
