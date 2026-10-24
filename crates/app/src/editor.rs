@@ -598,10 +598,11 @@ impl Renderer {
     /// Keyed on the editor's picture id, so the same file in two paragraphs is one texture — and so
     /// a scroll that brings a picture back costs nothing.
     ///
-    /// **Never evicted.** A session that opens a hundred distinct images holds a hundred textures,
-    /// which is the same bargain `heights` strikes and a smaller one than `layouts`: the editor's own
-    /// picture cache is what bounds this, and capping it is the follow-up that measurement should
-    /// ask for rather than a guess made now.
+    /// **Evicted only when superseded** (MDEDIT-150): [`Editor::check_pictures`] retires the id of a
+    /// file that changed on disk, and `retire_pictures` drops its texture. A session that opens a
+    /// hundred distinct images still holds a hundred textures, which is the same bargain `heights`
+    /// strikes and a smaller one than `layouts`: capping it is the follow-up that measurement
+    /// should ask for rather than a guess made now.
     fn upload_pictures(&mut self, sources: &[(u64, Rc<Picture>)]) {
         for (id, picture) in sources {
             if self.pictures.contains_key(id) {
@@ -650,6 +651,13 @@ impl Renderer {
                 &self.image_sampler,
             );
             self.pictures.insert(*id, bind_group);
+        }
+    }
+
+    /// Drops the textures of pictures the editor no longer has an entry for.
+    fn retire_pictures(&mut self, ids: &[u64]) {
+        for id in ids {
+            self.pictures.remove(id);
         }
     }
 
@@ -1032,6 +1040,8 @@ pub struct Editor<T: TextLayout> {
     pictures: HashMap<PictureKey, PictureState>,
     /// The number the next distinct picture gets, so the renderer can key a texture on it.
     picture_ids: HashMap<PictureKey, u64>,
+    /// Ids of superseded pictures whose textures the renderer has yet to drop (MDEDIT-150).
+    retired_pictures: Vec<u64>,
     /// The thread that decodes pictures, once one has been wanted (MDEDIT-156).
     ///
     /// `None` until then, so a session that never opens a document with an image in it never starts
@@ -1296,6 +1306,7 @@ impl<T: TextLayout> Editor<T> {
             layouts: HashMap::new(),
             pictures: HashMap::new(),
             picture_ids: HashMap::new(),
+            retired_pictures: Vec::new(),
             decoder: None,
             drawn_pictures: Vec::new(),
             picture_spans: Vec::new(),
@@ -1550,7 +1561,7 @@ impl<T: TextLayout> Editor<T> {
         // disk is: the user went away, changed something, and came back. MDEDIT-78 found that the
         // event alone cannot be relied on — see `follow_system_appearance` — and coming back to the
         // window is exactly when somebody who has just flipped Windows' setting is looking at it.
-        let repaint = self.check_disk() | self.system_appearance_changed();
+        let repaint = self.check_disk() | self.check_pictures() | self.system_appearance_changed();
         if repaint && let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -1592,6 +1603,48 @@ impl<T: TextLayout> Editor<T> {
             self.counted_for = None;
         }
         changed
+    }
+
+    /// Notices pictures whose file changed on disk, and forgets what was known of them.
+    ///
+    /// Called on regaining focus beside [`check_disk`](Self::check_disk), for the same reason: an
+    /// external edit has almost always happened while the window was away, and it costs nothing per
+    /// frame. A separate method rather than part of `check_disk`, so that one keeps meaning "a tab
+    /// was reloaded" for the tests and callers that read its answer.
+    ///
+    /// **Only keys already in the cache are stated**, and each came through `mdedit_image::resolve`
+    /// when it went in, so no path that has not been through it is touched. A file that is now gone
+    /// counts as changed, so the layout that follows draws its alt text.
+    ///
+    /// Returns whether anything changed, so the caller knows to redraw.
+    pub fn check_pictures(&mut self) -> bool {
+        let stale: Vec<PictureKey> = self
+            .pictures
+            .keys()
+            .filter(|key| PictureKey::of(key.path.clone()).as_ref() != Some(*key))
+            .cloned()
+            .collect();
+        for key in &stale {
+            self.pictures.remove(key);
+            if let Some(id) = self.picture_ids.remove(key) {
+                self.retired_pictures.push(id);
+            }
+        }
+        if !stale.is_empty() {
+            // The layouts hold the old picture's size and id, and their keys cannot tell.
+            self.layouts.clear();
+            self.heights.clear();
+        }
+        !stale.is_empty()
+    }
+
+    /// The ids of pictures superseded since the last call, for the renderer to drop (MDEDIT-150).
+    ///
+    /// **Public for the same reason [`Self::picture_sources`] is**: dropping a texture needs a
+    /// device, so this is the last point a headless test can see what the renderer will be told.
+    #[must_use]
+    pub fn take_retired_pictures(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.retired_pictures)
     }
 
     /// Checks one tab against its file, asking if it has to.
@@ -10364,7 +10417,11 @@ impl<T: TextLayout> Editor<T> {
     /// costs one attempt rather than one per layout.
     fn picture_at(&mut self, path: PathBuf) -> Option<(u64, u32, u32)> {
         let key = PictureKey::of(path)?;
-        let next = self.picture_ids.len() as u64;
+        // Past every id in use or still waiting to be dropped, never `len()`: removal shrinks the
+        // length and it would hand a live id out a second time.
+        let next = (self.picture_ids.values().chain(&self.retired_pictures))
+            .max()
+            .map_or(0, |highest| highest + 1);
         let id = *self.picture_ids.entry(key.clone()).or_insert(next);
 
         if let Some(known) = self.pictures.get(&key) {
@@ -10864,6 +10921,7 @@ impl<T: TextLayout> Editor<T> {
         // cheap: a `Drawn` is `Copy` and a source is an `Rc` clone, and there are usually none.
         let pictures = self.drawn_pictures.clone();
         let sources = self.picture_sources(&pictures);
+        let retired = self.take_retired_pictures();
 
         let Some(renderer) = self.renderer.as_mut() else {
             return;
@@ -10872,6 +10930,7 @@ impl<T: TextLayout> Editor<T> {
             renderer.upload_atlas(&self.atlas);
             self.atlas.mark_clean();
         }
+        renderer.retire_pictures(&retired);
         renderer.upload_pictures(&sources);
         renderer.draw(&quads, &pictures, self.theme.background);
         self.first_paint.get_or_insert_with(Instant::now);

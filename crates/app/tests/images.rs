@@ -854,3 +854,112 @@ fn a_picture_span_the_buffer_has_outgrown_is_ignored() {
         "Backspace did nothing"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// A picture follows its file (MDEDIT-150).
+// ---------------------------------------------------------------------------------------------
+
+/// Rewrites `path` as a `width` by `height` PNG with an mtime `bump` seconds from now.
+///
+/// The mtime is set outright, because two writes inside one clock tick can share one and the stamp
+/// would then differ by length alone.
+fn rewrite_png(path: &Path, width: u32, height: u32, bump: u64) {
+    write_png(path, width, height);
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(bump);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+}
+
+#[test]
+fn a_redrawn_file_shows_its_new_size() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    let old = once_decoded(&mut editor)[0];
+
+    rewrite_png(&dir.path().join("cat.png"), 200, 80, 60);
+    assert!(editor.check_pictures());
+
+    let new = once_decoded(&mut editor)[0];
+    assert_ne!(new.id, old.id);
+    assert!(
+        (new.rect[2] / new.rect[3] - 2.5).abs() < 0.01,
+        "still the old shape: {new:?}"
+    );
+    assert!(editor.picture(new.id).is_some());
+}
+
+#[test]
+fn the_superseded_picture_is_freed() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    let old = once_decoded(&mut editor)[0];
+    assert!(editor.take_retired_pictures().is_empty());
+
+    rewrite_png(&dir.path().join("cat.png"), 200, 80, 60);
+    assert!(editor.check_pictures());
+    once_decoded(&mut editor);
+
+    assert!(editor.picture(old.id).is_none());
+    assert_eq!(editor.take_retired_pictures(), vec![old.id]);
+    assert!(
+        !editor.check_pictures(),
+        "the superseded entry was kept, so it is found stale again"
+    );
+    assert!(editor.take_retired_pictures().is_empty());
+}
+
+#[test]
+fn an_unchanged_file_costs_nothing() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    let before = once_decoded(&mut editor)[0];
+    let laid_out = editor.build_frame(WIDTH, HEIGHT, 1.0).len();
+
+    assert!(!editor.check_pictures());
+
+    let after = pictures_of(&mut editor)[0];
+    assert_eq!(after.id, before.id);
+    assert_eq!(after, before);
+    assert!(editor.take_retired_pictures().is_empty());
+    assert_eq!(editor.build_frame(WIDTH, HEIGHT, 1.0).len(), laid_out);
+}
+
+#[test]
+fn a_file_deleted_on_disk_draws_its_alt_text() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    once_decoded(&mut editor);
+
+    std::fs::remove_file(dir.path().join("cat.png")).unwrap();
+    assert!(editor.check_pictures());
+
+    assert!(pictures_of(&mut editor).is_empty());
+}
+
+#[test]
+fn two_paragraphs_naming_one_file_both_update_and_decode_once() {
+    let dir = TempDir::new().unwrap();
+    write_png(&dir.path().join("cat.png"), 60, 60);
+    let (mut editor, _) = editor_on(&dir, "![](cat.png)\n\n![](cat.png)\n");
+    once_decoded(&mut editor);
+
+    rewrite_png(&dir.path().join("cat.png"), 120, 60, 60);
+    assert!(editor.check_pictures());
+    pictures_of(&mut editor);
+    assert!(editor.await_pictures(PATIENCE));
+    let drawn = pictures_of(&mut editor);
+
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+    assert_eq!(drawn[0].id, drawn[1].id);
+    assert!((drawn[0].rect[2] / drawn[0].rect[3] - 2.0).abs() < 0.01);
+    assert!((drawn[1].rect[2] / drawn[1].rect[3] - 2.0).abs() < 0.01);
+    assert!(editor.picture(drawn[0].id).is_some());
+    assert!(
+        !editor.await_pictures(std::time::Duration::from_millis(200)),
+        "a second decode was queued"
+    );
+}

@@ -85,7 +85,8 @@ pub(crate) enum PictureState {
     /// **The size is the header's, and it stays the header's even after the pixels arrive.** The
     /// promise this whole change makes is that nothing moves when a picture appears, and adopting
     /// the decoded dimensions would break it for exactly the file that had been rewritten between
-    /// the two reads — see MDEDIT-150 for noticing that at all.
+    /// the two reads. That file is noticed at the next focus, when `check_pictures` finds its stamp
+    /// no longer matches and drops the entry (MDEDIT-150); until then the header's size stands.
     Known {
         width: u32,
         height: u32,
