@@ -72,9 +72,16 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **Leaving plain markup moves the caret out of a marker it is in.** Found in review: with the
   caret free to stand in `# `, Ctrl+/ back to preview left it at byte 1, drawn just before the `T`,
   and typing gave `#x Title` — a heading silently turned into a paragraph. A click in plain markup
-  could already do this on `main`; this ticket made it the ordinary keyboard workflow. `toggle_mode`
-  now puts both ends of the selection through `past_concealed`, and leaves it untouched when nothing
-  moves, so a caret at a wrapped row's end keeps its affinity.
+  could already do this on `main`; this ticket made it the ordinary keyboard workflow.
+
+  **Checked where the character arrives, not on each route in.** A second review found the toggle
+  was one route of several: the mode is the editor's and the selection each tab's, so another tab
+  keeps a plain-mode caret; undo restores the caret an edit was made from; and go-to-line, find and
+  a restored session can all name a marker's first byte — which also meant opening a file that
+  starts with a heading and typing wrote `word# Notes`, on `main`. So `Editor::insert`, which every
+  key, IME commit, paste and Enter goes through, first puts both ends of the selection through
+  `past_concealed` (`leave_concealed`). The toggle does too, so a selection is right before a
+  Backspace. Neither touches a selection that is already outside, so a caret keeps its affinity.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.

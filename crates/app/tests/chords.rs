@@ -27,9 +27,12 @@ use crate::stub;
 use stub::Grid;
 
 /// An editor on one saved file, and a picker that answers with `save_to`.
+///
+/// The file is a paragraph, not a heading: the tests below type at byte 0, and in preview that is
+/// inside a heading's concealed `# `, where typing now goes after the marker (MDEDIT-194).
 fn editor(dir: &TempDir, save_to: Option<PathBuf>) -> (Editor<Grid>, PathBuf, Rc<RefCell<usize>>) {
     let path = dir.path().join("notes.md");
-    std::fs::write(&path, "# Notes\n").unwrap();
+    std::fs::write(&path, "Notes\n").unwrap();
 
     let mut workspace = Workspace::new();
     workspace.add(path.clone());
@@ -63,7 +66,7 @@ fn ctrl_shift_s_is_save_as_not_save() {
     );
     assert_eq!(
         std::fs::read_to_string(&original).unwrap(),
-        "# Notes\n",
+        "Notes\n",
         "the file it came from must not have been written"
     );
 }
@@ -92,7 +95,7 @@ fn a_dismissed_save_as_writes_nothing() {
     assert!(!editor.apply_chord("S", true));
 
     assert_eq!(*asked.borrow(), 1);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Notes\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "Notes\n");
 }
 
 /// Ctrl+Z and Ctrl+Shift+Z are the other pair that reads Shift, and the one this fix was modelled
@@ -165,7 +168,7 @@ fn an_unbound_chord_does_nothing() {
     assert!(!editor.apply_chord("q", true));
 
     assert_eq!(*asked.borrow(), 0);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Notes\n");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "Notes\n");
     assert!(editor.document().to_string().contains("EDITED"));
 }
 

@@ -486,3 +486,75 @@ fn a_toggle_leaves_a_caret_outside_any_marker_alone() {
     editor.toggle_mode();
     assert_eq!(editor.document().selection(), before);
 }
+
+// ---- every route into preview, checked where the character arrives ----
+//
+// The toggle is not the only way a plain-markup caret reaches preview: the mode is the editor's and
+// the selection each tab's, undo restores the caret an edit was made from, and find, go-to-line and
+// a session can all name a marker's first byte. So the insertion itself moves the caret out first.
+
+/// Plain markup writes inside a marker, and undo then hands that caret back in preview.
+#[test]
+fn typing_after_an_undo_into_a_marker_writes_past_it() {
+    let mut editor = plain("# Title\n", 1);
+    editor.insert_text("#");
+    assert_eq!(
+        editor.document().to_string(),
+        "## Title\n",
+        "plain writes there"
+    );
+    editor.toggle_mode();
+    editor.document_mut().undo();
+    assert_eq!(
+        caret_of(&editor),
+        1,
+        "setup: undo restores the in-marker caret"
+    );
+
+    editor.insert_text("x");
+    assert_eq!(editor.document().to_string(), "# xTitle\n");
+}
+
+/// The toggle normalises the tab in front of it, not the one behind.
+#[test]
+fn typing_in_a_tab_left_in_a_marker_writes_past_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let mut workspace = mdedit_session::Workspace::new();
+    for (name, text) in [("a.md", "# Title\n"), ("b.md", "other\n")] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        workspace.add(path);
+    }
+    let mut editor = Editor::with_workspace(workspace, Grid::new());
+    assert!(editor.show_tab(0));
+    editor.toggle_mode();
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(1)));
+    assert!(editor.show_tab(1));
+    editor.toggle_mode();
+    assert!(editor.show_tab(0));
+    assert_eq!(caret_of(&editor), 1, "setup: the other tab kept its caret");
+
+    editor.insert_text("x");
+    assert_eq!(editor.document().to_string(), "# xTitle\n");
+}
+
+/// A marker's first byte, which is where go-to-line and a restored session put a heading's caret.
+#[test]
+fn typing_at_a_headings_first_byte_writes_after_its_marker() {
+    let mut editor = editor("# Title\n", 0);
+    editor.insert_text("x");
+    assert_eq!(editor.document().to_string(), "# xTitle\n");
+}
+
+/// Typing over a selection that starts inside a marker replaces only what is visible.
+#[test]
+fn typing_over_a_selection_from_inside_a_marker_keeps_the_marker() {
+    let mut editor = editor("# Title\n", 0);
+    editor
+        .document_mut()
+        .set_selection(Selection::new(ByteOffset::new(1), ByteOffset::new(4)));
+    editor.insert_text("x");
+    assert_eq!(editor.document().to_string(), "# xtle\n");
+}
