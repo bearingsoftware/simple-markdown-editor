@@ -5463,13 +5463,30 @@ impl<T: TextLayout> Editor<T> {
 
     /// Switches between the previewed view and the raw markup.
     ///
-    /// A rendering mode, not a document mode: the buffer, the parse and the caret's byte are
-    /// untouched. Only what is drawn changes.
+    /// A rendering mode, not a document mode: the buffer and the parse are untouched, and so is the
+    /// caret's byte, with one exception.
+    ///
+    /// **Entering preview moves a caret out of a marker it is now inside** (MDEDIT-194). Plain
+    /// markup lets the caret stand anywhere, but in preview a caret at byte 1 of `# Title` draws
+    /// just before the `T`, and typing there wrote `#x Title` — a heading silently turned into a
+    /// paragraph by a keystroke that looked safe. So both ends go past any concealed marker, the
+    /// rule every motion keeps. A selection's anchor goes too, so deleting it cannot strand half a
+    /// marker either.
     pub fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             view::Mode::Preview => view::Mode::Plain,
             view::Mode::Plain => view::Mode::Preview,
         };
+        // Only entering preview can move anything: in plain markup `past_concealed` is the offset
+        // itself.
+        // Untouched when nothing moves, so a caret keeps the affinity that says which row it is on.
+        let selection = self.document().selection();
+        let anchor = self.past_concealed(selection.anchor());
+        let head = self.past_concealed(selection.head());
+        if (anchor, head) != (selection.anchor(), selection.head()) {
+            self.document_mut()
+                .set_selection(Selection::new(anchor, head));
+        }
         // The caret is on the same byte, but that byte is somewhere else on screen now — concealed
         // markers have appeared, and every heading has changed size. Bring it back into view rather
         // than leaving the reader hunting for it.

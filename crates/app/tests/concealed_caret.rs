@@ -17,7 +17,7 @@
 use mdedit_app::editor::Editor;
 use mdedit_app::view::Mode;
 use mdedit_document::Selection;
-use mdedit_offsets::ByteOffset;
+use mdedit_offsets::{Affinity, ByteOffset};
 
 use crate::stub;
 use stub::Grid;
@@ -441,4 +441,48 @@ fn in_plain_markup_backspace_leaves_the_other_half_of_a_link() {
     let mut editor = plain("[text](https://example.com)", 1);
     assert!(editor.press_backspace());
     assert_eq!(editor.document().to_string(), "text](https://example.com)");
+}
+
+/// **Leaving plain markup moves a caret out of the marker it is in.** In preview byte 1 of `# Title`
+/// draws just before the `T`, and typing there un-headed the line: `#x Title`.
+#[test]
+fn back_in_preview_a_caret_inside_a_marker_moves_past_it() {
+    let mut editor = plain("# Title\n", 0);
+    editor.press_right(false);
+    editor.toggle_mode();
+    assert_eq!(caret_of(&editor), 2);
+
+    editor.insert_text("x");
+    assert_eq!(
+        editor.document().to_string(),
+        "# xTitle\n",
+        "still a heading"
+    );
+}
+
+/// A selection's anchor moves too, so deleting it cannot leave half a marker behind as text.
+#[test]
+fn back_in_preview_a_selection_inside_a_marker_moves_both_ends() {
+    let mut editor = plain("**bold** after", 0);
+    editor
+        .document_mut()
+        .set_selection(Selection::new(ByteOffset::new(1), ByteOffset::new(7)));
+    editor.toggle_mode();
+    let selection = editor.document().selection();
+    assert_eq!((selection.anchor().get(), selection.head().get()), (2, 8));
+}
+
+/// A caret already somewhere it may be is left alone, affinity and all: the end of a wrapped row is
+/// drawn there only because of its affinity, and a toggle there and back must not move it a row.
+#[test]
+fn a_toggle_leaves_a_caret_outside_any_marker_alone() {
+    let mut editor = editor(&"word ".repeat(60), 150);
+    editor.build_frame(400.0, 600.0, 1.0);
+    editor.press_end(false);
+    let before = editor.document().selection();
+    assert_eq!(before.affinity(), Affinity::Upstream, "setup");
+
+    editor.toggle_mode();
+    editor.toggle_mode();
+    assert_eq!(editor.document().selection(), before);
 }

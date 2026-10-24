@@ -68,6 +68,13 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **Picture spans are dropped in plain markup too**, not left for the next frame to empty. They are
   what the last frame drew, and an arrow pressed straight after `Ctrl+/` would otherwise step over
   syntax that is now on screen. A test toggles and walks before another frame to hold that.
+
+  **Leaving plain markup moves the caret out of a marker it is in.** Found in review: with the
+  caret free to stand in `# `, Ctrl+/ back to preview left it at byte 1, drawn just before the `T`,
+  and typing gave `#x Title` — a heading silently turned into a paragraph. A click in plain markup
+  could already do this on `main`; this ticket made it the ordinary keyboard workflow. `toggle_mode`
+  now puts both ends of the selection through `past_concealed`, and leaves it untouched when nothing
+  moves, so a caret at a wrapped row's end keeps its affinity.
 - **Undo groups break on caret movement, not on a timer.** Deliberate — see `crates/document/src/history.rs`.
   It means a long pause mid-word still undoes as one step, which is the one place the behaviour
   differs from editors that use a clock.
