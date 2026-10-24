@@ -1,9 +1,9 @@
 //! A machine shutdown is not an ordinary exit (MDEDIT-120).
 //!
 //! These cover the work the event loop does when Windows says the session is ending: flush unsaved
-//! buffers, mark the exit clean, and set the flag the window subclass waits on. They call
-//! [`Editor::end_session`] directly. What they do **not** cover is the `WM_QUERYENDSESSION` and
-//! `WM_ENDSESSION` handling in `mdedit-menu-win`, because no test can deliver a session-end message;
+//! buffers, mark the exit clean, and set the flag the window subclass waits on. They go through
+//! [`wake_for`] and [`Editor::on_session_wake`], the seams the window subclass and the event loop
+//! use. What they do **not** cover is the `WM_QUERYENDSESSION` and `WM_ENDSESSION` handling in `mdedit-menu-win`, because no test can deliver a session-end message;
 //! that is checked by hand with a real log-off.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -107,4 +107,21 @@ fn other_wakes_are_not_taken() {
 
     assert!(!editor.on_session_wake(&mdedit_app::editor::Wake::Pictures));
     assert!(!editor.session_ended());
+}
+
+/// With no tabs there is nothing to restore, so nothing is written — the same rule the ordinary exit
+/// path keeps. An empty session file would replace a real one with a list of nothing.
+#[test]
+fn with_no_tabs_no_session_is_written() {
+    let dir = TempDir::new().unwrap();
+    let session = dir.path().join("session.json");
+    let mut editor = Editor::new("", Grid::new());
+    editor.with_session_path(session.clone());
+
+    assert!(!editor.end_session());
+    assert!(!session.exists());
+    assert!(
+        editor.session_ended(),
+        "the subclass is still told to stop waiting"
+    );
 }
