@@ -22,13 +22,24 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   where a document is deliberately discarded with the user looking at it. `ask_all` and its native
   implementation are gone with the question they answered.
 
-  **Not done, and the reason it matters:** a machine shutdown or log-off is still not an ordinary
-  exit. winit handles neither `WM_QUERYENDSESSION` nor `WM_ENDSESSION` — checked in 0.30.13, the
-  strings do not appear in its Windows backend — so a shutdown loses up to an idle interval of typing
-  and the next launch calls it a recovery from an unclean run. The fix is a window subclass in
-  `mdedit-menu-win`, where the platform `unsafe` already lives: flush, mark the exit clean, return
-  `TRUE`, do not block the shutdown. It is the third item on MDEDIT-82's plan and wants a machine to
-  test on, not a test.
+  **A machine shutdown or log-off is now an exit, through the loop rather than the window
+  procedure** (MDEDIT-120). winit handles neither `WM_QUERYENDSESSION` nor `WM_ENDSESSION`, so a
+  subclass in `mdedit-menu-win` (`watch_session_end`) does. It cannot flush: `run_app` owns
+  `&mut Editor` and a window procedure has no way to reach it. So `WM_QUERYENDSESSION` posts
+  `Wake::SessionEnding` and answers `TRUE` at once, and the loop calls `Editor::end_session` — snapshot
+  the dirty buffers, write the session marked clean, set a shared flag. `WM_ENDSESSION` with `TRUE`
+  means the process may be killed on return, so it pumps messages for up to three seconds until the
+  flag is set, which is what lets winit dispatch the wake; winit 0.30.13 was read to confirm that a user
+  event reaches `user_event` from a nested pump, because the runner is only "in use" while a handler is
+  running. A cancelled shutdown posts `Wake::SessionContinues`, which writes the session unclean again,
+  so a later crash is not reported as a clean exit. The shutdown is never blocked.
+  **It flushes twice.** The query can come long before the end, while Windows asks other apps, so
+  typing after it would otherwise be lost: `WM_ENDSESSION` clears the flag and asks again, then
+  pumps. The early flush stays in case the end gives little time. The three-second deadline is only
+  checked between messages, so a very slow write can run past Windows' allowance; accepted, because
+  snapshot writes are temp file plus rename (`crates/session/src/atomic.rs`) and cannot half-land. The message
+  handling cannot be tested, because nothing can deliver a session-end message; `end_session` is, in
+  `session_end.rs`.
 - **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and
   never written back" — four features were stalled on it. The file is read into a `serde_json::Map`
   as well as the typed `Config`, and a write merges the changed fields into that map, so a key from a

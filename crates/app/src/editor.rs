@@ -11,6 +11,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::clicks::{Clicks, Granularity};
@@ -86,6 +87,19 @@ pub enum Wake {
     /// Carries nothing: the answers are on the worker's channel, and one wake is enough however
     /// many of them arrived.
     Pictures,
+    /// Windows is shutting down or logging off (MDEDIT-120): flush and mark the exit clean.
+    SessionEnding,
+    /// The shutdown was cancelled (MDEDIT-120): the run is not over, so the session is not clean.
+    SessionContinues,
+}
+
+/// The wake a shutdown report becomes (MDEDIT-120).
+#[must_use]
+pub fn wake_for(end: mdedit_menu_win::SessionEnd) -> Wake {
+    match end {
+        mdedit_menu_win::SessionEnd::Ending => Wake::SessionEnding,
+        mdedit_menu_win::SessionEnd::Cancelled => Wake::SessionContinues,
+    }
 }
 
 /// The width chunks are laid out at when word wrap is off (MDEDIT-49).
@@ -1172,6 +1186,10 @@ pub struct Editor<T: TextLayout> {
     menu: Option<MenuBar>,
     /// How menu commands get from muda's channel into this loop. Set before the window exists.
     menu_proxy: Option<EventLoopProxy<Wake>>,
+    /// Where the session file is, for a shutdown to mark clean. `None` until `main` says (MDEDIT-120).
+    session_path: Option<PathBuf>,
+    /// Set once a shutdown has been flushed; `mdedit-menu-win` waits on it. See [`Self::end_session`].
+    session_ended: Arc<AtomicBool>,
     /// Where text goes when it is copied, and comes from when it is pasted.
     ///
     /// Boxed rather than a second type parameter: `Editor` is already generic over the text
@@ -1321,6 +1339,8 @@ impl<T: TextLayout> Editor<T> {
             encoding_state: None,
             menu: None,
             menu_proxy: None,
+            session_path: None,
+            session_ended: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -1960,6 +1980,58 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Says where the session file is, so a machine shutdown can mark the exit clean (MDEDIT-120).
+    pub fn with_session_path(&mut self, path: PathBuf) {
+        self.session_path = Some(path);
+    }
+
+    /// Windows is shutting down or logging off: flush unsaved work and mark the exit clean.
+    ///
+    /// Returns whether a session file was written. Sets the flag `mdedit-menu-win` is waiting on
+    /// whether or not it was, because the wait is for the flush and a missing path must not hold a
+    /// shutdown open. Nothing here blocks the shutdown or asks anything.
+    pub fn end_session(&mut self) -> bool {
+        self.snapshot_dirty_buffers();
+        let wrote = match self.session_path.clone() {
+            Some(path) if !self.workspace.tabs().is_empty() => {
+                self.save_session_on_exit(&path);
+                true
+            }
+            _ => false,
+        };
+        self.session_ended.store(true, Ordering::Release);
+        wrote
+    }
+
+    /// The shutdown was cancelled: the process carries on, so the session goes back to describing a
+    /// run that has not ended. Otherwise a later crash would read as a clean exit.
+    pub fn session_continues(&mut self) {
+        self.session_ended.store(false, Ordering::Release);
+        if let Some(path) = self.session_path.clone()
+            && !self.workspace.tabs().is_empty()
+        {
+            self.save_session(&path);
+        }
+    }
+
+    /// Handles the two shutdown wakes; returns whether `wake` was one of them.
+    pub fn on_session_wake(&mut self, wake: &Wake) -> bool {
+        match wake {
+            Wake::SessionEnding => {
+                self.end_session();
+            }
+            Wake::SessionContinues => self.session_continues(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The flag [`Self::end_session`] sets, for a test.
+    #[must_use]
+    pub fn session_ended(&self) -> bool {
+        self.session_ended.load(Ordering::Acquire)
+    }
+
     /// The buffer being edited: the active tab's, or the scratch document if no file is open.
     #[must_use]
     pub fn document(&self) -> &Document {
@@ -2299,11 +2371,34 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Hears a machine shutdown on the window and routes it into the loop (MDEDIT-120).
+    ///
+    /// The window procedure cannot reach this editor, so it only posts a wake; see
+    /// [`mdedit_menu_win::watch_session_end`].
+    fn watch_session_end(&self, window: &Window) {
+        let Some(proxy) = self.menu_proxy.clone() else {
+            return;
+        };
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::Win32(win32) = handle.as_raw()
+        {
+            mdedit_menu_win::watch_session_end(
+                win32.hwnd.get(),
+                move |end| {
+                    let _ = proxy.send_event(wake_for(end));
+                },
+                Arc::clone(&self.session_ended),
+            );
+        }
+    }
+
     /// Builds the menu bar and puts it on the window.
     ///
     /// Quiet about failure: an editor with no menu bar still edits, and every command it offers has
     /// a chord. Losing the menu is a worse day, not a lost document.
     fn attach_menu(&mut self, window: &Window) {
+        // Before the menu, which can fail to build; a shutdown must be heard regardless.
+        self.watch_session_end(window);
         let Some(menu) = MenuBar::new() else {
             return;
         };
@@ -10814,6 +10909,10 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                         window.request_redraw();
                     }
                 }
+                return;
+            }
+            Wake::SessionEnding | Wake::SessionContinues => {
+                self.on_session_wake(&wake);
                 return;
             }
             Wake::Pictures => {
