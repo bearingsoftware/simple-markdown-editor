@@ -456,3 +456,31 @@ fn a_long_value_scrolls_to_keep_the_caret_in_view() {
         "the caret is off the end of the box, so the text is being typed blind"
     );
 }
+
+/// **The dim is translucent, and its alpha is its own.** `draw_dialog` takes the page colour and
+/// overrides `a`; without that override the dim inherits the background's opaque alpha and the
+/// document behind the panel vanishes instead of reading as behind glass. `Theme` has no dim colour
+/// to name, so the test pins the alpha against the background's own, which is the value the defect
+/// would produce.
+#[test]
+fn the_dim_is_translucent_and_keeps_the_page_colour() {
+    let mut editor = dark("prose\n");
+    let theme = Theme::dark();
+    editor.link();
+
+    let quads = quads_of(&mut editor);
+    let dim: Vec<QuadInstance> = quads
+        .iter()
+        .filter(|quad| {
+            quad.rect == [0.0, 0.0, WIDTH, HEIGHT]
+                && quad.colour[..3] == [theme.background.r, theme.background.g, theme.background.b]
+        })
+        .copied()
+        .collect();
+    assert_eq!(dim.len(), 1, "one dim over the whole window");
+    let alpha = dim[0].colour[3];
+    assert!(
+        alpha > 0.0 && alpha < theme.background.a,
+        "the dim is {alpha} alpha, which is not translucent"
+    );
+}

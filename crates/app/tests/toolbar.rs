@@ -1276,3 +1276,25 @@ fn image_says_what_it_does() {
     assert_eq!(Action::Image.tooltip(), "Image");
     assert_eq!(Action::Table.tooltip(), "Table");
 }
+
+/// **With the icon font, every iconic button draws its icon.** Without the icon family the glyph is
+/// `.notdef`, `button_face` falls back to the word, and the bar reads as words where it should read
+/// as icons. This is the fallback test above, read from the side that has the font.
+#[test]
+fn with_the_icon_font_every_iconic_button_draws_its_icon() {
+    let mut editor = Editor::new("prose\n", Grid::with_icon_font());
+    select(&mut editor, 0, 5);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    for action in [toolbar::STANDARD, toolbar::MARKDOWN].concat() {
+        let Some(icon) = action.icon() else {
+            continue;
+        };
+        let icon = icon.to_string();
+        assert_eq!(
+            editor.button_face_drawn(action),
+            Some(icon.as_str()),
+            "{action:?} should draw its icon when the icon font is present"
+        );
+    }
+}
