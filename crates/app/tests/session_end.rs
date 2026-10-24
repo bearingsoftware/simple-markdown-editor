@@ -94,6 +94,10 @@ fn without_a_session_path_it_still_flushes_and_signals() {
     assert!(recovered(&dir)[0].contains("UNSAVED"));
     assert!(editor.session_ended());
     assert!(!session.exists());
+    assert!(
+        !editor.end_session(),
+        "nothing was written, so it must not say it was"
+    );
 }
 
 #[test]
