@@ -32,7 +32,12 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   flag is set, which is what lets winit dispatch the wake; winit 0.30.13 was read to confirm that a user
   event reaches `user_event` from a nested pump, because the runner is only "in use" while a handler is
   running. A cancelled shutdown posts `Wake::SessionContinues`, which writes the session unclean again,
-  so a later crash is not reported as a clean exit. The shutdown is never blocked. The message
+  so a later crash is not reported as a clean exit. The shutdown is never blocked.
+  **It flushes twice.** The query can come long before the end, while Windows asks other apps, so
+  typing after it would otherwise be lost: `WM_ENDSESSION` clears the flag and asks again, then
+  pumps. The early flush stays in case the end gives little time. The three-second deadline is only
+  checked between messages, so a very slow write can run past Windows' allowance; accepted, because
+  snapshot writes are temp file plus rename (`crates/session/src/atomic.rs`) and cannot half-land. The message
   handling cannot be tested, because nothing can deliver a session-end message; `end_session` is, in
   `session_end.rs`.
 - **Settings are written back now, and unknown keys survive it.** MDEDIT-60 replaced "read once and

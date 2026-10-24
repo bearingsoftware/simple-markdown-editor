@@ -3,7 +3,8 @@
 //! winit handles neither `WM_QUERYENDSESSION` nor `WM_ENDSESSION`, so a subclass on the window does.
 //! It cannot do the work itself: `Editor` is owned by `run_app` and the window procedure has no way
 //! to reach it. It tells the caller through `notify`, which posts a wake into the event loop, and on
-//! the message that means the process is about to be killed it pumps messages for a bounded time so
+//! the message that means the process is about to be killed it asks again, since the query can come
+//! long before it and typing since would be missed, then pumps messages for a bounded time so
 //! that wake is dispatched before it returns.
 //!
 //! It never blocks the shutdown: `WM_QUERYENDSESSION` always answers `TRUE`, and the pump gives up
@@ -18,8 +19,8 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage, WM_ENDSESSION, WM_NCDESTROY,
-    WM_QUERYENDSESSION,
+    DispatchMessageW, MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+    TranslateMessage, WM_ENDSESSION, WM_NCDESTROY, WM_QUERYENDSESSION,
 };
 
 use crate::SessionEnd;
@@ -77,6 +78,10 @@ unsafe extern "system" fn subclass_proc(
             // SAFETY: as above.
             let state = unsafe { &*(data as *const State) };
             if wparam != 0 {
+                // The query can come long before this, while Windows asks other apps; anything typed
+                // since was not in that flush. Ask again, at the last moment.
+                state.done.store(false, Ordering::Release);
+                (state.notify)(SessionEnd::Ending);
                 pump_until(&state.done);
             } else {
                 (state.notify)(SessionEnd::Cancelled);
@@ -98,7 +103,7 @@ unsafe extern "system" fn subclass_proc(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Dispatches this thread's messages until `done` is set or the limit passes.
+/// Dispatches this thread's messages, sleeping between them, until `done` is set or the limit passes.
 fn pump_until(done: &AtomicBool) {
     let deadline = Instant::now() + PUMP_LIMIT;
     // SAFETY: `MSG` is plain data that Win32 fills in; all-zero is a valid initial value.
@@ -108,7 +113,11 @@ fn pump_until(done: &AtomicBool) {
         // thread, which is what winit's own loop asks for. Translate and dispatch take that message.
         let got = unsafe { PeekMessageW(&raw mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) };
         if got == 0 {
-            std::thread::sleep(Duration::from_millis(1));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let millis = u32::try_from(remaining.as_millis()).unwrap_or(u32::MAX);
+            // SAFETY: no handles are passed (count 0, null array), so this waits only for a message
+            // to arrive on this thread or for the timeout.
+            unsafe { MsgWaitForMultipleObjects(0, std::ptr::null(), 0, millis, QS_ALLINPUT) };
             continue;
         }
         // SAFETY: `msg` was just filled by `PeekMessageW`.

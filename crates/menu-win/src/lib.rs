@@ -187,7 +187,8 @@ pub enum SessionEnd {
 ///
 /// `notify` runs on the window's thread and must only hand the news to the event loop, which does
 /// the work and then sets `done`. When Windows says the process is about to be killed, this pumps
-/// messages for up to three seconds waiting for `done`, so the loop gets to run. Once per window.
+/// messages for up to three seconds waiting for `done`, so the loop gets to run. It clears `done` and
+/// calls `notify(Ending)` again first, because the query can long precede the end. Once per window.
 #[cfg(windows)]
 pub fn watch_session_end(
     hwnd: isize,

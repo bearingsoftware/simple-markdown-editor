@@ -10,7 +10,8 @@
 
 use std::path::PathBuf;
 
-use mdedit_app::editor::Editor;
+use mdedit_app::editor::{Editor, wake_for};
+use mdedit_menu_win::SessionEnd;
 use mdedit_session::snapshot::Store;
 use mdedit_session::{Workspace, last_run_ended_cleanly};
 use tempfile::TempDir;
@@ -50,7 +51,7 @@ fn ending_flushes_typing_and_marks_the_exit_clean() {
 
     editor.insert_text("UNSAVED");
     assert!(recovered(&dir).is_empty(), "nothing flushed before the end");
-    assert!(editor.end_session());
+    assert!(editor.on_session_wake(&wake_for(SessionEnd::Ending)));
 
     let texts = recovered(&dir);
     assert_eq!(texts.len(), 1);
@@ -63,9 +64,9 @@ fn a_cancelled_shutdown_makes_the_session_unclean_again() {
     let dir = TempDir::new().unwrap();
     let (mut editor, session) = editor(&dir, true);
 
-    editor.end_session();
+    editor.on_session_wake(&wake_for(SessionEnd::Ending));
     assert!(last_run_ended_cleanly(&session));
-    editor.session_continues();
+    editor.on_session_wake(&wake_for(SessionEnd::Cancelled));
 
     assert!(!last_run_ended_cleanly(&session));
 }
@@ -76,9 +77,9 @@ fn the_done_flag_follows_ending_and_cancelling() {
     let (mut editor, _) = editor(&dir, true);
 
     assert!(!editor.session_ended());
-    editor.end_session();
+    editor.on_session_wake(&wake_for(SessionEnd::Ending));
     assert!(editor.session_ended());
-    editor.session_continues();
+    editor.on_session_wake(&wake_for(SessionEnd::Cancelled));
     assert!(!editor.session_ended());
 }
 
@@ -88,9 +89,18 @@ fn without_a_session_path_it_still_flushes_and_signals() {
     let (mut editor, session) = editor(&dir, false);
 
     editor.insert_text("UNSAVED");
-    assert!(!editor.end_session());
+    editor.on_session_wake(&wake_for(SessionEnd::Ending));
 
     assert!(recovered(&dir)[0].contains("UNSAVED"));
     assert!(editor.session_ended());
     assert!(!session.exists());
+}
+
+#[test]
+fn other_wakes_are_not_taken() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor(&dir, true);
+
+    assert!(!editor.on_session_wake(&mdedit_app::editor::Wake::Pictures));
+    assert!(!editor.session_ended());
 }

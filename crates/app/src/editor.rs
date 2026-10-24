@@ -93,6 +93,15 @@ pub enum Wake {
     SessionContinues,
 }
 
+/// The wake a shutdown report becomes (MDEDIT-120).
+#[must_use]
+pub fn wake_for(end: mdedit_menu_win::SessionEnd) -> Wake {
+    match end {
+        mdedit_menu_win::SessionEnd::Ending => Wake::SessionEnding,
+        mdedit_menu_win::SessionEnd::Cancelled => Wake::SessionContinues,
+    }
+}
+
 /// The width chunks are laid out at when word wrap is off (MDEDIT-49).
 ///
 /// A large finite number rather than infinity. It has to be finite because it goes into `ChunkKey`
@@ -2005,6 +2014,18 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Handles the two shutdown wakes; returns whether `wake` was one of them.
+    pub fn on_session_wake(&mut self, wake: &Wake) -> bool {
+        match wake {
+            Wake::SessionEnding => {
+                self.end_session();
+            }
+            Wake::SessionContinues => self.session_continues(),
+            _ => return false,
+        }
+        true
+    }
+
     /// The flag [`Self::end_session`] sets, for a test.
     #[must_use]
     pub fn session_ended(&self) -> bool {
@@ -2364,10 +2385,7 @@ impl<T: TextLayout> Editor<T> {
             mdedit_menu_win::watch_session_end(
                 win32.hwnd.get(),
                 move |end| {
-                    let _ = proxy.send_event(match end {
-                        mdedit_menu_win::SessionEnd::Ending => Wake::SessionEnding,
-                        mdedit_menu_win::SessionEnd::Cancelled => Wake::SessionContinues,
-                    });
+                    let _ = proxy.send_event(wake_for(end));
                 },
                 Arc::clone(&self.session_ended),
             );
@@ -10893,12 +10911,8 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 }
                 return;
             }
-            Wake::SessionEnding => {
-                self.end_session();
-                return;
-            }
-            Wake::SessionContinues => {
-                self.session_continues();
+            Wake::SessionEnding | Wake::SessionContinues => {
+                self.on_session_wake(&wake);
                 return;
             }
             Wake::Pictures => {
