@@ -110,7 +110,8 @@ fn other_wakes_are_not_taken() {
     assert!(!editor.session_ended());
 }
 
-/// With no tabs there is nothing to restore, so nothing is written, as on an ordinary exit. An empty session file would replace a real one with a list of nothing.
+/// With no tabs there is nothing to restore, so nothing is written, as on an ordinary exit.
+/// An empty session file would replace a real one with a list of nothing.
 #[test]
 fn with_no_tabs_no_session_is_written() {
     let dir = TempDir::new().unwrap();
