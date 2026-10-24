@@ -171,6 +171,42 @@ pub fn apps_use_light_theme() -> Option<bool> {
 }
 
 #[cfg(windows)]
+mod session_end;
+
+/// What Windows said about a shutdown or log-off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnd {
+    /// The session is ending: write everything down now.
+    Ending,
+    /// It was cancelled after all, so the process carries on.
+    Cancelled,
+}
+
+/// Reports a shutdown or log-off on a window, and holds the process open for a moment so the report
+/// is acted on (MDEDIT-120).
+///
+/// `notify` runs on the window's thread and must only hand the news to the event loop, which does
+/// the work and then sets `done`. When Windows says the process is about to be killed, this pumps
+/// messages for up to three seconds waiting for `done`, so the loop gets to run. Once per window.
+#[cfg(windows)]
+pub fn watch_session_end(
+    hwnd: isize,
+    notify: impl Fn(SessionEnd) + 'static,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    session_end::watch(hwnd, notify, done);
+}
+
+/// Watches nothing, off Windows.
+#[cfg(not(windows))]
+pub fn watch_session_end(
+    _hwnd: isize,
+    _notify: impl Fn(SessionEnd) + 'static,
+    _done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+}
+
+#[cfg(windows)]
 mod dark;
 
 #[cfg(windows)]

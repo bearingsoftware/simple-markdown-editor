@@ -444,6 +444,9 @@ fn main() {
         let mut opened: Vec<std::path::PathBuf> = Vec::new();
 
         let (mut editor, named) = start_from(text, session_path.as_deref(), arguments);
+        if let Some(path) = session_path.clone() {
+            editor.with_session_path(path);
+        }
         opened.extend(named);
         // **Before the restore, and that ordering is load-bearing in two directions.** The restore
         // reads the snapshot store, which this installs — MDEDIT-68 made the store something the app

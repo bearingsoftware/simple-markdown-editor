@@ -83,6 +83,7 @@ mod replace;
 mod scroll;
 mod scrollbar;
 mod selection_clicks;
+mod session_end;
 mod shortcuts;
 mod status;
 mod strikethrough;
