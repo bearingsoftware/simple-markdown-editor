@@ -928,3 +928,36 @@ fn the_opened_panel_replaces_the_overflow_list_where_it_was() {
     assert_eq!(editor.menu_kind(), Some(toolbar::Menu::Headings));
     assert_eq!(editor.menu_at().expect("open").1, overflow_top);
 }
+
+// ---- the icon column (MDEDIT-191) ----
+
+/// **Each row's icon is drawn in the icon family, so the icon font is what answers it.** With the
+/// font present every row puts one glyph in the icon column. A row that laid its icon out in the UI
+/// face would get `.notdef`, which is dropped, and its column would be empty.
+#[test]
+fn with_the_icon_font_each_list_row_draws_its_icon() {
+    let mut editor = Editor::new("prose\n", Grid::with_icon_font());
+    let _ = editor.build_frame(WIDE, HEIGHT, 1.0);
+    caret_at(&mut editor, 2);
+    open(&mut editor, Action::Lists);
+    let quads = editor.build_frame(WIDE, HEIGHT, 1.0);
+    let (x, y) = editor.menu_at().expect("the list is open");
+
+    for index in 0..toolbar::LISTS.len() {
+        let top = y + popup::row_top(index);
+        let glyphs_in_icon_column = quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= x
+                    && quad.rect[0] < x + popup::ICON_COLUMN
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + popup::ROW_HEIGHT
+            })
+            .count();
+        assert_eq!(
+            glyphs_in_icon_column, 1,
+            "row {index} should hold one icon glyph"
+        );
+    }
+}
