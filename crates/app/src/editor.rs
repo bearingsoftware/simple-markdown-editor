@@ -3435,6 +3435,28 @@ impl<T: TextLayout> Editor<T> {
         self.insert(text)
     }
 
+    /// Moves both ends of the selection past any concealed marker they are inside (MDEDIT-194).
+    ///
+    /// **A caret inside a concealed marker writes into its syntax**: at byte 1 of `# Title` it draws
+    /// before the `T`, and typing gave `#x Title`. Plain markup lets the caret stand there, and it
+    /// survives into preview by more routes than one — the toggle, another tab (the mode is the
+    /// editor's, the selection each tab's), undo restoring a plain-mode caret, a session, find and
+    /// go-to-line. So rather than chase each, every character is checked where it arrives, in
+    /// [`Self::insert`] — keys, IME commits, paste and Enter all come through it — and the toggle
+    /// checks too so a selection is right before anything is deleted. The anchor moves as well, so replacing a selection cannot strand half a marker.
+    ///
+    /// Untouched when nothing moves, so a caret keeps the affinity that says which row it is on. In
+    /// plain markup nothing moves, because `past_concealed` asks [`Self::concealed_at`].
+    fn leave_concealed(&mut self) {
+        let selection = self.document().selection();
+        let anchor = self.past_concealed(selection.anchor());
+        let head = self.past_concealed(selection.head());
+        if (anchor, head) != (selection.anchor(), selection.head()) {
+            self.document_mut()
+                .set_selection(Selection::new(anchor, head));
+        }
+    }
+
     /// Removes what is selected, if anything is. One edit, so one undo step.
     fn delete_selection(&mut self) -> bool {
         let span = self.document().selection().span();
@@ -3451,6 +3473,7 @@ impl<T: TextLayout> Editor<T> {
     /// One edit either way. Typing over a selection used to insert *beside* it, which left the
     /// selected text in the buffer and the highlight covering something the caret was no longer in.
     fn insert(&mut self, text: &str) -> bool {
+        self.leave_concealed();
         let span = self.document().selection().span();
         if !span.is_empty() {
             return self.document_mut().replace(span, text).is_ok();
@@ -3578,13 +3601,8 @@ impl<T: TextLayout> Editor<T> {
         let Some((offset, _)) = self.caret_row_edge(false) else {
             return false;
         };
-        // Asked of the mode, because `past_concealed` is not: the document conceals by language,
-        // and plain markup is a way of drawing it rather than a different parse.
-        let offset = if self.mode == view::Mode::Preview {
-            self.past_concealed(offset)
-        } else {
-            offset
-        };
+        // In plain markup this is the offset itself: `concealed_at` asks the mode.
+        let offset = self.past_concealed(offset);
         self.select(offset, extend);
         true
     }
@@ -3698,7 +3716,19 @@ impl<T: TextLayout> Editor<T> {
     /// panics on one today — the selection tolerates it and the next frame corrects it — but an
     /// out-of-range offset is a loaded gun for whoever next slices with one, and it costs a
     /// comparison to unload.
+    ///
+    /// # Plain markup conceals nothing (MDEDIT-194)
+    ///
+    /// So the answer there is always `None`. `Document::concealed_at` answers by **language** —
+    /// plain markup is a way of drawing the parse, not a different one — and asked unfiltered it
+    /// made every drawn marker an uncrossable step: Left from the `T` of `# Title` did nothing and
+    /// Right from byte 0 jumped to 3, while a click could land between. Plain draws no picture
+    /// either, so the picture spans go too, rather than trusting the last frame to have emptied
+    /// them. Every motion, Home, Backspace and Delete ask here, so one test of the mode covers all.
     fn concealed_at(&self, offset: ByteOffset) -> Option<ByteSpan> {
+        if self.mode == view::Mode::Plain {
+            return None;
+        }
         let end = self.document().len_bytes();
         self.picture_spans
             .iter()
@@ -5456,13 +5486,20 @@ impl<T: TextLayout> Editor<T> {
 
     /// Switches between the previewed view and the raw markup.
     ///
-    /// A rendering mode, not a document mode: the buffer, the parse and the caret's byte are
-    /// untouched. Only what is drawn changes.
+    /// A rendering mode, not a document mode: the buffer and the parse are untouched, and so is the
+    /// caret's byte, with one exception.
+    ///
+    /// **Entering preview moves a caret out of a marker it is now inside** (MDEDIT-194). Plain
+    /// markup lets the caret stand anywhere, but in preview a caret at byte 1 of `# Title` draws
+    /// just before the `T`, and typing there wrote `#x Title` — a heading silently turned into a
+    /// paragraph by a keystroke that looked safe. So both ends go past any concealed marker, the
+    /// rule every motion keeps. See `leave_concealed`, which typing asks too.
     pub fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             view::Mode::Preview => view::Mode::Plain,
             view::Mode::Plain => view::Mode::Preview,
         };
+        self.leave_concealed();
         // The caret is on the same byte, but that byte is somewhere else on screen now — concealed
         // markers have appeared, and every heading has changed size. Bring it back into view rather
         // than leaving the reader hunting for it.
