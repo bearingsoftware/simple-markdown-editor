@@ -1041,3 +1041,21 @@ fn an_id_reused_after_the_queue_drains_still_draws() {
     assert_eq!(drawn.len(), 1, "{drawn:?}");
     assert!(editor.picture(drawn[0].id).is_some());
 }
+
+#[test]
+fn the_waited_on_set_goes_when_the_layouts_do() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor_on(&dir, "![](a.png)\n\n![](b.png)\n");
+    pictures_of(&mut editor);
+    assert_eq!(editor.absent_pictures(), 2);
+
+    assert!(editor.set_wrap(false));
+
+    assert_eq!(editor.absent_pictures(), 0);
+    pictures_of(&mut editor);
+    assert_eq!(
+        editor.absent_pictures(),
+        2,
+        "laid out again, so waited on again"
+    );
+}

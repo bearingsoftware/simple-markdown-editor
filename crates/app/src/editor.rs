@@ -1780,6 +1780,7 @@ impl<T: TextLayout> Editor<T> {
             // The parse changed its mind about something, so anything derived from it is suspect.
             // Rare — see `Document::reconcile` — and the alternative is drawing a stale answer.
             self.layouts.clear();
+            self.watch.absent.clear();
             self.heights.clear();
         }
 
@@ -2280,6 +2281,7 @@ impl<T: TextLayout> Editor<T> {
                     // The buffer now holds what is on disk, so there is nothing left to write —
                     // and writing would put the discarded edits back.
                     self.layouts.clear();
+                    self.watch.absent.clear();
                     self.heights.clear();
                     return false;
                 }
@@ -6411,6 +6413,7 @@ impl<T: TextLayout> Editor<T> {
         // The gutter changes the document's width, so every chunk wraps differently — and a layout
         // cached at the old width would draw the old wrapping.
         self.layouts.clear();
+        self.watch.absent.clear();
         self.heights.clear();
         self.digits = None;
         self.flagged_digits = None;
@@ -7469,6 +7472,7 @@ impl<T: TextLayout> Editor<T> {
         self.theme.body_size = Theme::default().body_size * zoom;
 
         self.layouts.clear();
+        self.watch.absent.clear();
         self.heights.clear();
         self.digits = None;
         // The seventh, and MDEDIT-76's: the bold digits and the `!` a flagged line is drawn with.
@@ -7662,6 +7666,7 @@ impl<T: TextLayout> Editor<T> {
     pub fn toggle_toolbar(&mut self) {
         self.toolbar = !self.toolbar;
         self.layouts.clear();
+        self.watch.absent.clear();
         self.heights.clear();
         self.refresh_view_menu();
     }
@@ -9884,6 +9889,7 @@ impl<T: TextLayout> Editor<T> {
         }
         self.wrap = wrap;
         self.layouts.clear();
+        self.watch.absent.clear();
         self.heights.clear();
         self.widest = 0.0;
         if wrap {
@@ -10333,6 +10339,7 @@ impl<T: TextLayout> Editor<T> {
         // stops the document's length jumping around as it is scrolled.
         if self.layouts.len() >= MAX_CACHED_LAYOUTS {
             self.layouts.clear();
+            self.watch.absent.clear();
         }
         self.layouts.insert(key, Rc::clone(&cached));
         self.heights.insert(key, cached.height);
