@@ -879,3 +879,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 
   **No size cap yet.** A session opening many distinct images still holds them all. A cap is a
   number, and it should come from a measurement of what many images cost, not a guess.
+
+  **A link typed before its file is saved is waited on too.** A destination that resolved to
+  `NotAFile` has no cache entry to re-stat, so the destination and its directory are kept in a set
+  and re-run through `mdedit_image::resolve` on focus; the first to resolve clears the layouts. Only
+  absent files go in: a UNC or URL refusal is never retried as if it were missing. The set is
+  cleared with the layouts, so it holds only what has been laid out since.

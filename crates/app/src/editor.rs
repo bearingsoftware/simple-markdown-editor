@@ -4,8 +4,8 @@
 //! compiles on Linux CI and the portable backend needs no changes here when it arrives. Only
 //! `main.rs` picks a backend.
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -1040,8 +1040,8 @@ pub struct Editor<T: TextLayout> {
     pictures: HashMap<PictureKey, PictureState>,
     /// The number the next distinct picture gets, so the renderer can key a texture on it.
     picture_ids: HashMap<PictureKey, u64>,
-    /// Ids of superseded pictures whose textures the renderer has yet to drop (MDEDIT-150).
-    retired_pictures: Vec<u64>,
+    /// What picture changes the renderer and the next layout have yet to hear about (MDEDIT-150).
+    watch: PictureWatch,
     /// The thread that decodes pictures, once one has been wanted (MDEDIT-156).
     ///
     /// `None` until then, so a session that never opens a document with an image in it never starts
@@ -1306,7 +1306,7 @@ impl<T: TextLayout> Editor<T> {
             layouts: HashMap::new(),
             pictures: HashMap::new(),
             picture_ids: HashMap::new(),
-            retired_pictures: Vec::new(),
+            watch: PictureWatch::default(),
             decoder: None,
             drawn_pictures: Vec::new(),
             picture_spans: Vec::new(),
@@ -1594,6 +1594,7 @@ impl<T: TextLayout> Editor<T> {
             // Every cached layout is keyed on bytes that are no longer in the buffer.
             self.layouts.clear();
             self.heights.clear();
+            self.watch.absent.clear();
             // **And so is the word count**, for exactly the reason `reopen_with` gives and for
             // exactly as long as it was the inconsistent twin of it (MDEDIT-109): a count is left to
             // age because a stale one is nearly right, and after a file has been rewritten
@@ -1627,15 +1628,29 @@ impl<T: TextLayout> Editor<T> {
         for key in &stale {
             self.pictures.remove(key);
             if let Some(id) = self.picture_ids.remove(key) {
-                self.retired_pictures.push(id);
+                self.watch.retired.push(id);
             }
         }
-        if !stale.is_empty() {
-            // The layouts hold the old picture's size and id, and their keys cannot tell.
+        // Re-resolved rather than stated, so the trust boundary is the one a layout crosses: a file
+        // that has since appeared is accepted by the same rules as any other.
+        let appeared = self.watch.absent.iter().any(|(destination, beside)| {
+            mdedit_image::resolve(destination, beside.as_deref()).is_ok()
+        });
+        if !stale.is_empty() || appeared {
+            // The layouts hold the old picture's size and id, or an alt-text row, and their keys
+            // cannot tell.
             self.layouts.clear();
             self.heights.clear();
+            self.watch.absent.clear();
+            return true;
         }
-        !stale.is_empty()
+        false
+    }
+
+    /// How many destinations are being waited on to name a file. For tests of what is *not* kept.
+    #[must_use]
+    pub fn absent_pictures(&self) -> usize {
+        self.watch.absent.len()
     }
 
     /// The ids of pictures superseded since the last call, for the renderer to drop (MDEDIT-150).
@@ -1644,7 +1659,7 @@ impl<T: TextLayout> Editor<T> {
     /// device, so this is the last point a headless test can see what the renderer will be told.
     #[must_use]
     pub fn take_retired_pictures(&mut self) -> Vec<u64> {
-        std::mem::take(&mut self.retired_pictures)
+        std::mem::take(&mut self.watch.retired)
     }
 
     /// Checks one tab against its file, asking if it has to.
@@ -9676,6 +9691,7 @@ impl<T: TextLayout> Editor<T> {
         // Every cached layout is keyed on bytes that are no longer in the buffer.
         self.layouts.clear();
         self.heights.clear();
+        self.watch.absent.clear();
         // And so is the word count. It is normally left to age because a stale count is nearly
         // right; after a reopen it is not stale but *wrong*, and the commonest reopen is of a tab
         // that never opened at all — so the bar would read "0 words" over a document full of them
@@ -10352,9 +10368,13 @@ impl<T: TextLayout> Editor<T> {
 
         // Everything about what a destination may name lives in `mdedit_image::resolve`, including
         // the rule that keeps a UNC path from leaking an NTLM hash. None of it is repeated here.
-        let path = match mdedit_image::resolve(destination, self.document_directory().as_deref()) {
+        let beside = self.document_directory();
+        let path = match mdedit_image::resolve(destination, beside.as_deref()) {
             Ok(path) => path,
             Err(refused) => {
+                if matches!(refused, mdedit_image::Refused::NotAFile(_)) {
+                    self.watch.absent.insert((destination.to_owned(), beside));
+                }
                 Self::note_picture_refused(&refused);
                 return None;
             }
@@ -10419,7 +10439,7 @@ impl<T: TextLayout> Editor<T> {
         let key = PictureKey::of(path)?;
         // Past every id in use or still waiting to be dropped, never `len()`: removal shrinks the
         // length and it would hand a live id out a second time.
-        let next = (self.picture_ids.values().chain(&self.retired_pictures))
+        let next = (self.picture_ids.values().chain(&self.watch.retired))
             .max()
             .map_or(0, |highest| highest + 1);
         let id = *self.picture_ids.entry(key.clone()).or_insert(next);
@@ -11317,6 +11337,18 @@ impl ChunkKey {
             mode,
         }
     }
+}
+
+/// Picture bookkeeping that outlives one layout (MDEDIT-150).
+#[derive(Debug, Default)]
+struct PictureWatch {
+    /// Ids of superseded pictures whose textures the renderer has yet to drop.
+    retired: Vec<u64>,
+    /// Destinations that named no file when laid out, with the directory they were resolved
+    /// against. Re-resolved on focus, so a picture whose file is saved after its link is typed
+    /// appears. **Absent only**: a refusal on a rule is never in here. Cleared whenever the layouts
+    /// are, so it holds what was laid out since then and cannot grow past it.
+    absent: HashSet<(String, Option<PathBuf>)>,
 }
 
 /// A picture as a chunk draws it: which one, and how big after fitting the column.

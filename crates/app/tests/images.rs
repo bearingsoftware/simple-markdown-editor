@@ -917,15 +917,23 @@ fn an_unchanged_file_costs_nothing() {
     let dir = TempDir::new().unwrap();
     let mut editor = one_picture(&dir, (100, 50));
     let before = once_decoded(&mut editor)[0];
-    let laid_out = editor.build_frame(WIDTH, HEIGHT, 1.0).len();
+    // What a frame costs once the document is cached: the chrome is laid out afresh every frame.
+    let start = editor.text_backend().layouts();
+    pictures_of(&mut editor);
+    let steady = editor.text_backend().layouts() - start;
 
     assert!(!editor.check_pictures());
 
+    let start = editor.text_backend().layouts();
     let after = pictures_of(&mut editor)[0];
     assert_eq!(after.id, before.id);
     assert_eq!(after, before);
     assert!(editor.take_retired_pictures().is_empty());
-    assert_eq!(editor.build_frame(WIDTH, HEIGHT, 1.0).len(), laid_out);
+    assert_eq!(
+        editor.text_backend().layouts() - start,
+        steady,
+        "the document was laid out again"
+    );
 }
 
 #[test]
@@ -962,4 +970,74 @@ fn two_paragraphs_naming_one_file_both_update_and_decode_once() {
         !editor.await_pictures(std::time::Duration::from_millis(200)),
         "a second decode was queued"
     );
+}
+
+#[test]
+fn a_file_saved_after_its_link_was_typed_draws_when_the_window_is_focused() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor_on(&dir, "![a cat](cat.png)\n");
+    assert!(pictures_of(&mut editor).is_empty());
+    assert_eq!(editor.absent_pictures(), 1);
+
+    assert!(!editor.check_pictures(), "nothing has appeared yet");
+    write_png(&dir.path().join("cat.png"), 100, 50);
+    assert!(editor.check_pictures());
+
+    assert_eq!(once_decoded(&mut editor).len(), 1);
+    assert_eq!(editor.absent_pictures(), 0);
+}
+
+#[test]
+fn a_refused_destination_is_never_waited_on() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, _) = editor_on(
+        &dir,
+        "![](%5C%5Cevil.example%5Ca%5Cx.png)\n\n![](https://example.com/x.png)\n",
+    );
+
+    assert!(pictures_of(&mut editor).is_empty());
+
+    assert_eq!(editor.absent_pictures(), 0);
+    assert!(!editor.check_pictures());
+}
+
+#[test]
+fn an_unusable_entry_recovers_when_the_file_is_fixed() {
+    let dir = TempDir::new().unwrap();
+    let cat = dir.path().join("cat.png");
+    std::fs::write(&cat, b"not a png").unwrap();
+    let (mut editor, _) = editor_on(&dir, "![a cat](cat.png)\n");
+    assert!(pictures_of(&mut editor).is_empty());
+
+    rewrite_png(&cat, 100, 50, 60);
+    assert!(editor.check_pictures());
+
+    let drawn = once_decoded(&mut editor);
+    assert_eq!(drawn.len(), 1);
+    assert!(editor.picture(drawn[0].id).is_some());
+}
+
+#[test]
+fn an_id_reused_after_the_queue_drains_still_draws() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+    let old = once_decoded(&mut editor)[0];
+
+    std::fs::remove_file(dir.path().join("cat.png")).unwrap();
+    assert!(editor.check_pictures());
+    assert_eq!(editor.take_retired_pictures(), vec![old.id]);
+    pictures_of(&mut editor);
+
+    write_png(&dir.path().join("dog.png"), 80, 40);
+    editor
+        .document_mut()
+        .replace(
+            ByteSpan::new(ByteOffset::new(0), ByteOffset::new(0)),
+            "![](dog.png)\n\n",
+        )
+        .unwrap();
+    let drawn = once_decoded(&mut editor);
+
+    assert_eq!(drawn.len(), 1, "{drawn:?}");
+    assert!(editor.picture(drawn[0].id).is_some());
 }
