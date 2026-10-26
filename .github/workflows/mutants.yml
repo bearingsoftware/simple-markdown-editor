@@ -129,9 +129,10 @@ jobs:
     # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
     # from the old number — see proxmox FINCH-400.
     runs-on: [self-hosted, Linux, X64, general]
-    # It reports on a pull request and does not block. A sweep must not report green on a failure:
-    # `needs.<job>.result` reads success for a job that failed under continue-on-error (MDEDIT-191).
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # Every diff run reports and does not block; only a sweep can fail here. A sweep must not report
+    # green on a failure: `needs.<job>.result` reads success for a job that failed under
+    # continue-on-error (MDEDIT-191).
+    continue-on-error: ${{ github.event_name != 'schedule' && inputs.sweep == '' }}
     timeout-minutes: 20
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
@@ -545,6 +546,8 @@ jobs:
         with:
           name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
+          # A re-run of a failed job uploads the same name again; without this it fails the upload.
+          overwrite: true
           if-no-files-found: ignore
 
   # The sweep's only verdict (MDEDIT-191). Not `continue-on-error`: a scheduled sweep with survivors

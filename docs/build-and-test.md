@@ -529,7 +529,8 @@ an ordinary diff run, unchanged.
 
 The job writes a step summary with the counts and the lists either way. The shard jobs and the plan
 are not `continue-on-error` in a sweep, because GitHub reads a job that failed under that flag as a
-success. On pull requests they still are, so a pull request does not wait on the sweep.
+success. Every diff run still is, so no diff run can fail on the sweep's account. A re-run of a
+failed shard overwrites its report artifact, so the sweep's verdict reflects the last attempt.
 
 **It blocks nothing else.** Pull requests and releases never wait on it. On a scheduled run the red
 run, and the email GitHub sends for it, is the notification. A survivor is still a question, to be
