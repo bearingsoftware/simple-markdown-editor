@@ -853,3 +853,35 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **One thread, lazily started**, so a session that never opens a document with an image in it never
   starts one. Failures come back as values and are logged by the editor, so one thread writes the log
   and its lines stay in an order that matches the frames.
+
+- **A picture is re-checked when the window regains focus, and the superseded one is freed
+  (MDEDIT-150).** The picture cache is keyed on path, length and mtime, but that key is only looked
+  at when a chunk is laid out, and the layout cache hashes the buffer's bytes, which do not include
+  the image. So a `cat.png` edited in another program kept drawing its old self until something
+  else happened to clear the layouts.
+
+  **Focus, not per frame and not a file watcher.** The same reasoning `check_disk` gives: an
+  external edit has almost always happened while the window was away, and the check costs nothing
+  per frame. A watcher brings a thread and four platform backends for a case that happens between
+  focus changes. `Editor::check_pictures` re-stats only the keys already in the cache, each of which
+  went through `mdedit_image::resolve` on its way in, so no path that has not been accepted is
+  touched. It is separate from `check_disk` because that one answers "was a tab reloaded", and the
+  tests and callers that read it mean exactly that.
+
+  **A changed or vanished file is dropped, not patched.** Its entry goes, the layouts and heights
+  are cleared as a reload does, and the next layout asks for the new file. A file that is now gone
+  draws its alt text.
+
+  **The superseded entry is freed now.** Its id is queued in `retired_pictures`, and the draw that
+  uploads pictures first tells the renderer to drop that id's bind group and texture. A new id is
+  one past the highest in use or still queued, not the map's length: removal shrinks the length, and
+  a length would hand a live id out a second time.
+
+  **No size cap yet.** A session opening many distinct images still holds them all. A cap is a
+  number, and it should come from a measurement of what many images cost, not a guess.
+
+  **A link typed before its file is saved is waited on too.** A destination that resolved to
+  `NotAFile` has no cache entry to re-stat, so the destination and its directory are kept in a set
+  and re-run through `mdedit_image::resolve` on focus; the first to resolve clears the layouts. Only
+  absent files go in: a UNC or URL refusal is never retried as if it were missing. The set is
+  cleared with the layouts, so it holds only what has been laid out since.
