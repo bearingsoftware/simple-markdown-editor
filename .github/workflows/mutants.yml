@@ -129,8 +129,9 @@ jobs:
     # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
     # from the old number — see proxmox FINCH-400.
     runs-on: [self-hosted, Linux, X64, general]
-    # It reports; it does not block. Same rule as the shards below.
-    continue-on-error: true
+    # It reports on a pull request and does not block. A sweep must not report green on a failure:
+    # `needs.<job>.result` reads success for a job that failed under continue-on-error (MDEDIT-191).
+    continue-on-error: ${{ github.event_name == 'pull_request' }}
     timeout-minutes: 20
     outputs:
       mode: ${{ steps.mode.outputs.mode }}
@@ -144,8 +145,9 @@ jobs:
           # `--in-diff` needs the merge base, which a shallow clone does not have.
           fetch-depth: 0
 
-      # A schedule is always a sweep, and its slice is the ISO week mod N. `10#` because week `08` is
-      # otherwise read as octal. A dispatch sweeps the slice it was given, to re-run one by hand.
+      # A schedule is always a sweep. Its slice is whole weeks since the epoch mod N, not the ISO week,
+      # which restarts each January and would repeat or skip a slice across New Year. A dispatch sweeps
+      # the slice it was given, to re-run one by hand.
       - name: Which mode
         id: mode
         env:
@@ -160,7 +162,7 @@ jobs:
             exit 0
           fi
           if [ "$EVENT" = schedule ]; then
-            slice=$(( 10#$(date -u +%V) % MUTANTS_SWEEP_RUNS ))
+            slice=$(( $(date -u +%s) / 604800 % MUTANTS_SWEEP_RUNS ))
           else
             case "$SWEEP_INPUT" in
               *[!0-9]*|'')
@@ -182,10 +184,11 @@ jobs:
       # `pull_request` and `workflow_dispatch` only, so no `main`-scoped cache is ever written for a
       # pull request to restore — and `save-if` below makes that explicit rather than leaving the job
       # uploading 66–70 MB per run into a scope nothing reads. Registry downloads are the cost, and
-      # they are the small half.
+      # they are the small half. The weekly sweep runs on `main` too, so `save-if` excludes schedules
+      # by event as well, and it still saves nothing.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' }}
 
       # **The prebuilt binary is tried first, which MDEDIT-132 left open.** It was linked against
       # GLIBC 2.39 and the self-hosted box was older, so the download died on `version 'GLIBC_2.39'
@@ -278,7 +281,11 @@ jobs:
             total=0
             for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
               g=$((SLICE * MUTANTS_MAX_SHARDS + s))
-              cargo mutants --list $MUTANTS_EXCLUDES --shard "$g/$T" --sharding round-robin > /tmp/sweep-$s.list
+              if ! cargo mutants --list $MUTANTS_EXCLUDES --shard "$g/$T" --sharding round-robin > /tmp/sweep-$s.list; then
+                echo "::error title=Sweep list failed::cargo-mutants --list failed for global shard $g of $T. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
+                echo "shards=[]" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
               n=$(grep -c '' /tmp/sweep-$s.list || true)
               n=${n:-0}
               total=$((total + n))
@@ -340,8 +347,9 @@ jobs:
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
     runs-on: [self-hosted, Linux, X64, general]
-    # A trial. It reports; it does not block.
-    continue-on-error: true
+    # A trial: on a pull request it reports and does not block. A sweep must not report green on a
+    # failed shard, so there it is not continue-on-error (MDEDIT-191).
+    continue-on-error: ${{ needs.plan.outputs.mode != 'sweep' }}
     # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
     # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
     # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
@@ -368,7 +376,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -524,6 +532,9 @@ jobs:
           if [ "$timeouts" -gt 0 ]; then
             echo "::warning title=Mutants timed out in shard $SHARD::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report-shard-$SHARD artifact."
           fi
+          # The only marker sweep-report trusts. Written here and nowhere else, so a shard that
+          # failed or ran out of time leaves none, whatever the job's result says (MDEDIT-191).
+          touch mutants.out/shard-done
           exit 0
 
       # The report is the whole output of the job, so it survives the run being tidied away. One name
@@ -538,11 +549,14 @@ jobs:
 
   # The sweep's only verdict (MDEDIT-191). Not `continue-on-error`: a scheduled sweep with survivors
   # goes red, and a failed scheduled run is what emails the workflow's owner. Diff mode does not come
-  # here; it reports and does not block.
+  # here; it reports and does not block. It passes only when every shard wrote its `shard-done`
+  # marker, because a shard that failed, timed out or never installed leaves none.
   sweep-report:
     name: mutants sweep (report)
     needs: [plan, mutants]
-    if: always() && needs.plan.outputs.mode == 'sweep'
+    # `schedule` and a dispatch with a slice are the only sweeps. Keyed on the event rather than the
+    # plan's mode, so a plan that died before choosing one still gets a verdict.
+    if: always() && (github.event_name == 'schedule' || inputs.sweep != '')
     runs-on: [self-hosted, Linux, X64, general]
     timeout-minutes: 10
     steps:
@@ -552,16 +566,32 @@ jobs:
           path: /tmp/reports
           merge-multiple: false
 
-      - name: Summarise the sweep and fail on any survivor
+      - name: Check every shard reported, then summarise and fail on any survivor
         env:
           SLICE: ${{ needs.plan.outputs.slice }}
           PLAN_RESULT: ${{ needs.plan.result }}
           MUTANTS_RESULT: ${{ needs.mutants.result }}
         run: |
           set -uo pipefail
+          reports_ok=1
+          count=0
+          if [ -d /tmp/reports ]; then
+            count=$(find /tmp/reports -mindepth 1 -maxdepth 1 -type d -name 'mutants-report-shard-*' | wc -l)
+          fi
+          missing=""
+          for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
+            [ -f "/tmp/reports/mutants-report-shard-$s/shard-done" ] || missing="$missing $s"
+          done
+          if [ "$count" -ne "$MUTANTS_MAX_SHARDS" ] || [ -n "$missing" ]; then
+            reports_ok=0
+            echo "::error title=Sweep shards did not all finish::Expected $MUTANTS_MAX_SHARDS mutants-report-shard-* artifacts, each with a shard-done marker. Found $count artifact(s); shard(s) without a marker:${missing:- none}. A shard that ran out of time, failed its baseline or failed to install does not finish, and an unfinished shard leaves part of the workspace unchecked (MDEDIT-191)."
+          fi
+
           touch /tmp/missed.txt /tmp/timeout.txt
-          find /tmp/reports -name missed.txt -exec cat {} + >> /tmp/missed.txt
-          find /tmp/reports -name timeout.txt -exec cat {} + >> /tmp/timeout.txt
+          if [ -d /tmp/reports ]; then
+            find /tmp/reports -name missed.txt -exec cat {} + >> /tmp/missed.txt
+            find /tmp/reports -name timeout.txt -exec cat {} + >> /tmp/timeout.txt
+          fi
           missed=$(grep -c '' /tmp/missed.txt || true)
           timeouts=$(grep -c '' /tmp/timeout.txt || true)
           missed=${missed:-0}
@@ -570,6 +600,7 @@ jobs:
           {
             echo "## Mutants sweep: slice $SLICE of $MUTANTS_SWEEP_RUNS (MDEDIT-191)"
             echo
+            echo "- Shards with a shard-done marker: $count of $MUTANTS_MAX_SHARDS"
             echo "- Survived (missed): $missed"
             echo "- Timed out (outcome unknown): $timeouts"
             echo "- Plan: $PLAN_RESULT, shards: $MUTANTS_RESULT"
@@ -589,8 +620,8 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$PLAN_RESULT" != success ] || [ "$MUTANTS_RESULT" != success ]; then
-            echo "::error title=Sweep did not finish::The plan or a shard failed or was cancelled, so part of the workspace was not mutated (plan $PLAN_RESULT, shards $MUTANTS_RESULT). Read the shard logs (MDEDIT-191)."
+          if [ "$reports_ok" -ne 1 ] || [ "$PLAN_RESULT" != success ] || [ "$MUTANTS_RESULT" != success ]; then
+            echo "::error title=Sweep did not finish::The plan or a shard failed, was cancelled or was skipped, or reported short (plan $PLAN_RESULT, shards $MUTANTS_RESULT). Part of the workspace is unchecked (MDEDIT-191)."
             exit 1
           fi
           if [ "$missed" -gt 0 ] || [ "$timeouts" -gt 0 ]; then

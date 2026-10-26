@@ -506,21 +506,41 @@ machine a mutant cost 15–66 s to build and 25–34 s to test, and the run ran 
 three minutes. The whole workspace is 6994 mutants at the time of writing (`cargo mutants --list`,
 with the Windows-only crates excluded), so it is split across the pool rather than run in one job.
 
-**The mechanism has no state.** `mutants.yml` runs on a Sunday schedule, and that week's ISO number
-mod `MUTANTS_SWEEP_RUNS` (8) picks the slice `k`. Run `k` executes global shards `k*6` to `k*6+5`
-of `N*6` (`--shard g/T --sharding round-robin`, with no `--in-diff`). Round-robin gives every
-shard the same mix of crates, so no shard inherits the expensive `mdedit-app` mutants alone. With
-`N` = 8 that is 48 shards of about 146 mutants, and **one lap is eight weeks**, after which every
-mutant has been run once. The plan job counts each shard and warns above `MUTANTS_SWEEP_PER_SHARD`
-(150).
+**The mechanism has no state.** `mutants.yml` runs on a Sunday schedule. The slice is the number of
+whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (8). It is not the ISO week, because
+ISO week numbers restart each January and would repeat or skip a slice across New Year. Run `k`
+executes global shards `k*6` to `k*6+5` of `N*6` (`--shard g/T --sharding round-robin`, with no
+`--in-diff`). Round-robin gives every shard the same mix of crates, so no shard inherits the
+expensive `mdedit-app` mutants alone. With `N` = 8 that is 48 shards of about 146 mutants, and **one
+lap is eight weeks**, after which every mutant has been run once. The plan job counts each shard,
+warns above `MUTANTS_SWEEP_PER_SHARD` (150), and fails if `cargo mutants --list` fails.
 
 To re-run one slice by hand: `gh workflow run mutants.yml -f sweep=3`. An empty `sweep` input is
 an ordinary diff run, unchanged.
 
-**It blocks nothing.** Pull requests and releases never wait on it. The `sweep-report` job goes red
-when a mutant survives, a mutant times out, or a shard fails or is cancelled. On a scheduled run
-that red run, and the email GitHub sends for it, is the notification. A survivor is still a
-question, to be read as in the section above.
+**The verdict is `sweep-report`, and it passes only on a complete, clean sweep.** It fails when:
+
+- fewer than `MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*`
+  artifacts come back, or one of them lacks its `shard-done` marker. The marker is written only on
+  the Mutate step's final success path, so a shard that ran out of time, failed its baseline or
+  failed to install never leaves one.
+- the plan or a shard job did not succeed, which catches a cancelled or skipped job too.
+- a mutant survived (`missed.txt`) or timed out (`timeout.txt`) in any shard.
+
+The job writes a step summary with the counts and the lists either way. The shard jobs and the plan
+are not `continue-on-error` in a sweep, because GitHub reads a job that failed under that flag as a
+success. On pull requests they still are, so a pull request does not wait on the sweep.
+
+**It blocks nothing else.** Pull requests and releases never wait on it. On a scheduled run the red
+run, and the email GitHub sends for it, is the notification. A survivor is still a question, to be
+read as in the section above.
+
+**The sweep saves no cache.** It runs on `main`, and `save-if` is false for schedules as well as
+for pull requests, so a weekly run does not write a 66–70 MB cache.
+
+**Dispatches no longer cancel each other.** Concurrency is keyed on the event and the sweep slice,
+and only pull requests cancel in progress. A diff dispatch used to cancel an earlier one on the same
+ref. A sweep and a diff run never share a group.
 
 **When the workspace grows, raise `MUTANTS_SWEEP_RUNS`** in `mutants.yml` once a shard passes 150.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
