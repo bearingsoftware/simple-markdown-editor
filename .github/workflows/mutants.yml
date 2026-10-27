@@ -50,10 +50,12 @@ env:
   # **The sweep's lap length, and the per-shard cap that sizes it** (MDEDIT-191). A lap is
   # `MUTANTS_SWEEP_RUNS` weekly runs of `MUTANTS_MAX_SHARDS` shards each, so the workspace is split
   # into `MUTANTS_SWEEP_RUNS * MUTANTS_MAX_SHARDS` round-robin shards. Raise the first as the
-  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated, because that cap is what
-  # fits the 40-minute budget at roughly 10-15 s a mutant.
-  MUTANTS_SWEEP_RUNS: 8
-  MUTANTS_SWEEP_PER_SHARD: 150
+  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated. Sized from run 40408425052
+  # (slice 0 at N=8): a mutant costs about 15 s on the heavy shards, and 146 mutants a shard ran shard
+  # 2 out of its 40-minute budget with 35 survivors found and the rest untested. Sixteen slices halve
+  # the work per shard, and 80 is the cap that keeps a shard inside the budget at that cost.
+  MUTANTS_SWEEP_RUNS: 16
+  MUTANTS_SWEEP_PER_SHARD: 80
   # **One copy, read by both jobs**, because the count `plan` emits and the set the shards run have
   # to be the same set. Two lists that must agree is how MDEDIT-155 happened.
   #

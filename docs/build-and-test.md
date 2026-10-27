@@ -502,28 +502,33 @@ survivor. Reproduce a timed-out mutant locally before reading it either way.
 
 **The exhaustive mutants run lives on the self-hosted pool, not a laptop.** On one Windows
 machine a mutant cost 15–66 s to build and 25–34 s to test, and the run ran out of memory
-(MDEDIT-191). On the pool a mutant costs about 10 s: PR #224's shards ran 11–12 mutants in two to
-three minutes. The whole workspace is 6994 mutants at the time of writing (`cargo mutants --list`,
+(MDEDIT-191). The whole workspace is 6994 mutants at the time of writing (`cargo mutants --list`,
 with the Windows-only crates excluded), so it is split across the pool rather than run in one job.
 
+**The cost per mutant was measured in a real run, and it sized the split.** Run 40408425052 was
+slice 0 at the first setting, eight slices, so 146 mutants a shard. A shard took 19.5 to 40
+minutes, including about four minutes of setup, and cost about 15 s a mutant on the heavy shards,
+not the 10 s first estimated. Shard 2 ran out of its 2400 s budget with 35 survivors found and the
+rest untested, and `sweep-report` correctly went red for the missing marker. At sixteen slices a
+shard is about 73 mutants, roughly half the work, which leaves room for an overrun.
+
 **The mechanism has no state.** `mutants.yml` runs on a Sunday schedule. The slice is the number of
-whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (8). It is not the ISO week, because
+whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (16). It is not the ISO week, because
 ISO week numbers restart each January and would repeat or skip a slice across New Year. Run `k`
 executes global shards `k*6` to `k*6+5` of `N*6` (`--shard g/T --sharding round-robin`, with no
 `--in-diff`). Round-robin gives every shard the same mix of crates, so no shard inherits the
-expensive `mdedit-app` mutants alone. With `N` = 8 that is 48 shards of about 146 mutants, and **one
-lap is eight weeks**, after which every mutant has been run once. The plan job counts each shard,
-warns above `MUTANTS_SWEEP_PER_SHARD` (150), and fails if `cargo mutants --list` fails.
+expensive `mdedit-app` mutants alone. With `N` = 16 that is 96 shards of 73 mutants each, and **one
+lap is sixteen weeks**, after which every mutant has been run once. The plan job counts each shard,
+warns above `MUTANTS_SWEEP_PER_SHARD` (80), and fails if `cargo mutants --list` fails.
 
 To re-run one slice by hand: `gh workflow run mutants.yml -f sweep=3`. An empty `sweep` input is
 an ordinary diff run, unchanged.
 
 **The verdict is `sweep-report`, and it passes only on a complete, clean sweep.** It fails when:
 
-- fewer than `MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*`
-  artifacts come back, or one of them lacks its `shard-done` marker. The marker is written only on
-  the Mutate step's final success path, so a shard that ran out of time, failed its baseline or
-  failed to install never leaves one.
+- fewer than `MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*` artifacts come back, or one of them
+  lacks its `shard-done` marker. The marker is written only on the Mutate step's final success
+  path, so a shard that ran out of time, failed its baseline or failed to install never leaves one.
 - the plan or a shard job did not succeed, which catches a cancelled or skipped job too.
 - a mutant survived (`missed.txt`) or timed out (`timeout.txt`) in any shard.
 
@@ -543,6 +548,6 @@ for pull requests, so a weekly run does not write a 66–70 MB cache.
 and only pull requests cancel in progress. A diff dispatch used to cancel an earlier one on the same
 ref. A sweep and a diff run never share a group.
 
-**When the workspace grows, raise `MUTANTS_SWEEP_RUNS`** in `mutants.yml` once a shard passes 150.
+**When the workspace grows, raise `MUTANTS_SWEEP_RUNS`** in `mutants.yml` once a shard passes 80.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
 restarts.
