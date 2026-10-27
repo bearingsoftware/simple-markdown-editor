@@ -238,10 +238,13 @@ jobs:
       # mutates nothing, which made the workflow impossible to exercise by hand.
       - name: What this pull request changed
         if: steps.mode.outputs.mode == 'diff'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          INPUT_BASE: ${{ inputs.base }}
         run: |
-          base="origin/${{ github.base_ref }}"
-          if [ -z "${{ github.base_ref }}" ]; then
-            base="${{ inputs.base }}"
+          base="origin/$BASE_REF"
+          if [ -z "$BASE_REF" ]; then
+            base="$INPUT_BASE"
             # **A checkout has the remote's refs, not local branches**, so the obvious value for this
             # input — a branch name, and `main` is its own default — is not a revision here and
             # `git diff` fails with "ambiguous argument". A commit SHA resolves either way, which is

@@ -27,6 +27,22 @@ trigger may run on the self-hosted pool: CI and fuzzing are entirely GitHub-host
 mode is too. Only the weekly mutants sweep (`schedule` or a dispatch) stays on the pool it was sized for.
 MDEDIT-115 had put the Linux jobs on the pool to save billed minutes while the repository was private.
 
+## Self-hosted runners on a public repository (MDEDIT-136)
+
+**The YAML cannot enforce "no fork job on a self-hosted runner".** A fork's pull request runs the
+fork's own copy of the workflow file, so it can rewrite `runs-on` however it likes. What the workflows
+here do is keep their own jobs honest; the enforcement is in settings that live outside the repository
+and belong to the owner:
+
+- **The org runner group.** Either turn "Allow public repositories" off, which stops the weekly
+  mutants sweep and the status board, or turn it on and restrict the group to selected workflows:
+  `.github/workflows/mutants.yml@refs/heads/main` and `.github/workflows/project-status.yml@refs/heads/main`.
+  A fork pull request's run is `refs/pull/N/merge`, so it does not match.
+- **"Require approval for all outside collaborators"** on fork pull request workflows.
+- **A read-only default `GITHUB_TOKEN`.**
+- **`vars.STATUS_BOARD_URL` must be set** (repository variable), or the status board steps fail with an
+  `::error`. The board's address is deliberately not in the repository.
+
 ## The toolchain is pinned, and two jobs override the pin on purpose
 
 `rust-toolchain.toml` names the version everything here builds and lints with. Before it, CI asked
