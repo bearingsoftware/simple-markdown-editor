@@ -36,7 +36,8 @@ and belong to the owner:
 
 - **The org runner group.** Either turn "Allow public repositories" off, which stops the weekly
   mutants sweep and the status board, or turn it on and restrict the group to selected workflows:
-  `.github/workflows/mutants.yml@refs/heads/main` and `.github/workflows/project-status.yml@refs/heads/main`.
+  `bearingsoftware/simple-markdown-editor/.github/workflows/mutants.yml@refs/heads/main` and
+  `bearingsoftware/simple-markdown-editor/.github/workflows/project-status.yml@refs/heads/main`.
   A fork pull request's run is `refs/pull/N/merge`, so it does not match.
 - **"Require approval for all outside collaborators"** on fork pull request workflows.
 - **A read-only default `GITHUB_TOKEN`.**
