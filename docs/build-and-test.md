@@ -539,6 +539,11 @@ The file is compared as a multiset on `LC_ALL=C` sorted input, so a mutation tha
 one function needs two lines. It has no comment header, because every line is data. Keep it sorted:
 `LC_ALL=C sort -o .github/mutants-sweep-baseline.txt .github/mutants-sweep-baseline.txt`.
 
+The baseline is global, not per slice. If the same mutation text occurs twice in one function and
+the two copies fall in different slices, a new survivor at the second copy reads as known. That is
+accepted: it is narrow, and keying on the slice is impossible because a mutant's shard moves as the
+code changes.
+
 `sweep-report` normalises each slice's `missed.txt` and `timeout.txt` the same way, and goes red on
 any line not in the baseline. A known survivor is counted in the step summary and does not fail the
 run. The new lines are uploaded as the `sweep-new-survivors` artifact, ready to append. The summary

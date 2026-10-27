@@ -660,6 +660,8 @@ jobs:
           name: sweep-new-survivors
           path: /tmp/new.txt
           if-no-files-found: ignore
+          # A re-run of sweep-report uploads the same name again (MDEDIT-191).
+          overwrite: true
 
       - name: Verdict
         if: always()
