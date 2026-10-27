@@ -17,6 +17,11 @@ name: Mutants
 # next pull request, MDEDIT-142's #168, generated 82 mutants and got through 35 of them. The rest
 # were run on a laptop, and two survivors came out of the part CI never reached. So `plan` counts
 # what the diff generates and `mutants` runs that count in parallel shards, each with the same budget.
+#
+# **And a weekly sweep of the whole workspace** (MDEDIT-191). Each Sunday one slice of the workspace
+# is mutated, rotating through the slices week by week, so every mutant is reached within a lap. It
+# lives on the pool, not a laptop, because a Windows machine ran out of memory on it. A survivor
+# fails the scheduled run, and GitHub's email for that failure is the notification.
 
 on:
   pull_request:
@@ -26,14 +31,31 @@ on:
         description: What to diff against, for re-running a real diff by hand
         required: false
         default: main
+      sweep:
+        description: Run slice K of the weekly sweep by hand (0-based). Empty runs the diff.
+        required: false
+        default: ''
+  schedule:
+    # Sunday 03:00 UTC, when nobody wants the runners.
+    - cron: '0 3 * * 0'
 
-# A superseded push should stop costing the one runner time it could be giving the next pull request.
+# A sweep and a diff run never share a group, so neither cancels the other. Only a superseded pull
+# request push should stop costing the one runner time it could be giving the next pull request.
 concurrency:
-  group: mutants-${{ github.ref }}
-  cancel-in-progress: true
+  group: mutants-${{ github.event_name }}-${{ github.ref }}-${{ inputs.sweep }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  # **The sweep's lap length, and the per-shard cap that sizes it** (MDEDIT-191). A lap is
+  # `MUTANTS_SWEEP_RUNS` weekly runs of `MUTANTS_MAX_SHARDS` shards each, so the workspace is split
+  # into `MUTANTS_SWEEP_RUNS * MUTANTS_MAX_SHARDS` round-robin shards. Raise the first as the
+  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated. Sized from run 40408425052
+  # (slice 0 at N=8): a mutant costs about 15 s on the heavy shards, and 146 mutants a shard ran shard
+  # 2 out of its 40-minute budget with 35 survivors found and the rest untested. Sixteen slices halve
+  # the work per shard, and 80 is the cap that keeps a shard inside the budget at that cost.
+  MUTANTS_SWEEP_RUNS: 16
+  MUTANTS_SWEEP_PER_SHARD: 80
   # **One copy, read by both jobs**, because the count `plan` emits and the set the shards run have
   # to be the same set. Two lists that must agree is how MDEDIT-155 happened.
   #
@@ -109,10 +131,14 @@ jobs:
     # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
     # from the old number — see proxmox FINCH-400.
     runs-on: [self-hosted, Linux, X64, general]
-    # It reports; it does not block. Same rule as the shards below.
-    continue-on-error: true
+    # Every diff run reports and does not block; only a sweep can fail here. A sweep must not report
+    # green on a failure: `needs.<job>.result` reads success for a job that failed under
+    # continue-on-error (MDEDIT-191).
+    continue-on-error: ${{ github.event_name != 'schedule' && inputs.sweep == '' }}
     timeout-minutes: 20
     outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      slice: ${{ steps.mode.outputs.slice }}
       shards: ${{ steps.plan.outputs.shards }}
       total: ${{ steps.plan.outputs.total }}
       mutants: ${{ steps.plan.outputs.mutants }}
@@ -122,15 +148,50 @@ jobs:
           # `--in-diff` needs the merge base, which a shallow clone does not have.
           fetch-depth: 0
 
+      # A schedule is always a sweep. Its slice is whole weeks since the epoch mod N, not the ISO week,
+      # which restarts each January and would repeat or skip a slice across New Year. A dispatch sweeps
+      # the slice it was given, to re-run one by hand.
+      - name: Which mode
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          SWEEP_INPUT: ${{ inputs.sweep }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != schedule ] && [ -z "$SWEEP_INPUT" ]; then
+            echo "mode=diff" >> "$GITHUB_OUTPUT"
+            echo "slice=" >> "$GITHUB_OUTPUT"
+            echo "mode diff"
+            exit 0
+          fi
+          if [ "$EVENT" = schedule ]; then
+            slice=$(( $(date -u +%s) / 604800 % MUTANTS_SWEEP_RUNS ))
+          else
+            case "$SWEEP_INPUT" in
+              *[!0-9]*|'')
+                echo "::error title=Bad sweep slice::sweep must be an integer in 0..$((MUTANTS_SWEEP_RUNS - 1)), got '$SWEEP_INPUT'"
+                exit 1 ;;
+            esac
+            slice=$((10#$SWEEP_INPUT))
+            if [ "$slice" -ge "$MUTANTS_SWEEP_RUNS" ]; then
+              echo "::error title=Bad sweep slice::sweep must be an integer in 0..$((MUTANTS_SWEEP_RUNS - 1)), got $slice"
+              exit 1
+            fi
+          fi
+          echo "mode=sweep" >> "$GITHUB_OUTPUT"
+          echo "slice=$slice" >> "$GITHUB_OUTPUT"
+          echo "mode sweep, slice $slice of $MUTANTS_SWEEP_RUNS"
+
       - uses: dtolnay/rust-toolchain@stable
       # **This workflow can never have a cache, and that is structural** (MDEDIT-132). It runs on
       # `pull_request` and `workflow_dispatch` only, so no `main`-scoped cache is ever written for a
       # pull request to restore — and `save-if` below makes that explicit rather than leaving the job
       # uploading 66–70 MB per run into a scope nothing reads. Registry downloads are the cost, and
-      # they are the small half.
+      # they are the small half. The weekly sweep runs on `main` too, so `save-if` excludes schedules
+      # by event as well, and it still saves nothing.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' }}
 
       # **The prebuilt binary is tried first, which MDEDIT-132 left open.** It was linked against
       # GLIBC 2.39 and the self-hosted box was older, so the download died on `version 'GLIBC_2.39'
@@ -164,6 +225,7 @@ jobs:
       # input says what to diff against instead. Without it a dispatch diffs against `origin/` and
       # mutates nothing, which made the workflow impossible to exercise by hand.
       - name: What this pull request changed
+        if: steps.mode.outputs.mode == 'diff'
         run: |
           base="origin/${{ github.base_ref }}"
           if [ -z "${{ github.base_ref }}" ]; then
@@ -186,6 +248,7 @@ jobs:
       # MDEDIT-185: a handoff between jobs of one run, so it is dead the moment the run ends.
       # Without this it inherited the repo default of 14 days and piled up (FINCH-350).
       - uses: actions/upload-artifact@v4
+        if: steps.mode.outputs.mode == 'diff'
         with:
           name: mutants-diff
           path: /tmp/pr.diff
@@ -207,8 +270,46 @@ jobs:
         id: plan
         # `--list` parses rather than builds, so counting costs seconds. It takes the same filters as
         # the run: a count of a different set than the shards mutate would put mutants in no shard.
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          SLICE: ${{ steps.mode.outputs.slice }}
         run: |
           set -o pipefail
+
+          if [ "$MODE" = sweep ]; then
+            # **Each global shard is counted with the same flags the mutate step will use**, so the
+            # count is of the set that shard runs. A shard over the cap is annotated, not failed: the
+            # cap is a budget, and the sweep's own report is what says whether the budget held.
+            T=$((MUTANTS_SWEEP_RUNS * MUTANTS_MAX_SHARDS))
+            total=0
+            for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
+              g=$((SLICE * MUTANTS_MAX_SHARDS + s))
+              if ! cargo mutants --list $MUTANTS_EXCLUDES --shard "$g/$T" --sharding round-robin > /tmp/sweep-$s.list; then
+                echo "::error title=Sweep list failed::cargo-mutants --list failed for global shard $g of $T. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
+                echo "shards=[]" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              n=$(grep -c '' /tmp/sweep-$s.list || true)
+              n=${n:-0}
+              total=$((total + n))
+              echo "global shard $g of $T: $n mutant(s)"
+              if [ "$n" -gt "$MUTANTS_SWEEP_PER_SHARD" ]; then
+                echo "::warning title=Sweep shard over its cap::global shard $g of $T has $n mutants, over the $MUTANTS_SWEEP_PER_SHARD cap. Raise MUTANTS_SWEEP_RUNS so each slice is smaller (MDEDIT-191)."
+              fi
+            done
+            if [ "$total" -eq 0 ]; then
+              echo "::error title=Sweep generated no mutants::cargo-mutants listed nothing for slice $SLICE of $MUTANTS_SWEEP_RUNS. The whole workspace cannot generate none, so something is wrong with the list (MDEDIT-191)."
+              echo "mutants=0" >> "$GITHUB_OUTPUT"
+              echo "shards=[]" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "mutants=$total" >> "$GITHUB_OUTPUT"
+            echo "total=$T" >> "$GITHUB_OUTPUT"
+            echo "shards=[$(seq -s, 0 $((MUTANTS_MAX_SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
+            echo "$total mutants over $MUTANTS_MAX_SHARDS shard(s) of global slice $SLICE, round-robin of $T"
+            exit 0
+          fi
+
           cargo mutants --list --in-diff /tmp/pr.diff $MUTANTS_EXCLUDES > /tmp/mutants.list
           total=$(grep -c '' /tmp/mutants.list || true)
           total=${total:-0}
@@ -249,8 +350,9 @@ jobs:
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
     runs-on: [self-hosted, Linux, X64, general]
-    # A trial. It reports; it does not block.
-    continue-on-error: true
+    # A trial: on a pull request it reports and does not block. A sweep must not report green on a
+    # failed shard, so there it is not continue-on-error (MDEDIT-191).
+    continue-on-error: ${{ needs.plan.outputs.mode != 'sweep' }}
     # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
     # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
     # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
@@ -277,12 +379,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
       - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.mode == 'diff'
         with:
           name: mutants-diff
           path: /tmp
@@ -344,8 +447,24 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.total }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          SLICE: ${{ needs.plan.outputs.slice }}
         run: |
           set +e
+          # **The only difference between the two modes is the scope.** A diff shard mutates its
+          # share of the diff; a sweep shard mutates its round-robin share of the whole workspace,
+          # which is global shard `slice * MAX_SHARDS + shard` of `N * MAX_SHARDS`.
+          if [ "$MODE" = sweep ]; then
+            g=$(( SLICE * MUTANTS_MAX_SHARDS + SHARD ))
+            scope=(--shard "$g/$SHARDS")
+            where="global shard $g of $SHARDS (sweep slice $SLICE)"
+            advice="Raise MUTANTS_SWEEP_RUNS so each slice is smaller: the sweep cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-191)."
+          else
+            scope=(--in-diff /tmp/pr.diff --shard "$SHARD/$SHARDS")
+            where="shard $SHARD of $SHARDS"
+            advice="Split the pull request: the shard cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-172)."
+          fi
+
           # **A budget for the mutation run itself (MDEDIT-171)**, inside the job's 55 minutes and
           # the pool's 60, leaving room for checkout, the toolchain and the binary. INT rather than
           # KILL, so cargo-mutants stops the way it does on Ctrl-C and what it has already found is
@@ -357,8 +476,7 @@ jobs:
           budget=2400
           started=$SECONDS
           timeout --signal=INT --kill-after=120 "${budget}s" \
-            cargo mutants --in-diff /tmp/pr.diff \
-            --shard "$SHARD/$SHARDS" \
+            cargo mutants "${scope[@]}" \
             --sharding round-robin \
             --test-tool nextest \
             $MUTANTS_EXCLUDES \
@@ -374,7 +492,7 @@ jobs:
           # must not read as a result — the same rule MDEDIT-157 applies to an unreadable report.
           if [ "$status" -eq 124 ] || { [ "$status" -eq 137 ] && [ $((SECONDS - started)) -ge "$budget" ]; }; then
             missed=$(grep -c '' mutants.out/missed.txt 2>/dev/null || true)
-            echo "::error title=Shard $SHARD ran out of time::cargo-mutants did not finish shard $SHARD of $SHARDS within $((budget / 60)) minutes, so part of this diff was not mutated (${missed:-0} survivor(s) found before it stopped). The untested remainder is neither caught nor missed. Split the pull request: the shard cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-172)."
+            echo "::error title=Shard $SHARD ran out of time::cargo-mutants did not finish $where within $((budget / 60)) minutes, so part of it was not mutated (${missed:-0} survivor(s) found before it stopped). The untested remainder is neither caught nor missed. $advice"
             exit 1
           fi
 
@@ -383,7 +501,7 @@ jobs:
           # early — a compile error, a bad flag — also leaves no `mutants.out`, and that is exactly
           # what this catches now that "nothing was generated" is answered one job up (MDEDIT-155).
           if [ "$status" -eq 0 ] && [ ! -d mutants.out ]; then
-            echo "::error title=Shard $SHARD produced no report::The plan job counted mutants on this diff, so shard $SHARD of $SHARDS had work to do and left no mutants.out. The run did not get as far as mutating anything; read the step log rather than treating this as a pass (MDEDIT-155, MDEDIT-172)."
+            echo "::error title=Shard $SHARD produced no report::The plan job counted mutants for $where, so it had work to do and left no mutants.out. The run did not get as far as mutating anything; read the step log rather than treating this as a pass (MDEDIT-155, MDEDIT-172)."
             exit 1
           fi
 
@@ -417,6 +535,9 @@ jobs:
           if [ "$timeouts" -gt 0 ]; then
             echo "::warning title=Mutants timed out in shard $SHARD::$timeouts mutant(s) hit the test timeout, so their outcome is unknown: not caught, not missed. Reproduce each locally before reading it either way. On MDEDIT-156, two of three were caught in under a second off the runner and the third was a survivor in a function no test calls. Listed in timeout.txt in the mutants-report-shard-$SHARD artifact."
           fi
+          # The only marker sweep-report trusts. Written here and nowhere else, so a shard that
+          # failed or ran out of time leaves none, whatever the job's result says (MDEDIT-191).
+          touch mutants.out/shard-done
           exit 0
 
       # The report is the whole output of the job, so it survives the run being tidied away. One name
@@ -427,4 +548,134 @@ jobs:
         with:
           name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
+          # A re-run of a failed job uploads the same name again; without this it fails the upload.
+          overwrite: true
           if-no-files-found: ignore
+
+  # The sweep's verdict (MDEDIT-191). It fails on a new survivor or timeout, meaning one that is not
+  # in `.github/mutants-sweep-baseline.txt`, and on every shard that did not finish. Known survivors
+  # are counted, not failed: the first lap has 215 of them, and a red run on each would stop meaning
+  # anything. Not `continue-on-error`, so a scheduled run that fails is what emails the owner.
+  sweep-report:
+    name: mutants sweep (report)
+    needs: [plan, mutants]
+    # `schedule` and a dispatch with a slice are the only sweeps. Keyed on the event rather than the
+    # plan's mode, so a plan that died before choosing one still gets a verdict.
+    if: always() && (github.event_name == 'schedule' || inputs.sweep != '')
+    runs-on: [self-hosted, Linux, X64, general]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/mutants-sweep-baseline.txt
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mutants-report-shard-*
+          path: /tmp/reports
+          merge-multiple: false
+
+      - name: Check every shard reported, and compare survivors with the baseline
+        id: compare
+        env:
+          SLICE: ${{ needs.plan.outputs.slice }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MUTANTS_RESULT: ${{ needs.mutants.result }}
+        run: |
+          set -uo pipefail
+          reports_ok=1
+          count=0
+          if [ -d /tmp/reports ]; then
+            count=$(find /tmp/reports -mindepth 1 -maxdepth 1 -type d -name 'mutants-report-shard-*' | wc -l)
+          fi
+          missing=""
+          for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
+            [ -f "/tmp/reports/mutants-report-shard-$s/shard-done" ] || missing="$missing $s"
+          done
+          if [ "$count" -ne "$MUTANTS_MAX_SHARDS" ] || [ -n "$missing" ]; then
+            reports_ok=0
+            echo "::error title=Sweep shards did not all finish::Expected $MUTANTS_MAX_SHARDS mutants-report-shard-* artifacts, each with a shard-done marker. Found $count artifact(s); shard(s) without a marker:${missing:- none}. A shard that ran out of time, failed its baseline or failed to install does not finish, and an unfinished shard leaves part of the workspace unchecked (MDEDIT-191)."
+          fi
+          echo "reports_ok=$reports_ok" >> "$GITHUB_OUTPUT"
+
+          touch /tmp/missed.txt /tmp/timeout.txt /tmp/caught.txt
+          if [ -d /tmp/reports ]; then
+            find /tmp/reports -name missed.txt -exec cat {} + >> /tmp/missed.txt
+            find /tmp/reports -name timeout.txt -exec cat {} + >> /tmp/timeout.txt
+            find /tmp/reports -name caught.txt -exec cat {} + >> /tmp/caught.txt
+          fi
+
+          # `path:line:col: text` becomes `KIND path: text`, so an edit elsewhere in a file does not
+          # move its entry. Duplicates stay: the same mutation can occur twice in one function, and
+          # `comm` compares them as a multiset on sorted input.
+          sed -E 's/^([^:]+):[0-9]+:[0-9]+: /MISSED \1: /' /tmp/missed.txt > /tmp/cur-missed.txt
+          sed -E 's/^([^:]+):[0-9]+:[0-9]+: /TIMEOUT \1: /' /tmp/timeout.txt > /tmp/cur-timeout.txt
+          cat /tmp/cur-missed.txt /tmp/cur-timeout.txt | LC_ALL=C sort > /tmp/current.txt
+          LC_ALL=C sort .github/mutants-sweep-baseline.txt > /tmp/baseline.txt
+          LC_ALL=C comm -13 /tmp/baseline.txt /tmp/current.txt > /tmp/new.txt
+          known=$(LC_ALL=C comm -12 /tmp/baseline.txt /tmp/current.txt | wc -l)
+          new=$(grep -c '' /tmp/new.txt || true)
+          new=${new:-0}
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+
+          # Baseline entries for the files this slice mutated, that did not reappear. Another slice
+          # may own them, so this is a list to read, not a failure.
+          cat /tmp/missed.txt /tmp/timeout.txt /tmp/caught.txt | sed -E 's/^([^:]+):.*/\1/' \
+            | LC_ALL=C sort -u > /tmp/slice-files.txt
+          awk 'NR == FNR { f[$0] = 1; next } { p = $0; sub(/^[A-Z]+ /, "", p); sub(/:.*/, "", p); if (p in f) print }' \
+            /tmp/slice-files.txt /tmp/baseline.txt > /tmp/baseline-slice.txt
+          LC_ALL=C comm -23 /tmp/baseline-slice.txt /tmp/current.txt > /tmp/fixed.txt
+          fixed=$(grep -c '' /tmp/fixed.txt || true)
+          fixed=${fixed:-0}
+
+          {
+            echo "## Mutants sweep: slice $SLICE of $MUTANTS_SWEEP_RUNS (MDEDIT-191)"
+            echo
+            echo "- Shards with a shard-done marker: $count of $MUTANTS_MAX_SHARDS"
+            echo "- Known survivors and timeouts (in the baseline): $known"
+            echo "- New, not in the baseline: $new"
+            echo "- Plan: $PLAN_RESULT, shards: $MUTANTS_RESULT"
+            if [ "$new" -gt 0 ]; then
+              echo
+              echo "New. Each one needs a test that kills it, or a baseline line with a reason:"
+              echo '```'
+              cat /tmp/new.txt
+              echo '```'
+            fi
+            if [ "$fixed" -gt 0 ]; then
+              echo
+              echo "Baseline lines for this slice's files that did not reappear. Possibly fixed; drop"
+              echo "them from the baseline, after checking another slice does not own them:"
+              echo '```'
+              cat /tmp/fixed.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the new survivors
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep-new-survivors
+          path: /tmp/new.txt
+          if-no-files-found: ignore
+          # A re-run of sweep-report uploads the same name again (MDEDIT-191).
+          overwrite: true
+
+      - name: Verdict
+        if: always()
+        env:
+          REPORTS_OK: ${{ steps.compare.outputs.reports_ok }}
+          NEW: ${{ steps.compare.outputs.new }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MUTANTS_RESULT: ${{ needs.mutants.result }}
+        run: |
+          if [ "$REPORTS_OK" != 1 ] || [ "$PLAN_RESULT" != success ] || [ "$MUTANTS_RESULT" != success ]; then
+            echo "::error title=Sweep did not finish::The plan or a shard failed, was cancelled or was skipped, or reported short (plan $PLAN_RESULT, shards $MUTANTS_RESULT, reports ok $REPORTS_OK). Part of the workspace is unchecked (MDEDIT-191)."
+            exit 1
+          fi
+          if [ -z "$NEW" ] || [ "$NEW" -gt 0 ]; then
+            echo "::error title=Sweep found new survivors::${NEW:-unknown} survivor(s) or timeout(s) are not in .github/mutants-sweep-baseline.txt. Each needs a test that kills it, or a baseline line with a reason. The list is in the step summary and the sweep-new-survivors artifact (MDEDIT-191)."
+            exit 1
+          fi
