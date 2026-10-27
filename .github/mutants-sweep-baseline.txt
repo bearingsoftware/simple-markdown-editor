@@ -1,0 +1,240 @@
+MISSED crates/app/src/blocks.rs: replace += with *= in visible
+MISSED crates/app/src/blocks.rs: replace match guard *last >= start with false in split
+MISSED crates/app/src/config.rs: replace > with >= in Config::load_from
+MISSED crates/app/src/dialog.rs: replace && with || in contains
+MISSED crates/app/src/dialog.rs: replace * with + in height_of
+MISSED crates/app/src/dialog.rs: replace * with / in height_of
+MISSED crates/app/src/dialog.rs: replace - with + in height_of
+MISSED crates/app/src/dialog.rs: replace - with / in height_of
+MISSED crates/app/src/dialog.rs: replace < with <= in contains
+MISSED crates/app/src/editor.rs: delete ! in Editor<T>::dialog_key
+MISSED crates/app/src/editor.rs: delete - in Editor<T>::apply_chord
+MISSED crates/app/src/editor.rs: delete match arm Key::Character(character) in Editor<T>::dialog_key
+MISSED crates/app/src/editor.rs: delete match arm Key::Named(NamedKey::ArrowDown) in Editor<T>::dialog_key
+MISSED crates/app/src/editor.rs: delete match arm Key::Named(NamedKey::Space) in Editor<T>::dialog_key
+MISSED crates/app/src/editor.rs: delete match arm WindowEvent::KeyboardInput{event, ..} in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: delete match arm WindowEvent::RedrawRequested in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: replace % with / in Editor<T>::draw_line_number
+MISSED crates/app/src/editor.rs: replace && with || in Editor<T>::lay_out
+MISSED crates/app/src/editor.rs: replace && with || in Editor<T>::lay_out
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_caret_line
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_row_label
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_rules
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_tab_menu_rows
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::lay_out
+MISSED crates/app/src/editor.rs: replace * with + in Editor<T>::stamp
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_caret_line
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_find
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_preedit
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_row_label
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_rules
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_rules
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_tab_menu_rows
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_table
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_table
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_table
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::stamp
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_tab
+MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_field
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_text
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_find
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_find_buttons
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_glyphs
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_menu_rows
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_row_label
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_size_picker
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_tab
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::stamp
+MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::warm
+MISSED crates/app/src/editor.rs: replace - with + in Editor<T>::draw_find_buttons
+MISSED crates/app/src/editor.rs: replace - with + in Editor<T>::draw_status_bar
+MISSED crates/app/src/editor.rs: replace - with + in Editor<T>::draw_status_bar
+MISSED crates/app/src/editor.rs: replace - with + in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace - with + in Editor<T>::pan_by
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_find_buttons
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_marks
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_status_bar
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_tab
+MISSED crates/app/src/editor.rs: replace - with / in Editor<T>::draw_toolbar
+MISSED crates/app/src/editor.rs: replace / with % in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: replace / with % in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: replace / with % in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace / with % in Editor<T>::draw_find
+MISSED crates/app/src/editor.rs: replace / with % in Editor<T>::draw_tab
+MISSED crates/app/src/editor.rs: replace / with % in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace / with * in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: replace / with * in <impl ApplicationHandler<Wake> for Editor<T>>::window_event
+MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::build_frame
+MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::build_frame
+MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::draw_dialog_buttons
+MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace < with <= in list_pieces
+MISSED crates/app/src/editor.rs: replace < with == in Editor<T>::draw_find_term
+MISSED crates/app/src/editor.rs: replace < with == in list_pieces
+MISSED crates/app/src/editor.rs: replace == with != in Editor<T>::draw_pane
+MISSED crates/app/src/editor.rs: replace == with != in Editor<T>::toggle_menu
+MISSED crates/app/src/editor.rs: replace > with < in Editor<T>::title
+MISSED crates/app/src/editor.rs: replace > with == in Editor<T>::title
+MISSED crates/app/src/editor.rs: replace > with >= in Editor<T>::pan_by
+MISSED crates/app/src/editor.rs: replace Editor<T>::draw_size_picker with ()
+MISSED crates/app/src/editor.rs: replace Editor<T>::find_key -> bool with false
+MISSED crates/app/src/editor.rs: replace Editor<T>::find_key -> bool with true
+MISSED crates/app/src/editor.rs: replace Editor<T>::first_paint -> Option<Instant> with None
+MISSED crates/app/src/editor.rs: replace Editor<T>::gpu_error -> Option<&GpuError> with None
+MISSED crates/app/src/editor.rs: replace match guard grid.is_none() with true in Editor<T>::lay_out
+MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::dismiss_panels
+MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::find_origin
+MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::warm
+MISSED crates/app/src/find.rs: delete match arm (Mode::GoTo, _) in Bar::active
+MISSED crates/app/src/find.rs: delete match arm (Mode::Replace, Focus::Secondary) in Bar::active
+MISSED crates/app/src/find.rs: replace < with <= in Layout::over_field
+MISSED crates/app/src/find.rs: replace Bar::active -> &Field with Box::leak(Box::new(Default::default()))
+MISSED crates/app/src/gpu.rs: replace + with * in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace + with - in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace + with - in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace += with *= in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace += with -= in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace > with >= in Atlas::insert
+MISSED crates/app/src/hit.rs: replace < with <= in row_at
+MISSED crates/app/src/latency.rs: replace Latency::is_empty -> bool with true
+MISSED crates/app/src/latency.rs: replace Latency::len -> usize with 0
+MISSED crates/app/src/latency.rs: replace Latency::len -> usize with 1
+MISSED crates/app/src/list.rs: replace - with + in assemble
+MISSED crates/app/src/main.rs: replace <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask -> mdedit_app::prompt::Unsaved with Default::default()
+MISSED crates/app/src/main.rs: replace == with != in <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask
+MISSED crates/app/src/main.rs: replace match guard choice == "Discard" with false in <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask
+MISSED crates/app/src/main.rs: replace match guard choice == "Discard" with true in <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask
+MISSED crates/app/src/main.rs: replace match guard choice == save with false in <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask
+MISSED crates/app/src/main.rs: replace match guard choice == save with true in <impl mdedit_app::prompt::UnsavedPrompt for NativePrompt>::ask
+MISSED crates/app/src/popup.rs: replace * with + in grid::height
+MISSED crates/app/src/popup.rs: replace + with * in grid::height
+MISSED crates/app/src/quote.rs: replace && with || in assemble
+MISSED crates/app/src/scrollbar.rs: replace - with + in offset_for_thumb
+MISSED crates/app/src/scrollbar.rs: replace / with * in offset_for_thumb
+MISSED crates/app/src/table.rs: replace < with <= in Grid::column_at
+MISSED crates/app/src/tooltip.rs: replace * with + in width_of
+MISSED crates/app/src/tooltip.rs: replace * with / in width_of
+MISSED crates/app/src/view.rs: delete match arm 3 in Theme::heading_size
+MISSED crates/app/src/view.rs: delete match arm 4 in Theme::heading_size
+MISSED crates/app/src/view.rs: delete match arm 5 in Theme::heading_size
+MISSED crates/app/src/view.rs: delete match arm Marker::Emphasis in Builder<'_, 't>::apply
+MISSED crates/app/src/view.rs: replace * with + in Theme::heading_size
+MISSED crates/app/src/view.rs: replace < with <= in mark_for
+MISSED crates/app/src/view.rs: replace DecorState::end_line with ()
+MISSED crates/document/src/format.rs: replace && with || in leading_marker
+MISSED crates/document/src/format.rs: replace - with + in Document::unwrap_fence
+MISSED crates/document/src/format.rs: replace > with >= in Document::enclosing
+MISSED crates/document/src/format.rs: replace || with && in Document::empty_pair
+MISSED crates/document/src/lib.rs: replace + with * in Document::source_line
+MISSED crates/document/src/lib.rs: replace < with <= in Document::resegment_scope
+MISSED crates/document/src/lib.rs: replace < with <= in Document::source_line
+MISSED crates/document/src/table.rs: replace && with || in Document::caret_cell
+MISSED crates/document/src/table.rs: replace + with * in Document::rewrite
+MISSED crates/document/src/table.rs: replace match guard !escaped with true in split_row
+MISSED crates/image/src/resolve.rs: replace < with <= in url_scheme
+MISSED crates/ini/src/lib.rs: replace && with || in looks_numeric
+MISSED crates/ini/src/lib.rs: replace == with != in looks_numeric
+MISSED crates/ini/src/lib.rs: replace == with != in looks_numeric
+MISSED crates/ini/src/lib.rs: replace || with && in looks_numeric
+MISSED crates/json/src/format.rs: replace += with -= in meaningful_bytes
+MISSED crates/json/src/format.rs: replace < with == in meaningful_bytes
+MISSED crates/json/src/format.rs: replace < with > in meaningful_bytes
+MISSED crates/json/src/lib.rs: replace += with *= in Lexer<'a>::number
+MISSED crates/markers/src/classify.rs: replace + with * in walk
+MISSED crates/markers/src/classify.rs: replace / with % in walk
+MISSED crates/markers/src/classify.rs: replace / with * in walk
+MISSED crates/markers/src/classify.rs: replace closes_block -> bool with false
+MISSED crates/markers/src/lib.rs: replace + with - in shift
+MISSED crates/markers/src/lib.rs: replace == with != in analyze_region
+MISSED crates/markers/src/lib.rs: replace analyze_region -> Analysis with Default::default()
+MISSED crates/markers/src/lib.rs: replace shift -> ByteSpan with Default::default()
+MISSED crates/offsets/src/lib.rs: replace < with <= in ByteSpan::overlaps
+MISSED crates/session/src/recent.rs: replace > with >= in read
+MISSED crates/session/src/snapshot.rs: replace * with +
+MISSED crates/session/src/snapshot.rs: replace * with +
+MISSED crates/toml/src/lib.rs: delete match arm b'#' in Lexer<'a>::assignment
+MISSED crates/toml/src/lib.rs: delete match arm b'\'' | b'"' in Lexer<'a>::assignment
+MISSED crates/toml/src/lib.rs: replace + with * in Lexer<'a>::string
+MISSED crates/toml/src/lib.rs: replace > with >= in Lexer<'a>::word_end
+MISSED crates/toml/src/lib.rs: replace match guard body + offset + delimiter.len() <= end with false in Lexer<'a>::string
+MISSED crates/xml/src/lib.rs: replace += with *= in Lexer<'a>::declaration
+MISSED crates/xml/src/lib.rs: replace += with *= in Lexer<'a>::declaration
+MISSED crates/yaml/src/lib.rs: replace < with <= in Lexer<'a>::boundary
+MISSED crates/yaml/src/lib.rs: replace < with == in Lexer<'a>::boundary
+MISSED crates/yaml/src/lib.rs: replace < with > in Lexer<'a>::boundary
+TIMEOUT crates/app/src/view.rs: replace + with * in Builder<'_, 't>::push_split
+TIMEOUT crates/app/src/view.rs: replace + with - in Builder<'_, 't>::push_split
+TIMEOUT crates/app/src/view.rs: replace < with <= in Builder<'_, 't>::push_split
+TIMEOUT crates/ini/src/lib.rs: replace + with * in Lexer<'a>::run
+TIMEOUT crates/ini/src/lib.rs: replace + with - in Lexer<'a>::run
+TIMEOUT crates/ini/src/lib.rs: replace < with <= in Lexer<'a>::run
+TIMEOUT crates/json/src/format.rs: replace += with *= in meaningful_bytes
+TIMEOUT crates/json/src/lib.rs: replace += with *= in Lexer<'a>::run
+TIMEOUT crates/json/src/lib.rs: replace Lexer<'a>::number with ()
+TIMEOUT crates/json/src/lib.rs: replace match guard byte.is_ascii_whitespace() with true in Lexer<'a>::run
+TIMEOUT crates/json/src/validate.rs: replace += with *= in Checker<'a>::string
+TIMEOUT crates/json/src/validate.rs: replace += with *= in is_json_number
+TIMEOUT crates/json/src/validate.rs: replace += with -= in Checker<'a>::escape
+TIMEOUT crates/json/src/validate.rs: replace += with -= in Checker<'a>::string
+TIMEOUT crates/json/src/validate.rs: replace Checker<'a>::escape with ()
+TIMEOUT crates/xml/src/lib.rs: replace + with * in Lexer<'a>::word_end
+TIMEOUT crates/xml/src/lib.rs: replace += with *= in Lexer<'a>::declaration
+TIMEOUT crates/xml/src/lib.rs: replace += with -= in Lexer<'a>::declaration
+TIMEOUT crates/xml/src/lib.rs: replace += with -= in Lexer<'a>::declaration
+TIMEOUT crates/xml/src/lib.rs: replace < with == in Lexer<'a>::text
+TIMEOUT crates/xml/src/lib.rs: replace < with > in Lexer<'a>::text
+TIMEOUT crates/xml/src/lib.rs: replace == with != in Lexer<'a>::run
+TIMEOUT crates/xml/src/lib.rs: replace Lexer<'a>::text with ()
+TIMEOUT crates/yaml/src/lib.rs: replace Lexer<'a>::boundary -> usize with 0
+TIMEOUT crates/yaml/src/lib.rs: replace Lexer<'a>::boundary -> usize with 1

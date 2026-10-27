@@ -506,11 +506,11 @@ machine a mutant cost 15–66 s to build and 25–34 s to test, and the run ran 
 with the Windows-only crates excluded), so it is split across the pool rather than run in one job.
 
 **The cost per mutant was measured in a real run, and it sized the split.** Run 40408425052 was
-slice 0 at the first setting, eight slices, so 146 mutants a shard. A shard took 19.5 to 40
-minutes, including about four minutes of setup, and cost about 15 s a mutant on the heavy shards,
-not the 10 s first estimated. Shard 2 ran out of its 2400 s budget with 35 survivors found and the
-rest untested, and `sweep-report` correctly went red for the missing marker. At sixteen slices a
-shard is about 73 mutants, roughly half the work, which leaves room for an overrun.
+slice 0 at eight slices, so 146 mutants a shard. A shard took 19.5 to 40 minutes, including about
+four minutes of setup, and cost about 15 s a mutant on the heavy shards, not the 10 s first
+estimated. Shard 2 ran out of its 2400 s budget with 35 survivors found and the rest untested, and
+`sweep-report` correctly went red for the missing marker. At sixteen slices a shard is 73
+mutants, roughly half the work, which leaves room for an overrun.
 
 **The mechanism has no state.** `mutants.yml` runs on a Sunday schedule. The slice is the number of
 whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (16). It is not the ISO week, because
@@ -524,22 +524,51 @@ warns above `MUTANTS_SWEEP_PER_SHARD` (80), and fails if `cargo mutants --list` 
 To re-run one slice by hand: `gh workflow run mutants.yml -f sweep=3`. An empty `sweep` input is
 an ordinary diff run, unchanged.
 
-**The verdict is `sweep-report`, and it passes only on a complete, clean sweep.** It fails when:
+**The baseline: a sweep fails on a new survivor, not a known one.** The first lap has about 215
+survivors and 25 timeouts, and red on each would stop meaning anything.
+`.github/mutants-sweep-baseline.txt`
+lists the ones already accepted, one per line, in the form:
 
-- fewer than `MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*` artifacts come back, or one of them
-  lacks its `shard-done` marker. The marker is written only on the Mutate step's final success
-  path, so a shard that ran out of time, failed its baseline or failed to install never leaves one.
-- the plan or a shard job did not succeed, which catches a cancelled or skipped job too.
-- a mutant survived (`missed.txt`) or timed out (`timeout.txt`) in any shard.
+```
+MISSED <path>: <mutation text>
+TIMEOUT <path>: <mutation text>
+```
 
-The job writes a step summary with the counts and the lists either way. The shard jobs and the plan
-are not `continue-on-error` in a sweep, because GitHub reads a job that failed under that flag as a
-success. Every diff run still is, so no diff run can fail on the sweep's account. A re-run of a
-failed shard overwrites its report artifact, so the sweep's verdict reflects the last attempt.
+`cargo-mutants`' `:line:col` is stripped, so an edit elsewhere in a file does not churn its entry.
+The file is compared as a multiset on `LC_ALL=C` sorted input, so a mutation that occurs twice in
+one function needs two lines. It has no comment header, because every line is data. Keep it sorted:
+`LC_ALL=C sort -o .github/mutants-sweep-baseline.txt .github/mutants-sweep-baseline.txt`.
+
+`sweep-report` normalises each slice's `missed.txt` and `timeout.txt` the same way, and goes red on
+any line not in the baseline. A known survivor is counted in the step summary and does not fail the
+run. The new lines are uploaded as the `sweep-new-survivors` artifact, ready to append. The summary
+also lists baseline entries for this slice's files that no longer appear, as possibly fixed. That
+list is informational, because another slice may own those mutants.
+
+**Triage, for each new survivor:** either write a test that kills it, which is what the survivor is
+for, or append its line to the baseline in a commit that says why it is equivalent or untestable
+here (a window or a device, for example). Then sort the file. Re-run the slice to confirm
+it is green.
+
+The baseline covers slices 0 and 8 of 16. Under round-robin, the 48-shard split of the first run
+is the same as the 96-shard split: old shards 0 to 5 of 48 are new shards 0 to 5 and 48 to 53 of 96,
+which are slices 0 and 8. The exception is old shard 2's untested remainder, which the first slice-0
+run never reached, so its mutants show as new in those slices. The first lap will be red on most
+other slices. That is expected: each red run is one triage.
+
+**The sweep's other checks stay strict.** `sweep-report` also fails when fewer than
+`MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*` artifacts come back, or one lacks its `shard-done`
+marker. The marker is written only on the Mutate step's final success path, so a shard that ran out
+of time, failed its baseline or failed to install never leaves one. It also fails when the plan or a
+shard job did not succeed, which catches a cancelled or skipped job too.
+
+The shard jobs and the plan are not `continue-on-error` in a sweep, because GitHub reads a job that
+failed under that flag as a success. Every diff run still is, so no diff run can fail on the sweep's
+account. A re-run of a failed shard overwrites its report artifact, so the verdict reflects the last
+attempt.
 
 **It blocks nothing else.** Pull requests and releases never wait on it. On a scheduled run the red
-run, and the email GitHub sends for it, is the notification. A survivor is still a question, to be
-read as in the section above.
+run, and the email GitHub sends for it, is the notification.
 
 **The sweep saves no cache.** It runs on `main`, and `save-if` is false for schedules as well as
 for pull requests, so a weekly run does not write a 66–70 MB cache.
@@ -550,4 +579,4 @@ ref. A sweep and a diff run never share a group.
 
 **When the workspace grows, raise `MUTANTS_SWEEP_RUNS`** in `mutants.yml` once a shard passes 80.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
-restarts.
+restarts, and the baseline's slice numbers need recomputing too.

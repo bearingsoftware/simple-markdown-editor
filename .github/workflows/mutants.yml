@@ -552,10 +552,10 @@ jobs:
           overwrite: true
           if-no-files-found: ignore
 
-  # The sweep's only verdict (MDEDIT-191). Not `continue-on-error`: a scheduled sweep with survivors
-  # goes red, and a failed scheduled run is what emails the workflow's owner. Diff mode does not come
-  # here; it reports and does not block. It passes only when every shard wrote its `shard-done`
-  # marker, because a shard that failed, timed out or never installed leaves none.
+  # The sweep's verdict (MDEDIT-191). It fails on a new survivor or timeout, meaning one that is not
+  # in `.github/mutants-sweep-baseline.txt`, and on every shard that did not finish. Known survivors
+  # are counted, not failed: the first lap has 215 of them, and a red run on each would stop meaning
+  # anything. Not `continue-on-error`, so a scheduled run that fails is what emails the owner.
   sweep-report:
     name: mutants sweep (report)
     needs: [plan, mutants]
@@ -565,13 +565,19 @@ jobs:
     runs-on: [self-hosted, Linux, X64, general]
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/mutants-sweep-baseline.txt
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
           pattern: mutants-report-shard-*
           path: /tmp/reports
           merge-multiple: false
 
-      - name: Check every shard reported, then summarise and fail on any survivor
+      - name: Check every shard reported, and compare survivors with the baseline
+        id: compare
         env:
           SLICE: ${{ needs.plan.outputs.slice }}
           PLAN_RESULT: ${{ needs.plan.result }}
@@ -591,45 +597,83 @@ jobs:
             reports_ok=0
             echo "::error title=Sweep shards did not all finish::Expected $MUTANTS_MAX_SHARDS mutants-report-shard-* artifacts, each with a shard-done marker. Found $count artifact(s); shard(s) without a marker:${missing:- none}. A shard that ran out of time, failed its baseline or failed to install does not finish, and an unfinished shard leaves part of the workspace unchecked (MDEDIT-191)."
           fi
+          echo "reports_ok=$reports_ok" >> "$GITHUB_OUTPUT"
 
-          touch /tmp/missed.txt /tmp/timeout.txt
+          touch /tmp/missed.txt /tmp/timeout.txt /tmp/caught.txt
           if [ -d /tmp/reports ]; then
             find /tmp/reports -name missed.txt -exec cat {} + >> /tmp/missed.txt
             find /tmp/reports -name timeout.txt -exec cat {} + >> /tmp/timeout.txt
+            find /tmp/reports -name caught.txt -exec cat {} + >> /tmp/caught.txt
           fi
-          missed=$(grep -c '' /tmp/missed.txt || true)
-          timeouts=$(grep -c '' /tmp/timeout.txt || true)
-          missed=${missed:-0}
-          timeouts=${timeouts:-0}
+
+          # `path:line:col: text` becomes `KIND path: text`, so an edit elsewhere in a file does not
+          # move its entry. Duplicates stay: the same mutation can occur twice in one function, and
+          # `comm` compares them as a multiset on sorted input.
+          sed -E 's/^([^:]+):[0-9]+:[0-9]+: /MISSED \1: /' /tmp/missed.txt > /tmp/cur-missed.txt
+          sed -E 's/^([^:]+):[0-9]+:[0-9]+: /TIMEOUT \1: /' /tmp/timeout.txt > /tmp/cur-timeout.txt
+          cat /tmp/cur-missed.txt /tmp/cur-timeout.txt | LC_ALL=C sort > /tmp/current.txt
+          LC_ALL=C sort .github/mutants-sweep-baseline.txt > /tmp/baseline.txt
+          LC_ALL=C comm -13 /tmp/baseline.txt /tmp/current.txt > /tmp/new.txt
+          known=$(LC_ALL=C comm -12 /tmp/baseline.txt /tmp/current.txt | wc -l)
+          new=$(grep -c '' /tmp/new.txt || true)
+          new=${new:-0}
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+
+          # Baseline entries for the files this slice mutated, that did not reappear. Another slice
+          # may own them, so this is a list to read, not a failure.
+          cat /tmp/missed.txt /tmp/timeout.txt /tmp/caught.txt | sed -E 's/^([^:]+):.*/\1/' \
+            | LC_ALL=C sort -u > /tmp/slice-files.txt
+          awk 'NR == FNR { f[$0] = 1; next } { p = $0; sub(/^[A-Z]+ /, "", p); sub(/:.*/, "", p); if (p in f) print }' \
+            /tmp/slice-files.txt /tmp/baseline.txt > /tmp/baseline-slice.txt
+          LC_ALL=C comm -23 /tmp/baseline-slice.txt /tmp/current.txt > /tmp/fixed.txt
+          fixed=$(grep -c '' /tmp/fixed.txt || true)
+          fixed=${fixed:-0}
 
           {
             echo "## Mutants sweep: slice $SLICE of $MUTANTS_SWEEP_RUNS (MDEDIT-191)"
             echo
             echo "- Shards with a shard-done marker: $count of $MUTANTS_MAX_SHARDS"
-            echo "- Survived (missed): $missed"
-            echo "- Timed out (outcome unknown): $timeouts"
+            echo "- Known survivors and timeouts (in the baseline): $known"
+            echo "- New, not in the baseline: $new"
             echo "- Plan: $PLAN_RESULT, shards: $MUTANTS_RESULT"
-            if [ "$missed" -gt 0 ]; then
+            if [ "$new" -gt 0 ]; then
               echo
-              echo "Missed:"
+              echo "New. Each one needs a test that kills it, or a baseline line with a reason:"
               echo '```'
-              cat /tmp/missed.txt
+              cat /tmp/new.txt
               echo '```'
             fi
-            if [ "$timeouts" -gt 0 ]; then
+            if [ "$fixed" -gt 0 ]; then
               echo
-              echo "Timed out:"
+              echo "Baseline lines for this slice's files that did not reappear. Possibly fixed; drop"
+              echo "them from the baseline, after checking another slice does not own them:"
               echo '```'
-              cat /tmp/timeout.txt
+              cat /tmp/fixed.txt
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$reports_ok" -ne 1 ] || [ "$PLAN_RESULT" != success ] || [ "$MUTANTS_RESULT" != success ]; then
-            echo "::error title=Sweep did not finish::The plan or a shard failed, was cancelled or was skipped, or reported short (plan $PLAN_RESULT, shards $MUTANTS_RESULT). Part of the workspace is unchecked (MDEDIT-191)."
+      - name: Keep the new survivors
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep-new-survivors
+          path: /tmp/new.txt
+          if-no-files-found: ignore
+
+      - name: Verdict
+        if: always()
+        env:
+          REPORTS_OK: ${{ steps.compare.outputs.reports_ok }}
+          NEW: ${{ steps.compare.outputs.new }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MUTANTS_RESULT: ${{ needs.mutants.result }}
+        run: |
+          if [ "$REPORTS_OK" != 1 ] || [ "$PLAN_RESULT" != success ] || [ "$MUTANTS_RESULT" != success ]; then
+            echo "::error title=Sweep did not finish::The plan or a shard failed, was cancelled or was skipped, or reported short (plan $PLAN_RESULT, shards $MUTANTS_RESULT, reports ok $REPORTS_OK). Part of the workspace is unchecked (MDEDIT-191)."
             exit 1
           fi
-          if [ "$missed" -gt 0 ] || [ "$timeouts" -gt 0 ]; then
-            echo "::error title=Sweep found survivors::$missed mutant(s) survived and $timeouts timed out in slice $SLICE. Read the summary, and check a survivor is not equivalent before writing a test for it (MDEDIT-191)."
+          if [ -z "$NEW" ] || [ "$NEW" -gt 0 ]; then
+            echo "::error title=Sweep found new survivors::${NEW:-unknown} survivor(s) or timeout(s) are not in .github/mutants-sweep-baseline.txt. Each needs a test that kills it, or a baseline line with a reason. The list is in the step summary and the sweep-new-survivors artifact (MDEDIT-191)."
             exit 1
           fi
