@@ -27,7 +27,20 @@ concurrency:
 
 jobs:
   status:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    # **The guard exists because this job is self-hosted and the repository is public** (MDEDIT-136).
+    # `branches: [main]` on `workflow_run` filters on the triggering run's *head branch name*, not on
+    # which repository it came from. A fork PR from a branch called `main` produces a CI run whose
+    # `head_branch` is `main`, passes that filter, and this job would then check out the fork's
+    # `head_sha` and run it on the LAN-connected runner (GitHub Security Lab, "Keeping your GitHub
+    # Actions and workflows secure: Preventing pwn requests"). So the run must be a `push` and come
+    # from this repository. `workflow_dispatch` needs write access and is unaffected.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) }}
+    # Self-hosted because it POSTs to a LAN host that hosted runners cannot reach.
+    #
     # **`proxmox` is load-bearing here, unlike the other workflows in this repo (FINCH-326).**
     # The steps below POST to the status board at 192.168.1.23, an internal host. Only rack's
     # runners carry `proxmox`, and their path to the LAN is the reliable one; giant's pool reaches

@@ -1,14 +1,13 @@
 name: CI
 
-# **Where these run is a cost decision, not a technical one** (MDEDIT-115). This repository is
-# private, so every GitHub-hosted minute is billed and Windows minutes bill at twice the Linux rate.
-# Everything that can run on the self-hosted Linux box does; what is left on GitHub-hosted is the
-# Windows leg, because there is no self-hosted Windows runner and Windows is the only platform this
-# editor actually runs on. See `mdedit-shell-win` and the DirectWrite backend for why dropping it is
-# not an option.
-#
-# The self-hosted labels are the ones `project-status.yml` has been using since MDEDIT-83, so the box
-# is known to have a working rustup, cache and `taiki-e/install-action`.
+# **Where these run is a security decision first** (MDEDIT-136). The repository is public, so any
+# `pull_request` job can be started by whoever opens a fork PR, and on a self-hosted runner that is
+# arbitrary code on a machine we own. So nothing here runs on the self-hosted pool: every job is
+# GitHub-hosted, where the runner is discarded after the job and minutes are free for a public
+# repository. MDEDIT-115 put the Linux jobs on the pool to save billed minutes while the repository
+# was private; that reason is gone. The Windows leg was always hosted, because there is no
+# self-hosted Windows runner and Windows is the only platform this editor actually runs on. See
+# `mdedit-shell-win` and the DirectWrite backend for why dropping it is not an option.
 
 # `paths-ignore` goes on each event rather than beside them — at the top level it is silently
 # ignored. Documentation-only changes compile nothing: Rust doc comments live in `.rs` files, so this
@@ -59,7 +58,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            runner: [self-hosted, Linux, X64, general]
+            runner: ubuntu-latest
             # The whole suite, because this one is free.
             everything: true
           - os: windows-latest
@@ -127,7 +126,7 @@ jobs:
 
   msrv:
     name: MSRV
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
@@ -148,15 +147,14 @@ jobs:
 
   deny:
     name: cargo-deny
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # The Docker action brought its own Rust; nothing else does. Without this the job dies on
       # `cargo: command not found`, which is what it did the first time.
       - uses: dtolnay/rust-toolchain@stable
       # `taiki-e/install-action` rather than `EmbarkStudios/cargo-deny-action`, which is a Docker
-      # action: a container runtime is one more thing the self-hosted box would have to have, and
-      # this is the same installer the other three jobs already use here.
+      # action: this is the same installer the other jobs already use here.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny

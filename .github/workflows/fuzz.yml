@@ -4,6 +4,11 @@ name: Fuzz
 # Unix-only, while the four crates fuzzed here are platform-agnostic by design. The one platform
 # thing it buys on the way is AddressSanitizer, which rustc does not support on Windows in 2026.
 #
+# **Everything runs GitHub-hosted** (MDEDIT-136): this repository is public, so a fork's pull request
+# can start these jobs and must never reach a self-hosted runner. The weekly run moved with the rest
+# rather than staying on the pool: half an hour a target is far inside the 6-hour hosted job limit,
+# and one runner label for the whole file is easier to keep correct than a per-event expression.
+#
 # Two cadences. On a pull request each target gets five minutes, which is enough to reach the shallow
 # input and short enough that nobody starts skipping the job; the weekly run gets half an hour a
 # target and starts from the corpus the PR runs left behind.
@@ -17,8 +22,7 @@ on:
     - cron: "0 3 * * 0"
   workflow_dispatch:
 
-# One self-hosted runner takes one job at a time, so the four targets queue behind each other. A
-# superseded push must not add four more to that queue.
+# A superseded push must not keep seven targets running for a commit nobody will read.
 #
 # The schedule is exempt: a weekly long run cancelled by a Sunday push is a week of fuzzing lost
 # rather than a minute saved.
@@ -26,13 +30,16 @@ concurrency:
   group: fuzz-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   fuzz:
     name: fuzz ${{ matrix.target }}
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     # **`markers_segment` reports rather than blocks, and only until upstream fixes MDEDIT-114.**
     #
     # `pulldown-cmark` 0.13.4 panics on documents this target reaches in about two minutes, and the

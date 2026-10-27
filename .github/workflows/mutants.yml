@@ -112,6 +112,18 @@ env:
   # this project has produced, generated 82.
   MUTANTS_MAX_SHARDS: 6
 
+# **Where each job runs is keyed on the event** (MDEDIT-136). This repository is public, so a fork's
+# pull request can start the diff mode and must not reach the self-hosted pool: it runs on
+# `ubuntu-latest`. The weekly sweep (`schedule`, or a dispatch with `sweep` set) needs write access
+# or the default branch, and stays on the pool it was sized for (MDEDIT-191). The diff mode's
+# per-mutant cost on hosted runners is unmeasured: the numbers quoted in this file are the pool's.
+# `runs-on` is the same expression on `plan`, `mutants` and `sweep-report`; keep them in step.
+#
+# No `permissions:` block existed, so a push or dispatch got the repository default token. Nothing
+# here writes anywhere.
+permissions:
+  contents: read
+
 jobs:
   plan:
     name: cargo-mutants (plan)
@@ -130,7 +142,7 @@ jobs:
     # 684 MiB of giant's tmpfs. Roughly 50x less. Keep the label off anyway: a shard on rack still
     # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
     # from the old number — see proxmox FINCH-400.
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
     # Every diff run reports and does not block; only a sweep can fail here. A sweep must not report
     # green on a failure: `needs.<job>.result` reads success for a job that failed under
     # continue-on-error (MDEDIT-191).
@@ -349,7 +361,7 @@ jobs:
     needs: plan
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
     # A trial: on a pull request it reports and does not block. A sweep must not report green on a
     # failed shard, so there it is not continue-on-error (MDEDIT-191).
     continue-on-error: ${{ needs.plan.outputs.mode != 'sweep' }}
@@ -562,7 +574,7 @@ jobs:
     # `schedule` and a dispatch with a slice are the only sweeps. Keyed on the event rather than the
     # plan's mode, so a plan that died before choosing one still gets a verdict.
     if: always() && (github.event_name == 'schedule' || inputs.sweep != '')
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

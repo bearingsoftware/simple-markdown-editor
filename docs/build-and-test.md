@@ -22,10 +22,10 @@ which is line endings, path handling and the whole platform layer.
 
 `cargo deny` and the MSRV check run on **Linux only** — neither is platform-sensitive.
 
-Where each job runs is a cost decision, not a technical one (MDEDIT-115). This repository is private,
-so every GitHub-hosted minute is billed and Windows bills at twice the Linux rate. Everything that can
-run on the self-hosted Linux box does; the Windows leg stays hosted because there is no self-hosted
-Windows runner and dropping it is not an option.
+Where each job runs is a security decision (MDEDIT-136). This repository is public, so no job a fork can
+trigger may run on the self-hosted pool: CI and fuzzing are entirely GitHub-hosted, and the mutants diff
+mode is too. Only the weekly mutants sweep (`schedule` or a dispatch) stays on the pool it was sized for.
+MDEDIT-115 had put the Linux jobs on the pool to save billed minutes while the repository was private.
 
 ## The toolchain is pinned, and two jobs override the pin on purpose
 
