@@ -66,6 +66,10 @@ jobs:
             everything: false
     steps:
       - uses: actions/checkout@v4
+      # Guards against our own regression, not a fork: a fork edits its own copy of this file.
+      - name: No workflow targets a self-hosted runner
+        if: matrix.os == 'ubuntu-latest'
+        run: if grep -nE '^\s*runs-on:.*self-hosted' .github/workflows/*.yml; then echo "::error::a workflow targets a self-hosted runner (MDEDIT-136)"; exit 1; fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -112,12 +112,11 @@ env:
   # this project has produced, generated 82.
   MUTANTS_MAX_SHARDS: 6
 
-# **Where each job runs is keyed on the event** (MDEDIT-136). This repository is public, so a fork's
-# pull request can start the diff mode and must not reach the self-hosted pool: it runs on
-# `ubuntu-latest`. The weekly sweep (`schedule`, or a dispatch with `sweep` set) needs write access
-# or the default branch, and stays on the pool it was sized for (MDEDIT-191). The diff mode's
-# per-mutant cost on hosted runners is unmeasured: the numbers quoted in this file are the pool's.
-# `runs-on` is the same expression on `plan`, `mutants` and `sweep-report`; keep them in step.
+# **Every job is GitHub-hosted** (MDEDIT-136). This repository is public, so a fork's pull request
+# can start the diff mode and must never reach a self-hosted runner. The org's single runner group
+# cannot be opened to a public repository safely, so nothing here uses the pool. Hosted jobs may run
+# up to 6 hours, against the pool's 60 minutes. The sweep (MDEDIT-191) was sized on the pool at
+# about 15 s a mutant; its hosted cost is unmeasured, and the first scheduled run will show it.
 #
 # No `permissions:` block existed, so a push or dispatch got the repository default token. Nothing
 # here writes anywhere.
@@ -142,7 +141,7 @@ jobs:
     # 684 MiB of giant's tmpfs. Roughly 50x less. Keep the label off anyway: a shard on rack still
     # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
     # from the old number — see proxmox FINCH-400.
-    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # Every diff run reports and does not block; only a sweep can fail here. A sweep must not report
     # green on a failure: `needs.<job>.result` reads success for a job that failed under
     # continue-on-error (MDEDIT-191).
@@ -364,12 +363,13 @@ jobs:
     needs: plan
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
-    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     # A trial: on a pull request it reports and does not block. A sweep must not report green on a
     # failed shard, so there it is not continue-on-error (MDEDIT-191).
     continue-on-error: ${{ needs.plan.outputs.mode != 'sweep' }}
     # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
-    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
+    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for; the value is kept
+    # from then, though hosted jobs allow more. With no value
     # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
     # nothing saying why. This is the backstop; the Mutate step has its own, shorter budget so
     # it can stop cleanly and say so.
@@ -377,9 +377,9 @@ jobs:
     strategy:
       # One shard's survivors must not cancel another's run: each is a separate part of the answer.
       fail-fast: false
-      # **Two at a time, because the pool's runners are not independent machines.** They are VMs on
-      # one Proxmox host, so five shards do not get five machines' worth of CPU — they get a fifth
-      # each. Measured on #168's diff: five shards started together on five different runners, and in
+      # **Two at a time, from when the pool's runners were VMs on one Proxmox host.** Five shards
+      # did not get five machines' worth of CPU there — they got a fifth each. Measured on #168's
+      # diff: five shards started together on five different runners, and in
       # the same 41 minutes two managed 16 and 17 mutants while three managed 9. Sharding wider makes
       # each shard slower, which is the opposite of what the budget needs. Two shards keep the host
       # usefully busy without starving each other, and the waves cost wall-clock rather than results.
@@ -577,7 +577,7 @@ jobs:
     # `schedule` and a dispatch with a slice are the only sweeps. Keyed on the event rather than the
     # plan's mode, so a plan that died before choosing one still gets a verdict.
     if: always() && (github.event_name == 'schedule' || inputs.sweep != '')
-    runs-on: ${{ (github.event_name == 'schedule' || inputs.sweep != '') && fromJSON('["self-hosted","Linux","X64","general"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

@@ -22,27 +22,26 @@ which is line endings, path handling and the whole platform layer.
 
 `cargo deny` and the MSRV check run on **Linux only** — neither is platform-sensitive.
 
-Where each job runs is a security decision (MDEDIT-136). This repository is public, so no job a fork can
-trigger may run on the self-hosted pool: CI and fuzzing are entirely GitHub-hosted, and the mutants diff
-mode is too. Only the weekly mutants sweep (`schedule` or a dispatch) stays on the pool it was sized for.
-MDEDIT-115 had put the Linux jobs on the pool to save billed minutes while the repository was private.
+Where each job runs is a security decision (MDEDIT-136). This repository is public, so no job a fork
+can trigger may run on a self-hosted runner. **Every job is GitHub-hosted, the weekly mutants sweep
+included.** MDEDIT-115 had put the Linux jobs on the pool to save billed minutes while the
+repository was private.
 
 ## Self-hosted runners on a public repository (MDEDIT-136)
 
 **The YAML cannot enforce "no fork job on a self-hosted runner".** A fork's pull request runs the
-fork's own copy of the workflow file, so it can rewrite `runs-on` however it likes. What the workflows
-here do is keep their own jobs honest; the enforcement is in settings that live outside the repository
-and belong to the owner:
+fork's own copy of the workflow file, so it can rewrite `runs-on` however it likes.
 
-- **The org runner group.** Either turn "Allow public repositories" off, which stops the weekly
-  mutants sweep and the status board, or turn it on and restrict the group to selected workflows:
-  `bearingsoftware/simple-markdown-editor/.github/workflows/mutants.yml@refs/heads/main` and
-  `bearingsoftware/simple-markdown-editor/.github/workflows/project-status.yml@refs/heads/main`.
-  A fork pull request's run is `refs/pull/N/merge`, so it does not match.
-- **"Require approval for all outside collaborators"** on fork pull request workflows.
-- **A read-only default `GITHUB_TOKEN`.**
-- **`vars.STATUS_BOARD_URL` must be set** (repository variable), or the status board steps fail with an
-  `::error`. The board's address is deliberately not in the repository.
+- **The org runner group stays closed to public repositories, and must stay closed.** The org is on
+  the Free plan with one runner group, `Default`, which holds every runner, including the `deploy`,
+  `hetzner-deploy` and `docker-privileged` hosts. A selected-workflows limit applies to that whole
+  group, so it would cut every other repository off. Opening the group without that limit would let
+  a fork's own workflow ask for any of those runners.
+- **So nothing here runs on the pool.** The `No workflow targets a self-hosted runner` step in
+  `ci.yml` catches our own regressions. It cannot catch a fork's, which edits its own copy.
+- **A read-only default `GITHUB_TOKEN`**, set in the repository settings.
+- **"Require approval for all outside collaborators"** on fork pull request workflows. The API
+  refuses this on a private repository, so it can only be set once the repository is public.
 
 ## The toolchain is pinned, and two jobs override the pin on purpose
 
@@ -142,9 +141,10 @@ new test fail, put the fix back. Several tests in this repo were vacuous until t
 
 ## Coverage
 
-After CI passes on `main`, `.github/workflows/project-status.yml` measures unit coverage with
-`cargo llvm-cov` and pushes it to the status board. `scripts/build-status.sh <sha>` builds both
-`status.json` and the lcov bundle from one measurement and can be run locally.
+Coverage and status are produced by a scheduled job in a private companion repository, which runs
+`scripts/build-status.sh` against this repository's `main` on the self-hosted pool. That job is a
+follow-up ticket, MDEDIT-196. `scripts/build-status.sh <sha>` builds both `status.json` and the lcov
+bundle from one measurement with `cargo llvm-cov`, and can be run locally.
 
 The figure is the **Linux** one — the Windows-gated code has no regions to measure there, which is
 worth knowing before concluding the platform layer is untested.
@@ -340,8 +340,9 @@ bytes does. Both are the GitHub Actions backend rather than the box, so this was
 runners became ephemeral; the conversion only stopped a warm local `target/` from partly masking it.
 
 Left caching `target/`: `fuzz` at 31–40 MB a target and `mutants` at 66–70 MB, both small enough that
-the round trip is not what costs them, and `project-status`, which re-runs the whole suite under
-instrumentation on `main` where saving is wanted. A shared `shared-key`, so the Linux jobs restore one
+the round trip is not what costs them, and the companion repository's coverage job, which re-runs
+the whole suite under instrumentation on `main` where saving is wanted. A shared `shared-key`, so
+the Linux jobs restore one
 cache instead of five job-scoped ones, remains untried.
 
 ## One CI wrinkle worth knowing
@@ -405,8 +406,9 @@ killed for memory even at `--jobs 1`. It is not a required check, so a slow run 
 a *red* one still shows on the pull request, which is why the step below decides its own exit status
 rather than leaving it to `continue-on-error`.
 
-**That 35 minutes is most of what the job is allowed** (MDEDIT-171). The self-hosted pool stops every
-job at 60 minutes, whatever the workflow asks for, and GitHub reports it about nine minutes later as
+**That 35 minutes was most of what the job was allowed on the pool** (MDEDIT-171). The pool stopped
+every job at 60 minutes, whatever the workflow asked for, and GitHub reported it about nine minutes
+later as
 *"the self-hosted runner lost communication"* — with no step conclusion and no log. PR #166 lost both
 attempts that way, at 69 minutes each, and the message reads like a crash rather than a limit. So the
 job asks for 55 minutes, and the Mutate step has a **40-minute budget** of its own, set once as
@@ -517,10 +519,12 @@ survivor. Reproduce a timed-out mutant locally before reading it either way.
 
 ## The weekly sweep (MDEDIT-191)
 
-**The exhaustive mutants run lives on the self-hosted pool, not a laptop.** On one Windows
-machine a mutant cost 15–66 s to build and 25–34 s to test, and the run ran out of memory
-(MDEDIT-191). The whole workspace is 6994 mutants at the time of writing (`cargo mutants --list`,
-with the Windows-only crates excluded), so it is split across the pool rather than run in one job.
+**The exhaustive mutants run lives on GitHub-hosted runners, not a laptop** (MDEDIT-136 moved it off
+the self-hosted pool). The per-mutant figures below were measured on the pool; the hosted cost is
+unmeasured. On one Windows machine a mutant cost 15–66 s to build and 25–34 s to test, and the run
+ran out of memory (MDEDIT-191). The whole workspace is 6994 mutants at the time of writing
+(`cargo mutants --list`, with the Windows-only crates excluded), so it is split across runners
+rather than run in one job.
 
 **The cost per mutant was measured in a real run, and it sized the split.** Run 40408425052 was
 slice 0 at eight slices, so 146 mutants a shard. A shard took 19.5 to 40 minutes, including about
