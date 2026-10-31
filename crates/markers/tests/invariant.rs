@@ -345,7 +345,7 @@ fn the_document_that_panicked_0_13_4_now_tiles() {
 #[test]
 fn the_awkward_lengths_tile() {
     for source in ["", "\0", "+\t[\0]:d\n\u{b}", "ordinary prose"] {
-        assert_partitions(source, "fallback");
+        assert_partitions(source, "awkward length");
     }
 }
 

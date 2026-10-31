@@ -269,6 +269,7 @@ mod tests {
             ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(PANICKING_SOURCE.len()))
         );
         assert_eq!(analysis.segments[0].kind(), SegmentKind::Content);
+        assert!(analysis.blocks.is_empty(), "{:?}", analysis.blocks);
     }
 
     #[test]
@@ -277,6 +278,7 @@ mod tests {
         let analysis = contain("", |_| panic!("upstream"));
 
         assert!(analysis.segments.is_empty(), "{:?}", analysis.segments);
+        assert!(analysis.blocks.is_empty(), "{:?}", analysis.blocks);
     }
 
     #[test]
