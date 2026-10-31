@@ -311,9 +311,9 @@ of run 31839765178:
 **Sixteen and a half minutes of a twenty-minute job spent uploading a cache whose restore had already
 missed**, and the miss is structural rather than unlucky: rust-cache's workspace hash covers
 `Cargo.lock` and every `crates/*/Cargo.toml`, so any change touching a manifest is a guaranteed full
-miss followed by a full upload that the next manifest change also misses. Across the self-hosted legs
-that was roughly 920 MB a pull request — `check` 491–546 MB, `status` 394–449 MB, `msrv` 158 MB,
-`mutants` 66–70 MB, `fuzz` 31–40 MB × 5.
+miss followed by a full upload that the next manifest change also misses. When the Linux legs were
+self-hosted (MDEDIT-115) that was roughly 920 MB a pull request — `check` 491–546 MB, `status`
+394–449 MB, `msrv` 158 MB, `mutants` 66–70 MB, `fuzz` 31–40 MB × 5.
 
 So every `Swatinem/rust-cache` step carries `save-if: ${{ github.ref == 'refs/heads/main' }}`. Pull
 requests restore what `main` last saved and upload nothing. What that gives up is a second push to a
@@ -410,7 +410,7 @@ rather than leaving it to `continue-on-error`.
 every job at 60 minutes, whatever the workflow asked for, and GitHub reported it about nine minutes
 later as
 *"the self-hosted runner lost communication"* — with no step conclusion and no log. PR #166 lost both
-attempts that way, at 69 minutes each, and the message reads like a crash rather than a limit. So the
+attempts that way, at 69 minutes each, and the message read like a crash rather than a limit. So the
 job asks for 55 minutes, and the Mutate step has a **40-minute budget** of its own, set once as
 `budget` in the step: when it runs out, cargo-mutants is interrupted, keeps what it found, and the job
 says so as an error — a partial run is not a result. A diff of about sixty mutants fits; a bigger one
@@ -521,8 +521,8 @@ survivor. Reproduce a timed-out mutant locally before reading it either way.
 
 **The exhaustive mutants run lives on GitHub-hosted runners, not a laptop** (MDEDIT-136 moved it off
 the self-hosted pool). The per-mutant figures below were measured on the pool; the hosted cost is
-unmeasured. On one Windows machine a mutant cost 15–66 s to build and 25–34 s to test, and the run
-ran out of memory (MDEDIT-191). The whole workspace is 6994 mutants at the time of writing
+unmeasured. On one Windows machine a mutant cost 15–66 s to build and 25–34 s to test, and the
+run ran out of memory (MDEDIT-191). The whole workspace is 6994 mutants at the time of writing
 (`cargo mutants --list`, with the Windows-only crates excluded), so it is split across runners
 rather than run in one job.
 

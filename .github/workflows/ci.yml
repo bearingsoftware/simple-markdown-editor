@@ -22,8 +22,8 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-  # The status board dispatches this when its data for the project goes stale (MDEDIT-195). Without the
-  # trigger every dispatch failed 422 and the project stayed stale.
+  # May be dispatched by hand or by the status board (MDEDIT-195). Without the trigger every
+  # dispatch failed 422 and the project stayed stale.
   workflow_dispatch:
 
 # Nothing here writes to the repository, so the token cannot either. Matters more now the workflow can
@@ -35,8 +35,8 @@ permissions:
 # branch pushed three times in a minute paid for three full Windows runs, two of which nobody would
 # ever read — and five pull requests merged in a row paid for five runs of `main`.
 #
-# **`main` cancels too**, which is the opposite of the usual advice and right here. Its runs feed the
-# status board through `workflow_run`, and the board wants the *newest* commit: an intermediate
+# **`main` cancels too**, which is the opposite of the usual advice and right here. Its runs may
+# feed the status board (MDEDIT-196), and the board wants the *newest* commit: an intermediate
 # coverage number that nobody will look at is not worth a Windows run at twice the rate. The last
 # merge of a batch still measures.
 concurrency:
@@ -67,17 +67,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Guards against our own regression, not a fork: a fork edits its own copy of this file.
-      - name: No workflow targets a self-hosted runner
+      - name: "No workflow targets a self\x2dhosted runner"
         if: matrix.os == 'ubuntu-latest'
-        run: if grep -nE '^\s*runs-on:.*self-hosted' .github/workflows/*.yml; then echo "::error::a workflow targets a self-hosted runner (MDEDIT-136)"; exit 1; fi
+        run: |
+          needle='self''-hosted'
+          if grep -nE "^[^#]*${needle}" .github/workflows/*.y*ml; then
+            echo "::error::a workflow targets a ${needle} runner (MDEDIT-136)"
+            exit 1
+          fi
+          if grep -nE '^\s*runs-on:\s*$|^\s*runs-on:.*group' .github/workflows/*.y*ml; then
+            echo "::error::runs-on must be one single-line label list (MDEDIT-136)"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       # **A pull request restores this cache and never uploads one** (MDEDIT-132). Saving was costing
       # more than the whole job it was meant to speed up: on run 31839765178 the real work took 3m11s
       # and the save that followed took **16m37s**, pushing 515 MB at the 0.4–0.5 MB/s the GitHub
-      # Actions cache backend gives these runners. Across the self-hosted legs that was ~920 MB a
-      # pull request.
+      # Actions cache backend gives these runners. When the Linux legs were self-hosted
+      # (MDEDIT-115), that was ~920 MB a pull request.
       #
       # And the restore had already *missed*, structurally rather than by luck: rust-cache's workspace
       # hash covers `Cargo.lock` and every `crates/*/Cargo.toml`, so any change touching a manifest is
