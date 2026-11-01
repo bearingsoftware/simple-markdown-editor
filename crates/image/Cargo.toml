@@ -5,11 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Resolving an image destination from document content, and decoding the PNG it names"
+description = "Resolving an image destination from document content, and decoding the PNG or JPEG it names"
 
 [dependencies]
 png.workspace = true
 thiserror.workspace = true
+zune-core.workspace = true
+zune-jpeg.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -5,17 +5,16 @@
 //! - [`resolve`] turns a destination written in a document into an absolute path, or refuses it.
 //!   A destination is the least trusted of the three sources of paths this codebase handles, and
 //!   the module says why at length.
-//! - [`decode`] turns PNG bytes into an RGBA surface, with the caps that a decompression bomb makes
+//! - [`decode`] turns PNG or JPEG bytes into an RGBA surface, with the caps that a decompression bomb makes
 //!   necessary.
 //!
 //! Headless and platform-agnostic, like everything below `mdedit-app`. Nothing here knows about a
 //! window, a GPU or a text engine, and nothing here writes a byte to the document — an image is
 //! drawn beside the buffer, never into it.
 //!
-//! **PNG only, deliberately.** JPEG is a separate decision rather than a missing feature: the crate
-//! that decodes it carries `unsafe` SIMD *inside* the trust boundary, which is worth its own ticket
-//! and its own reading. Everything this crate refuses draws its alt text, which is what the editor
-//! did before it existed.
+//! **PNG and JPEG, nothing else.** `zune-jpeg` carries `unsafe` SIMD behind its default features,
+//! so it is taken with those off and `deny.toml` bans them (MDEDIT-148). Everything this crate
+//! refuses draws its alt text, which is what the editor did before it existed.
 
 mod decode;
 mod resolve;

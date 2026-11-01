@@ -74,7 +74,7 @@ impl PictureKey {
 /// What the editor knows about one picture.
 #[derive(Debug, Clone)]
 pub(crate) enum PictureState {
-    /// Refused, missing, or not a usable PNG.
+    /// Refused, missing, or not a usable picture.
     ///
     /// Cached like any other answer, so a document naming a file that is not there costs one
     /// attempt and one line in the log rather than one of each per layout.

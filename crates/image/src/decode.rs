@@ -1,4 +1,4 @@
-//! PNG bytes to a surface the renderer can upload.
+//! PNG or JPEG bytes to a surface the renderer can upload.
 //!
 //! # This is the file-parsing trust boundary, and the caps are the point
 //!
@@ -6,7 +6,9 @@
 //! in hand-rolled encoding detection — the class Rust removes, provided we don't reintroduce it in
 //! `unsafe`."* Nothing here is hand-rolled and nothing here is `unsafe`: `png` 0.18 is
 //! `#![forbid(unsafe_code)]`, which is why it was chosen over `image` — see the note on the
-//! dependency in the workspace manifest.
+//! dependency in the workspace manifest. `zune-jpeg` keeps that sentence true only with its default
+//! features off: they are the `unsafe` SIMD, `deny.toml` bans them, and without them the crate is
+//! `#![forbid(unsafe_code)]` too (MDEDIT-148).
 //!
 //! What Rust does **not** remove is a decompression bomb. A PNG header is twenty-odd bytes and can
 //! honestly declare a surface of billions of pixels; the allocation that follows is the attack, and
@@ -14,10 +16,13 @@
 //! the dimensions checked **before** a buffer is sized — [`MAX_PIXELS`] and [`MAX_DIMENSION`] — and
 //! the file is capped before it is read at all ([`MAX_FILE_BYTES`]).
 //!
-//! Every failure is a value. A truncated file, a bomb, a JPEG somebody named `.png`: each one draws
+//! Every failure is a value. A truncated file, a bomb, a GIF somebody named `.png`: each one draws
 //! the alt text, which is what the editor did before this crate existed and is never worse than what
-//! the document says.
+//! the document says. The format is read from the first bytes, never from the file name.
+//!
+//! Known limit: EXIF orientation is ignored, so a phone photo may draw sideways.
 
+use std::io::BufRead;
 use std::path::Path;
 
 /// The largest file this will read, in bytes.
@@ -84,12 +89,12 @@ pub enum Undecodable {
     #[error("{0}x{1} is larger than this editor will decode")]
     TooManyPixels(u32, u32),
 
-    /// Not a PNG, or a damaged one. Carries the decoder's own account, which is more use than ours.
-    #[error("not a usable PNG: {0}")]
+    /// Not a PNG or JPEG, or a damaged one. Carries the decoder's own account, which is more use than ours.
+    #[error("not a usable picture: {0}")]
     Malformed(String),
 }
 
-/// Reads and decodes the PNG at `path`.
+/// Reads and decodes the PNG or JPEG at `path`.
 ///
 /// # Errors
 ///
@@ -100,7 +105,7 @@ pub fn read(path: &Path) -> Result<Picture, Undecodable> {
     decode(&bytes)
 }
 
-/// The size the PNG at `path` declares, without decoding it (MDEDIT-156).
+/// The size the PNG or JPEG at `path` declares, without decoding it (MDEDIT-156).
 ///
 /// Reads the header and stops, which is the first few dozen bytes rather than the whole file. That
 /// is what lets the editor give an image its row on the frame it appears in and decode the pixels
@@ -119,11 +124,18 @@ pub fn measure(path: &Path) -> Result<(u32, u32), Undecodable> {
     let file = std::fs::File::open(path).map_err(|_| Undecodable::Unreadable)?;
     // Buffered, and the buffer is the point: unlike `read` this must not pull a 16 MB file into
     // memory to look at its first forty bytes.
-    let mut decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let info = decoder
-        .read_header_info()
-        .map_err(|error| Undecodable::Malformed(error.to_string()))?;
-    let (width, height) = (info.width, info.height);
+    let mut reader = std::io::BufReader::new(file);
+    let format = sniff(reader.fill_buf().map_err(|_| Undecodable::Unreadable)?)?;
+    let (width, height) = match format {
+        Format::Png => {
+            let mut decoder = png::Decoder::new(reader);
+            let info = decoder
+                .read_header_info()
+                .map_err(|error| Undecodable::Malformed(error.to_string()))?;
+            (info.width, info.height)
+        }
+        Format::Jpeg => jpeg_size(&mut jpeg_decoder(reader))?,
+    };
     within_the_pixel_caps(width, height)?;
     Ok((width, height))
 }
@@ -150,12 +162,83 @@ fn within_the_pixel_caps(width: u32, height: u32) -> Result<(), Undecodable> {
     Ok(())
 }
 
-/// Decodes PNG bytes to RGBA.
+enum Format {
+    Png,
+    Jpeg,
+}
+
+/// The format `bytes` start like. Never the file name: a picture is whatever its bytes are.
+fn sniff(bytes: &[u8]) -> Result<Format, Undecodable> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        Ok(Format::Png)
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Ok(Format::Jpeg)
+    } else {
+        Err(Undecodable::Malformed("not a PNG or JPEG".to_owned()))
+    }
+}
+
+/// Decodes PNG or JPEG bytes to RGBA.
 ///
 /// # Errors
 ///
 /// [`Undecodable`], naming what stopped it.
 pub fn decode(bytes: &[u8]) -> Result<Picture, Undecodable> {
+    match sniff(bytes)? {
+        Format::Png => decode_png(bytes),
+        Format::Jpeg => decode_jpeg(bytes),
+    }
+}
+
+fn jpeg_decoder<R: zune_core::bytestream::ZByteReaderTrait>(
+    reader: R,
+) -> zune_jpeg::JpegDecoder<R> {
+    // Limit of `u16::MAX`: a JPEG cannot declare more than that an edge, so these limits refuse nothing themselves.
+    // A smaller one would turn a bomb into an opaque `Malformed` before `within_the_pixel_caps` could
+    // name it; the caps in this file are the ones that apply.
+    let options = zune_core::options::DecoderOptions::default()
+        .jpeg_set_out_colorspace(zune_core::colorspace::ColorSpace::RGBA)
+        // Strict: lenient mode paints a truncated scan grey and says nothing; a bad file should be alt text.
+        .set_strict_mode(true)
+        .set_max_width(usize::from(u16::MAX))
+        .set_max_height(usize::from(u16::MAX));
+    zune_jpeg::JpegDecoder::new_with_options(reader, options)
+}
+
+/// Reads the headers and returns the declared size, not yet checked against the caps.
+fn jpeg_size<R: zune_core::bytestream::ZByteReaderTrait>(
+    decoder: &mut zune_jpeg::JpegDecoder<R>,
+) -> Result<(u32, u32), Undecodable> {
+    decoder
+        .decode_headers()
+        .map_err(|error| Undecodable::Malformed(error.to_string()))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| Undecodable::Malformed("the decoder read no header".to_owned()))?;
+    Ok((u32::from(info.width), u32::from(info.height)))
+}
+
+fn decode_jpeg(bytes: &[u8]) -> Result<Picture, Undecodable> {
+    let mut decoder = jpeg_decoder(std::io::Cursor::new(bytes));
+    // Before the pixel decode allocates, as for PNG.
+    let (width, height) = jpeg_size(&mut decoder)?;
+    within_the_pixel_caps(width, height)?;
+    let rgba = decoder
+        .decode()
+        .map_err(|error| Undecodable::Malformed(error.to_string()))?;
+    if rgba.len() as u64 != u64::from(width) * u64::from(height) * 4 {
+        return Err(Undecodable::Malformed(
+            "the decoder returned the wrong number of bytes".to_owned(),
+        ));
+    }
+    Ok(Picture {
+        width,
+        height,
+        rgba,
+    })
+}
+
+fn decode_png(bytes: &[u8]) -> Result<Picture, Undecodable> {
     // `Cursor` because `png` 0.18 wants `BufRead + Seek`, which a slice alone is not.
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // `EXPAND` takes a palette to RGB and a sub-byte greyscale up to eight bits, and turns a `tRNS`

@@ -57,6 +57,8 @@ deny = [
     { crate = "openssl", reason = "prefer rustls — avoids a system OpenSSL dependency and its CVE cadence" },
     { crate = "openssl-sys", reason = "prefer rustls" },
 ]
+# MDEDIT-148: these features are the `unsafe` SIMD; without them zune-jpeg forbids `unsafe_code`.
+features = [{ crate = "zune-jpeg", deny = ["x86", "neon", "portable_simd"] }]
 # Crates legitimately appearing at two versions during a migration go here with a reason.
 skip = []
 
