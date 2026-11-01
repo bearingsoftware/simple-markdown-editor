@@ -22,7 +22,7 @@
 //!
 //! Known limit: EXIF orientation is ignored, so a phone photo may draw sideways.
 
-use std::io::BufRead;
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// The largest file this will read, in bytes.
@@ -138,7 +138,10 @@ fn measure_file(path: &Path) -> Result<(u32, u32), Undecodable> {
                 .map_err(|error| Undecodable::Malformed(error.to_string()))?;
             (info.width, info.height)
         }
-        Format::Jpeg => jpeg_size(&mut jpeg_decoder(reader))?,
+        Format::Jpeg => {
+            within_the_segment_cap(&mut reader)?;
+            jpeg_size(&mut jpeg_decoder(reader))?
+        }
     };
     within_the_pixel_caps(width, height)?;
     Ok((width, height))
@@ -227,7 +230,9 @@ fn jpeg_size<R: zune_core::bytestream::ZByteReaderTrait>(
 }
 
 fn decode_jpeg(bytes: &[u8]) -> Result<Picture, Undecodable> {
-    let mut decoder = jpeg_decoder(std::io::Cursor::new(bytes));
+    let mut cursor = std::io::Cursor::new(bytes);
+    within_the_segment_cap(&mut cursor)?;
+    let mut decoder = jpeg_decoder(cursor);
     // Before the pixel decode allocates, as for PNG.
     let (width, height) = jpeg_size(&mut decoder)?;
     within_the_pixel_caps(width, height)?;
@@ -326,6 +331,76 @@ fn to_rgba(samples: &[u8], channels: usize) -> Vec<u8> {
 fn contain<T>(work: impl FnOnce() -> Result<T, Undecodable>) -> Result<T, Undecodable> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
         .unwrap_or_else(|_| Err(Undecodable::Malformed("the decoder panicked".to_owned())))
+}
+
+/// The most application segments (`APP0`..`APP15`) a JPEG may carry before its scan.
+const MAX_APP_SEGMENTS: u32 = 256;
+
+/// Refuses a JPEG with more than [`MAX_APP_SEGMENTS`] application segments, then rewinds.
+///
+/// `zune-jpeg` 0.5.15 re-sorts and re-scans every Extended XMP segment collected so far after each
+/// marker, and never drops an incomplete set, so a file of N such segments costs N squared: 16 000
+/// of them took four seconds and 64 000 took fifty-five (MDEDIT-148). A real file has a handful.
+/// This walks the markers from the start to the scan and stops there, so it never reads the image
+/// data, and anything it cannot make sense of is left for the decoder to refuse.
+fn within_the_segment_cap<R: Read + Seek>(reader: &mut R) -> Result<(), Undecodable> {
+    let counted = count_app_segments(reader);
+    reader
+        .seek(SeekFrom::Start(0))
+        .map_err(|_| Undecodable::Unreadable)?;
+    if counted > MAX_APP_SEGMENTS {
+        return Err(Undecodable::Malformed(
+            "the JPEG has too many application segments".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+/// Application segments before the scan, stopping early once there are more than the cap.
+fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
+    let mut count = 0;
+    let mut byte = [0_u8; 1];
+    if reader.read_exact(&mut [0_u8; 2]).is_err() {
+        return count;
+    }
+    loop {
+        if reader.read_exact(&mut byte).is_err() || byte[0] != 0xff {
+            return count;
+        }
+        // Any number of 0xff fill bytes may precede a marker code.
+        let marker = loop {
+            if reader.read_exact(&mut byte).is_err() {
+                return count;
+            }
+            if byte[0] != 0xff {
+                break byte[0];
+            }
+        };
+        match marker {
+            // Escaped 0xff, EOI and SOS: nothing more to count, or no header to walk.
+            0x00 | 0xd9 | 0xda => return count,
+            // TEM, SOI and RSTn carry no length.
+            0x01 | 0xd0..=0xd8 => continue,
+            _ => {}
+        }
+        let mut length = [0_u8; 2];
+        if reader.read_exact(&mut length).is_err() {
+            return count;
+        }
+        let Some(payload) = u64::from(u16::from_be_bytes(length)).checked_sub(2) else {
+            return count;
+        };
+        if (0xe0..=0xef).contains(&marker) {
+            count += 1;
+            if count > MAX_APP_SEGMENTS {
+                return count;
+            }
+        }
+        match std::io::copy(&mut reader.by_ref().take(payload), &mut std::io::sink()) {
+            Ok(skipped) if skipped == payload => {}
+            _ => return count,
+        }
+    }
 }
 
 #[cfg(test)]

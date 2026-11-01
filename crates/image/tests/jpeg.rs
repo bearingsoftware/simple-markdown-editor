@@ -115,3 +115,58 @@ fn a_png_still_decodes() {
         (1, 1, vec![1, 2, 3, 4])
     );
 }
+
+/// SOI, `segments` Extended XMP segments with a fixed GUID and a gap between their offsets, then
+/// the rest of `rgb.jpg`. `zune-jpeg` 0.5.15 spends N squared on these: 16 000 took 4.1 s and
+/// 64 000 took 55 s.
+fn xmp_flood(segments: usize) -> Vec<u8> {
+    let mut bytes = vec![0xff, 0xd8];
+    for index in 0..segments {
+        let mut body = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
+        body.extend_from_slice(&[7; 32]);
+        body.extend_from_slice(&(1_u32 << 30).to_be_bytes());
+        body.extend_from_slice(&u32::try_from(index * 100 + 100).unwrap().to_be_bytes());
+        body.push(b'x');
+        bytes.extend_from_slice(&[0xff, 0xe1]);
+        bytes.extend_from_slice(&u16::try_from(body.len() + 2).unwrap().to_be_bytes());
+        bytes.extend_from_slice(&body);
+    }
+    bytes.extend_from_slice(&RGB[2..]);
+    bytes
+}
+
+fn within_ten_seconds<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("finished within 10 s")
+}
+
+#[test]
+fn a_flood_of_application_segments_is_refused_without_quadratic_work() {
+    let bytes = xmp_flood(16_000);
+    let copy = bytes.clone();
+    let decoded = within_ten_seconds(move || decode(&copy));
+    assert!(
+        matches!(decoded, Err(Undecodable::Malformed(_))),
+        "{decoded:?}"
+    );
+    let (_directory, path) = file_named("flood.jpg", &bytes);
+    let measured = within_ten_seconds(move || measure(&path));
+    assert!(
+        matches!(measured, Err(Undecodable::Malformed(_))),
+        "{measured:?}"
+    );
+}
+
+#[test]
+fn a_handful_of_application_segments_still_decodes() {
+    let bytes = xmp_flood(200);
+    let picture = decode(&bytes).unwrap();
+    assert_eq!((picture.width, picture.height), (4, 3));
+    let (_directory, path) = file_named("some.jpg", &bytes);
+    assert_eq!(measure(&path), Ok((4, 3)));
+}
