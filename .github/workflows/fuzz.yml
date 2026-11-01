@@ -72,7 +72,7 @@ jobs:
           - toml_analyze
           - ini_analyze
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # `cargo fuzz` needs nightly. Nothing else in this repo does, and nothing stable builds here.
       #

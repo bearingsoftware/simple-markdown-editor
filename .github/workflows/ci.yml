@@ -65,7 +65,7 @@ jobs:
             runner: windows-latest
             everything: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Guards against our own regression, not a fork: a fork edits its own copy of this file.
       - name: "No workflow targets a self\x2dhosted runner"
         if: matrix.os == 'ubuntu-latest'
@@ -141,7 +141,7 @@ jobs:
     name: MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.90.0
       # Saved on `main` only and registry-only, for the reasons on the `check` job above. This one
       # runs a bare `cargo check`, so it had the least to gain from a `target/` cache and was still
@@ -162,7 +162,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The Docker action brought its own Rust; nothing else does. Without this the job dies on
       # `cargo: command not found`, which is what it did the first time.
       - uses: dtolnay/rust-toolchain@stable
