@@ -120,6 +120,11 @@ fn a_png_still_decodes() {
 /// the rest of `rgb.jpg`. `zune-jpeg` 0.5.15 spends N squared on these: 16 000 took 4.1 s and
 /// 64 000 took 55 s.
 fn xmp_flood(segments: usize) -> Vec<u8> {
+    xmp_flood_after_first(segments, &[])
+}
+
+/// As [`xmp_flood`], with `between` after the first segment.
+fn xmp_flood_after_first(segments: usize, between: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0xff, 0xd8];
     for index in 0..segments {
         let mut body = b"http://ns.adobe.com/xmp/extension/\0".to_vec();
@@ -130,6 +135,9 @@ fn xmp_flood(segments: usize) -> Vec<u8> {
         bytes.extend_from_slice(&[0xff, 0xe1]);
         bytes.extend_from_slice(&u16::try_from(body.len() + 2).unwrap().to_be_bytes());
         bytes.extend_from_slice(&body);
+        if index == 0 {
+            bytes.extend_from_slice(between);
+        }
     }
     bytes.extend_from_slice(&RGB[2..]);
     bytes
@@ -169,4 +177,24 @@ fn a_handful_of_application_segments_still_decodes() {
     assert_eq!((picture.width, picture.height), (4, 3));
     let (_directory, path) = file_named("some.jpg", &bytes);
     assert_eq!(measure(&path), Ok((4, 3)));
+}
+
+#[test]
+fn stray_bytes_between_segments_do_not_hide_a_flood() {
+    // zune-jpeg tolerates stray bytes before a marker and skips `FF 00`, then goes on collecting.
+    for between in [&[0x55_u8][..], &[0xff, 0x00]] {
+        let bytes = xmp_flood_after_first(16_000, between);
+        let copy = bytes.clone();
+        let decoded = within_ten_seconds(move || decode(&copy));
+        assert!(
+            matches!(decoded, Err(Undecodable::Malformed(_))),
+            "{between:?} {decoded:?}"
+        );
+        let (_directory, path) = file_named("flood.jpg", &bytes);
+        let measured = within_ten_seconds(move || measure(&path));
+        assert!(
+            matches!(measured, Err(Undecodable::Malformed(_))),
+            "{between:?} {measured:?}"
+        );
+    }
 }

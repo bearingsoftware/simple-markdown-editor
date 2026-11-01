@@ -364,8 +364,12 @@ fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
         return count;
     }
     loop {
-        if reader.read_exact(&mut byte).is_err() || byte[0] != 0xff {
+        if reader.read_exact(&mut byte).is_err() {
             return count;
+        }
+        // zune-jpeg tolerates stray bytes between segments, so resync on the next 0xff rather than stop.
+        if byte[0] != 0xff {
+            continue;
         }
         // Any number of 0xff fill bytes may precede a marker code.
         let marker = loop {
@@ -377,10 +381,10 @@ fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
             }
         };
         match marker {
-            // Escaped 0xff, EOI and SOS: nothing more to count, or no header to walk.
-            0x00 | 0xd9 | 0xda => return count,
-            // TEM, SOI and RSTn carry no length.
-            0x01 | 0xd0..=0xd8 => continue,
+            // EOI and SOS: nothing more to count.
+            0xd9 | 0xda => return count,
+            // An escaped 0xff, which zune skips, and TEM, SOI and RSTn, which carry no length.
+            0x00 | 0x01 | 0xd0..=0xd8 => continue,
             _ => {}
         }
         let mut length = [0_u8; 2];
@@ -388,7 +392,7 @@ fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
             return count;
         }
         let Some(payload) = u64::from(u16::from_be_bytes(length)).checked_sub(2) else {
-            return count;
+            continue;
         };
         if (0xe0..=0xef).contains(&marker) {
             count += 1;
