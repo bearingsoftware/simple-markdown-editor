@@ -105,10 +105,11 @@ impl Language for Markdown {
 /// fine, which is why nothing but this crate sees it — and **no options are required**, so it is not
 /// something a configuration change avoids.
 ///
-/// When it is fixed, this containment does not come out. It is not a workaround for one defect; it
-/// is what a third-party parser at a trust boundary gets, and the next panic will not announce
-/// itself either. **It depends on unwinding**: a `panic = "abort"` profile turns the crash back on
-/// silently, which is why `Cargo.toml` says so beside the release profile.
+/// When it is fixed, this containment does not come out. Upstream fixed #1129 in 0.13.5, and the
+/// containment stayed. It is not a workaround for one defect; it is what a third-party parser at a
+/// trust boundary gets, and the next panic will not announce itself either. **It depends on
+/// unwinding**: a `panic = "abort"` profile turns the crash back on silently, which is why
+/// `Cargo.toml` says so beside the release profile.
 ///
 /// [pulldown-cmark#1129]: https://github.com/pulldown-cmark/pulldown-cmark/issues/1129
 #[must_use]
@@ -122,8 +123,11 @@ pub fn analyze(source: &str) -> Analysis {
 /// borrows `source` immutably and this crate keeps no state across the call — a panicking parse
 /// leaves nothing of ours half-written, and the fallback reads only `source.len()`.
 fn contained(source: &str) -> Analysis {
-    let parsed =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| classify::analyze(source)));
+    contain(source, classify::analyze)
+}
+
+fn contain(source: &str, parse: impl FnOnce(&str) -> Analysis) -> Analysis {
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parse(source)));
     match parsed {
         Ok(analysis) => analysis,
         Err(_) => all_content(source),
@@ -245,5 +249,45 @@ pub mod bench {
     #[must_use]
     pub fn analyze_with(source: &str, options: Options) -> Analysis {
         crate::classify::analyze_with(source, options)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PANICKING_SOURCE: &str = "+\t[\0]:d\n\u{b}";
+
+    #[test]
+    #[allow(clippy::panic, reason = "the parser under test panics on purpose")]
+    fn a_parse_that_panics_comes_back_as_one_content_segment() {
+        let analysis = contain(PANICKING_SOURCE, |_| panic!("upstream"));
+
+        assert_eq!(analysis.segments.len(), 1, "{:?}", analysis.segments);
+        assert_eq!(
+            analysis.segments[0].span(),
+            ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(PANICKING_SOURCE.len()))
+        );
+        assert_eq!(analysis.segments[0].kind(), SegmentKind::Content);
+        assert!(analysis.blocks.is_empty(), "{:?}", analysis.blocks);
+    }
+
+    #[test]
+    #[allow(clippy::panic, reason = "the parser under test panics on purpose")]
+    fn an_empty_document_that_panics_comes_back_with_no_segments() {
+        let analysis = contain("", |_| panic!("upstream"));
+
+        assert!(analysis.segments.is_empty(), "{:?}", analysis.segments);
+        assert!(analysis.blocks.is_empty(), "{:?}", analysis.blocks);
+    }
+
+    #[test]
+    fn a_parse_that_returns_is_passed_through() {
+        let source = "# Title\n\nSome **bold** text.\n";
+
+        assert_eq!(
+            contain(source, classify::analyze),
+            classify::analyze(source)
+        );
     }
 }
