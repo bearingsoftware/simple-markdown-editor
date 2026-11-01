@@ -498,3 +498,81 @@ fn with_the_icon_font_the_column_holds_the_icon() {
         mdedit_app::file_icon::Icon::Note.badge(),
     );
 }
+
+// ---------------------------------------------------------------------------
+// The active file is revealed (MDEDIT-197).
+// ---------------------------------------------------------------------------
+
+/// The pane's visible height, as the editor computes it: the window less the status bar and the
+/// formatting bar the pane starts below.
+fn pane_visible_height() -> f32 {
+    HEIGHT - mdedit_app::status::BAR_HEIGHT - mdedit_app::toolbar::HEIGHT
+}
+
+fn row_of(editor: &Editor<Grid>, index: usize) -> Option<pane::RowRect> {
+    editor
+        .row_rects()
+        .iter()
+        .copied()
+        .find(|row| row.index == index)
+}
+
+#[test]
+fn the_active_file_is_scrolled_into_view() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files(&dir, 40, "# One\n\ntext\n");
+    editor.toggle_chrome();
+    editor.workspace_mut().activate(35).unwrap();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let row = row_of(&editor, 35).expect("the active file's row should be laid out");
+    assert!(row.y >= 0.0, "its top is inside the pane: {}", row.y);
+    assert!(
+        row.bottom() <= pane_visible_height(),
+        "its bottom is inside the pane: {} of {}",
+        row.bottom(),
+        pane_visible_height()
+    );
+}
+
+#[test]
+fn showing_the_pane_reveals_the_active_file() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files(&dir, 40, "# One\n\ntext\n");
+    editor.toggle_chrome();
+    editor.workspace_mut().activate(35).unwrap();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    editor.toggle_chrome();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    editor.toggle_chrome();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    let row = row_of(&editor, 35).expect("the active file's row should be laid out");
+    assert!(row.y >= 0.0 && row.bottom() <= pane_visible_height());
+}
+
+#[test]
+fn a_hand_scroll_is_not_undone_by_the_next_frame() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = editor_with_files(&dir, 40, "# One\n\ntext\n");
+    editor.toggle_chrome();
+    editor.workspace_mut().activate(35).unwrap();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let revealed = editor.row_rects()[0].index;
+
+    assert!(editor.scroll_pane(-ROW_HEIGHT * 3.0));
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let by_hand = editor.row_rects()[0].index;
+    assert!(
+        by_hand < revealed,
+        "the hand scrolled up: {by_hand} from {revealed}"
+    );
+
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.row_rects()[0].index,
+        by_hand,
+        "the active file has not changed, so the list stays where it was put"
+    );
+}

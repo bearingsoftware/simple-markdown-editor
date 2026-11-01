@@ -108,6 +108,26 @@ pub fn max_scroll(count: usize, visible_height: f32) -> f32 {
     (content_height(count) - visible_height).max(0.0)
 }
 
+/// The smallest change to `scroll` that puts row `index` wholly inside the visible height.
+///
+/// Callers clamp the result; this does not.
+#[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "a workspace with more tabs than an f32 can count is not reachable"
+)]
+pub fn reveal(scroll: f32, index: usize, visible_height: f32) -> f32 {
+    let top = index as f32 * ROW_HEIGHT;
+    let bottom = top + ROW_HEIGHT;
+    if visible_height < ROW_HEIGHT || top < scroll {
+        top
+    } else if bottom > scroll + visible_height {
+        bottom - visible_height
+    } else {
+        scroll
+    }
+}
+
 /// Lays out the rows that are visible at `scroll`.
 ///
 /// Only the visible ones, for the reason the strip stops at the edge: laying out forty labels to
@@ -167,5 +187,40 @@ pub fn hit_test(rects: &[RowRect], x: f32, y: f32) -> Option<Hit> {
         Some(Hit::Close(rect.index))
     } else {
         Some(Hit::Select(rect.index))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ROW_HEIGHT, reveal};
+
+    #[test]
+    fn a_visible_row_does_not_move_the_list() {
+        assert_eq!(reveal(0.0, 2, ROW_HEIGHT * 5.0), 0.0);
+        assert_eq!(reveal(ROW_HEIGHT, 3, ROW_HEIGHT * 5.0), ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_row_above_the_top_scrolls_to_its_top() {
+        assert_eq!(
+            reveal(ROW_HEIGHT * 10.0, 4, ROW_HEIGHT * 5.0),
+            ROW_HEIGHT * 4.0
+        );
+    }
+
+    #[test]
+    fn a_row_below_the_bottom_scrolls_just_far_enough() {
+        assert_eq!(reveal(0.0, 7, ROW_HEIGHT * 5.0), ROW_HEIGHT * 3.0);
+    }
+
+    #[test]
+    fn a_row_exactly_at_the_bottom_edge_is_already_visible() {
+        assert_eq!(reveal(0.0, 4, ROW_HEIGHT * 5.0), 0.0);
+        assert_eq!(reveal(0.0, 5, ROW_HEIGHT * 5.0), ROW_HEIGHT);
+    }
+
+    #[test]
+    fn a_viewport_shorter_than_a_row_shows_its_top() {
+        assert_eq!(reveal(0.0, 6, ROW_HEIGHT / 2.0), ROW_HEIGHT * 6.0);
     }
 }

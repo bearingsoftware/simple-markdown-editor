@@ -986,6 +986,9 @@ pub struct Editor<T: TextLayout> {
     /// How far the pane's list has been scrolled. Its own, not the document's — the two scroll
     /// independently, which is the point of a pane that can hold more files than fit.
     pane_scroll: f32,
+    /// The active file the pane last scrolled to show. The reveal keys on a change of active file,
+    /// not on every frame, so a hand scroll is not undone by the next one.
+    pane_revealed: Option<usize>,
     /// Where unsaved work is kept against a crash. `None` when there is nowhere to put it.
     snapshots: Option<mdedit_session::snapshot::Store>,
     /// The document revision each snapshot was taken at, so an unchanged buffer is not rewritten.
@@ -1248,6 +1251,10 @@ impl<T: TextLayout> Editor<T> {
     /// choice does end up following Windows — which means **a test that names colours should pin the
     /// choice**, or it is asserting against whichever palette the machine it runs on prefers. Two
     /// test files learned that from a light-themed CI runner.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every field is initialised here; splitting it would scatter them"
+    )]
     pub fn new(source: &str, text: T) -> Self {
         let mut workspace = Workspace::new();
         // Set here as well as in `with_workspace`, because a file opened later through the menu goes
@@ -1291,6 +1298,7 @@ impl<T: TextLayout> Editor<T> {
             chrome: Chrome::Strip,
             row_rects: Vec::new(),
             pane_scroll: 0.0,
+            pane_revealed: None,
             row_labels: HashMap::new(),
             icon_faces: HashMap::new(),
             // Nowhere, until somebody says where. See `with_snapshot_store`, and MDEDIT-68 for what
@@ -6105,6 +6113,12 @@ impl<T: TextLayout> Editor<T> {
         let visible = (logical_height - status::BAR_HEIGHT - top).max(0.0);
         let count = self.workspace.tabs().len();
 
+        if let Some(index) = self.workspace.active()
+            && self.pane_revealed != Some(index)
+        {
+            self.pane_scroll = pane::reveal(self.pane_scroll, index, visible);
+            self.pane_revealed = Some(index);
+        }
         self.pane_scroll = self
             .pane_scroll
             .clamp(0.0, pane::max_scroll(count, visible));
@@ -6394,6 +6408,7 @@ impl<T: TextLayout> Editor<T> {
             Chrome::Pane => Chrome::Strip,
         };
         self.pane_scroll = 0.0;
+        self.pane_revealed = None;
         // Remembered, so the next launch opens on whichever was chosen. Written on the idle timer
         // rather than here — see `crate::config`.
         let chrome = self.chrome;
