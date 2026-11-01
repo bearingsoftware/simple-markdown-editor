@@ -120,6 +120,10 @@ pub fn read(path: &Path) -> Result<Picture, Undecodable> {
 /// [`Undecodable`], naming what stopped it. A file whose header is intact measures even when its
 /// image data is truncated or corrupt; that only shows up in [`read`].
 pub fn measure(path: &Path) -> Result<(u32, u32), Undecodable> {
+    contain(|| measure_file(path))
+}
+
+fn measure_file(path: &Path) -> Result<(u32, u32), Undecodable> {
     within_the_file_cap(path)?;
     let file = std::fs::File::open(path).map_err(|_| Undecodable::Unreadable)?;
     // Buffered, and the buffer is the point: unlike `read` this must not pull a 16 MB file into
@@ -184,6 +188,10 @@ fn sniff(bytes: &[u8]) -> Result<Format, Undecodable> {
 ///
 /// [`Undecodable`], naming what stopped it.
 pub fn decode(bytes: &[u8]) -> Result<Picture, Undecodable> {
+    contain(|| decode_bytes(bytes))
+}
+
+fn decode_bytes(bytes: &[u8]) -> Result<Picture, Undecodable> {
     match sniff(bytes)? {
         Format::Png => decode_png(bytes),
         Format::Jpeg => decode_jpeg(bytes),
@@ -305,4 +313,41 @@ fn to_rgba(samples: &[u8], channels: usize) -> Vec<u8> {
         rgba.push(alpha);
     }
     rgba
+}
+
+/// Runs `work`, turning a panic inside a decoder into a value.
+///
+/// `zune-jpeg` has `unwrap` and `expect` on its decode path (`mcu.rs`, `color_convert/scalar.rs`,
+/// `idct/scalar.rs`), and the bytes it reads are a stranger's. `measure` runs on the thread that
+/// draws and `read` on the one worker that decodes, so an uncaught panic either closes the editor or
+/// ends picture decoding for the session. **Depends on unwinding**: `panic = "abort"` would turn this
+/// back into a crash, which is why the workspace manifest says not to set it. `AssertUnwindSafe` is
+/// sound because `work` borrows its input immutably and nothing here outlives a panicking call.
+fn contain<T>(work: impl FnOnce() -> Result<T, Undecodable>) -> Result<T, Undecodable> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+        .unwrap_or_else(|_| Err(Undecodable::Malformed("the decoder panicked".to_owned())))
+}
+
+#[cfg(test)]
+#[allow(clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_while_decoding_comes_back_as_malformed() {
+        let result: Result<Picture, Undecodable> = contain(|| panic!("injected"));
+        assert_eq!(
+            result,
+            Err(Undecodable::Malformed("the decoder panicked".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_panic_while_measuring_comes_back_as_malformed() {
+        let result: Result<(u32, u32), Undecodable> = contain(|| panic!("injected"));
+        assert_eq!(
+            result,
+            Err(Undecodable::Malformed("the decoder panicked".to_owned()))
+        );
+    }
 }
