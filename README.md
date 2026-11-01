@@ -62,6 +62,7 @@ Read in order:
    new evidence.
 
 Work is tracked in Jira `MDEDIT`, with plans and findings in the Confluence space of the same key.
+That tracker is private, so `MDEDIT-*` references in commits and docs will not resolve for outside readers.
 
 ## Moving to Windows
 

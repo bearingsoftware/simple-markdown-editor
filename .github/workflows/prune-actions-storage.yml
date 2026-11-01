@@ -22,6 +22,9 @@ permissions:
 
 jobs:
   prune:
+    # A fork's pull_request run gets a read-only token, so the DELETE calls would fail with 403 and
+    # redden the fork's PR for nothing. The sweep has nothing to do for a fork, so skip it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Delete artifacts older than 7 days

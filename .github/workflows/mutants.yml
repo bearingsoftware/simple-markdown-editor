@@ -13,14 +13,16 @@ name: Mutants
 # would never be looked at; a diff-sized one is minutes and lands with the change that caused it.
 #
 # **Sharded, because a diff-sized run outgrew one job** (MDEDIT-172). MDEDIT-171 gave the run a
-# 40-minute budget inside the pool's 60-minute kill and made running out of it an honest error; the
+# 40-minute budget inside the 60-minute kill the pool imposed, and made running out of it an honest
+# error; the
 # next pull request, MDEDIT-142's #168, generated 82 mutants and got through 35 of them. The rest
 # were run on a laptop, and two survivors came out of the part CI never reached. So `plan` counts
 # what the diff generates and `mutants` runs that count in parallel shards, each with the same budget.
 #
 # **And a weekly sweep of the whole workspace** (MDEDIT-191). Each Sunday one slice of the workspace
 # is mutated, rotating through the slices week by week, so every mutant is reached within a lap. It
-# lives on the pool, not a laptop, because a Windows machine ran out of memory on it. A survivor
+# runs on GitHub-hosted runners, not a laptop, because a Windows machine ran out of memory on
+# it. A survivor
 # fails the scheduled run, and GitHub's email for that failure is the notification.
 
 on:
@@ -102,35 +104,32 @@ env:
   #
   # **Still fifteen, and the reason is no longer cost.** `MUTANTS_MAX_SHARDS` below makes 6 x 15 a
   # deliberate 90-mutant ceiling: past it the workflow tells you to split the pull request rather
-  # than take six more runners off a shared pool. Raising this number raises that ceiling with it —
+  # than take six more runners at once. Raising this number raises that ceiling with it —
   # 45 would make it 270 — so it trades a norm about pull request size, not runner minutes. Change
   # it when that norm is what you mean to change.
   MUTANTS_PER_SHARD: 15
   # **A decision, not arithmetic.** Six shards of fifteen is 90 mutants; past that a shard still says
   # it ran out of time, because the answer to a diff that large is to split the pull request rather
-  # than to take six more runners off everything else queued on this pool. #168, the largest diff
+  # than to take six more runners at once. #168, the largest diff
   # this project has produced, generated 82.
   MUTANTS_MAX_SHARDS: 6
+
+# **Every job is GitHub-hosted** (MDEDIT-136). This repository is public, so a fork's pull request
+# can start the diff mode and must never reach a self-hosted runner. The org's single runner group
+# cannot be opened to a public repository safely, so nothing here uses the pool. Hosted jobs may
+# run up to 6 hours, where the pool allowed 60 minutes. The sweep (MDEDIT-191) was sized on the
+# pool at about 15 s a mutant; its hosted cost is unmeasured, and the first scheduled run
+# will show it.
+#
+# No `permissions:` block existed, so a push or dispatch got the repository default token. Nothing
+# here writes anywhere.
+permissions:
+  contents: read
 
 jobs:
   plan:
     name: cargo-mutants (plan)
-    # **No `proxmox` label, deliberately (FINCH-326).** The general pool spans two hosts: rack's
-    # twelve LXC runners and giant's eight. Only rack carries `proxmox`, so naming it here did not
-    # express a requirement — it silently pinned every shard below to rack, which is where this
-    # workflow's cost lands hardest. A shard rebuilds the tree per mutant in `$TMPDIR`, and on rack
-    # `$TMPDIR` is the runner's rootfs on the one SATA SSD every runner and every database shares.
-    # giant puts the workspace and `$TMPDIR` on a 16 GiB tmpfs instead, so the same writes never
-    # reach a disk. Nothing in this job needs a Proxmox guest: it compiles Rust, reads no internal
-    # host and holds no secret.
-    #
-    # **The cost that made this urgent is gone, and the reason still holds.** FINCH-331 measured a
-    # shard at 89.8 GB and 391 MB/s on 2026-09-19; MDEDIT-182 landed after that and a re-measure on
-    # 2026-09-27 (run 36305543827, 135 mutants over 6 shards) put a shard at ~1.7 GiB, peaking at
-    # 684 MiB of giant's tmpfs. Roughly 50x less. Keep the label off anyway: a shard on rack still
-    # writes to the shared SSD for no reason, and giant is half the pool. Do not re-derive urgency
-    # from the old number — see proxmox FINCH-400.
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     # Every diff run reports and does not block; only a sweep can fail here. A sweep must not report
     # green on a failure: `needs.<job>.result` reads success for a job that failed under
     # continue-on-error (MDEDIT-191).
@@ -226,10 +225,13 @@ jobs:
       # mutates nothing, which made the workflow impossible to exercise by hand.
       - name: What this pull request changed
         if: steps.mode.outputs.mode == 'diff'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          INPUT_BASE: ${{ inputs.base }}
         run: |
-          base="origin/${{ github.base_ref }}"
-          if [ -z "${{ github.base_ref }}" ]; then
-            base="${{ inputs.base }}"
+          base="origin/$BASE_REF"
+          if [ -z "$BASE_REF" ]; then
+            base="$INPUT_BASE"
             # **A checkout has the remote's refs, not local branches**, so the obvious value for this
             # input — a branch name, and `main` is its own default — is not a revision here and
             # `git diff` fails with "ambiguous argument". A commit SHA resolves either way, which is
@@ -255,7 +257,7 @@ jobs:
           retention-days: 1
 
       # The binary is built once and handed to the shards. Compiling ~250 crates per shard is the
-      # cost that would make sharding worse than the problem it fixes, on a pool CI shares.
+      # cost that would make sharding worse than the problem it fixes, paid once per shard.
       - name: Keep the binary for the shards
         run: cp "$(command -v cargo-mutants)" /tmp/cargo-mutants
       # MDEDIT-185: same handoff, and at ~3 MiB a copy it was 104 MiB of the org's
@@ -349,12 +351,13 @@ jobs:
     needs: plan
     # No shards for a diff with nothing to mutate; `plan` has already said so.
     if: needs.plan.outputs.shards != '[]'
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     # A trial: on a pull request it reports and does not block. A sweep must not report green on a
     # failed shard, so there it is not continue-on-error (MDEDIT-191).
     continue-on-error: ${{ needs.plan.outputs.mode != 'sweep' }}
-    # **Under the pool's limit, not GitHub's (MDEDIT-171).** The self-hosted pool stops any job
-    # at 60 minutes of execution (FINCH-274) whatever the workflow asks for, and with no value
+    # **Under the pool's limit, not GitHub's (MDEDIT-171).** The pool stopped any job at 60
+    # minutes of execution (FINCH-274) whatever the workflow asked for; the value is kept from
+    # then, though hosted jobs allow more. With no value
     # here GitHub allowed 360 — so PR #166 lost both attempts' reports to a host-side kill with
     # nothing saying why. This is the backstop; the Mutate step has its own, shorter budget so
     # it can stop cleanly and say so.
@@ -362,9 +365,9 @@ jobs:
     strategy:
       # One shard's survivors must not cancel another's run: each is a separate part of the answer.
       fail-fast: false
-      # **Two at a time, because the pool's runners are not independent machines.** They are VMs on
-      # one Proxmox host, so five shards do not get five machines' worth of CPU — they get a fifth
-      # each. Measured on #168's diff: five shards started together on five different runners, and in
+      # **Two at a time, from when the pool's runners were VMs on one Proxmox host.** Five shards
+      # did not get five machines' worth of CPU there — they got a fifth each. Measured on #168's
+      # diff: five shards started together on five different runners, and in
       # the same 41 minutes two managed 16 and 17 mutants while three managed 9. Sharding wider makes
       # each shard slower, which is the opposite of what the budget needs. Two shards keep the host
       # usefully busy without starving each other, and the waves cost wall-clock rather than results.
@@ -394,8 +397,9 @@ jobs:
           name: cargo-mutants-bin
           path: /tmp/bin
       - name: Use the binary the plan job built
-        # Same pool image, so the binary it built runs here. The fallback is for the day that stops
-        # being true, and the log says which path ran rather than leaving it to be inferred.
+        # Same runner image, so the binary it built runs here. The fallback is for the day
+        # that stops being true, and the log says which path ran rather than leaving it to be
+        # inferred.
         run: |
           mkdir -p "$HOME/.cargo/bin"
           if [ -f /tmp/bin/cargo-mutants ]; then
@@ -425,8 +429,9 @@ jobs:
       # used to, reported that run as a broken job and never mentioned the survivors.
       #
       # `--minimum-test-timeout 60`, because the auto-set timeout is the baseline's test time times
-      # four, and the baseline runs before the shared pool gets busy. PR #163's got 22 s and three
-      # mutants timed out under load. Two of them fail in half a second on a laptop. **The third
+      # four, and the baseline runs before parallel shards load the machine. PR #163's got 22 s
+      # and three mutants timed out under load. Two of them fail in half a second on a laptop.
+      # **The third
       # was a survivor**: `user_event` replaced with `()`, which no test calls, and which the run
       # before had reported as MISSED. So a timeout is not "probably fine" — it is a mutant whose
       # outcome is unknown, and one in three of those was hiding a survivor. The default floor is
@@ -458,15 +463,18 @@ jobs:
             g=$(( SLICE * MUTANTS_MAX_SHARDS + SHARD ))
             scope=(--shard "$g/$SHARDS")
             where="global shard $g of $SHARDS (sweep slice $SLICE)"
-            advice="Raise MUTANTS_SWEEP_RUNS so each slice is smaller: the sweep cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-191)."
+            advice="Raise MUTANTS_SWEEP_RUNS so each slice is smaller:"
+            advice+=" the sweep cap is deliberate, and the job's own 55-minute limit"
+            advice+=" is the ceiling (MDEDIT-171, MDEDIT-191)."
           else
             scope=(--in-diff /tmp/pr.diff --shard "$SHARD/$SHARDS")
             where="shard $SHARD of $SHARDS"
-            advice="Split the pull request: the shard cap is deliberate, and the runner pool stops every job at 60 minutes (MDEDIT-171, MDEDIT-172)."
+            advice="Split the pull request: the shard cap is deliberate,"
+            advice+=" and the job's own 55-minute limit is the ceiling (MDEDIT-171, MDEDIT-172)."
           fi
 
-          # **A budget for the mutation run itself (MDEDIT-171)**, inside the job's 55 minutes and
-          # the pool's 60, leaving room for checkout, the toolchain and the binary. INT rather than
+          # **A budget for the mutation run itself (MDEDIT-171)**, inside the job's 55 minutes,
+          # leaving room for checkout, the toolchain and the binary. INT rather than
           # KILL, so cargo-mutants stops the way it does on Ctrl-C and what it has already found is
           # still written to mutants.out for the upload below.
           #
@@ -562,7 +570,7 @@ jobs:
     # `schedule` and a dispatch with a slice are the only sweeps. Keyed on the event rather than the
     # plan's mode, so a plan that died before choosing one still gets a verdict.
     if: always() && (github.event_name == 'schedule' || inputs.sweep != '')
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4

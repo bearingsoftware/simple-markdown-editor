@@ -1,14 +1,13 @@
 name: CI
 
-# **Where these run is a cost decision, not a technical one** (MDEDIT-115). This repository is
-# private, so every GitHub-hosted minute is billed and Windows minutes bill at twice the Linux rate.
-# Everything that can run on the self-hosted Linux box does; what is left on GitHub-hosted is the
-# Windows leg, because there is no self-hosted Windows runner and Windows is the only platform this
-# editor actually runs on. See `mdedit-shell-win` and the DirectWrite backend for why dropping it is
-# not an option.
-#
-# The self-hosted labels are the ones `project-status.yml` has been using since MDEDIT-83, so the box
-# is known to have a working rustup, cache and `taiki-e/install-action`.
+# **Where these run is a security decision first** (MDEDIT-136). The repository is public, so any
+# `pull_request` job can be started by whoever opens a fork PR, and on a self-hosted runner that is
+# arbitrary code on a machine we own. So nothing here runs on the self-hosted pool: every job is
+# GitHub-hosted, where the runner is discarded after the job and minutes are free for a public
+# repository. MDEDIT-115 put the Linux jobs on the pool to save billed minutes while the repository
+# was private; that reason is gone. The Windows leg was always hosted, because there is no
+# self-hosted Windows runner and Windows is the only platform this editor actually runs on. See
+# `mdedit-shell-win` and the DirectWrite backend for why dropping it is not an option.
 
 # `paths-ignore` goes on each event rather than beside them — at the top level it is silently
 # ignored. Documentation-only changes compile nothing: Rust doc comments live in `.rs` files, so this
@@ -23,8 +22,8 @@ on:
     paths-ignore:
       - "**.md"
       - "docs/**"
-  # The status board dispatches this when its data for the project goes stale (MDEDIT-195). Without the
-  # trigger every dispatch failed 422 and the project stayed stale.
+  # May be dispatched by hand or by the status board (MDEDIT-195). Without the trigger every
+  # dispatch failed 422 and the project stayed stale.
   workflow_dispatch:
 
 # Nothing here writes to the repository, so the token cannot either. Matters more now the workflow can
@@ -36,8 +35,8 @@ permissions:
 # branch pushed three times in a minute paid for three full Windows runs, two of which nobody would
 # ever read — and five pull requests merged in a row paid for five runs of `main`.
 #
-# **`main` cancels too**, which is the opposite of the usual advice and right here. Its runs feed the
-# status board through `workflow_run`, and the board wants the *newest* commit: an intermediate
+# **`main` cancels too**, which is the opposite of the usual advice and right here. Its runs may
+# feed the status board (MDEDIT-196), and the board wants the *newest* commit: an intermediate
 # coverage number that nobody will look at is not worth a Windows run at twice the rate. The last
 # merge of a batch still measures.
 concurrency:
@@ -59,7 +58,7 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            runner: [self-hosted, Linux, X64, general]
+            runner: ubuntu-latest
             # The whole suite, because this one is free.
             everything: true
           - os: windows-latest
@@ -67,14 +66,27 @@ jobs:
             everything: false
     steps:
       - uses: actions/checkout@v4
+      # Guards against our own regression, not a fork: a fork edits its own copy of this file.
+      - name: "No workflow targets a self\x2dhosted runner"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          needle='self''-hosted'
+          if grep -nE "^[^#]*${needle}" .github/workflows/*.y*ml; then
+            echo "::error::a workflow targets a ${needle} runner (MDEDIT-136)"
+            exit 1
+          fi
+          if grep -nE '^\s*runs-on:\s*$|^\s*runs-on:.*group' .github/workflows/*.y*ml; then
+            echo "::error::runs-on must be one single-line label list (MDEDIT-136)"
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       # **A pull request restores this cache and never uploads one** (MDEDIT-132). Saving was costing
       # more than the whole job it was meant to speed up: on run 31839765178 the real work took 3m11s
       # and the save that followed took **16m37s**, pushing 515 MB at the 0.4–0.5 MB/s the GitHub
-      # Actions cache backend gives these runners. Across the self-hosted legs that was ~920 MB a
-      # pull request.
+      # Actions cache backend gives these runners. When the Linux legs were self-hosted
+      # (MDEDIT-115), that was ~920 MB a pull request.
       #
       # And the restore had already *missed*, structurally rather than by luck: rust-cache's workspace
       # hash covers `Cargo.lock` and every `crates/*/Cargo.toml`, so any change touching a manifest is
@@ -127,7 +139,7 @@ jobs:
 
   msrv:
     name: MSRV
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.90.0
@@ -148,15 +160,14 @@ jobs:
 
   deny:
     name: cargo-deny
-    runs-on: [self-hosted, Linux, X64, general]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # The Docker action brought its own Rust; nothing else does. Without this the job dies on
       # `cargo: command not found`, which is what it did the first time.
       - uses: dtolnay/rust-toolchain@stable
       # `taiki-e/install-action` rather than `EmbarkStudios/cargo-deny-action`, which is a Docker
-      # action: a container runtime is one more thing the self-hosted box would have to have, and
-      # this is the same installer the other three jobs already use here.
+      # action: this is the same installer the other jobs already use here.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
