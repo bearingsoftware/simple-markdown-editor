@@ -96,7 +96,7 @@ jobs:
       # The corpus is the point of running this repeatedly: a fuzzer that starts from nothing every
       # time re-derives "a document begins with a brace" on every run.
       - name: Restore the corpus
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
