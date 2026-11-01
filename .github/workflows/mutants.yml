@@ -249,7 +249,7 @@ jobs:
       # and two `git diff`s against a branch that moved under them would not.
       # MDEDIT-185: a handoff between jobs of one run, so it is dead the moment the run ends.
       # Without this it inherited the repo default of 14 days and piled up (FINCH-350).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.mode.outputs.mode == 'diff'
         with:
           name: mutants-diff
@@ -262,7 +262,7 @@ jobs:
         run: cp "$(command -v cargo-mutants)" /tmp/cargo-mutants
       # MDEDIT-185: same handoff, and at ~3 MiB a copy it was 104 MiB of the org's
       # Free-plan Actions quota across 33 runs.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cargo-mutants-bin
           path: /tmp/cargo-mutants
@@ -387,12 +387,12 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: needs.plan.outputs.mode == 'diff'
         with:
           name: mutants-diff
           path: /tmp
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: cargo-mutants-bin
           path: /tmp/bin
@@ -552,7 +552,7 @@ jobs:
       # per shard: two uploads under one name is a failed upload or a lost half of the evidence.
       - name: Keep the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
@@ -578,7 +578,7 @@ jobs:
           sparse-checkout: .github/mutants-sweep-baseline.txt
           sparse-checkout-cone-mode: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: mutants-report-shard-*
           path: /tmp/reports
@@ -663,7 +663,7 @@ jobs:
 
       - name: Keep the new survivors
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sweep-new-survivors
           path: /tmp/new.txt

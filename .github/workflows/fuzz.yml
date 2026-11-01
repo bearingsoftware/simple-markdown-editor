@@ -137,7 +137,7 @@ jobs:
       # because `markers_segment` above deliberately does not fail.
       - name: Keep whatever crashed it
         if: always() && steps.fuzz.outputs.crashed != '0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
