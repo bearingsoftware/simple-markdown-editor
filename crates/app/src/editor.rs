@@ -10454,7 +10454,7 @@ impl<T: TextLayout> Editor<T> {
     /// from `mdedit_image::measure` — a few dozen bytes — and the pixels are asked of the worker,
     /// which answers by waking the loop for another frame.
     ///
-    /// `None` when the file cannot be read, is not a usable PNG, or declares a surface past the
+    /// `None` when the file cannot be read, is not a usable picture, or declares a surface past the
     /// caps. Cached as [`PictureState::Unusable`] so a document naming a file that is not there
     /// costs one attempt rather than one per layout.
     fn picture_at(&mut self, path: PathBuf) -> Option<(u64, u32, u32)> {
