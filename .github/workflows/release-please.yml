@@ -31,3 +31,12 @@ jobs:
           # No fallback to GITHUB_TOKEN: this repository forbids it from creating PRs, and a PR it
           # opened would not start CI anyway. A missing secret should fail loudly.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+  package:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+    permissions:
+      contents: write
