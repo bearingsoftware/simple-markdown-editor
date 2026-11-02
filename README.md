@@ -82,6 +82,14 @@ script is in the spike's [README](spikes/font-fallback/README.md).
 Neither can be exercised from WSL: `fontique` uses DirectWrite on Windows and fontconfig on Linux, so
 a WSL run tests the code path that is not broken.
 
+## Versions and releases
+
+Versions follow [SemVer](https://semver.org) and tags look like `v0.1.0`. Commits use conventional
+prefixes (`feat`, `fix`, ...); `release-please` reads them, keeps a release PR open with the next
+version and changelog, and merging that PR tags the release and publishes it.
+
+Windows binaries are unsigned for now, so SmartScreen warns on first run.
+
 ## Licence
 
 MIT.
