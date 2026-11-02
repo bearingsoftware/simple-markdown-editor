@@ -74,6 +74,25 @@ pub fn restorable(saved: &WindowPlacement, monitors: &[MonitorRect]) -> Option<W
     best.map(|(_, placement)| placement)
 }
 
+/// How the window should open, decided from the session file and the monitors.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Opening {
+    /// The validated normal rectangle, or `None` for the default.
+    pub rect: Option<WindowPlacement>,
+    /// Whether to open maximised. Kept even when the rectangle was refused, so a user who left
+    /// the window maximised on a monitor that has since gone still gets a maximised window.
+    pub maximized: bool,
+}
+
+/// Decides how to open from what the session file said. See [`restorable`].
+#[must_use]
+pub fn opening(saved: Option<&WindowPlacement>, monitors: &[MonitorRect]) -> Opening {
+    Opening {
+        rect: saved.and_then(|saved| restorable(saved, monitors)),
+        maximized: saved.is_some_and(|saved| saved.maximized),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +226,57 @@ mod tests {
         let left = monitor(-1920, 0, 1920, 1080, 1.0);
         let saved = at(-1800, 100, 900.0, 700.0);
         assert_eq!(restorable(&saved, &[left, MAIN]), Some(saved));
+    }
+}
+
+#[cfg(test)]
+mod opening_tests {
+    use super::*;
+
+    const MAIN: MonitorRect = MonitorRect {
+        x: 0,
+        y: 0,
+        width: 1920,
+        height: 1080,
+        scale: 1.0,
+    };
+
+    fn saved(x: i32, maximized: bool) -> WindowPlacement {
+        WindowPlacement {
+            x,
+            y: 100,
+            width: 900.0,
+            height: 700.0,
+            maximized,
+        }
+    }
+
+    #[test]
+    fn nothing_saved_opens_the_default() {
+        let opened = opening(None, &[MAIN]);
+        assert_eq!(opened.rect, None);
+        assert!(!opened.maximized);
+    }
+
+    #[test]
+    fn a_maximised_placement_opens_maximised_on_its_rectangle() {
+        let placement = saved(100, true);
+        let opened = opening(Some(&placement), &[MAIN]);
+        assert_eq!(opened.rect, Some(placement));
+        assert!(opened.maximized);
+    }
+
+    #[test]
+    fn a_refused_rectangle_still_opens_maximised_at_the_default() {
+        let opened = opening(Some(&saved(5000, true)), &[MAIN]);
+        assert_eq!(opened.rect, None);
+        assert!(opened.maximized);
+    }
+
+    #[test]
+    fn a_refused_normal_window_opens_the_default_unmaximised() {
+        let opened = opening(Some(&saved(5000, false)), &[MAIN]);
+        assert_eq!(opened.rect, None);
+        assert!(!opened.maximized);
     }
 }

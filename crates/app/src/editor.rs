@@ -2084,9 +2084,13 @@ impl<T: TextLayout> Editor<T> {
     /// wrappers below, which call this first, so no path can write a stale one.
     fn sync_placement(&mut self) {
         if let Some(placement) = self.normal_placement {
+            let maximized = self
+                .window
+                .as_ref()
+                .map_or(self.window_maximized, |window| window.is_maximized());
             self.workspace
                 .set_window_placement(Some(mdedit_session::WindowPlacement {
-                    maximized: self.window_maximized,
+                    maximized,
                     ..placement
                 }));
         }
@@ -11148,10 +11152,9 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 }
             })
             .collect();
-        let restored = self
-            .workspace
-            .window_placement()
-            .and_then(|saved| crate::placement::restorable(&saved, &monitors));
+        let opening =
+            crate::placement::opening(self.workspace.window_placement().as_ref(), &monitors);
+        let restored = opening.rect;
         let mut attributes = Window::default_attributes()
             .with_title("Simple Markdown Editor")
             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 700.0));
@@ -11163,6 +11166,7 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                     placement.height,
                 ));
         }
+        attributes = attributes.with_maximized(opening.maximized);
         let Ok(window) = event_loop.create_window(attributes) else {
             event_loop.exit();
             return;
@@ -11172,11 +11176,8 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 maximized: false,
                 ..placement
             });
-            self.window_maximized = placement.maximized;
-            if placement.maximized {
-                window.set_maximized(true);
-            }
         }
+        self.window_maximized = opening.maximized;
         // Without this winit never delivers `WindowEvent::Ime` at all, and a Japanese, Chinese or
         // Korean keyboard types nothing into the editor.
         window.set_ime_allowed(true);
@@ -11226,6 +11227,7 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 // Glyphs are rasterized per scale factor, so the atlas is stale. Dropping it is the
                 // correct response to WM_DPICHANGED and cheap — it refills on the next frame.
                 self.atlas = Atlas::new();
+                self.track_window();
                 if let Some(window) = self.window.as_ref() {
                     window.request_redraw();
                 }
