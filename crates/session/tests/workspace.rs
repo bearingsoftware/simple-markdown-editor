@@ -755,3 +755,69 @@ fn a_session_can_be_written_into_a_directory_that_does_not_exist_yet() {
 
     assert!(session.exists());
 }
+
+mod window_placement {
+    use mdedit_session::{WindowPlacement, Workspace};
+    use tempfile::TempDir;
+
+    fn tab_session(dir: &TempDir, window: &str) -> std::path::PathBuf {
+        let note = dir.path().join("a.md");
+        std::fs::write(&note, "# a\n").unwrap();
+        let session = dir.path().join("session.json");
+        let json = format!(
+            r#"{{"version":1,"active":0,"tabs":[{{"path":{},"caret":0}}]{window}}}"#,
+            serde_json::to_string(&note).unwrap()
+        );
+        std::fs::write(&session, json).unwrap();
+        session
+    }
+
+    #[test]
+    fn a_placement_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let session = dir.path().join("session.json");
+        let placement = WindowPlacement {
+            x: -1200,
+            y: 40,
+            width: 900.5,
+            height: 700.0,
+            maximized: true,
+        };
+        let mut workspace = Workspace::new();
+        workspace.set_window_placement(Some(placement));
+        workspace.save_session(&session).unwrap();
+        let (restored, _) = Workspace::restore_session(&session).unwrap();
+        assert_eq!(restored.window_placement(), Some(placement));
+    }
+
+    #[test]
+    fn a_file_without_a_window_loads_as_none() {
+        let dir = TempDir::new().unwrap();
+        let session = tab_session(&dir, "");
+        let (restored, _) = Workspace::restore_session(&session).unwrap();
+        assert_eq!(restored.window_placement(), None);
+        assert_eq!(restored.tabs().len(), 1);
+    }
+
+    #[test]
+    fn a_window_of_the_wrong_types_is_dropped_and_the_tabs_survive() {
+        let dir = TempDir::new().unwrap();
+        let session = tab_session(
+            &dir,
+            r#","window":{"x":"left","y":null,"width":[],"height":true,"maximized":3}"#,
+        );
+        let (restored, _) = Workspace::restore_session(&session).unwrap();
+        assert_eq!(restored.window_placement(), None);
+        assert_eq!(restored.tabs().len(), 1);
+    }
+
+    #[test]
+    fn an_out_of_range_number_is_malformed_json_so_the_whole_file_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let session = tab_session(
+            &dir,
+            r#","window":{"x":1e999,"y":0,"width":900,"height":700,"maximized":false}"#,
+        );
+        assert!(Workspace::restore_session(&session).is_err());
+    }
+}
