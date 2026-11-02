@@ -618,7 +618,7 @@ to `GITHUB_TOKEN`, which this repository forbids from creating PRs. Once `v0.1.0
 On a release, `package.yml` builds `mdedit.exe`, fails unless the embedded manifest declares
 `PerMonitorV2` and does not ask for elevation (MDEDIT-70), then produces
 `mdedit-<version>-windows-x64-portable.zip`, `mdedit-<version>-windows-x64-setup.exe` (Inno Setup
-6.7.3, per-user, no UAC) and `SHA256SUMS.txt`, and uploads them to the release. Binaries are unsigned
+6.7.4, per-user, no UAC) and `SHA256SUMS.txt`, and uploads them to the release. Binaries are unsigned
 (MDEDIT-138).
 
 A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files

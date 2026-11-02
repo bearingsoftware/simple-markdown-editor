@@ -27,6 +27,10 @@ jobs:
   package:
     name: portable zip and installer
     runs-on: windows-latest
+    env:
+      # bump both together; take the hash from the GitHub release asset digest
+      INNO_VERSION: "6.7.4"
+      INNO_SHA256: A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C
     steps:
       - uses: actions/checkout@v7
 
@@ -65,17 +69,23 @@ jobs:
           Copy-Item target\release\mdedit.exe, LICENSE, README.md stage\
           Compress-Archive -Path stage\* -DestinationPath "dist\mdedit-$version-windows-x64-portable.zip"
 
-      # Pinned exactly so a new Inno Setup release cannot change the installer unreviewed.
+      # Pinned by version and hash so a new Inno Setup release cannot change the installer unreviewed.
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup --version=6.7.3 -y --no-progress
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-$($env:INNO_VERSION -replace '\.', '_')/innosetup-$env:INNO_VERSION.exe" -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup hash mismatch: $actual" }
+          Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$env:RUNNER_TEMP\inno`"" -Wait
+          if (-not (Test-Path "$env:RUNNER_TEMP\inno\ISCC.exe")) { throw "ISCC.exe missing after install" }
 
       - name: Build the installer
         shell: pwsh
         env:
           VERSION: ${{ steps.stage.outputs.version }}
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          $iscc = "$env:RUNNER_TEMP\inno\ISCC.exe"
           & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$((Resolve-Path stage).Path)" "/O$((Resolve-Path dist).Path)" crates\app\resources\windows\mdedit.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
