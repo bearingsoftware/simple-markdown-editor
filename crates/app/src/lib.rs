@@ -35,6 +35,7 @@ pub mod list;
 pub mod log;
 pub mod pane;
 pub mod place;
+pub mod placement;
 pub mod pointer;
 pub mod popup;
 pub mod prompt;

@@ -889,6 +889,10 @@ pub struct Editor<T: TextLayout> {
     text: T,
     atlas: Atlas,
     window: Option<Arc<Window>>,
+    /// Where the window sits when it is neither maximised nor minimised, which is what a session
+    /// records so that un-maximising after a restart has somewhere to go back to (MDEDIT-198).
+    normal_placement: Option<mdedit_session::WindowPlacement>,
+    window_maximized: bool,
     renderer: Option<Renderer>,
     latency: Latency,
     /// When the keystroke currently in flight was received, if any. Cleared once presented.
@@ -1359,6 +1363,8 @@ impl<T: TextLayout> Editor<T> {
             menu: None,
             menu_proxy: None,
             session_path: None,
+            normal_placement: None,
+            window_maximized: false,
             session_ended: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -2038,10 +2044,59 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
+    /// Remembers where the window is, unless it is maximised or minimised (MDEDIT-198).
+    ///
+    /// A maximised window keeps the rectangle it will restore to, and a minimised one on Windows
+    /// reports a position of -32000, which must never be written down: it is off every monitor.
+    /// `placement` is as [`mdedit_session::WindowPlacement`] says: physical outer position, logical
+    /// inner size.
+    pub fn note_window(&mut self, placement: mdedit_session::WindowPlacement, minimized: bool) {
+        const MINIMISED_POSITION: i32 = -32000;
+        if minimized || placement.x == MINIMISED_POSITION || placement.y == MINIMISED_POSITION {
+            return;
+        }
+        self.window_maximized = placement.maximized;
+        if !placement.maximized {
+            self.normal_placement = Some(placement);
+        }
+    }
+
+    fn track_window(&mut self) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Ok(position) = window.outer_position() else {
+            return;
+        };
+        let size = window.inner_size().to_logical::<f64>(window.scale_factor());
+        let minimized = window.is_minimized() == Some(true);
+        let placement = mdedit_session::WindowPlacement {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+            maximized: window.is_maximized(),
+        };
+        self.note_window(placement, minimized);
+    }
+
+    /// Pushes the tracked placement into the workspace. Every session write goes through the two
+    /// wrappers below, which call this first, so no path can write a stale one.
+    fn sync_placement(&mut self) {
+        if let Some(placement) = self.normal_placement {
+            self.workspace
+                .set_window_placement(Some(mdedit_session::WindowPlacement {
+                    maximized: self.window_maximized,
+                    ..placement
+                }));
+        }
+    }
+
     /// Writes the tab list, for a caller shutting down.
     ///
     /// Handles only, never content — that is what makes restoring one cheap.
-    pub fn save_session(&self, path: &Path) {
+    pub fn save_session(&mut self, path: &Path) {
+        self.sync_placement();
         if let Err(error) = self.workspace.save_session(path) {
             crate::log_error!("could not save session: {error}");
         }
@@ -2051,7 +2106,8 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// Only the exit path calls this. The marker is what stops the next launch describing an
     /// ordinary restore as a crash recovery — see [`mdedit_session::last_run_ended_cleanly`].
-    pub fn save_session_on_exit(&self, path: &Path) {
+    pub fn save_session_on_exit(&mut self, path: &Path) {
+        self.sync_placement();
         if let Err(error) = self.workspace.save_session_on_exit(path) {
             crate::log_error!("could not save session: {error}");
         }
@@ -11078,13 +11134,49 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
         if self.window.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let monitors: Vec<crate::placement::MonitorRect> = event_loop
+            .available_monitors()
+            .map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                crate::placement::MonitorRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                    scale: monitor.scale_factor(),
+                }
+            })
+            .collect();
+        let restored = self
+            .workspace
+            .window_placement()
+            .and_then(|saved| crate::placement::restorable(&saved, &monitors));
+        let mut attributes = Window::default_attributes()
             .with_title("Simple Markdown Editor")
             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 700.0));
+        if let Some(placement) = restored {
+            attributes = attributes
+                .with_position(winit::dpi::PhysicalPosition::new(placement.x, placement.y))
+                .with_inner_size(winit::dpi::LogicalSize::new(
+                    placement.width,
+                    placement.height,
+                ));
+        }
         let Ok(window) = event_loop.create_window(attributes) else {
             event_loop.exit();
             return;
         };
+        if let Some(placement) = restored {
+            self.normal_placement = Some(mdedit_session::WindowPlacement {
+                maximized: false,
+                ..placement
+            });
+            self.window_maximized = placement.maximized;
+            if placement.maximized {
+                window.set_maximized(true);
+            }
+        }
         // Without this winit never delivers `WindowEvent::Ime` at all, and a Japanese, Chinese or
         // Korean keyboard types nothing into the editor.
         window.set_ime_allowed(true);
@@ -11125,7 +11217,11 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
             WindowEvent::Focused(true) => self.on_focus(),
             // The value it carries is deliberately ignored. See `follow_system_appearance`.
             WindowEvent::ThemeChanged(_) => self.follow_system_appearance(),
-            WindowEvent::Resized(size) => self.on_resized(size),
+            WindowEvent::Resized(size) => {
+                self.on_resized(size);
+                self.track_window();
+            }
+            WindowEvent::Moved(_) => self.track_window(),
             WindowEvent::ScaleFactorChanged { .. } => {
                 // Glyphs are rasterized per scale factor, so the atlas is stale. Dropping it is the
                 // correct response to WM_DPICHANGED and cheap — it refills on the next frame.

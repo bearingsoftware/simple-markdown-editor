@@ -208,6 +208,36 @@ pub struct Workspace {
     /// and this crate is about tabs and files — a dependency on every parser the editor will ever
     /// support does not belong in it. The app knows; see `mdedit_app::detect`.
     language_for: Option<LanguageFor>,
+    /// Where the window was last left. Plain data: it is untrusted until the app validates it.
+    window: Option<WindowPlacement>,
+}
+
+/// Where the window sits, as the session file records it.
+///
+/// The position is the **physical** outer position, because monitor rectangles are physical on
+/// Windows. The size is the **logical** inner size, so a window moved to a monitor with a different
+/// scale keeps a sensible size. Nothing here is trusted: it comes from a file.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlacement {
+    /// Physical outer x.
+    pub x: i32,
+    /// Physical outer y.
+    pub y: i32,
+    /// Logical inner width.
+    pub width: f64,
+    /// Logical inner height.
+    pub height: f64,
+    /// Whether the window was maximised. `x`..`height` are then the rectangle it restores to.
+    pub maximized: bool,
+}
+
+/// A placement that does not parse is dropped rather than failing the file, so a bad one costs the
+/// window position and not the tab list.
+fn lenient_placement<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<WindowPlacement>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// How a path becomes a language. See [`Workspace::with_language_resolver`].
@@ -225,6 +255,17 @@ impl Workspace {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Records where the window is, for the next session write.
+    pub fn set_window_placement(&mut self, placement: Option<WindowPlacement>) {
+        self.window = placement;
+    }
+
+    /// Where the window was left. Unvalidated: see `mdedit_app::placement::restorable`.
+    #[must_use]
+    pub fn window_placement(&self) -> Option<WindowPlacement> {
+        self.window
     }
 
     /// The next unused snapshot id.
@@ -595,6 +636,8 @@ struct SessionFile {
     /// through [`Default`], which is the right answer.
     #[serde(default)]
     clean_exit: bool,
+    #[serde(default, deserialize_with = "lenient_placement")]
+    window: Option<WindowPlacement>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -634,6 +677,7 @@ impl Workspace {
         let session = SessionFile {
             version: FORMAT_VERSION,
             clean_exit,
+            window: self.window,
             active: self.active,
             // Untitled tabs are left out. The session persists handles, not content — that is what
             // makes restoring one cheap — and an untitled buffer is nothing but content. Writing it
@@ -722,6 +766,7 @@ impl Workspace {
         }
 
         let mut workspace = Self::new();
+        workspace.window = session.window;
         let mut skipped = Vec::new();
 
         for entry in session.tabs.into_iter().take(MAX_TABS) {

@@ -126,3 +126,64 @@ fn with_no_tabs_no_session_is_written() {
         "the subclass is still told to stop waiting"
     );
 }
+
+#[test]
+fn the_tracked_window_placement_is_written_with_the_session() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, session) = editor(&dir, true);
+
+    editor.note_window(place(120, 80, 1000.0, 640.0, false), false);
+    editor.save_session_on_exit(&session);
+
+    let (restored, _) = Workspace::restore_session(&session).unwrap();
+    let placement = restored.window_placement().unwrap();
+    assert_eq!((placement.x, placement.y), (120, 80));
+    assert!((placement.width - 1000.0).abs() < f64::EPSILON);
+    assert!(!placement.maximized);
+}
+
+#[test]
+fn a_maximised_window_keeps_its_normal_rectangle_and_the_flag() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, session) = editor(&dir, true);
+
+    editor.note_window(place(120, 80, 1000.0, 640.0, false), false);
+    editor.note_window(place(-8, -8, 1920.0, 1040.0, true), false);
+    editor.save_session(&session);
+
+    let (restored, _) = Workspace::restore_session(&session).unwrap();
+    let placement = restored.window_placement().unwrap();
+    assert_eq!((placement.x, placement.y), (120, 80));
+    assert!(placement.maximized);
+}
+
+#[test]
+fn a_minimised_position_is_never_recorded() {
+    let dir = TempDir::new().unwrap();
+    let (mut editor, session) = editor(&dir, true);
+
+    editor.note_window(place(120, 80, 1000.0, 640.0, false), false);
+    editor.note_window(place(-32000, -32000, 160.0, 28.0, false), true);
+    editor.note_window(place(-32000, -32000, 160.0, 28.0, false), false);
+    editor.end_session();
+
+    let (restored, _) = Workspace::restore_session(&session).unwrap();
+    let placement = restored.window_placement().unwrap();
+    assert_eq!((placement.x, placement.y), (120, 80));
+}
+
+fn place(
+    x: i32,
+    y: i32,
+    width: f64,
+    height: f64,
+    maximized: bool,
+) -> mdedit_session::WindowPlacement {
+    mdedit_session::WindowPlacement {
+        x,
+        y,
+        width,
+        height,
+        maximized,
+    }
+}
