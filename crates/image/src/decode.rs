@@ -412,6 +412,66 @@ fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
 mod tests {
     use super::*;
 
+    fn segment(marker: u8, body: usize) -> Vec<u8> {
+        let mut bytes = vec![0xff, marker];
+        bytes.extend_from_slice(&u16::try_from(body + 2).unwrap().to_be_bytes());
+        bytes.resize(bytes.len() + body, 0);
+        bytes
+    }
+
+    fn stream(parts: &[&[u8]]) -> std::io::Cursor<Vec<u8>> {
+        let mut bytes = vec![0xff, 0xd8];
+        for part in parts {
+            bytes.extend_from_slice(part);
+        }
+        std::io::Cursor::new(bytes)
+    }
+
+    fn apps(count: usize) -> Vec<u8> {
+        (0..count).flat_map(|_| segment(0xe1, 3)).collect()
+    }
+
+    #[test]
+    fn exactly_the_cap_of_application_segments_passes_and_one_more_is_refused() {
+        assert_eq!(within_the_segment_cap(&mut stream(&[&apps(256)])), Ok(()));
+        assert!(matches!(
+            within_the_segment_cap(&mut stream(&[&apps(257)])),
+            Err(Undecodable::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn the_count_stops_at_the_scan() {
+        let fake_in_the_scan = apps(300);
+        let mut reader = stream(&[&apps(10), &[0xff, 0xda, 0x00, 0x02], &fake_in_the_scan]);
+        assert_eq!(count_app_segments(&mut reader), 10);
+    }
+
+    #[test]
+    fn markers_without_a_length_are_not_read_as_having_one() {
+        // Read as a length, `FF E1` is 65505 bytes, which would swallow everything after it.
+        let mut parts: Vec<Vec<u8>> = Vec::new();
+        for standalone in [
+            [0xff, 0x01],
+            [0xff, 0xd0],
+            [0xff, 0xd7],
+            [0xff, 0xd8],
+            [0xff, 0x00],
+        ] {
+            parts.push(standalone.to_vec());
+            parts.push(segment(0xe1, 3));
+        }
+        let parts: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+        assert_eq!(count_app_segments(&mut stream(&parts)), 5);
+    }
+
+    #[test]
+    fn a_stream_cut_inside_a_segment_ends_the_count_with_what_was_seen() {
+        // The cut segment is counted, as it was announced; nothing after it exists to be counted.
+        let cut = &segment(0xe1, 50)[..10];
+        assert_eq!(count_app_segments(&mut stream(&[&apps(3), cut])), 4);
+    }
+
     #[test]
     fn a_panic_while_decoding_comes_back_as_malformed() {
         let result: Result<Picture, Undecodable> = contain(|| panic!("injected"));
