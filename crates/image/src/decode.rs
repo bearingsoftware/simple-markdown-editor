@@ -408,7 +408,7 @@ fn count_app_segments<R: Read>(reader: &mut R) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
 
