@@ -51,8 +51,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "mt.exe could not extract the manifest" }
           $xml = Get-Content manifest.xml -Raw
           if ($xml -notmatch 'PerMonitorV2') { throw "manifest does not declare PerMonitorV2" }
-          if ($xml -match 'requestedExecutionLevel' -and $xml -notmatch 'level="asInvoker"') {
-            throw "manifest requests an execution level other than asInvoker"
+          if ($xml -notmatch 'requestedExecutionLevel\s+level=[''"]asInvoker[''"]') {
+            throw "manifest does not request asInvoker"
           }
           Select-String -Path manifest.xml -Pattern 'PerMonitorV2|requestedExecutionLevel'
 
