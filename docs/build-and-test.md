@@ -606,3 +606,28 @@ ref. A sweep and a diff run never share a group.
 **When the workspace grows, raise `MUTANTS_SWEEP_RUNS`** in `mutants.yml` once a shard passes 80.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
 restarts, and the baseline's slice numbers need recomputing too.
+
+## Releases (MDEDIT-140, MDEDIT-137)
+
+`release-please.yml` runs on every push to `main`. It keeps a release PR open that carries the next
+version and changelog, taken from the conventional commit prefixes; merging it tags `vX.Y.Z` and
+creates the GitHub release. It authenticates with `secrets.RELEASE_PLEASE_TOKEN` and has no fallback
+to `GITHUB_TOKEN`, which this repository forbids from creating PRs. Once `v0.1.0` is out, remove
+`release-as` from `release-please-config.json`.
+
+On a release, `package.yml` builds `mdedit.exe`, fails unless the embedded manifest declares
+`PerMonitorV2` and does not ask for elevation (MDEDIT-70), then produces
+`mdedit-<version>-windows-x64-portable.zip`, `mdedit-<version>-windows-x64-setup.exe` (Inno Setup
+6.7.4, per-user, no UAC) and `SHA256SUMS.txt`, and uploads them to the release. Binaries are unsigned
+(MDEDIT-138).
+
+A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files
+and keeps them as a workflow artifact for seven days, publishing nothing. CI cannot install anything
+or open Explorer, so the installer is checked by hand, and the session pairs with the MDEDIT-6,
+MDEDIT-80 and MDEDIT-120 manual sessions:
+
+1. Install on a machine without the editor and check there is no UAC prompt.
+2. Check that a `.md` file opens in it.
+3. Select several files in Explorer, drag them onto the editor, and check there is one process.
+4. Uninstall.
+5. Check the registry holds nothing the installer added.
