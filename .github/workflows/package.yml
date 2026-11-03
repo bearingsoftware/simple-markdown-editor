@@ -1,0 +1,126 @@
+name: Package
+
+# Builds the Windows portable zip and the per-user installer (MDEDIT-137). Called by release-please.yml
+# with the release tag, which uploads the files to that release. A pull request that changes the
+# packaging builds the same files and keeps them as an artifact for a week, publishing nothing.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to upload to, e.g. v0.1.0. Empty builds without publishing.
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - ".github/workflows/package.yml"
+      - "crates/app/resources/windows/**"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: portable zip and installer
+    runs-on: windows-latest
+    env:
+      # bump both together; take the hash from the GitHub release asset digest
+      INNO_VERSION: "6.7.4"
+      INNO_SHA256: A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked -p mdedit-app --bin mdedit
+
+      # The manifest is what declares Per-Monitor DPI v2 and keeps the exe from asking for elevation
+      # (MDEDIT-70). `embed-manifest`'s `new_manifest` emits `asInvoker` by default.
+      - name: Check the embedded manifest
+        shell: pwsh
+        run: |
+          $mt = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\mt.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending | Select-Object -First 1
+          if (-not $mt) { throw "mt.exe not found in the Windows SDK" }
+          & $mt.FullName "-inputresource:target\release\mdedit.exe;#1" "-out:manifest.xml"
+          if ($LASTEXITCODE -ne 0) { throw "mt.exe could not extract the manifest" }
+          $xml = Get-Content manifest.xml -Raw
+          if ($xml -notmatch 'PerMonitorV2') { throw "manifest does not declare PerMonitorV2" }
+          if ($xml -notmatch 'requestedExecutionLevel\s+level=[''"]asInvoker[''"]') {
+            throw "manifest does not request asInvoker"
+          }
+          Select-String -Path manifest.xml -Pattern 'PerMonitorV2|requestedExecutionLevel'
+
+      - name: Stage and zip
+        id: stage
+        shell: pwsh
+        env:
+          TAG: ${{ inputs.tag }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          $version = if ($env:TAG) { $env:TAG -replace '^v', '' } else { "0.0.0-pr$env:PR_NUMBER" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory dist, stage | Out-Null
+          Copy-Item target\release\mdedit.exe, LICENSE, README.md stage\
+          Compress-Archive -Path stage\* -DestinationPath "dist\mdedit-$version-windows-x64-portable.zip"
+
+      # Pinned by version and hash so a new Inno Setup release cannot change the installer unreviewed.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/is-$($env:INNO_VERSION -replace '\.', '_')/innosetup-$env:INNO_VERSION.exe" -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash
+          if ($actual -ne $env:INNO_SHA256) { throw "Inno Setup hash mismatch: $actual" }
+          Start-Process $installer -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=`"$env:RUNNER_TEMP\inno`"" -Wait
+          if (-not (Test-Path "$env:RUNNER_TEMP\inno\ISCC.exe")) { throw "ISCC.exe missing after install" }
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          $iscc = "$env:RUNNER_TEMP\inno\ISCC.exe"
+          & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$((Resolve-Path stage).Path)" "/O$((Resolve-Path dist).Path)" crates\app\resources\windows\mdedit.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: Checksums
+        shell: pwsh
+        working-directory: dist
+        run: |
+          Get-ChildItem -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-packages
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: upload to the release
+    needs: package
+    if: inputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-packages
+          path: dist
+
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: gh release upload "$TAG" dist/* --clobber
