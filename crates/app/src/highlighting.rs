@@ -76,7 +76,7 @@ pub(crate) enum Answer {
 }
 
 /// What colours a fence: `mdedit_highlight::highlight`, or a stand-in in a test.
-pub(crate) type Job = fn(&str, &str) -> Option<Vec<(ByteSpan, Token)>>;
+pub(crate) type Job = crate::editor::HighlightJob;
 
 struct Worker {
     job: Job,

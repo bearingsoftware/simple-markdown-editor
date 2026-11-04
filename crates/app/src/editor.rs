@@ -432,6 +432,8 @@ const MAX_CACHED_LAYOUTS: usize = 512;
 /// How many fences' highlight answers to keep (MDEDIT-190). Every keystroke in a fence is a new key,
 /// so the store is cleared when it fills rather than growing with the typing.
 const MAX_HIGHLIGHTS: usize = 256;
+/// What colours a fence: `mdedit_highlight::highlight`, or a stand-in in a test (MDEDIT-190).
+pub type HighlightJob = fn(&str, &str) -> Option<Vec<(ByteSpan, mdedit_language::Token)>>;
 
 /// GPU resources for one window.
 struct Renderer {
@@ -10786,10 +10788,7 @@ impl<T: TextLayout> Editor<T> {
     /// For a test: runs the worker with `job` in place of the real highlighter, started at once.
     ///
     /// So a test can make a job panic, which the real one never does on purpose.
-    pub fn use_highlight_job(
-        &mut self,
-        job: fn(&str, &str) -> Option<Vec<(ByteSpan, mdedit_language::Token)>>,
-    ) {
+    pub fn use_highlight_job(&mut self, job: HighlightJob) {
         self.highlighter = Some(Highlighter::spawn(None, job));
     }
 
