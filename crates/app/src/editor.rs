@@ -10774,11 +10774,13 @@ impl<T: TextLayout> Editor<T> {
     ///
     /// So a frame can be laid out with colours genuinely pending, and so a test can prove the thread
     /// that draws never loads a syntax set itself.
+    #[doc(hidden)] // for the integration tests only
     pub fn hold_highlighting(&mut self) {
         self.highlighter = Some(Highlighter::unstarted(None, mdedit_highlight::highlight));
     }
 
     /// For a test: starts the worker [`Self::hold_highlighting`] was holding back.
+    #[doc(hidden)] // for the integration tests only
     pub fn start_highlighting(&mut self) {
         if let Some(highlighter) = self.highlighter.as_mut() {
             highlighter.start();
@@ -10788,12 +10790,14 @@ impl<T: TextLayout> Editor<T> {
     /// For a test: runs the worker with `job` in place of the real highlighter, started at once.
     ///
     /// So a test can make a job panic, which the real one never does on purpose.
+    #[doc(hidden)] // for the integration tests only
     pub fn use_highlight_job(&mut self, job: HighlightJob) {
         self.highlighter = Some(Highlighter::spawn(None, job));
     }
 
     /// For a test: how many fence texts are `(ready, pending, plain)` in the store.
     #[must_use]
+    #[doc(hidden)] // for the integration tests only
     pub fn highlight_counts(&self) -> (usize, usize, usize) {
         let mut counts = (0, 0, 0);
         for state in self.highlights.values() {
@@ -10804,6 +10808,13 @@ impl<T: TextLayout> Editor<T> {
             }
         }
         counts
+    }
+
+    /// For a test: how many fences' last answered versions are remembered for reuse.
+    #[must_use]
+    #[doc(hidden)] // for the integration tests only
+    pub fn remembered_fences(&self) -> usize {
+        self.answered_fences.len()
     }
 
     /// Takes whatever the decode worker has finished, without waiting (MDEDIT-156).

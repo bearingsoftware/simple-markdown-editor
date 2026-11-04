@@ -220,28 +220,54 @@ fn only_the_newest_request_for_a_fence_is_highlighted_and_the_older_is_forgotten
     );
 }
 
-/// More tagged fences than the table of remembered versions holds: reuse still works for one.
+/// More tagged fences laid out than the table of remembered versions holds (64): it stays full
+/// rather than being wiped, and reuse still works for a fence in it.
 #[test]
-fn reuse_still_works_in_a_document_of_a_hundred_fences() {
+fn the_remembered_versions_stay_full_past_the_cap_and_reuse_still_works() {
     let source = "```rust\nfn f() {}\n```\n\n".repeat(100);
+    let tall = 40_000.0;
     let mut editor = editor_on(&source);
-    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let _ = editor.build_frame(WIDTH, tall, 1.0);
     until_nothing_is_pending(&mut editor);
-    assert!(keyword_quads(&mut editor) > 0);
+    let _ = editor.build_frame(WIDTH, tall, 1.0);
+    assert_eq!(
+        editor.remembered_fences(),
+        64,
+        "100 fences were laid out: the table should hold its cap, not be cleared at it"
+    );
 
+    // The last fence laid out is always remembered, whichever were evicted.
     editor.hold_highlighting();
-    let at = source.find("fn f() {}").unwrap() + "fn f() {}".len();
+    let at = source.rfind("fn f() {}").unwrap() + "fn f() {}".len();
     editor
         .document_mut()
         .set_selection(Selection::caret(ByteOffset::new(at)));
     editor.insert_text(" ");
-    let reused = keyword_quads(&mut editor);
+    let reused = {
+        let key = Theme::dark().token_key;
+        let wanted = [key.r, key.g, key.b, key.a];
+        editor
+            .build_frame(WIDTH, tall, 1.0)
+            .iter()
+            .filter(|quad| quad.colour == wanted)
+            .count()
+    };
 
     let mut edited = source.clone();
     edited.insert(at, ' ');
     let mut baseline = editor_on(&edited);
     baseline.hold_highlighting();
-    assert!(reused > keyword_quads(&mut baseline));
+    let key = Theme::dark().token_key;
+    let wanted = [key.r, key.g, key.b, key.a];
+    let plain = baseline
+        .build_frame(WIDTH, tall, 1.0)
+        .iter()
+        .filter(|quad| quad.colour == wanted)
+        .count();
+    assert!(
+        reused > plain,
+        "{reused} keyword quads reused, {plain} plain"
+    );
 }
 
 fn boom(_: &str, _: &str) -> Option<Vec<(mdedit_offsets::ByteSpan, mdedit_language::Token)>> {
