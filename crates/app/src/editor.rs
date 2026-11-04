@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use crate::clicks::{Clicks, Granularity};
 use crate::decoding::{Decoder, PictureKey, PictureState};
+use crate::highlighting::{self, Highlight, Highlighter, Spans};
 use crate::scrollbar::{self, Bar};
 use mdedit_document::{Document, Selection};
 use mdedit_image::Picture;
@@ -87,6 +88,8 @@ pub enum Wake {
     /// Carries nothing: the answers are on the worker's channel, and one wake is enough however
     /// many of them arrived.
     Pictures,
+    /// The highlight worker has coloured a fence (MDEDIT-190). Carries nothing, like `Pictures`.
+    Highlights,
     /// Windows is shutting down or logging off (MDEDIT-120): flush and mark the exit clean.
     SessionEnding,
     /// The shutdown was cancelled (MDEDIT-120): the run is not over, so the session is not clean.
@@ -426,6 +429,9 @@ const RECONCILE_AFTER: std::time::Duration = std::time::Duration::from_millis(15
 /// How many laid-out chunks to keep. At a few hundred glyphs each this is tens of megabytes at the
 /// cap, and it is only reached by scrolling through a very large document.
 const MAX_CACHED_LAYOUTS: usize = 512;
+/// How many fences' highlight answers to keep (MDEDIT-190). Every keystroke in a fence is a new key,
+/// so the store is cleared when it fills rather than growing with the typing.
+const MAX_HIGHLIGHTS: usize = 256;
 
 /// GPU resources for one window.
 struct Renderer {
@@ -1054,6 +1060,13 @@ pub struct Editor<T: TextLayout> {
     /// `None` until then, so a session that never opens a document with an image in it never starts
     /// a thread — which is most sessions, and every test that does not place a picture.
     decoder: Option<Decoder>,
+    /// The thread that colours fenced code, once a tagged fence has been laid out (MDEDIT-190).
+    highlighter: Option<Highlighter>,
+    /// What is known of each fence text, by [`highlighting::key_of`].
+    highlights: HashMap<u64, Highlight>,
+    /// The last answered version of each fence, by where its body starts, so an edit keeps the
+    /// colours it did not touch while the new answer is on its way. See [`reuse_highlights`].
+    answered_fences: HashMap<usize, AnsweredFence>,
     /// Which pictures the last [`build_frame`](Self::build_frame) placed, and where.
     ///
     /// Rebuilt each frame and read by the renderer afterwards, rather than returned: `build_frame`
@@ -1320,6 +1333,9 @@ impl<T: TextLayout> Editor<T> {
             picture_ids: HashMap::new(),
             watch: PictureWatch::default(),
             decoder: None,
+            highlighter: None,
+            highlights: HashMap::new(),
+            answered_fences: HashMap::new(),
             drawn_pictures: Vec::new(),
             picture_spans: Vec::new(),
             anchor: None,
@@ -8773,10 +8789,15 @@ impl<T: TextLayout> Editor<T> {
         let chunks = blocks::split(self.document(), &text);
         let last = chunks.len().saturating_sub(1);
         let language = self.document().language().name();
+        let fences: Vec<Option<ChunkFence>> = chunks
+            .iter()
+            .map(|chunk| self.fence_of_chunk(chunk, &text))
+            .collect();
         let keys: Vec<ChunkKey> = chunks
             .iter()
+            .zip(&fences)
             .enumerate()
-            .map(|(index, chunk)| {
+            .map(|(index, (chunk, fence))| {
                 ChunkKey::of(
                     chunk,
                     chunk.span.slice(&text),
@@ -8784,6 +8805,7 @@ impl<T: TextLayout> Editor<T> {
                     width,
                     self.mode,
                     language,
+                    fence.as_ref().map_or(0, ChunkFence::key_part),
                 )
             })
             .collect();
@@ -8791,6 +8813,7 @@ impl<T: TextLayout> Editor<T> {
         let mut frame = Frame {
             chunks,
             keys,
+            fences,
             fresh: Vec::new(),
             heights: Vec::new(),
             tops: Vec::new(),
@@ -8894,8 +8917,7 @@ impl<T: TextLayout> Editor<T> {
 
             // Runs are rebuilt rather than stored with the layout: they are cheap for one chunk, and
             // keeping them would mean holding a `String` per run for every chunk ever measured.
-            let runs =
-                view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
+            let runs = self.runs_for(index, frame);
             let chunk_top = frame.tops[index];
             let drawn = cached.drawn_lines();
             quads.reserve(
@@ -10329,6 +10351,7 @@ impl<T: TextLayout> Editor<T> {
         }
         let chunk = frame.chunks[index];
         let key = frame.keys[index];
+        self.request_highlight(index, frame);
         if let Some(cached) = self.layouts.get(&key) {
             return Some(Rc::clone(cached));
         }
@@ -10376,8 +10399,7 @@ impl<T: TextLayout> Editor<T> {
         } else if let Some(fitted) = picture {
             (picture_layout(fitted, body), None)
         } else {
-            let runs =
-                view::build_runs_in(self.document(), self.decoration(), chunk.span, &frame.text);
+            let runs = self.runs_for(index, frame);
             let styled = view::as_styled(&runs);
             (self.text.layout(&styled, frame.width).ok()?, None)
         };
@@ -10560,6 +10582,201 @@ impl<T: TextLayout> Editor<T> {
         // long as its closure runs, so the closure cannot reach `self` for the proxy.
         let wake = self.menu_proxy.clone();
         self.decoder.get_or_insert_with(|| Decoder::spawn(wake))
+    }
+
+    /// The runs to draw for chunk `index`, with its fence's colours if it has them (MDEDIT-190).
+    fn runs_for<'f>(&self, index: usize, frame: &'f Frame) -> Vec<view::ViewRun<'f>> {
+        let absolute: Vec<(ByteSpan, mdedit_language::Token)> = frame.fences[index]
+            .as_ref()
+            .and_then(|fence| {
+                let base = fence.body.start().get();
+                fence.spans.as_ref().map(|spans| {
+                    spans
+                        .iter()
+                        .map(|(span, token)| {
+                            let at = |offset: ByteOffset| ByteOffset::new(base + offset.get());
+                            (ByteSpan::new(at(span.start()), at(span.end())), *token)
+                        })
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        view::build_runs_highlighted(
+            self.document(),
+            self.decoration(),
+            frame.chunks[index].span,
+            &frame.text,
+            &absolute,
+        )
+    }
+
+    /// What a chunk knows of its fence's colours, if it is a tagged fenced code block (MDEDIT-190).
+    ///
+    /// **Only reads the store, and never the highlighter**, so measuring every chunk of a large
+    /// document asks nothing of the worker: a request is made when a chunk is laid out, which is
+    /// when it is visible or holds the caret.
+    fn fence_of_chunk(&mut self, chunk: &blocks::Chunk, text: &str) -> Option<ChunkFence> {
+        if chunk.kind != Some(BlockKind::CodeBlock) {
+            return None;
+        }
+        let block = self.document().block_at(chunk.span.start())?;
+        let fence = view::fence_of(block, text)?;
+        let (body, info) = (fence.body, fence.info.to_owned());
+        let code = body.slice(text);
+        if info.is_empty() || code.is_empty() || code.len() > mdedit_highlight::MAX_BODY_BYTES {
+            return None;
+        }
+        let hash = highlighting::key_of(&info, code);
+        let start = body.start().get();
+        match self.highlights.get(&hash).cloned() {
+            Some(Highlight::Plain) => None,
+            Some(Highlight::Ready(spans)) => {
+                self.remember_answered(start, hash, &info, code, &spans);
+                Some(ChunkFence {
+                    hash,
+                    body,
+                    info,
+                    state: FenceState::Ready,
+                    spans: Some(spans),
+                })
+            }
+            Some(Highlight::Pending) | None => {
+                let reused = self
+                    .answered_fences
+                    .get(&start)
+                    .and_then(|previous| reuse_highlights(previous, &info, code));
+                let state = if reused.is_some() {
+                    FenceState::Reused
+                } else {
+                    FenceState::Unasked
+                };
+                Some(ChunkFence {
+                    hash,
+                    body,
+                    info,
+                    state,
+                    spans: reused,
+                })
+            }
+        }
+    }
+
+    fn remember_answered(
+        &mut self,
+        start: usize,
+        hash: u64,
+        info: &str,
+        code: &str,
+        spans: &Spans,
+    ) {
+        if self
+            .answered_fences
+            .get(&start)
+            .is_some_and(|known| known.hash == hash)
+        {
+            return;
+        }
+        if self.answered_fences.len() >= MAX_ANSWERED_FENCES {
+            self.answered_fences.clear();
+        }
+        self.answered_fences.insert(
+            start,
+            AnsweredFence {
+                hash,
+                info: info.to_owned(),
+                body: code.to_owned(),
+                spans: Spans::clone(spans),
+            },
+        );
+    }
+
+    /// Asks the worker to colour chunk `index`'s fence, once per distinct text (MDEDIT-190).
+    fn request_highlight(&mut self, index: usize, frame: &Frame) {
+        let Some(fence) = frame.fences[index].as_ref() else {
+            return;
+        };
+        if fence.state == FenceState::Ready || self.highlights.contains_key(&fence.hash) {
+            return;
+        }
+        if self.highlights.len() >= MAX_HIGHLIGHTS {
+            self.highlights.clear();
+        }
+        self.highlights.insert(fence.hash, Highlight::Pending);
+        let request = highlighting::Request {
+            key: fence.hash,
+            fence: fence.body.start().get(),
+            info: fence.info.clone(),
+            body: fence.body.slice(&frame.text).to_owned(),
+        };
+        self.highlighter().request(request);
+    }
+
+    /// The highlight worker, started if this is the first tagged fence to want one.
+    fn highlighter(&mut self) -> &Highlighter {
+        let wake = self.menu_proxy.clone();
+        self.highlighter
+            .get_or_insert_with(|| Highlighter::spawn(wake))
+    }
+
+    /// Takes whatever the highlight worker has finished, without waiting (MDEDIT-190).
+    ///
+    /// `true` when something changed, which is the caller's cue to draw another frame. Called on
+    /// [`Wake::Highlights`], and harmless at any other time.
+    pub fn absorb_highlights(&mut self) -> bool {
+        let answers = self
+            .highlighter
+            .as_mut()
+            .map(Highlighter::collect)
+            .unwrap_or_default();
+        let mut changed = false;
+        for answer in answers {
+            match answer {
+                highlighting::Answer::Spans(key, spans) => {
+                    if self.highlights.len() >= MAX_HIGHLIGHTS {
+                        self.highlights.clear();
+                    }
+                    let state = match spans {
+                        Some(spans) if !spans.is_empty() => Highlight::Ready(Spans::from(spans)),
+                        _ => Highlight::Plain,
+                    };
+                    self.highlights.insert(key, state);
+                    changed = true;
+                }
+                highlighting::Answer::Superseded(key) => {
+                    if matches!(self.highlights.get(&key), Some(Highlight::Pending)) {
+                        self.highlights.remove(&key);
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Blocks for up to `patience` for the highlight worker's next answer, then takes it.
+    ///
+    /// For a headless test, which has no event loop to be woken by; the answers go through
+    /// [`Self::absorb_highlights`], the call the event loop makes.
+    #[must_use]
+    pub fn await_highlights(&mut self, patience: std::time::Duration) -> bool {
+        if let Some(highlighter) = self.highlighter.as_mut() {
+            highlighter.wait_for_one(patience);
+        }
+        self.absorb_highlights()
+    }
+
+    /// For a test: from now on requests queue and no worker runs, until [`Self::start_highlighting`].
+    ///
+    /// So a frame can be laid out with colours genuinely pending, and so a test can prove the thread
+    /// that draws never loads a syntax set itself.
+    pub fn hold_highlighting(&mut self) {
+        self.highlighter = Some(Highlighter::unstarted(None));
+    }
+
+    /// For a test: starts the worker [`Self::hold_highlighting`] was holding back.
+    pub fn start_highlighting(&mut self) {
+        if let Some(highlighter) = self.highlighter.as_mut() {
+            highlighter.start();
+        }
     }
 
     /// Takes whatever the decode worker has finished, without waiting (MDEDIT-156).
@@ -11086,6 +11303,14 @@ impl<T: TextLayout> ApplicationHandler<Wake> for Editor<T> {
                 }
                 return;
             }
+            Wake::Highlights => {
+                if self.absorb_highlights()
+                    && let Some(window) = self.window.as_ref()
+                {
+                    window.request_redraw();
+                }
+                return;
+            }
         };
 
         if self.apply_command(command) {
@@ -11376,6 +11601,8 @@ struct Placement {
 struct Frame {
     chunks: Vec<blocks::Chunk>,
     keys: Vec<ChunkKey>,
+    /// Per chunk, the fence it is, if it is a tagged one (MDEDIT-190).
+    fences: Vec<Option<ChunkFence>>,
     /// Chunks laid out this frame rather than taken from the cache — the caret's, always.
     fresh: Vec<(usize, Rc<Cached>)>,
     heights: Vec<f32>,
@@ -11397,6 +11624,106 @@ impl Frame {
     }
 }
 
+/// What a chunk that is a tagged fenced code block knows about its colours (MDEDIT-190).
+#[derive(Debug, Clone)]
+struct ChunkFence {
+    /// [`highlighting::key_of`] for the info string and the body.
+    hash: u64,
+    /// The bytes between the fence lines.
+    body: ByteSpan,
+    info: String,
+    state: FenceState,
+    /// Relative to `body`: the answer's, or the previous version's where the edit left it alone.
+    spans: Option<Spans>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FenceState {
+    /// No answer, and none borrowed from an earlier version: drawn plain.
+    Unasked,
+    /// Drawn from the previous version's spans while the answer for this one is on its way.
+    Reused,
+    Ready,
+}
+
+impl ChunkFence {
+    /// The part of [`ChunkKey`] this fence contributes: 0 while it draws plain.
+    fn key_part(&self) -> u64 {
+        let tag = match self.state {
+            FenceState::Unasked => return 0,
+            FenceState::Reused => 2u8,
+            FenceState::Ready => 1u8,
+        };
+        let mut hasher = DefaultHasher::new();
+        (self.hash, tag).hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// The last answered version of one fence, kept to colour the next while its answer is pending.
+#[derive(Debug, Clone)]
+struct AnsweredFence {
+    hash: u64,
+    info: String,
+    body: String,
+    spans: Spans,
+}
+
+/// How many fences' last answered versions are kept.
+const MAX_ANSWERED_FENCES: usize = 64;
+
+/// The previous version's spans that an edit left alone, for the new body `code`.
+///
+/// **Spans that end before the first differing byte are kept as they are**, which is right because
+/// a highlighter's state is causal: nothing after an edit can change how the text before it was
+/// scoped. **Spans that start after the common suffix are kept, shifted by the length delta** —
+/// close enough until the answer lands, and wrong only where the edit opened or closed something
+/// that runs on, such as a string. Spans overlapping the edit are dropped. A different info string
+/// reuses nothing: it may name another language, and the spans mean nothing there.
+fn reuse_highlights(previous: &AnsweredFence, info: &str, code: &str) -> Option<Spans> {
+    if previous.info != info {
+        return None;
+    }
+    let (old, new) = (previous.body.as_str(), code);
+    let mut prefix = old
+        .bytes()
+        .zip(new.bytes())
+        .take_while(|(a, b)| a == b)
+        .count();
+    while !old.is_char_boundary(prefix) || !new.is_char_boundary(prefix) {
+        prefix -= 1;
+    }
+    let room = old.len().min(new.len()) - prefix;
+    let mut suffix = old
+        .bytes()
+        .rev()
+        .zip(new.bytes().rev())
+        .take_while(|(a, b)| a == b)
+        .count()
+        .min(room);
+    while !old.is_char_boundary(old.len() - suffix) || !new.is_char_boundary(new.len() - suffix) {
+        suffix -= 1;
+    }
+
+    let suffix_from = old.len() - suffix;
+    let mut kept = Vec::new();
+    for (span, token) in previous.spans.iter() {
+        let (start, end) = (span.start().get(), span.end().get());
+        if end <= prefix {
+            kept.push((*span, *token));
+        } else if start >= suffix_from {
+            let shifted = |at: usize| (at + new.len()).checked_sub(old.len());
+            if let (Some(start), Some(end)) = (shifted(start), shifted(end)) {
+                kept.push((
+                    ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),
+                    *token,
+                ));
+            }
+        }
+    }
+    (!kept.is_empty()).then(|| Spans::from(kept))
+}
+
 /// What identifies a laid-out chunk.
 ///
 /// Deliberately **not** [`mdedit_offsets::BlockId`], and not the chunk's position: both are indices
@@ -11416,6 +11743,14 @@ struct ChunkKey {
     /// identifies a layout. In the key rather than clearing the cache on a toggle, so switching back
     /// and forth is free after the first time.
     mode: view::Mode,
+    /// What the chunk's fence is known to look like (MDEDIT-190); 0 for every chunk that is not a
+    /// tagged fence, and for one drawn plain.
+    ///
+    /// **In the key because the bytes are not the whole of what is drawn.** A fence laid out while its
+    /// answer is pending is plain, and a key without this would serve that plain layout for ever once
+    /// the colours arrived. Kept out of `content`, which the scroll anchor matches on: colours landing
+    /// must not lose the reader's place.
+    highlight: u64,
 }
 
 impl ChunkKey {
@@ -11430,6 +11765,7 @@ impl ChunkKey {
         width: f32,
         mode: view::Mode,
         language: &'static str,
+        highlight: u64,
     ) -> Self {
         let mut hasher = DefaultHasher::new();
         chunk.kind.hash(&mut hasher);
@@ -11455,6 +11791,7 @@ impl ChunkKey {
             width: width.to_bits(),
             last,
             mode,
+            highlight,
         }
     }
 }

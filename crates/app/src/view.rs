@@ -504,7 +504,26 @@ pub fn build_runs_in<'t>(
     within: ByteSpan,
     text: &'t str,
 ) -> Vec<ViewRun<'t>> {
+    build_runs_highlighted(doc, decoration, within, text, &[])
+}
+
+/// [`build_runs_in`] with a fenced code block's highlight spans (MDEDIT-190).
+///
+/// `highlights` are **absolute** offsets into `text`, sorted and non-overlapping, and they are all
+/// this function knows of highlighting: it never loads a syntax or parses code. Producing them is
+/// `mdedit_highlight`'s job, on the worker thread, and a view that is a pure function of its inputs
+/// is what lets the layout cache key on them. Content inside a span draws as that token; every byte
+/// is still drawn.
+#[must_use]
+pub fn build_runs_highlighted<'t>(
+    doc: &Document,
+    decoration: Decoration<'_>,
+    within: ByteSpan,
+    text: &'t str,
+    highlights: &[(ByteSpan, Token)],
+) -> Vec<ViewRun<'t>> {
     let mut builder = Builder {
+        highlights,
         runs: Vec::new(),
         theme: decoration.theme,
         mode: decoration.mode,
@@ -562,9 +581,11 @@ pub fn build_runs_in<'t>(
 }
 
 /// A fenced code block's body and the language its opening line names.
-struct Fence<'t> {
-    body: ByteSpan,
-    info: &'t str,
+pub struct Fence<'t> {
+    /// The bytes between the fence lines.
+    pub body: ByteSpan,
+    /// Everything after the fence characters on the opening line, trimmed.
+    pub info: &'t str,
 }
 
 /// The fence a top-level code block is written with, or `None` for an indented one.
@@ -572,7 +593,8 @@ struct Fence<'t> {
 /// **The info string is the fence's own syntax**, read from the opening line, and the only thing
 /// that chooses a language (MDEDIT-190); the code is never looked at to guess. A fence nested in a
 /// quote or a list is left plain, because its lines carry a prefix that is not code.
-fn fence_of<'t>(block: &Block, text: &'t str) -> Option<Fence<'t>> {
+#[must_use]
+pub fn fence_of<'t>(block: &Block, text: &'t str) -> Option<Fence<'t>> {
     if block.depth() != 0 {
         return None;
     }
@@ -581,7 +603,11 @@ fn fence_of<'t>(block: &Block, text: &'t str) -> Option<Fence<'t>> {
     let (indent, opener) = split_indent(opener);
     let fence_char = opener.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let run = opener.chars().take_while(|c| *c == fence_char).count();
-    if indent > 3 || run < 3 {
+    // An indented code block's range starts after its indent, so its first line can look like a fence.
+    let opened = block.span().start().get();
+    let line_start = text[..opened].rfind(char::from(10)).map_or(0, |at| at + 1);
+    let before = &text[line_start..opened];
+    if before.chars().any(|c| c != ' ') || before.len() + indent > 3 || run < 3 {
         return None;
     }
     let info = opener[run..].trim();
@@ -759,6 +785,7 @@ fn brackets_a_link(character: char) -> bool {
 
 /// Accumulates runs while walking the document's segments.
 struct Builder<'a, 't> {
+    highlights: &'a [(ByteSpan, Token)],
     runs: Vec<ViewRun<'t>>,
     theme: &'a Theme,
     mode: Mode,
@@ -914,38 +941,30 @@ impl<'t> Builder<'_, 't> {
         role == Role::Content && !in_code_block && self.doc.in_block_quote(offset)
     }
 
-    /// Content that may be the body of a fenced code block, in which case it is highlighted.
+    /// Content, drawn as the fence's highlight spans say where it falls inside one (MDEDIT-190).
     ///
-    /// **Highlighting runs only when the layout cache misses**, because this is called from the run
-    /// builder and that is only called for a chunk the cache has not seen; the key hashes the chunk's
-    /// bytes, opening fence line included, so editing either re-highlights and nothing else does.
-    /// Decoration only: every byte is still drawn, in the order it is in.
+    /// Decoration only: every byte is still drawn, in the order it is in. With no spans this is
+    /// `push_split`, which is every chunk but a highlighted fence.
     fn push_content(&mut self, piece: &'t str, span: ByteSpan, text: &'t str) {
-        let fence = self
-            .doc
-            .block_at(span.start())
-            .filter(|block| block.kind() == BlockKind::CodeBlock)
-            .and_then(|block| fence_of(block, text));
-        let Some(fence) = fence.filter(|fence| fence.body.overlaps(span)) else {
+        if self.highlights.is_empty() {
             self.push_split(piece, span, Role::Content);
             return;
-        };
-        let Some(spans) = mdedit_highlight::highlight(fence.info, fence.body.slice(text)) else {
-            self.push_split(piece, span, Role::Content);
-            return;
-        };
-
-        let base = fence.body.start().get();
+        }
+        let highlights = self.highlights;
+        let first = highlights.partition_point(|(token, _)| token.end() <= span.start());
         let mut cursor = span.start().get();
         let end = span.end().get();
-        for (token_span, token) in spans {
-            let from = (base + token_span.start().get()).max(cursor);
-            let to = (base + token_span.end().get()).min(end);
+        for (token_span, token) in &highlights[first..] {
+            if token_span.start().get() >= end {
+                break;
+            }
+            let from = token_span.start().get().max(cursor);
+            let to = token_span.end().get().min(end);
             if from >= to {
                 continue;
             }
             self.push_range(text, cursor, from, Role::Content);
-            self.push_range(text, from, to, Role::Token(token));
+            self.push_range(text, from, to, Role::Token(*token));
             cursor = to;
         }
         self.push_range(text, cursor, end, Role::Content);

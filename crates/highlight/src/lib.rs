@@ -15,6 +15,9 @@
 //! **Loading is lazy.** The syntax set is deserialised on the first call that names a language, not
 //! at startup, and [`is_loaded`] says whether that has happened.
 //!
+//! **This is expensive and is meant to run off the thread that draws** (MDEDIT-190): about 4 us a byte
+//! in a release build, and 54 ms to load the syntax set. The editor calls it from one worker thread.
+//!
 //! Highlighting is best effort. A line the regex engine refuses ends the highlighting there and the
 //! rest of the fence draws plain; nothing in here panics on what a file contains.
 
@@ -26,12 +29,13 @@ use mdedit_offsets::{ByteOffset, ByteSpan};
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 /// Past this many bytes a fence draws plain. Measured at about 4 us a byte in release (MDEDIT-190), so
-/// this is roughly 7 ms, which is what a keystroke has left of its 8.3 ms p99.
-const MAX_BODY_BYTES: usize = 1536;
+/// this keeps one job on the worker thread under about half a second.
+pub const MAX_BODY_BYTES: usize = 128 * 1024;
 
-/// Past this many bytes a single line draws plain, because a regex engine with backtracking can
-/// take far longer on one long line than its length suggests.
-const MAX_LINE_BYTES: usize = 512;
+/// Past this many bytes a single line ends the highlighting, and the rest of the fence draws plain:
+/// a regex engine with backtracking can take far longer on one long line than its length suggests,
+/// and a 3,000-character line measured 121 ms.
+pub const MAX_LINE_BYTES: usize = 4096;
 
 /// How many distinct info tokens are remembered before the table is cleared. A document chooses
 /// them, so the table must not grow with it.

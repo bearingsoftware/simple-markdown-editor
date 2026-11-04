@@ -17,7 +17,9 @@ yanked = "deny"
 # ignore = [
 #     { id = "RUSTSEC-0000-0000", reason = "no upgrade path yet — tracked in ABC-123" },
 # ]
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is unmaintained; syntect reads only the dump built into the exe, never a user file - tracked in MDEDIT-199" },
+]
 
 [licenses]
 version = 2

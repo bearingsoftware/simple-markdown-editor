@@ -301,14 +301,14 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **`two-face` was tried and dropped.** It bundles about 200 of `bat`'s syntaxes under mixed
   licences, and no definition with an unknown or copyleft licence may ship inside `mdedit.exe`.
   `syntect`'s own bundled set is the sublimehq/Packages dump.
-- **Licence of the bundled set.** The `syntect` crate is MIT (`LICENSE.txt`), but that covers its
-  code: **the crate ships no licence file for the syntax dump**, and its README says nothing of the
-  Packages' licence. Upstream, `sublimehq/Packages/LICENSE` grants "permission to copy, use, modify,
-  sell and distribute this software", as is, no warranty — a permissive custom licence, the same
-  text `two-face` files under `Sublime`. **Upstream also says individual packages may carry their
-  own licence in a `<name>-license.txt` beside them, and those were not individually checked here**
-  (a read of the upstream repo, not a cargo job). Attribution or notice shipping is not done;
-  ticketed separately.
+- **Licence of the bundled set, audited.** The `syntect` crate itself is MIT, but it ships no
+  licence file for the syntax dump. The 5.3.0 dump is built from `sublimehq/Packages` at commit
+  `fa6b8629c95041bf262d4c1dab95c456a0530122` (2017-11-13), and **all 74 `.sublime-syntax` files are
+  in it; none are excluded.** The top-level `LICENSE` is a permissive Sublime grant (copy, use,
+  modify, sell and distribute, as is). `Rust/LICENSE.txt` is MIT with no copyright line;
+  `YAML.sublime-syntax` carries an MIT header, (c) 2015 FichteFoll, and `C#.sublime-syntax` an MIT
+  header, (c) 2016 Sublime HQ. **No copyleft licence was found.** Shipping the notices is tracked
+  by MDEDIT-200. **The syntaxes date from 2017**, so a newer language feature may draw plain.
 - **The language comes from the info string and nothing else.** First word, lower-cased. No info
   string means no highlighting, and nothing reads the code to guess; a JSON body under ```` ```text ````
   is plain text. The set loads lazily, on the first fence that names a language; `is_loaded()`
