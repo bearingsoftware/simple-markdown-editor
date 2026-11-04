@@ -554,11 +554,57 @@ pub fn build_runs_in<'t>(
             SegmentKind::Token(token) => builder.push_split(piece, span, Role::Token(token)),
             // Content, and any kind this renderer has not learned yet — whose bytes are drawn as
             // ordinary text rather than dropped, the same bargain `Marker` already makes.
-            _ => builder.push_split(piece, span, Role::Content),
+            _ => builder.push_content(piece, span, text),
         }
     }
 
     builder.runs
+}
+
+/// A fenced code block's body and the language its opening line names.
+struct Fence<'t> {
+    body: ByteSpan,
+    info: &'t str,
+}
+
+/// The fence a top-level code block is written with, or `None` for an indented one.
+///
+/// **The info string is the fence's own syntax**, read from the opening line, and the only thing
+/// that chooses a language (MDEDIT-190); the code is never looked at to guess. A fence nested in a
+/// quote or a list is left plain, because its lines carry a prefix that is not code.
+fn fence_of<'t>(block: &Block, text: &'t str) -> Option<Fence<'t>> {
+    if block.depth() != 0 {
+        return None;
+    }
+    let source = block.span().slice(text);
+    let (opener, rest) = source.split_once('\n')?;
+    let (indent, opener) = split_indent(opener);
+    let fence_char = opener.chars().next().filter(|c| matches!(c, '`' | '~'))?;
+    let run = opener.chars().take_while(|c| *c == fence_char).count();
+    if indent > 3 || run < 3 {
+        return None;
+    }
+    let info = opener[run..].trim();
+
+    let start = block.span().end().get() - rest.len();
+    let mut end = block.span().end().get();
+    let trimmed = rest.trim_end_matches(['\r', '\n']);
+    let closer_at = trimmed.rfind('\n').map_or(0, |i| i + 1);
+    let (indent, closer) = split_indent(&trimmed[closer_at..]);
+    let closing = closer.chars().take_while(|c| *c == fence_char).count();
+    if indent <= 3 && closing >= run && closer[closing..].trim().is_empty() {
+        end = start + closer_at;
+    }
+    Some(Fence {
+        body: ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end)),
+        info,
+    })
+}
+
+/// How many spaces start `line`, and the rest of it.
+fn split_indent(line: &str) -> (usize, &str) {
+    let rest = line.trim_start_matches(' ');
+    (line.len() - rest.len(), rest)
 }
 
 /// What a concealed marker draws instead of nothing, or `None` to keep dropping it (MDEDIT-141).
@@ -866,6 +912,50 @@ impl<'t> Builder<'_, 't> {
     /// monospace is where alignment goes to die.
     fn is_quoted(&self, offset: ByteOffset, role: Role, in_code_block: bool) -> bool {
         role == Role::Content && !in_code_block && self.doc.in_block_quote(offset)
+    }
+
+    /// Content that may be the body of a fenced code block, in which case it is highlighted.
+    ///
+    /// **Highlighting runs only when the layout cache misses**, because this is called from the run
+    /// builder and that is only called for a chunk the cache has not seen; the key hashes the chunk's
+    /// bytes, opening fence line included, so editing either re-highlights and nothing else does.
+    /// Decoration only: every byte is still drawn, in the order it is in.
+    fn push_content(&mut self, piece: &'t str, span: ByteSpan, text: &'t str) {
+        let fence = self
+            .doc
+            .block_at(span.start())
+            .filter(|block| block.kind() == BlockKind::CodeBlock)
+            .and_then(|block| fence_of(block, text));
+        let Some(fence) = fence.filter(|fence| fence.body.overlaps(span)) else {
+            self.push_split(piece, span, Role::Content);
+            return;
+        };
+        let Some(spans) = mdedit_highlight::highlight(fence.info, fence.body.slice(text)) else {
+            self.push_split(piece, span, Role::Content);
+            return;
+        };
+
+        let base = fence.body.start().get();
+        let mut cursor = span.start().get();
+        let end = span.end().get();
+        for (token_span, token) in spans {
+            let from = (base + token_span.start().get()).max(cursor);
+            let to = (base + token_span.end().get()).min(end);
+            if from >= to {
+                continue;
+            }
+            self.push_range(text, cursor, from, Role::Content);
+            self.push_range(text, from, to, Role::Token(token));
+            cursor = to;
+        }
+        self.push_range(text, cursor, end, Role::Content);
+    }
+
+    fn push_range(&mut self, text: &'t str, from: usize, to: usize, role: Role) {
+        if from < to {
+            let span = ByteSpan::new(ByteOffset::new(from), ByteOffset::new(to));
+            self.push_split(span.slice(text), span, role);
+        }
     }
 
     /// Pushes `piece`, splitting at newlines so line-scoped styling state can be reset.

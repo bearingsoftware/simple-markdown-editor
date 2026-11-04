@@ -68,6 +68,7 @@ crates/toml/          # The same for TOML. Its own lexer, not INI's; a table hea
                       #   is a safe restart point
 crates/ini/           # The same for INI and .cfg. There is no INI specification, so its crate docs
                       #   state the dialect it reads
+crates/highlight/     # Fenced-code highlighting, by info string only. syntect + fancy-regex, never onig
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/image/         # An image destination's trust boundary, and a PNG decoder behind size caps.

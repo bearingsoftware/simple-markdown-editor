@@ -288,3 +288,54 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   landed. Removing it surfaced one more thing: a `HardBreak`'s reported range covers whatever
   trailing whitespace preceded the newline, not just the two spaces or backslash that were written.
   That is the format being loose rather than the locator being wrong.
+
+## MDEDIT-190: fenced code is highlighted by `syntect`, chosen by the info string alone
+
+- **Backend: `syntect` 5.3.0 on `fancy-regex`, never Oniguruma.** A fence's contents are untrusted
+  file contents and Oniguruma is C — the same ground `tree-sitter` was rejected on above. `syntect`
+  is taken with `default-features = false` and `default-syntaxes` + `regex-fancy`; `deny.toml` bans
+  `onig` and `onig_sys` so a feature flip cannot bring them back (`cargo tree -i onig` finds
+  nothing). The MSRV objection recorded under YAML has gone with the 1.90 floor. The hand-written
+  lexers stay for whole-file languages: they guarantee their spans tile the source, which syntect's
+  styles do not.
+- **`two-face` was tried and dropped.** It bundles about 200 of `bat`'s syntaxes under mixed
+  licences, and no definition with an unknown or copyleft licence may ship inside `mdedit.exe`.
+  `syntect`'s own bundled set is the sublimehq/Packages dump.
+- **Licence of the bundled set.** The `syntect` crate is MIT (`LICENSE.txt`), but that covers its
+  code: **the crate ships no licence file for the syntax dump**, and its README says nothing of the
+  Packages' licence. Upstream, `sublimehq/Packages/LICENSE` grants "permission to copy, use, modify,
+  sell and distribute this software", as is, no warranty — a permissive custom licence, the same
+  text `two-face` files under `Sublime`. **Upstream also says individual packages may carry their
+  own licence in a `<name>-license.txt` beside them, and those were not individually checked here**
+  (a read of the upstream repo, not a cargo job). Attribution or notice shipping is not done;
+  ticketed separately.
+- **The language comes from the info string and nothing else.** First word, lower-cased. No info
+  string means no highlighting, and nothing reads the code to guess; a JSON body under ```` ```text ````
+  is plain text. The set loads lazily, on the first fence that names a language; `is_loaded()`
+  exists so a test can prove it (`tests/lazy.rs`, a binary of its own).
+- **Colours are the existing token colours**, by a scope-prefix table in one place
+  (`crates/highlight/src/lib.rs`), longest prefix wins, and a comment or string anywhere in the
+  scope stack governs what is inside it. No syntect theme is imported.
+- **Coverage: 75 syntaxes.** Plain Text, ASP, ActionScript, AppleScript, Batch File, C, C#, C++,
+  Clojure, CSS, D, Diff, Erlang, Go, Graphviz, Groovy, Haskell, HTML, Java, JavaDoc, JSON,
+  JavaScript, LaTeX, TeX, BibTeX, Lisp, Lua, Makefile, Markdown, MATLAB, Objective-C(++), OCaml,
+  Pascal, Perl, PHP, Python, R, reStructuredText, Ruby (and Rails/Haml variants), Rust, Scala, SQL,
+  Bash/shell, Tcl, Textile, XML, YAML, and a few regex and output grammars. **Absent, and so drawn
+  plain for now: TOML, TypeScript, Dockerfile, PowerShell** (also Kotlin, Swift, JSX/TSX, Vue).
+  Vendoring more is ticketed separately.
+- **Dropped syntaxes: none found.** `every_bundled_syntax_parses` (`#[ignore]`) runs ten sample
+  lines through all 75 and reports 0 that error under `fancy-regex`. Syntax regexes compile lazily,
+  so this proves the contexts those lines reach, not every rule.
+- **Cost, release build** (`highlight_cost` in the highlight crate and `fence_cost.rs` in app;
+  ~80-byte lines): cold set load plus first parse **54 ms**; **about 0.22 ms a line, 4 us a byte** —
+  30 lines 6.9 ms, 300 lines 74 ms, 3,000 lines 655 ms; one 3,000-character line 121 ms. Through the
+  whole run builder (which also parses the document), 30 / 300 / 3,000 lines took 12.6 / 76 / 820
+  ms, and a one-character edit in a 300-line fence p50 169 ms, p99 303 ms (n=200).
+- **Size cap, because of those numbers: a fence body over 1,536 bytes, or any line over 512
+  bytes, draws plain.** That is roughly 7 ms against an 8.3 ms p99, on a layout-cache miss only.
+  It means a fence of more than ~25 lines is not highlighted, which is a real limit: `fancy-regex`
+  is slow, and highlighting stays on the UI thread (no worker, per `AGENTS.md`). Lifting the cap
+  needs a number from a faster backend or a ticket for background highlighting.
+- **Error handling.** A line `parse_line` refuses ends highlighting there and the rest draws plain.
+  No test input reaches that arm — no sample made `fancy-regex` error — so it is unverified by test;
+  a mutation that unwraps it survived.

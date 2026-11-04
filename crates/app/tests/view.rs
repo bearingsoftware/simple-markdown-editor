@@ -208,7 +208,8 @@ fn a_fenced_block_stays_monospaced_across_its_lines() {
     let doc = Document::from(source);
     let runs = build_runs(&doc, &Theme::default(), source);
 
-    for needle in ["fn one() {}", "fn two() {}"] {
+    // Highlighted (MDEDIT-190), so a line is several runs; the function names are one each.
+    for needle in ["one", "two"] {
         let line = runs
             .iter()
             .find(|r| r.text.contains(needle))

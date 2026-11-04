@@ -56,6 +56,9 @@ wildcards = "deny"              # no `foo = "*"` — unreproducible builds
 deny = [
     { crate = "openssl", reason = "prefer rustls — avoids a system OpenSSL dependency and its CVE cadence" },
     { crate = "openssl-sys", reason = "prefer rustls" },
+    # MDEDIT-190: a fence's contents are untrusted file contents and Oniguruma is C. syntect is built on fancy-regex.
+    { crate = "onig", reason = "C regex engine at a file-parsing trust boundary (MDEDIT-190)" },
+    { crate = "onig_sys", reason = "C regex engine at a file-parsing trust boundary (MDEDIT-190)" },
 ]
 # MDEDIT-148: these features are the `unsafe` SIMD; without them zune-jpeg forbids `unsafe_code`.
 features = [{ crate = "zune-jpeg", deny = ["x86", "neon", "portable_simd"] }]

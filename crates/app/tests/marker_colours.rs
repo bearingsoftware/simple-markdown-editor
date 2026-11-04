@@ -284,3 +284,58 @@ fn the_new_markers_are_concealed_in_preview() {
         .collect();
     assert_eq!(text, "text .\n\nthe note\n");
 }
+
+/// MDEDIT-190: a fence's info string chooses its language and the code draws in the theme's own
+/// token colours, still monospaced.
+#[test]
+fn a_rust_fence_is_highlighted_from_its_info_string() {
+    let theme = Theme::default();
+    let runs = drawn_in("```rust\nfn main() {}\n```\n", Mode::Preview);
+
+    let keyword = run_of(&runs, "fn");
+    assert_eq!(keyword.colour, theme.token_key);
+    assert_eq!(keyword.style.family, FontFamily::Mono);
+    let joined: String = runs.iter().map(|run| run.text.as_str()).collect();
+    assert!(
+        joined.contains("fn main() {}\n"),
+        "every byte is still drawn: {joined:?}"
+    );
+}
+
+#[test]
+fn a_fence_with_no_info_string_draws_as_before() {
+    let theme = Theme::default();
+    let fenced = drawn_in("```\nfn main() {}\n```\n", Mode::Preview);
+    let block = run_of(&fenced, "fn main() {}\n");
+    assert_eq!(block.colour, theme.token_string);
+    assert_eq!(block.style.family, FontFamily::Mono);
+
+    let json = drawn_in("```\n{\"a\": 1}\n```\n", Mode::Preview);
+    assert_eq!(run_of(&json, "{\"a\": 1}\n").colour, theme.token_string);
+}
+
+#[test]
+fn an_indented_code_block_is_not_highlighted() {
+    let theme = Theme::default();
+    let runs = drawn_in("para\n\n    fn main() {}\n", Mode::Preview);
+    assert!(
+        runs.iter().all(|run| run.colour != theme.token_key),
+        "{:?}",
+        runs.iter()
+            .map(|run| (&run.text, run.colour))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn an_unterminated_and_a_tilde_fence_are_highlighted_too() {
+    let theme = Theme::default();
+    for source in [
+        "```rust\nfn main() {}\n",
+        "~~~rust\nfn main() {}\n~~~\n",
+        "  ```rust\nfn main() {}\n  ```\n",
+    ] {
+        let runs = drawn_in(source, Mode::Preview);
+        assert_eq!(run_of(&runs, "fn").colour, theme.token_key, "{source:?}");
+    }
+}

@@ -30,6 +30,7 @@ mdedit-yaml.workspace = true
 mdedit-xml.workspace = true
 mdedit-toml.workspace = true
 mdedit-ini.workspace = true
+mdedit-highlight.workspace = true
 mdedit-language.workspace = true
 mdedit-markers.workspace = true
 mdedit-menu-win.workspace = true
