@@ -581,6 +581,7 @@ pub fn build_runs_highlighted<'t>(
 }
 
 /// A fenced code block's body and the language its opening line names.
+#[derive(Debug)]
 pub struct Fence<'t> {
     /// The bytes between the fence lines.
     pub body: ByteSpan,
@@ -604,9 +605,11 @@ pub fn fence_of<'t>(block: &Block, text: &'t str) -> Option<Fence<'t>> {
     let fence_char = opener.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let run = opener.chars().take_while(|c| *c == fence_char).count();
     // An indented code block's range starts after its indent, so its first line can look like a fence.
-    let opened = block.span().start().get();
-    let line_start = text[..opened].rfind(char::from(10)).map_or(0, |at| at + 1);
-    let before = &text[line_start..opened];
+    let fence_at = block.span().start().get();
+    let line_start = text[..fence_at]
+        .rfind(char::from(10))
+        .map_or(0, |at| at + 1);
+    let before = &text[line_start..fence_at];
     if before.chars().any(|c| c != ' ') || before.len() + indent > 3 || run < 3 {
         return None;
     }

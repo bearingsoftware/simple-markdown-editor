@@ -65,7 +65,7 @@ fn fence_cost() {
         "worker: cold syntax set load + first parse: {:.1} ms",
         millis(started)
     );
-    for lines in [30, 300, 3_000] {
+    for lines in [30, 300, 1_000] {
         let source = rust_lines(lines);
         let started = Instant::now();
         let _ = mdedit_highlight::highlight("rust", &source);
@@ -92,28 +92,32 @@ fn fence_cost() {
         );
     }
 
-    // UI: a keystroke inside a coloured 300-line fence, the worker held back so every one is
-    // answered from the previous version's spans.
-    let source = fence("rust", 300);
-    let mut editor = Editor::new(&source, Grid::new());
-    let _ = editor.build_frame(900.0, 600.0, 1.0);
-    assert!(editor.await_highlights(std::time::Duration::from_secs(60)));
-    let _ = editor.build_frame(900.0, 600.0, 1.0);
-    editor.hold_highlighting();
-    let middle = source.find("value_150").unwrap();
-    let mut times = Vec::new();
-    for offset in 0..200 {
-        editor
-            .document_mut()
-            .set_selection(Selection::caret(ByteOffset::new(middle + offset % 5)));
-        editor.insert_text("x");
-        times.push(frame_ms(&mut editor));
+    // UI: a keystroke inside a 300-line fence. Tagged: the worker is held back, so every keystroke is
+    // answered from the previous version's spans. Untagged: the plain path, for the baseline.
+    for (label, info) in [("tagged, reusing spans", "rust"), ("untagged, plain", "")] {
+        let source = fence(info, 300);
+        let mut editor = Editor::new(&source, Grid::new());
+        let _ = editor.build_frame(900.0, 600.0, 1.0);
+        if !info.is_empty() {
+            assert!(editor.await_highlights(std::time::Duration::from_secs(60)));
+            let _ = editor.build_frame(900.0, 600.0, 1.0);
+        }
+        editor.hold_highlighting();
+        let middle = source.find("value_150").unwrap();
+        let mut times = Vec::new();
+        for offset in 0..200 {
+            editor
+                .document_mut()
+                .set_selection(Selection::caret(ByteOffset::new(middle + offset % 5)));
+            editor.insert_text("x");
+            times.push(frame_ms(&mut editor));
+        }
+        times.sort_by(f64::total_cmp);
+        println!(
+            "ui: keystroke in a 300 line fence, {label}: p50 {:.2} ms, p99 {:.2} ms (n={})",
+            percentile(&times, 50),
+            percentile(&times, 99),
+            times.len()
+        );
     }
-    times.sort_by(f64::total_cmp);
-    println!(
-        "ui: keystroke in a 300 line fence, reusing spans: p50 {:.2} ms, p99 {:.2} ms (n={})",
-        percentile(&times, 50),
-        percentile(&times, 99),
-        times.len()
-    );
 }

@@ -10631,7 +10631,21 @@ impl<T: TextLayout> Editor<T> {
         match self.highlights.get(&hash).cloned() {
             Some(Highlight::Plain) => None,
             Some(Highlight::Ready(spans)) => {
-                self.remember_answered(start, hash, &info, code, &spans);
+                if self
+                    .answered_fences
+                    .get(&start)
+                    .is_none_or(|known| known.hash != hash)
+                {
+                    self.remember_answered(
+                        start,
+                        AnsweredFence {
+                            hash,
+                            info: info.clone(),
+                            body: code.to_owned(),
+                            spans: Spans::clone(&spans),
+                        },
+                    );
+                }
                 Some(ChunkFence {
                     hash,
                     body,
@@ -10661,33 +10675,11 @@ impl<T: TextLayout> Editor<T> {
         }
     }
 
-    fn remember_answered(
-        &mut self,
-        start: usize,
-        hash: u64,
-        info: &str,
-        code: &str,
-        spans: &Spans,
-    ) {
-        if self
-            .answered_fences
-            .get(&start)
-            .is_some_and(|known| known.hash == hash)
-        {
-            return;
-        }
+    fn remember_answered(&mut self, start: usize, answered: AnsweredFence) {
         if self.answered_fences.len() >= MAX_ANSWERED_FENCES {
             self.answered_fences.clear();
         }
-        self.answered_fences.insert(
-            start,
-            AnsweredFence {
-                hash,
-                info: info.to_owned(),
-                body: code.to_owned(),
-                spans: Spans::clone(spans),
-            },
-        );
+        self.answered_fences.insert(start, answered);
     }
 
     /// Asks the worker to colour chunk `index`'s fence, once per distinct text (MDEDIT-190).

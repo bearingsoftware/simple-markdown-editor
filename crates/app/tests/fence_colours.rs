@@ -133,3 +133,22 @@ fn an_edit_to_the_info_string_does_not_reuse_the_old_colours() {
         "the old spans were reused under a new info string"
     );
 }
+
+/// What the key is for: the colours are read at draw time, but the layout holds the glyphs, and a
+/// Literal draws italic. An arriving answer must rebuild the fence's chunk — and only that chunk.
+#[test]
+fn an_arriving_answer_rebuilds_its_own_chunk_and_no_other() {
+    let mut editor = editor_on("para one\n\n```rust\nlet a = true;\n```\n\npara two\n");
+    editor.hold_highlighting();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let before = editor.text_backend().layouts();
+
+    editor.start_highlighting();
+    answered(&mut editor);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.text_backend().layouts(),
+        before + 1,
+        "the layout cache served the plain layout, or rebuilt more than the fence"
+    );
+}

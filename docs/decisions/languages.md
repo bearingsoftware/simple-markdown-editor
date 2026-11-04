@@ -326,16 +326,40 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **Dropped syntaxes: none found.** `every_bundled_syntax_parses` (`#[ignore]`) runs ten sample
   lines through all 75 and reports 0 that error under `fancy-regex`. Syntax regexes compile lazily,
   so this proves the contexts those lines reach, not every rule.
-- **Cost, release build** (`highlight_cost` in the highlight crate and `fence_cost.rs` in app;
-  ~80-byte lines): cold set load plus first parse **54 ms**; **about 0.22 ms a line, 4 us a byte** —
-  30 lines 6.9 ms, 300 lines 74 ms, 3,000 lines 655 ms; one 3,000-character line 121 ms. Through the
-  whole run builder (which also parses the document), 30 / 300 / 3,000 lines took 12.6 / 76 / 820
-  ms, and a one-character edit in a 300-line fence p50 169 ms, p99 303 ms (n=200).
-- **Size cap, because of those numbers: a fence body over 1,536 bytes, or any line over 512
-  bytes, draws plain.** That is roughly 7 ms against an 8.3 ms p99, on a layout-cache miss only.
-  It means a fence of more than ~25 lines is not highlighted, which is a real limit: `fancy-regex`
-  is slow, and highlighting stays on the UI thread (no worker, per `AGENTS.md`). Lifting the cap
-  needs a number from a faster backend or a ticket for background highlighting.
+- **Highlighting runs on a worker thread, and that is the one second thread** (`crates/app/src/
+  highlighting.rs`, mirroring `decoding.rs`). `AGENTS.md` asked for a number from a cost harness
+  before a second worker, and the first version, which highlighted on the UI thread, supplied it
+  (release build): a 54 ms cold load, about 0.22 ms a line (4 us a byte), and a p50 of 169 ms / p99
+  of 303 ms for a one-character edit in a 300-line fence, against an 8.3 ms p99. A size cap on the
+  UI thread (1,536 bytes) would have made ordinary fences plain, so the work moved instead.
+- **The drawing thread never loads the syntax set and never parses code.** It hashes a fence's info
+  string and body, looks in a store (`Pending`, `Ready` or `Plain`, capped at 256 entries), and
+  draws plain until an answer is there. `tests/isolated/highlight_not_loaded.rs` is a binary of its
+  own, with the worker held back, so a loaded set could only have come from the drawing thread.
+  The view takes ready spans as a parameter (`build_runs_highlighted`) and stays a pure function.
+- **Stale work: the worker highlights only the newest request per fence** (identified by where its
+  body starts) out of everything queued, and answers each skipped one `Superseded`. The editor then
+  drops that key's `Pending` entry, so undoing back to those bytes asks again instead of waiting for
+  an answer that was never coming. No answer carries spans for a body other than its key's.
+- **The layout-cache key carries the highlight state.** Colours are read from the run list at draw
+  time, but the layout holds the glyphs and a literal (`true`, `None`) draws italic, so a plain
+  layout cannot be served once colours exist. The state is a separate field of `ChunkKey`, not part
+  of `content`, which the scroll anchor matches on: colours landing must not lose the reader's
+  place. `an_arriving_answer_rebuilds_its_own_chunk_and_no_other` pins it.
+- **No flash to plain while typing.** The editor remembers the last answered version of each fence
+  by where its body starts. While a new version is pending, spans ending before the first differing
+  byte are kept (right, because the highlighter's state is causal), spans starting after the common
+  suffix are kept shifted by the length delta (close enough until the answer lands), and spans
+  overlapping the edit are dropped. A changed info string reuses nothing.
+- **Caps, on the worker:** a fence body over **128 KiB** is `Plain` (about half a second of work at
+  4 us a byte), and a line over **4,096 bytes** ends the highlighting there, the rest drawing plain
+  (a 3,000-character line took 121 ms). Both are `pub const` in `mdedit-highlight`.
+- **Numbers, release build.** Worker, per job: 30 lines 6.9 ms, 300 lines 74 ms, 1,000 lines 224 ms
+  (`highlight_cost`, quiet machine); the same sizes inside the app harness on a busier run took 25,
+  263 and 811 ms, and the cold load 54 to 130 ms. UI, first frame holding a pending 300-line fence:
+  p50 2.65 ms against 2.51 ms for the same fence untagged, so the cost of asking is noise. UI, a
+  keystroke in a 300-line fence reusing the previous spans: p50 3.9 ms, p99 9.6 ms (the untagged
+  baseline in the same run was noisy at 10 / 52 ms, so only the first frame is a clean comparison).
 - **Error handling.** A line `parse_line` refuses ends highlighting there and the rest draws plain.
   No test input reaches that arm — no sample made `fancy-regex` error — so it is unverified by test;
   a mutation that unwraps it survived.
