@@ -152,3 +152,140 @@ fn an_arriving_answer_rebuilds_its_own_chunk_and_no_other() {
         "the layout cache served the plain layout, or rebuilt more than the fence"
     );
 }
+
+/// Waits until the worker has answered everything asked of it, a few answers at most.
+fn until_nothing_is_pending(editor: &mut Editor<Grid>) {
+    for _ in 0..8 {
+        if editor.highlight_counts().1 == 0 {
+            return;
+        }
+        let _ = editor.await_highlights(PATIENCE);
+    }
+}
+
+/// A token below the edit keeps its colour at its shifted offset while the answer is pending: the
+/// suffix half of the reuse, which the prefix test does not touch.
+#[test]
+fn a_token_below_an_edit_keeps_its_colour_at_the_shifted_offset() {
+    let mut editor = editor_on(SOURCE);
+    answered(&mut editor);
+    assert!(keyword_quads(&mut editor) > 0);
+
+    editor.hold_highlighting();
+    let at = SOURCE.find("fn one").unwrap();
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(at)));
+    editor.insert_text("xyz ");
+    let reused = keyword_quads(&mut editor);
+
+    let mut baseline = editor_on(&SOURCE.replacen("fn one", "xyz fn one", 1));
+    baseline.hold_highlighting();
+    let plain = keyword_quads(&mut baseline);
+    assert!(
+        reused >= plain + 4,
+        "{reused} keyword quads with shifted colours, {plain} with none: both `fn`s should keep theirs"
+    );
+}
+
+/// Two requests for one fence queued before the worker runs: only the newest is highlighted, the
+/// older is answered `Superseded` and forgotten, and going back to the older bytes asks again.
+#[test]
+fn only_the_newest_request_for_a_fence_is_highlighted_and_the_older_is_forgotten() {
+    let mut editor = editor_on(SOURCE);
+    editor.hold_highlighting();
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    type_after(&mut editor, "fn two() {}", " ");
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.highlight_counts(),
+        (0, 2, 0),
+        "both versions are asked for"
+    );
+
+    editor.start_highlighting();
+    until_nothing_is_pending(&mut editor);
+    assert_eq!(
+        editor.highlight_counts(),
+        (1, 0, 0),
+        "the older request should have been superseded, not highlighted"
+    );
+
+    assert!(editor.document_mut().undo());
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert_eq!(
+        editor.highlight_counts(),
+        (1, 1, 0),
+        "going back to the older bytes should ask again"
+    );
+}
+
+/// More tagged fences than the table of remembered versions holds: reuse still works for one.
+#[test]
+fn reuse_still_works_in_a_document_of_a_hundred_fences() {
+    let source = "```rust\nfn f() {}\n```\n\n".repeat(100);
+    let mut editor = editor_on(&source);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    until_nothing_is_pending(&mut editor);
+    assert!(keyword_quads(&mut editor) > 0);
+
+    editor.hold_highlighting();
+    let at = source.find("fn f() {}").unwrap() + "fn f() {}".len();
+    editor
+        .document_mut()
+        .set_selection(Selection::caret(ByteOffset::new(at)));
+    editor.insert_text(" ");
+    let reused = keyword_quads(&mut editor);
+
+    let mut edited = source.clone();
+    edited.insert(at, ' ');
+    let mut baseline = editor_on(&edited);
+    baseline.hold_highlighting();
+    assert!(reused > keyword_quads(&mut baseline));
+}
+
+fn boom(_: &str, _: &str) -> Option<Vec<(mdedit_offsets::ByteSpan, mdedit_language::Token)>> {
+    panic!("a job that panics, on purpose");
+}
+
+/// A job that panics is answered plain, and the worker lives to answer the next fence: a dead
+/// worker would leave every later fence plain for the session.
+#[test]
+fn a_panicking_job_is_answered_plain_and_the_worker_survives() {
+    let mut editor = editor_on("```rust\nfn a() {}\n```\n\n```rust\nfn b() {}\n```\n");
+    editor.use_highlight_job(boom);
+    let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    until_nothing_is_pending(&mut editor);
+    assert_eq!(
+        editor.highlight_counts(),
+        (0, 0, 2),
+        "both fences should be answered plain, the second by a worker that outlived the first"
+    );
+}
+
+/// The thread that draws never loads the syntax set (MDEDIT-190).
+///
+/// **Needs a process of its own**, which nextest gives every test and CI runs; under plain
+/// `cargo test` another test in this binary may have loaded the set first, and this panics rather
+/// than skip, because a skipped check proves nothing. The worker is held back, so a loaded set
+/// could only have come from the drawing thread.
+#[test]
+fn laying_a_frame_out_with_a_pending_fence_never_loads_the_syntax_set() {
+    assert!(
+        !mdedit_highlight::is_loaded(),
+        "the syntax set is already loaded: this test must run under nextest, one process per test"
+    );
+
+    let mut editor = editor_on("```rust\nfn main() {}\n```\n");
+    editor.hold_highlighting();
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+    assert!(!quads.is_empty());
+    assert!(
+        !mdedit_highlight::is_loaded(),
+        "the drawing thread loaded the syntax set"
+    );
+
+    editor.start_highlighting();
+    assert!(editor.await_highlights(PATIENCE));
+    assert!(mdedit_highlight::is_loaded(), "the worker never loaded it");
+}

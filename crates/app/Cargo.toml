@@ -20,11 +20,6 @@ path = "src/main.rs"
 name = "app"
 path = "tests/main.rs"
 
-# Its own binary, so nothing else in the process can have loaded the syntax set first (MDEDIT-190).
-[[test]]
-name = "highlight_isolated"
-path = "tests/isolated/highlight_not_loaded.rs"
-
 [dependencies]
 mdedit-document.workspace = true
 mdedit-image.workspace = true

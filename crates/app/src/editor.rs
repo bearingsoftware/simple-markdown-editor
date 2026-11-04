@@ -10630,60 +10630,72 @@ impl<T: TextLayout> Editor<T> {
         let start = body.start().get();
         match self.highlights.get(&hash).cloned() {
             Some(Highlight::Plain) => None,
-            Some(Highlight::Ready(spans)) => {
-                if self
-                    .answered_fences
-                    .get(&start)
-                    .is_none_or(|known| known.hash != hash)
-                {
-                    self.remember_answered(
-                        start,
-                        AnsweredFence {
-                            hash,
-                            info: info.clone(),
-                            body: code.to_owned(),
-                            spans: Spans::clone(&spans),
-                        },
-                    );
-                }
-                Some(ChunkFence {
-                    hash,
-                    body,
-                    info,
-                    state: FenceState::Ready,
-                    spans: Some(spans),
-                })
-            }
+            Some(Highlight::Ready(spans)) => Some(ChunkFence {
+                hash,
+                body,
+                info,
+                state: FenceState::Ready,
+                source: 0,
+                spans: Some(spans),
+            }),
             Some(Highlight::Pending) | None => {
-                let reused = self
-                    .answered_fences
-                    .get(&start)
-                    .and_then(|previous| reuse_highlights(previous, &info, code));
-                let state = if reused.is_some() {
-                    FenceState::Reused
-                } else {
-                    FenceState::Unasked
+                let previous = self.answered_fences.get(&start);
+                let reused = previous.and_then(|previous| reuse_highlights(previous, &info, code));
+                let (state, source) = match (&reused, previous) {
+                    (Some(_), Some(previous)) => (FenceState::Reused, previous.hash),
+                    _ => (FenceState::Unasked, 0),
                 };
                 Some(ChunkFence {
                     hash,
                     body,
                     info,
                     state,
+                    source,
                     spans: reused,
                 })
             }
         }
     }
 
-    fn remember_answered(&mut self, start: usize, answered: AnsweredFence) {
-        if self.answered_fences.len() >= MAX_ANSWERED_FENCES {
-            self.answered_fences.clear();
+    /// Keeps the last answered version of a fence that is being laid out, to colour the next while
+    /// its answer is pending. **Only for fences laid out**, which is what is visible or holds the
+    /// caret: remembering every fence in a large document each frame would copy their bodies every
+    /// frame. A body already remembered is not copied again, and a full table evicts one entry.
+    fn remember_answered(&mut self, index: usize, frame: &Frame) {
+        let Some(fence) = frame.fences[index].as_ref() else {
+            return;
+        };
+        let (Some(spans), FenceState::Ready) = (fence.spans.as_ref(), fence.state) else {
+            return;
+        };
+        let start = fence.body.start().get();
+        if self
+            .answered_fences
+            .get(&start)
+            .is_some_and(|known| known.hash == fence.hash)
+        {
+            return;
         }
-        self.answered_fences.insert(start, answered);
+        if self.answered_fences.len() >= MAX_ANSWERED_FENCES
+            && !self.answered_fences.contains_key(&start)
+            && let Some(evicted) = self.answered_fences.keys().next().copied()
+        {
+            self.answered_fences.remove(&evicted);
+        }
+        self.answered_fences.insert(
+            start,
+            AnsweredFence {
+                hash: fence.hash,
+                info: fence.info.clone(),
+                body: fence.body.slice(&frame.text).to_owned(),
+                spans: Spans::clone(spans),
+            },
+        );
     }
 
     /// Asks the worker to colour chunk `index`'s fence, once per distinct text (MDEDIT-190).
     fn request_highlight(&mut self, index: usize, frame: &Frame) {
+        self.remember_answered(index, frame);
         let Some(fence) = frame.fences[index].as_ref() else {
             return;
         };
@@ -10707,7 +10719,7 @@ impl<T: TextLayout> Editor<T> {
     fn highlighter(&mut self) -> &Highlighter {
         let wake = self.menu_proxy.clone();
         self.highlighter
-            .get_or_insert_with(|| Highlighter::spawn(wake))
+            .get_or_insert_with(|| Highlighter::spawn(wake, mdedit_highlight::highlight))
     }
 
     /// Takes whatever the highlight worker has finished, without waiting (MDEDIT-190).
@@ -10761,7 +10773,7 @@ impl<T: TextLayout> Editor<T> {
     /// So a frame can be laid out with colours genuinely pending, and so a test can prove the thread
     /// that draws never loads a syntax set itself.
     pub fn hold_highlighting(&mut self) {
-        self.highlighter = Some(Highlighter::unstarted(None));
+        self.highlighter = Some(Highlighter::unstarted(None, mdedit_highlight::highlight));
     }
 
     /// For a test: starts the worker [`Self::hold_highlighting`] was holding back.
@@ -10769,6 +10781,30 @@ impl<T: TextLayout> Editor<T> {
         if let Some(highlighter) = self.highlighter.as_mut() {
             highlighter.start();
         }
+    }
+
+    /// For a test: runs the worker with `job` in place of the real highlighter, started at once.
+    ///
+    /// So a test can make a job panic, which the real one never does on purpose.
+    pub fn use_highlight_job(
+        &mut self,
+        job: fn(&str, &str) -> Option<Vec<(ByteSpan, mdedit_language::Token)>>,
+    ) {
+        self.highlighter = Some(Highlighter::spawn(None, job));
+    }
+
+    /// For a test: how many fence texts are `(ready, pending, plain)` in the store.
+    #[must_use]
+    pub fn highlight_counts(&self) -> (usize, usize, usize) {
+        let mut counts = (0, 0, 0);
+        for state in self.highlights.values() {
+            match state {
+                Highlight::Ready(_) => counts.0 += 1,
+                Highlight::Pending => counts.1 += 1,
+                Highlight::Plain => counts.2 += 1,
+            }
+        }
+        counts
     }
 
     /// Takes whatever the decode worker has finished, without waiting (MDEDIT-156).
@@ -11625,6 +11661,9 @@ struct ChunkFence {
     body: ByteSpan,
     info: String,
     state: FenceState,
+    /// For `Reused`: the hash of the version whose spans these were derived from, so two different
+    /// previous versions never share a key; 0 otherwise.
+    source: u64,
     /// Relative to `body`: the answer's, or the previous version's where the edit left it alone.
     spans: Option<Spans>,
 }
@@ -11647,7 +11686,7 @@ impl ChunkFence {
             FenceState::Ready => 1u8,
         };
         let mut hasher = DefaultHasher::new();
-        (self.hash, tag).hash(&mut hasher);
+        (self.hash, tag, self.source).hash(&mut hasher);
         hasher.finish()
     }
 }

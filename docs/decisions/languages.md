@@ -312,7 +312,7 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **The language comes from the info string and nothing else.** First word, lower-cased. No info
   string means no highlighting, and nothing reads the code to guess; a JSON body under ```` ```text ````
   is plain text. The set loads lazily, on the first fence that names a language; `is_loaded()`
-  exists so a test can prove it (`tests/lazy.rs`, a binary of its own).
+  exists so a test can prove it (`crates/highlight/tests/lazy.rs`, a binary of its own: that is cheap in the highlight crate).
 - **Colours are the existing token colours**, by a scope-prefix table in one place
   (`crates/highlight/src/lib.rs`), longest prefix wins, and a comment or string anywhere in the
   scope stack governs what is inside it. No syntect theme is imported.
@@ -334,8 +334,11 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   UI thread (1,536 bytes) would have made ordinary fences plain, so the work moved instead.
 - **The drawing thread never loads the syntax set and never parses code.** It hashes a fence's info
   string and body, looks in a store (`Pending`, `Ready` or `Plain`, capped at 256 entries), and
-  draws plain until an answer is there. `tests/isolated/highlight_not_loaded.rs` is a binary of its
-  own, with the worker held back, so a loaded set could only have come from the drawing thread.
+  draws plain until an answer is there. The test for that is in `crates/app/tests/fence_colours.rs`
+  (not a binary of its own, which would cost a full app link, MDEDIT-182): it needs a process to
+  itself, which nextest gives every test and CI runs, and it panics rather than skips if the set is
+  already loaded. The worker is held back, so a loaded set could only have come from the drawing
+  thread.
   The view takes ready spans as a parameter (`build_runs_highlighted`) and stays a pure function.
 - **Stale work: the worker highlights only the newest request per fence** (identified by where its
   body starts) out of everything queued, and answers each skipped one `Superseded`. The editor then
@@ -363,3 +366,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **Error handling.** A line `parse_line` refuses ends highlighting there and the rest draws plain.
   No test input reaches that arm — no sample made `fancy-regex` error — so it is unverified by test;
   a mutation that unwraps it survived.
+- **Remembered versions, and the worker's survival.** The last answered version of a fence is kept
+  only for fences that are laid out (visible, or holding the caret), at most 64, evicting one when
+  full and never copying a body twice. A reused layout's key includes the hash of the version its
+  spans came from, so two previous versions cannot share one. The worker runs each job under
+  `catch_unwind` (the workspace unwinds) and answers a panicking fence plain, so one bad fence does
+  not leave every later one plain; the test uses a stand-in job that panics.

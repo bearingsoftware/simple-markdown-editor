@@ -75,13 +75,28 @@ pub(crate) enum Answer {
     Superseded(u64),
 }
 
+/// What colours a fence: `mdedit_highlight::highlight`, or a stand-in in a test.
+pub(crate) type Job = fn(&str, &str) -> Option<Vec<(ByteSpan, Token)>>;
+
 struct Worker {
+    job: Job,
     inbox: Receiver<Request>,
     outbox: Sender<Answer>,
     wake: Option<EventLoopProxy<Wake>>,
 }
 
 impl Worker {
+    /// Runs one job, and **survives it panicking**: the fence is answered plain and the thread lives
+    /// on, because a dead worker would leave every later fence plain for the rest of the session.
+    /// The workspace unwinds (`panic = "abort"` is deliberately not set), so this can be caught.
+    fn run_job(&self, request: &Request) -> Option<Vec<(ByteSpan, Token)>> {
+        let job = self.job;
+        std::panic::catch_unwind(|| job(&request.info, &request.body)).unwrap_or_else(|_| {
+            crate::log_error!("the highlighter panicked on a fence; drawing it plain");
+            None
+        })
+    }
+
     fn run(self) {
         while let Ok(first) = self.inbox.recv() {
             let mut batch = vec![first];
@@ -93,10 +108,7 @@ impl Worker {
             }
             for (index, request) in batch.into_iter().enumerate() {
                 let answer = if newest.get(&request.fence) == Some(&index) {
-                    Answer::Spans(
-                        request.key,
-                        mdedit_highlight::highlight(&request.info, &request.body),
-                    )
+                    Answer::Spans(request.key, self.run_job(&request))
                 } else {
                     Answer::Superseded(request.key)
                 };
@@ -135,7 +147,7 @@ impl std::fmt::Debug for Worker {
 
 impl Highlighter {
     /// Builds the channels and the worker without starting it.
-    pub(crate) fn unstarted(wake: Option<EventLoopProxy<Wake>>) -> Self {
+    pub(crate) fn unstarted(wake: Option<EventLoopProxy<Wake>>, job: Job) -> Self {
         let (requests, inbox) = mpsc::channel();
         let (outbox, answers) = mpsc::channel();
         Self {
@@ -143,6 +155,7 @@ impl Highlighter {
             answers,
             held: Vec::new(),
             unstarted: Some(Worker {
+                job,
                 inbox,
                 outbox,
                 wake,
@@ -151,8 +164,8 @@ impl Highlighter {
     }
 
     /// Builds the channels and starts the worker.
-    pub(crate) fn spawn(wake: Option<EventLoopProxy<Wake>>) -> Self {
-        let mut highlighter = Self::unstarted(wake);
+    pub(crate) fn spawn(wake: Option<EventLoopProxy<Wake>>, job: Job) -> Self {
+        let mut highlighter = Self::unstarted(wake, job);
         highlighter.start();
         highlighter
     }
