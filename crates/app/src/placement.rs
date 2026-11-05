@@ -227,6 +227,75 @@ mod tests {
         let saved = at(-1800, 100, 900.0, 700.0);
         assert_eq!(restorable(&saved, &[left, MAIN]), Some(saved));
     }
+
+    #[test]
+    fn title_strip_is_measured_in_physical_pixels_at_scale_two() {
+        let hidpi = monitor(0, 0, 3840, 2160, 2.0);
+        assert!(restorable(&at(100, 2128, 900.0, 700.0), &[hidpi]).is_some());
+        assert_eq!(restorable(&at(100, 2129, 900.0, 700.0), &[hidpi]), None);
+    }
+
+    #[test]
+    fn title_strip_height_is_scaled_at_scale_two() {
+        let hidpi = monitor(0, 0, 3840, 2160, 2.0);
+        assert!(restorable(&at(2840, 1000, 900.0, 700.0), &[hidpi]).is_some());
+    }
+
+    #[test]
+    fn the_strip_area_is_scaled_on_both_axes() {
+        let hidpi = monitor(0, 0, 3840, 2160, 2.0);
+        assert_eq!(restorable(&at(2940, 2128, 900.0, 700.0), &[hidpi]), None);
+    }
+
+    #[test]
+    fn height_is_clamped_to_logical_height_at_a_fractional_scale() {
+        let fractional = monitor(0, 0, 1920, 1080, 1.5);
+        let kept = restorable(&at(100, 100, 900.0, 1000.0), &[fractional])
+            .unwrap_or_else(|| at(0, 0, 0.0, 0.0));
+        assert!((kept.width - 900.0).abs() < f64::EPSILON, "{kept:?}");
+        assert!((kept.height - 720.0).abs() < f64::EPSILON, "{kept:?}");
+    }
+
+    #[test]
+    fn a_monitor_whose_scale_is_not_a_positive_finite_number_is_ignored() {
+        let valid = monitor(1920, 0, 1280, 720, 1.0);
+        for scale in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let bad = monitor(0, 0, 1920, 1080, scale);
+            assert_eq!(
+                restorable(&at(5000, 5000, 900.0, 700.0), &[bad]),
+                None,
+                "{scale}"
+            );
+            let kept = restorable(&at(2000, 100, 9000.0, 9000.0), &[bad, valid])
+                .unwrap_or_else(|| at(0, 0, 0.0, 0.0));
+            assert!(
+                (kept.width - 1280.0).abs() < f64::EPSILON,
+                "{scale}: {kept:?}"
+            );
+            assert!(
+                (kept.height - 720.0).abs() < f64::EPSILON,
+                "{scale}: {kept:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_window_straddling_two_scales_is_clamped_to_the_monitor_holding_most_of_it() {
+        let logical_one = monitor(0, 0, 1920, 1080, 1.0);
+        let hidpi = monitor(1920, 0, 2560, 1440, 2.0);
+        let saved = at(800, 100, 9000.0, 9000.0);
+        for monitors in [[logical_one, hidpi], [hidpi, logical_one]] {
+            let kept = restorable(&saved, &monitors).unwrap_or_else(|| at(0, 0, 0.0, 0.0));
+            assert!(
+                (kept.width - 1280.0).abs() < f64::EPSILON,
+                "{monitors:?}: {kept:?}"
+            );
+            assert!(
+                (kept.height - 720.0).abs() < f64::EPSILON,
+                "{monitors:?}: {kept:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -278,5 +347,19 @@ mod opening_tests {
         let opened = opening(Some(&saved(5000, false)), &[MAIN]);
         assert_eq!(opened.rect, None);
         assert!(!opened.maximized);
+    }
+
+    #[test]
+    fn a_refused_maximised_placement_on_a_scaled_monitor_still_opens_maximised() {
+        let hidpi = MonitorRect {
+            x: 0,
+            y: 0,
+            width: 3840,
+            height: 2160,
+            scale: 2.0,
+        };
+        let opened = opening(Some(&saved(5000, true)), &[hidpi]);
+        assert_eq!(opened.rect, None);
+        assert!(opened.maximized);
     }
 }
