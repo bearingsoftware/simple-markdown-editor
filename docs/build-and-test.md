@@ -85,7 +85,12 @@ here. `rfd` needing GTK headers and a `cfg`-gated enum going dead both reached C
 A separate workflow and a **separate workspace** (MDEDIT-111). `fuzz/` holds a target per
 span-producing lexer: the marker locator against its tiling gate, JSON's validator, JSON's formatter
 against the `meaningful_bytes` oracle it shares with the property test, the YAML lexer, the XML one,
-the TOML one and the INI one.
+the TOML one and the INI one. `image_decode` feeds raw bytes to the picture decoder, the one parser
+whose input is a stranger's file before anything has checked it; it asserts the caps and the
+`width * height * 4` length, and a panic inside `png` or `zune-jpeg` shows as a crash here even though
+the editor contains it, for the reason MDEDIT-114 gives. `fence_highlight` splits its input at the
+first newline into an info string and a fence body, and asserts the spans `highlight` returns are
+sorted, non-empty and on character boundaries inside the body.
 
 Three of them assert more than tiling. **XML's** input is what a fuzzer is unusually well suited to
 producing — an unclosed tag, a stray angle bracket — which is exactly what that lexer exists to

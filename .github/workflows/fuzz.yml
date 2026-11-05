@@ -1,7 +1,7 @@
 name: Fuzz
 
 # MDEDIT-111. Linux only, and not as a compromise: `libfuzzer-sys` builds a C++ runtime and is
-# Unix-only, while the four crates fuzzed here are platform-agnostic by design. The one platform
+# Unix-only, while the crates fuzzed here are platform-agnostic by design. The one platform
 # thing it buys on the way is AddressSanitizer, which rustc does not support on Windows in 2026.
 #
 # **Everything runs GitHub-hosted** (MDEDIT-136): this repository is public, so a fork's pull request
@@ -71,6 +71,8 @@ jobs:
           - xml_analyze
           - toml_analyze
           - ini_analyze
+          - image_decode
+          - fence_highlight
     steps:
       - uses: actions/checkout@v7
 
