@@ -28,6 +28,8 @@ mdedit-toml = { path = "../crates/toml" }
 mdedit-xml = { path = "../crates/xml" }
 mdedit-ini = { path = "../crates/ini" }
 mdedit-yaml = { path = "../crates/yaml" }
+mdedit-image = { path = "../crates/image" }
+mdedit-highlight = { path = "../crates/highlight" }
 
 # Every target is a `[[bin]]` with the harness off, which is what `cargo fuzz` expects.
 
@@ -76,6 +78,20 @@ bench = false
 [[bin]]
 name = "ini_analyze"
 path = "fuzz_targets/ini_analyze.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_decode"
+path = "fuzz_targets/image_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fence_highlight"
+path = "fuzz_targets/fence_highlight.rs"
 test = false
 doc = false
 bench = false
