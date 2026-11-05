@@ -6,7 +6,6 @@
 ### Features
 
 * **MDEDIT-190:** colour fenced code on a worker thread ([f27f01f](https://github.com/bearingsoftware/simple-markdown-editor/commit/f27f01f2e8a250918521392136c8d3cd79fecedf))
-* **MDEDIT-190:** highlight fenced code by its info string ([8988241](https://github.com/bearingsoftware/simple-markdown-editor/commit/89882415bcfad264b7553cd1bb47fe62f498831f))
 * **MDEDIT-190:** highlight fenced code by its info string ([8626cca](https://github.com/bearingsoftware/simple-markdown-editor/commit/8626ccaed435e36519325cde05e223d902ec6372))
 
 
