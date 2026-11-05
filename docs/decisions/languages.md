@@ -139,7 +139,7 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **`.yaml` and `.yml` open highlighted too, from a hand-written lexer — and the parser decision is
   evidenced, so read `crates/yaml/src/lib.rs` before proposing a crate for it.** Measured 2026-07-31:
   `syntect` **failed MSRV 1.87** (`plist` and `time` need 1.88) — **that ground has gone, the floor
-  is 1.90 as of MDEDIT-189, and MDEDIT-190 is where syntect is reconsidered for fenced code**;
+  is 1.90 as of MDEDIT-189, and MDEDIT-190 adopted syntect for fenced code, on fancy-regex (see its entry below)**;
   `tree-sitter` passes but is a C
   parser at a file-parsing trust boundary, which is the CVE class this project's language choice
   exists to remove; and a real YAML parser (`saphyr-parser`) **failed 3 of 4** mid-edit documents —
@@ -288,3 +288,87 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   landed. Removing it surfaced one more thing: a `HardBreak`'s reported range covers whatever
   trailing whitespace preceded the newline, not just the two spaces or backslash that were written.
   That is the format being loose rather than the locator being wrong.
+
+## MDEDIT-190: fenced code is highlighted by `syntect`, chosen by the info string alone
+
+- **Backend: `syntect` 5.3.0 on `fancy-regex`, never Oniguruma.** A fence's contents are untrusted
+  file contents and Oniguruma is C — the same ground `tree-sitter` was rejected on above. `syntect`
+  is taken with `default-features = false` and `default-syntaxes` + `regex-fancy`; `deny.toml` bans
+  `onig` and `onig_sys` so a feature flip cannot bring them back (`cargo tree -i onig` finds
+  nothing). The MSRV objection recorded under YAML has gone with the 1.90 floor. The hand-written
+  lexers stay for whole-file languages: they guarantee their spans tile the source, which syntect's
+  styles do not.
+- **`two-face` was tried and dropped.** It bundles about 200 of `bat`'s syntaxes under mixed
+  licences, and no definition with an unknown or copyleft licence may ship inside `mdedit.exe`.
+  `syntect`'s own bundled set is the sublimehq/Packages dump.
+- **Licence of the bundled set, audited.** The `syntect` crate itself is MIT, but it ships no
+  licence file for the syntax dump. The 5.3.0 dump is built from `sublimehq/Packages` at commit
+  `fa6b8629c95041bf262d4c1dab95c456a0530122` (2017-11-13), and **all 74 `.sublime-syntax` files are
+  in it; none are excluded.** The top-level `LICENSE` is a permissive Sublime grant (copy, use,
+  modify, sell and distribute, as is). `Rust/LICENSE.txt` is MIT with no copyright line;
+  `YAML.sublime-syntax` carries an MIT header, (c) 2015 FichteFoll, and `C#.sublime-syntax` an MIT
+  header, (c) 2016 Sublime HQ. **No copyleft licence was found.** Shipping the notices is tracked
+  by MDEDIT-200. **The syntaxes date from 2017**, so a newer language feature may draw plain.
+- **The language comes from the info string and nothing else.** First word, lower-cased. No info
+  string means no highlighting, and nothing reads the code to guess; a JSON body under ```` ```text ````
+  is plain text. The set loads lazily, on the first fence that names a language; `is_loaded()`
+  exists so a test can prove it (`crates/highlight/tests/lazy.rs`, a binary of its own: that is cheap in the highlight crate).
+- **Colours are the existing token colours**, by a scope-prefix table in one place
+  (`crates/highlight/src/lib.rs`), longest prefix wins, and a comment or string anywhere in the
+  scope stack governs what is inside it. No syntect theme is imported.
+- **Coverage: 75 syntaxes.** Plain Text, ASP, ActionScript, AppleScript, Batch File, C, C#, C++,
+  Clojure, CSS, D, Diff, Erlang, Go, Graphviz, Groovy, Haskell, HTML, Java, JavaDoc, JSON,
+  JavaScript, LaTeX, TeX, BibTeX, Lisp, Lua, Makefile, Markdown, MATLAB, Objective-C(++), OCaml,
+  Pascal, Perl, PHP, Python, R, reStructuredText, Ruby (and Rails/Haml variants), Rust, Scala, SQL,
+  Bash/shell, Tcl, Textile, XML, YAML, and a few regex and output grammars. **Absent, and so drawn
+  plain for now: TOML, TypeScript, Dockerfile, PowerShell** (also Kotlin, Swift, JSX/TSX, Vue).
+  Vendoring more is ticketed separately.
+- **Dropped syntaxes: none found.** `every_bundled_syntax_parses` (`#[ignore]`) runs ten sample
+  lines through all 75 and reports 0 that error under `fancy-regex`. Syntax regexes compile lazily,
+  so this proves the contexts those lines reach, not every rule.
+- **Highlighting runs on a worker thread, and that is the one second thread** (`crates/app/src/
+  highlighting.rs`, mirroring `decoding.rs`). `AGENTS.md` asked for a number from a cost harness
+  before a second worker, and the first version, which highlighted on the UI thread, supplied it
+  (release build): a 54 ms cold load, about 0.22 ms a line (4 us a byte), and a p50 of 169 ms / p99
+  of 303 ms for a one-character edit in a 300-line fence, against an 8.3 ms p99. A size cap on the
+  UI thread (1,536 bytes) would have made ordinary fences plain, so the work moved instead.
+- **The drawing thread never loads the syntax set and never parses code.** It hashes a fence's info
+  string and body, looks in a store (`Pending`, `Ready` or `Plain`, capped at 256 entries), and
+  draws plain until an answer is there. The test for that is in `crates/app/tests/fence_colours.rs`
+  (not a binary of its own, which would cost a full app link, MDEDIT-182): it needs a process to
+  itself, which nextest gives every test and CI runs, and it panics rather than skips if the set is
+  already loaded. The worker is held back, so a loaded set could only have come from the drawing
+  thread.
+  The view takes ready spans as a parameter (`build_runs_highlighted`) and stays a pure function.
+- **Stale work: the worker highlights only the newest request per fence** (identified by where its
+  body starts) out of everything queued, and answers each skipped one `Superseded`. The editor then
+  drops that key's `Pending` entry, so undoing back to those bytes asks again instead of waiting for
+  an answer that was never coming. No answer carries spans for a body other than its key's.
+- **The layout-cache key carries the highlight state.** Colours are read from the run list at draw
+  time, but the layout holds the glyphs and a literal (`true`, `None`) draws italic, so a plain
+  layout cannot be served once colours exist. The state is a separate field of `ChunkKey`, not part
+  of `content`, which the scroll anchor matches on: colours landing must not lose the reader's
+  place. `an_arriving_answer_rebuilds_its_own_chunk_and_no_other` pins it.
+- **No flash to plain while typing.** The editor remembers the last answered version of each fence
+  by where its body starts. While a new version is pending, spans ending before the first differing
+  byte are kept (right, because the highlighter's state is causal), spans starting after the common
+  suffix are kept shifted by the length delta (close enough until the answer lands), and spans
+  overlapping the edit are dropped. A changed info string reuses nothing.
+- **Caps, on the worker:** a fence body over **128 KiB** is `Plain` (about half a second of work at
+  4 us a byte), and a line over **4,096 bytes** ends the highlighting there, the rest drawing plain
+  (a 3,000-character line took 121 ms). Both are `pub const` in `mdedit-highlight`.
+- **Numbers, release build.** Worker, per job: 30 lines 6.9 ms, 300 lines 74 ms, 1,000 lines 224 ms
+  (`highlight_cost`, quiet machine); the same sizes inside the app harness on a busier run took 25,
+  263 and 811 ms, and the cold load 54 to 130 ms. UI, first frame holding a pending 300-line fence:
+  p50 2.65 ms against 2.51 ms for the same fence untagged, so the cost of asking is noise. UI, a
+  keystroke in a 300-line fence reusing the previous spans: p50 3.9 ms, p99 9.6 ms (the untagged
+  baseline in the same run was noisy at 10 / 52 ms, so only the first frame is a clean comparison).
+- **Error handling.** A line `parse_line` refuses ends highlighting there and the rest draws plain.
+  No test input reaches that arm — no sample made `fancy-regex` error — so it is unverified by test;
+  a mutation that unwraps it survived.
+- **Remembered versions, and the worker's survival.** The last answered version of a fence is kept
+  only for fences that are laid out (visible, or holding the caret), at most 64, evicting one when
+  full and never copying a body twice. A reused layout's key includes the hash of the version its
+  spans came from, so two previous versions cannot share one. The worker runs each job under
+  `catch_unwind` (the workspace unwinds) and answers a panicking fence plain, so one bad fence does
+  not leave every later one plain; the test uses a stand-in job that panics.

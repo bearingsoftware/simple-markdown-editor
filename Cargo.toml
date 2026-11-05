@@ -8,6 +8,7 @@ members = [
     "crates/xml",
     "crates/toml",
     "crates/ini",
+    "crates/highlight",
     "crates/markers",
     "crates/image",
     "crates/document",
@@ -46,6 +47,14 @@ png = { version = "0.18", default-features = false }
 # `x86` and `neon` features are the SIMD, and `deny.toml` bans them. The cost is a scalar decoder.
 zune-jpeg = { version = "0.5.15", default-features = false, features = ["std"] }
 zune-core = { version = "0.5.3", default-features = false, features = ["std"] }
+# Fenced-code highlighting, MDEDIT-190. **`fancy-regex` rather than Oniguruma**, because a fence's
+# contents are untrusted file contents and `onig` is C - the class of dependency AGENTS.md exists to
+# keep out of a parser. `default-features = false` is what drops `regex-onig`; `deny.toml` bans
+# `onig` outright so a feature flip cannot bring it back. Only the parsing half of syntect is
+# wanted: no themes, no HTML, no plist loading - `default-syntaxes` is the prebuilt dump of
+# sublimehq/Packages that ships inside the crate (MDEDIT-190 chose it over two-face, whose bundled
+# syntaxes carry mixed licences).
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 # `version` alongside `path` is not redundant: without it this is a wildcard dependency,
 # which deny.toml rejects.
 mdedit-language = { path = "crates/language", version = "0.1.0" }
@@ -54,6 +63,7 @@ mdedit-yaml = { path = "crates/yaml", version = "0.1.0" }
 mdedit-xml = { path = "crates/xml", version = "0.1.0" }
 mdedit-toml = { path = "crates/toml", version = "0.1.0" }
 mdedit-ini = { path = "crates/ini", version = "0.1.0" }
+mdedit-highlight = { path = "crates/highlight", version = "0.1.0" }
 mdedit-markers = { path = "crates/markers", version = "0.1.0" }
 mdedit-image = { path = "crates/image", version = "0.1.0" }
 mdedit-offsets = { path = "crates/offsets", version = "0.1.0" }

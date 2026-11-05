@@ -27,6 +27,7 @@ pub mod field;
 pub mod file_icon;
 pub mod find;
 pub mod gpu;
+pub(crate) mod highlighting;
 pub mod hit;
 pub mod image;
 pub mod ime;

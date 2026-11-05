@@ -284,3 +284,97 @@ fn the_new_markers_are_concealed_in_preview() {
         .collect();
     assert_eq!(text, "text .\n\nthe note\n");
 }
+
+/// The runs for a source whose only fence has been coloured by `mdedit_highlight`, as the worker
+/// does and the editor hands to the view (MDEDIT-190).
+fn drawn_coloured(source: &str, mode: Mode) -> Vec<Drawn> {
+    let doc = Document::from(source);
+    let theme = Theme::default();
+    let spans = doc
+        .blocks()
+        .iter()
+        .find(|block| block.kind() == mdedit_language::BlockKind::CodeBlock)
+        .and_then(|block| mdedit_app::view::fence_of(block, source))
+        .and_then(|fence| {
+            let base = fence.body.start().get();
+            mdedit_highlight::highlight(fence.info, fence.body.slice(source)).map(|spans| {
+                spans
+                    .into_iter()
+                    .map(|(span, token)| {
+                        (
+                            ByteSpan::new(
+                                ByteOffset::new(base + span.start().get()),
+                                ByteOffset::new(base + span.end().get()),
+                            ),
+                            token,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .unwrap_or_default();
+    mdedit_app::view::build_runs_highlighted(
+        &doc,
+        Decoration {
+            theme: &theme,
+            mode,
+        },
+        ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(source.len())),
+        source,
+        &spans,
+    )
+    .iter()
+    .map(|run| Drawn {
+        text: run.text.clone().into_owned(),
+        colour: run.colour,
+        style: run.style,
+    })
+    .collect()
+}
+
+/// A fence's spans draw in the theme's own token colours, still monospaced, every byte kept.
+#[test]
+fn highlight_spans_draw_as_theme_tokens() {
+    let theme = Theme::default();
+    let runs = drawn_coloured("```rust\nfn main() {}\n```\n", Mode::Preview);
+
+    let keyword = run_of(&runs, "fn");
+    assert_eq!(keyword.colour, theme.token_key);
+    assert_eq!(keyword.style.family, FontFamily::Mono);
+    let joined: String = runs.iter().map(|run| run.text.as_str()).collect();
+    assert!(joined.contains("fn main() {}\n"), "{joined:?}");
+}
+
+#[test]
+fn a_fence_with_no_info_string_draws_as_before() {
+    let theme = Theme::default();
+    let fenced = drawn_coloured("```\nfn main() {}\n```\n", Mode::Preview);
+    let block = run_of(&fenced, "fn main() {}\n");
+    assert_eq!(block.colour, theme.token_string);
+    assert_eq!(block.style.family, FontFamily::Mono);
+}
+
+#[test]
+fn an_indented_code_block_has_no_fence() {
+    let doc = Document::from("para\n\n    ```rust\n    fn main() {}\n");
+    let source = "para\n\n    ```rust\n    fn main() {}\n";
+    assert!(
+        doc.blocks()
+            .iter()
+            .filter(|block| block.kind() == mdedit_language::BlockKind::CodeBlock)
+            .all(|block| mdedit_app::view::fence_of(block, source).is_none())
+    );
+}
+
+#[test]
+fn tilde_unterminated_and_indented_fences_are_found() {
+    let theme = Theme::default();
+    for source in [
+        "```rust\nfn main() {}\n",
+        "~~~rust\nfn main() {}\n~~~\n",
+        "  ```rust\nfn main() {}\n  ```\n",
+    ] {
+        let runs = drawn_coloured(source, Mode::Preview);
+        assert_eq!(run_of(&runs, "fn").colour, theme.token_key, "{source:?}");
+    }
+}

@@ -20,7 +20,7 @@
 //! `AGENTS.md` already names syntect for code fences, where it would pay for itself twice. What it
 //! was *not* measured against is error tolerance on a half-typed file, which is what disqualified
 //! the real parser above and is the question to ask before adopting it. Nothing here has changed its
-//! mind; the blocker has merely stopped being the MSRV. **MDEDIT-190** is where that is decided, for
+//! mind; the blocker has merely stopped being the MSRV. **MDEDIT-190** adopted syntect, with fancy-regex, for
 //! fenced code — and it keeps this lexer, because what a lexer here guarantees is that concatenating
 //! its spans reproduces the source byte-for-byte, and syntect returns styles rather than spans with
 //! that property.

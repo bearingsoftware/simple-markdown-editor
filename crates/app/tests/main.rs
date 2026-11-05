@@ -45,6 +45,8 @@ mod dialog;
 mod encodings;
 mod endings;
 mod external;
+mod fence_colours;
+mod fence_cost;
 mod field;
 mod file_commands;
 mod find;

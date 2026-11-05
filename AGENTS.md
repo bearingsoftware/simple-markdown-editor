@@ -68,6 +68,7 @@ crates/toml/          # The same for TOML. Its own lexer, not INI's; a table hea
                       #   is a safe restart point
 crates/ini/           # The same for INI and .cfg. There is no INI specification, so its crate docs
                       #   state the dialect it reads
+crates/highlight/     # Fenced-code highlighting, by info string only. syntect + fancy-regex, never onig
 crates/markers/       # Markdown's implementation. Partitions source into marker and content spans
                       #   and reports block extents, in one parse
 crates/image/         # An image destination's trust boundary, and a PNG decoder behind size caps.
@@ -170,11 +171,12 @@ benchmarks and why each job runs where it does.
 `standards/rust.md` owns the general rules. Only these are project decisions:
 
 - **No `async` in the editor core**, and adding a runtime needs a design decision on the ticket. The
-  UI thread is a synchronous frame loop. **There is exactly one worker thread and it decodes
-  pictures** (`decoding.rs`, MDEDIT-156). Load, save and the session snapshot still run on the thread
-  that draws, because MDEDIT-151 measured all four and only the decode breached a target. This line
-  once claimed a worker that did not exist and MDEDIT-146 built around it — so a second one needs a
-  number from a cost harness, not an argument.
+  UI thread is a synchronous frame loop. **There are exactly two worker threads: one decodes
+  pictures** (`decoding.rs`, MDEDIT-156) **and one highlights fenced code** (`highlighting.rs`,
+  MDEDIT-190, which measured 169 ms for an edit on the UI thread). Load, save and the session snapshot
+  still run on the thread that draws, because MDEDIT-151 measured all four and only the decode
+  breached a target. This line once claimed a worker that did not exist — so a third needs a number
+  from a cost harness, not an argument.
 - **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
   the baseline's `deny` + scoped-allow. **Three** crates qualify: `mdedit-text-dwrite` for
   DirectWrite, `mdedit-menu-win` for the call that attaches a menu bar to a window, and
