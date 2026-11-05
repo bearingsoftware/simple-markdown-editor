@@ -612,8 +612,12 @@ restarts, and the baseline's slice numbers need recomputing too.
 `release-please.yml` runs on every push to `main`. It keeps a release PR open that carries the next
 version and changelog, taken from the conventional commit prefixes; merging it tags `vX.Y.Z` and
 creates the GitHub release. It authenticates with `secrets.RELEASE_PLEASE_TOKEN` and has no fallback
-to `GITHUB_TOKEN`, which this repository forbids from creating PRs. Once `v0.1.0` is out, remove
-`release-as` from `release-please-config.json`.
+to `GITHUB_TOKEN`, which this repository forbids from creating PRs.
+
+**Merge with an empty body:** `gh pr merge --merge --body ""`, or clear the description in the web
+merge dialog. GitHub writes the PR title into a merge commit's body, release-please reads that as a
+second conventional commit, and the changelog lists the change twice — three times for a stacked PR.
+GitHub has no setting that keeps the "Merge pull request" title and drops the body.
 
 On a release, `package.yml` builds `mdedit.exe`, fails unless the embedded manifest declares
 `PerMonitorV2` and does not ask for elevation (MDEDIT-70), then produces
