@@ -172,3 +172,17 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # MDEDIT-200. Fails when a dependency's licence cannot be resolved or is not in about.toml's
+  # accepted list, so a bump fails its own PR and not the release. Keep the version and the command
+  # identical to the Stage and zip step in package.yml.
+  notices:
+    name: licence notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo about generate --locked --manifest-path crates/app/Cargo.toml about.hbs -o notices.txt

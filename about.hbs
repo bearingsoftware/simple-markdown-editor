@@ -1,0 +1,19 @@
+THIRD-PARTY NOTICES
+
+mdedit.exe statically links the crates listed below. Each is distributed under the
+licence shown, and the full text of each licence appears once, after the crates that use it.
+{{#each licenses}}
+
+================================================================================
+{{{name}}}
+================================================================================
+
+Used by:
+{{#each used_by}}
+  {{{crate.name}}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+Licence text:
+
+{{{text}}}
+{{/each}}

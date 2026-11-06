@@ -16,6 +16,9 @@ on:
     paths:
       - ".github/workflows/package.yml"
       - "crates/app/resources/windows/**"
+      - "about.toml"
+      - "about.hbs"
+      - "crates/highlight/NOTICE-syntaxes.txt"
 
 permissions:
   contents: read
@@ -35,6 +38,11 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # MDEDIT-200. Keep the version and the command identical to the notices job in ci.yml.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
 
       - name: Build
         run: cargo build --release --locked -p mdedit-app --bin mdedit
@@ -67,6 +75,11 @@ jobs:
           "version=$version" >> $env:GITHUB_OUTPUT
           New-Item -ItemType Directory dist, stage | Out-Null
           Copy-Item target\release\mdedit.exe, LICENSE, README.md stage\
+          # Same command as the notices job in ci.yml. The syntax-dump licences are concatenated here
+          # rather than templated, because handlebars cannot include a file.
+          cargo about generate --locked --manifest-path crates/app/Cargo.toml about.hbs -o notices.txt
+          if ($LASTEXITCODE -ne 0) { throw "cargo about failed" }
+          Get-Content notices.txt, crates\highlight\NOTICE-syntaxes.txt | Set-Content -Encoding utf8 stage\THIRD-PARTY-NOTICES.txt
           Compress-Archive -Path stage\* -DestinationPath "dist\mdedit-$version-windows-x64-portable.zip"
 
       # Pinned by version and hash so a new Inno Setup release cannot change the installer unreviewed.
