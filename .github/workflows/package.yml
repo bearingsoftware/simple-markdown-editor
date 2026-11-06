@@ -79,7 +79,8 @@ jobs:
           # rather than templated, because handlebars cannot include a file.
           cargo about generate --locked --manifest-path crates/app/Cargo.toml about.hbs -o notices.txt
           if ($LASTEXITCODE -ne 0) { throw "cargo about failed" }
-          Get-Content notices.txt, crates\highlight\NOTICE-syntaxes.txt | Set-Content -Encoding utf8 stage\THIRD-PARTY-NOTICES.txt
+          # The blank line keeps the syntax heading off the last licence text, which has no trailing newline.
+          @(Get-Content notices.txt) + '' + @(Get-Content crates\highlight\NOTICE-syntaxes.txt) | Set-Content -Encoding utf8 stage\THIRD-PARTY-NOTICES.txt
           Compress-Archive -Path stage\* -DestinationPath "dist\mdedit-$version-windows-x64-portable.zip"
 
       # Pinned by version and hash so a new Inno Setup release cannot change the installer unreviewed.
