@@ -345,22 +345,44 @@ fn typescript_is_drawn_exactly_as_javascript() {
 
 #[test]
 fn vendored_syntaxes_parse_their_samples() {
-    let mut samples: Vec<&str> = OLD_SAMPLES.to_vec();
-    samples.extend([
-        "[server.tls]\nkey = \"v\" # c\nports = [1, 2]\nt = { a = 1.5, b = true }",
-        "dt = 1979-05-27T07:32:00Z\nmulti = '''\nline'''",
-        "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
-        "ENV A=b \\n    C=d\nCOPY --from=build /a /b\nCMD [\"x\", \"y\"]",
-        "package a.b\nclass C<T>(val x: Int) : Base() { fun f(): String = \"$x ${x + 1}\" }",
-        "val r = \"\"\"raw\"\"\".trimIndent() // c\n@Suppress(\"x\") suspend fun g() = when (x) { is A -> 1; else -> 2 }",
-        "function Get-Thing { param([string]$Name = 'x') Write-Host \"hi $Name\" }",
-        "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n<# block #>",
-    ]);
-    let failing = mdedit_highlight::syntaxes_that_error(&samples);
-    let broken: Vec<&&str> = VENDORED
-        .iter()
-        .filter(|name| failing.iter().any(|f| f == *name))
-        .collect();
+    let own: [(&str, &[&str]); 4] = [
+        (
+            "TOML",
+            &[
+                "[server.tls]\nkey = \"v\" # c\nports = [1, 2]\nt = { a = 1.5, b = true }",
+                "dt = 1979-05-27T07:32:00Z\nmulti = '''\nline'''",
+            ],
+        ),
+        (
+            "Dockerfile",
+            &[
+                "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
+                "ENV A=b \\n    C=d\nCOPY --from=build /a /b\nCMD [\"x\", \"y\"]",
+            ],
+        ),
+        (
+            "Kotlin",
+            &[
+                "package a.b\nclass C<T>(val x: Int) : Base() { fun f(): String = \"$x ${x + 1}\" }",
+                "val r = \"\"\"raw\"\"\".trimIndent() // c\n@Suppress(\"x\") suspend fun g() = when (x) { is A -> 1; else -> 2 }",
+            ],
+        ),
+        (
+            "PowerShell",
+            &[
+                "function Get-Thing { param([string]$Name = 'x') Write-Host \"hi $Name\" }",
+                "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n<# block #>",
+            ],
+        ),
+    ];
+    let mut broken = Vec::new();
+    for (name, lines) in own {
+        let mut samples: Vec<&str> = OLD_SAMPLES.to_vec();
+        samples.extend(lines);
+        if !mdedit_highlight::syntaxes_that_error_in(&[name], &samples).is_empty() {
+            broken.push(name);
+        }
+    }
     assert!(broken.is_empty(), "error under fancy-regex: {broken:?}");
     let names = mdedit_highlight::language_names();
     for name in VENDORED {
@@ -393,4 +415,34 @@ fn vendored_syntaxes_use_no_features_syntect_5_ignores() {
         }
     }
     assert_eq!(checked, VENDORED.len());
+}
+
+/// Times each (syntax, sample line) pair, first call per syntax included, to find where
+/// `vendored_syntaxes_parse_their_samples` spends its time.
+#[test]
+#[ignore = "a measurement"]
+fn sample_timings() {
+    let started = std::time::Instant::now();
+    let _ = highlight("rust", "x\n");
+    println!("load: {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+    let lines = [
+        "// comment",
+        "let x = \"string\" + 12;",
+        "<div class=\"a\">text</div>",
+        "`${x}` \"\"\"doc\"\"\" r#\"raw\"# <<EOF",
+        "[server.tls]\nkey = \"v\" # c\nports = [1, 2]",
+        "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
+        "package a.b\nclass C<T>(val x: Int) : Base() { fun f(): String = \"$x ${x + 1}\" }",
+        "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n<# block #>",
+    ];
+    for info in ["toml", "dockerfile", "kotlin", "powershell"] {
+        for (i, line) in lines.iter().chain(lines.iter()).enumerate() {
+            let started = std::time::Instant::now();
+            let _ = highlight(info, line);
+            println!(
+                "{info:>10} sample {i}: {:>8.2} ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
 }

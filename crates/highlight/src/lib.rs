@@ -260,9 +260,19 @@ fn token_of(name: &str) -> Option<Token> {
 #[doc(hidden)]
 #[must_use]
 pub fn syntaxes_that_error(samples: &[&str]) -> Vec<String> {
+    syntaxes_that_error_in(&[], samples)
+}
+
+/// As [`syntaxes_that_error`], but only for the syntaxes named in `only`; empty means all.
+#[doc(hidden)]
+#[must_use]
+pub fn syntaxes_that_error_in(only: &[&str], samples: &[&str]) -> Vec<String> {
     let set = syntaxes();
     let mut failing = Vec::new();
     for syntax in set.syntaxes() {
+        if !only.is_empty() && !only.contains(&syntax.name.as_str()) {
+            continue;
+        }
         let mut state = ParseState::new(syntax);
         let failed = samples.iter().any(|sample| {
             let mut line = (*sample).to_string();
