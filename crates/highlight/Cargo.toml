@@ -16,6 +16,11 @@ mdedit-language.workspace = true
 mdedit-offsets.workspace = true
 syntect.workspace = true
 
+# The build script reads the vendored `.sublime-syntax` files, so it alone needs the YAML loader and
+# syntect's own default dump. Neither reaches the binary. Still `fancy-regex`, never `onig`.
+[build-dependencies]
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "yaml-load", "dump-create", "regex-fancy"] }
+
 [dev-dependencies]
 proptest = "1.11.0"
 

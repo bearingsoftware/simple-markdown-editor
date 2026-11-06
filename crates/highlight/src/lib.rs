@@ -26,6 +26,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use mdedit_language::Token;
 use mdedit_offsets::{ByteOffset, ByteSpan};
+use syntect::dumps::from_uncompressed_data;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 /// Past this many bytes a fence draws plain. Measured at about 4 us a byte in release (MDEDIT-190), so
@@ -64,6 +65,21 @@ const SCOPES: &[(&str, Token)] = &[
     ("punctuation", Token::Punctuation),
 ];
 
+/// Info strings that name a language under another word. TypeScript has no syntax of its own: the only
+/// maintained ones are `version: 2` and syntect 5.3.0 cannot load them, so it is drawn as JavaScript
+/// until syntect 6.0 (MDEDIT-201).
+const ALIASES: &[(&str, &str)] = &[
+    ("ts", "js"),
+    ("tsx", "js"),
+    ("typescript", "js"),
+    ("jsx", "js"),
+    ("mts", "js"),
+    ("cts", "js"),
+    ("pwsh", "powershell"),
+    ("ps", "powershell"),
+    ("docker", "dockerfile"),
+];
+
 static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
 static MEMO: Mutex<Option<Memo>> = Mutex::new(None);
 
@@ -71,6 +87,18 @@ static MEMO: Mutex<Option<Memo>> = Mutex::new(None);
 struct Memo {
     syntax_by_token: HashMap<String, Option<usize>>,
     token_by_scope: HashMap<Scope, Option<Token>>,
+}
+
+/// The merged set `build.rs` dumped: syntect's bundled syntaxes plus the vendored ones.
+#[allow(clippy::expect_used)]
+fn syntaxes() -> &'static SyntaxSet {
+    SYNTAXES.get_or_init(|| {
+        from_uncompressed_data(include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/syntaxes.packdump"
+        )))
+        .expect("the build script wrote a valid dump")
+    })
 }
 
 /// Whether the syntax set has been loaded yet. Exists so a test can prove laziness.
@@ -98,8 +126,12 @@ pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
         return None;
     }
     let word = word.to_lowercase();
+    let word = ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == word)
+        .map_or(word, |(_, target)| (*target).to_string());
 
-    let set = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let set = syntaxes();
     let mut guard = MEMO.lock().unwrap_or_else(PoisonError::into_inner);
     let memo = guard.get_or_insert_with(Memo::default);
 
@@ -228,7 +260,7 @@ fn token_of(name: &str) -> Option<Token> {
 #[doc(hidden)]
 #[must_use]
 pub fn syntaxes_that_error(samples: &[&str]) -> Vec<String> {
-    let set = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let set = syntaxes();
     let mut failing = Vec::new();
     for syntax in set.syntaxes() {
         let mut state = ParseState::new(syntax);
@@ -248,7 +280,7 @@ pub fn syntaxes_that_error(samples: &[&str]) -> Vec<String> {
 #[doc(hidden)]
 #[must_use]
 pub fn language_names() -> Vec<String> {
-    let set = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let set = syntaxes();
     set.syntaxes()
         .iter()
         .map(|syntax| syntax.name.clone())
