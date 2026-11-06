@@ -630,6 +630,13 @@ On a release, `package.yml` builds `mdedit.exe`, fails unless the embedded manif
 6.7.4, per-user, no UAC) and `SHA256SUMS.txt`, and uploads them to the release. Binaries are unsigned
 (MDEDIT-138).
 
+**Third-party notices (MDEDIT-200).** `package.yml` runs `cargo about generate` (pinned in the workflow;
+configured by `about.toml` and `about.hbs`) and appends `crates/highlight/NOTICE-syntaxes.txt`, the
+hand-written licences of the syntect syntax dump, to make `THIRD-PARTY-NOTICES.txt` in the zip and the
+installer. Nothing generated is committed. The `notices` job in `ci.yml` runs the same command, so a
+dependency whose licence is unresolved or not accepted fails its own PR. A newly vendored syntax
+(MDEDIT-201) must add its licence to `NOTICE-syntaxes.txt`.
+
 A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files
 and keeps them as a workflow artifact for seven days, publishing nothing. CI cannot install anything
 or open Explorer, so the installer is checked by hand, and the session pairs with the MDEDIT-6,

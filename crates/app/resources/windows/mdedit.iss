@@ -1,6 +1,6 @@
 ; Per-user installer for Simple Markdown Editor (MDEDIT-137). Never elevates: AGENTS.md, "Windows
 ; integration". Built by .github/workflows/package.yml:
-;   ISCC.exe /DAppVersion=0.1.0 /DSourceDir=<dir holding mdedit.exe, LICENSE, README.md> mdedit.iss
+;   ISCC.exe /DAppVersion=0.1.0 /DSourceDir=<dir holding mdedit.exe, LICENSE, THIRD-PARTY-NOTICES.txt, README.md> mdedit.iss
 
 #ifndef AppVersion
   #error AppVersion must be passed with /DAppVersion=
@@ -37,6 +37,7 @@ Name: "desktopicon"; Description: "Create a &desktop icon"; Flags: unchecked
 [Files]
 Source: "{#SourceDir}\mdedit.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
