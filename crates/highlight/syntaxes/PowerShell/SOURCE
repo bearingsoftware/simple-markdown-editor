@@ -1,0 +1,10 @@
+grammar repo: https://github.com/PowerShell/EditorSyntax
+grammar commit: 23eed76d483c887a1608609e9dd57e09666411cc
+grammar path: PowerShellSyntax.tmLanguage (licence: LICENSE, MIT, Microsoft Corporation)
+converted by: https://github.com/sharkdp/bat, commit a02713dc15818dd2d82d5a38b45d2cc33a4de95c
+converted path: assets/syntaxes/02_Extra/PowerShell.sublime-syntax (git blob 3a452a643737f5bc95e11c8ca5e97b0b0ea6af81)
+  bat made it with Sublime Text 3.1.1 build 3176, "New Syntax from ...", no manual changes.
+edits to the bat file (1):
+  1. The numeric-escape rule `u\{...} used the subroutine call \g<1>, which fancy-regex rejects
+     ("Subroutine Call"). `0?\g<1>{1,5}` became `0?[0-9a-fA-F]{1,5}`; group 1 is that same class, so
+     the pattern matches the same text. No possessive quantifier or \G needed a rewrite.

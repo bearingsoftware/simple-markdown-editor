@@ -320,9 +320,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   Clojure, CSS, D, Diff, Erlang, Go, Graphviz, Groovy, Haskell, HTML, Java, JavaDoc, JSON,
   JavaScript, LaTeX, TeX, BibTeX, Lisp, Lua, Makefile, Markdown, MATLAB, Objective-C(++), OCaml,
   Pascal, Perl, PHP, Python, R, reStructuredText, Ruby (and Rails/Haml variants), Rust, Scala, SQL,
-  Bash/shell, Tcl, Textile, XML, YAML, and a few regex and output grammars. **Absent, and so drawn
-  plain for now: TOML, TypeScript, Dockerfile, PowerShell** (also Kotlin, Swift, JSX/TSX, Vue).
-  Vendoring more is ticketed separately.
+  Bash/shell, Tcl, Textile, XML, YAML, and a few regex and output grammars. **Absent here: TOML,
+  TypeScript, Dockerfile, PowerShell, Kotlin, Swift, JSX/TSX, Vue** — see MDEDIT-201 below for what
+  was added; Swift, Vue and a real TypeScript syntax are still absent.
 - **Dropped syntaxes: none found.** `every_bundled_syntax_parses` (`#[ignore]`) runs ten sample
   lines through all 75 and reports 0 that error under `fancy-regex`. Syntax regexes compile lazily,
   so this proves the contexts those lines reach, not every rule.
@@ -372,3 +372,32 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   spans came from, so two previous versions cannot share one. The worker runs each job under
   `catch_unwind` (the workspace unwinds) and answers a panicking fence plain, so one bad fence does
   not leave every later one plain; the test uses a stand-in job that panics.
+
+## MDEDIT-201: TOML, Dockerfile, Kotlin and PowerShell fences, and TypeScript as JavaScript
+
+- **Four syntaxes are vendored** under `crates/highlight/syntaxes/<Language>/`, each with its upstream
+  licence and a `SOURCE` file giving the repo, pinned commit, path and every edit: TOML
+  (`jasonwilliams/sublime_toml_highlighting`, MIT), Dockerfile (`asbjornenge/Docker.tmbundle`, MIT),
+  Kotlin (`guille/sublime-kotlin`, Unlicense) and PowerShell (`PowerShell/EditorSyntax`, MIT, via
+  `bat`'s converted file). PowerShell needed one edit: a `\g<1>` subroutine call, which `fancy-regex`
+  rejects, became the character class it called. The notices are MDEDIT-200's.
+- **TypeScript has no syntax of its own.** `ts`, `tsx`, `typescript`, `jsx`, `mts` and `cts` map to the
+  bundled JavaScript (`ALIASES` in `lib.rs`, with `pwsh`, `ps` and `docker`). The maintained TypeScript
+  syntaxes are sublimehq's `version: 2`, which `extends` another and uses `branch_point`, `fail` and
+  `pop: N`; syntect 5.3.0 reads none of those and drops them silently. Interim, until syntect 6.0.
+- **Newer Sublime syntaxes wait for syntect 6.0.** Its support is unreleased, and open #707 hangs the
+  parser on a one-line TypeScript ternary, which a fence's untrusted text could trigger.
+  `vendored_syntaxes_use_no_features_syntect_5_ignores` fails on a vendored file that grows any of them.
+- **The set is built at compile time.** `crates/highlight/build.rs` loads syntect's defaults, adds the
+  vendored files and dumps an uncompressed 385 KB set to `OUT_DIR`; `lib.rs` loads it with
+  `from_uncompressed_data`. The YAML loader is a build-dependency only, so the binary has none.
+  A bad vendored file fails the build, which is how the PowerShell edit was found.
+- **Numbers (release).** First `highlight` call, 10-run median: 46 ms before (quiet machine) and 103
+  ms after, but an interleaved run on a busy machine gave 103 against 113 ms, so no measurable change.
+  `mdedit.exe`: 12,550,144 to 12,579,328 bytes (+29 KB). The set has 79 syntaxes.
+- **Costs, all on the worker thread, none on the UI thread** (the per-fence time budget is MDEDIT-202).
+  First touch of a syntax compiles its regexes lazily: PowerShell 230-310 ms and Kotlin 50-80 ms on
+  the first fence of a session; repeat lines take about 1 ms. Hostile 4 KB single lines (release):
+  PowerShell up to about 280 ms (`class a-a-...!`), Kotlin about 207 ms (4000 `a`), TOML about 96 ms
+  (`a = 1_1_...`), Dockerfile under 4 ms. Quadratic, not exponential, and no worse than the bundled
+  `rust` (401 ms) and `js` (852 ms) on the same kind of line.

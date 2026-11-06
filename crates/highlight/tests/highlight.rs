@@ -250,3 +250,201 @@ fn highlight_cost() {
         started.elapsed().as_secs_f64() * 1000.0
     );
 }
+
+/// Times the first `highlight` call, which loads the syntax set. One load per process, so run the
+/// test binary repeatedly and take the median.
+#[test]
+#[ignore = "a measurement"]
+fn cold_load() {
+    let started = std::time::Instant::now();
+    let _ = highlight("rust", "fn main() {}\n");
+    println!(
+        "cold load: {:.2} ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+}
+
+const OLD_SAMPLES: [&str; 10] = [
+    "// comment",
+    "# comment",
+    "let x = \"string\" + 12;",
+    "fn main() { if (a) { return; } }",
+    "<div class=\"a\">text</div>",
+    "{\"a\": [1, true, null]}",
+    "def f(x): return x * 2",
+    "SELECT * FROM t WHERE a = 'b';",
+    "/* block */ int main(void) { return 0; }",
+    "`${x}` \"\"\"doc\"\"\" r#\"raw\"# <<EOF",
+];
+
+const VENDORED: [&str; 4] = ["TOML", "Dockerfile", "Kotlin", "PowerShell"];
+
+#[test]
+fn toml_has_a_key_a_string_and_a_comment() {
+    let found = tokens_of("toml", "# note\n[package]\nname = \"x\"\nn = 1\n");
+    assert!(has(&found, "# note", Token::Comment), "{found:?}");
+    assert!(has(&found, "\"x\"", Token::String), "{found:?}");
+    assert!(has(&found, "name", Token::Tag), "{found:?}");
+    assert!(has(&found, "1", Token::Number), "{found:?}");
+}
+
+#[test]
+fn dockerfile_has_an_instruction_a_string_and_a_comment() {
+    let found = tokens_of("dockerfile", "# note\nFROM rust:1\nLABEL a=\"b\"\n");
+    assert!(has(&found, "# note", Token::Comment), "{found:?}");
+    assert!(has(&found, "FROM", Token::Key), "{found:?}");
+    assert!(has(&found, "\"b\"", Token::String), "{found:?}");
+}
+
+#[test]
+fn kotlin_has_a_keyword_a_string_and_a_comment() {
+    let found = tokens_of("kotlin", "// note\nfun main() {\n    val s = \"hi\"\n}\n");
+    assert!(has(&found, "// note", Token::Comment), "{found:?}");
+    assert!(has(&found, "fun", Token::Key), "{found:?}");
+    assert!(has(&found, "\"hi\"", Token::String), "{found:?}");
+}
+
+#[test]
+fn powershell_has_a_keyword_a_string_and_a_comment() {
+    let found = tokens_of(
+        "powershell",
+        "# note\nfunction Get-Thing {\n    $s = \"hi\"\n}\n",
+    );
+    assert!(has(&found, "# note", Token::Comment), "{found:?}");
+    assert!(has(&found, "function", Token::Key), "{found:?}");
+    assert!(has(&found, "\"hi\"", Token::String), "{found:?}");
+}
+
+#[test]
+fn aliases_name_a_language_and_colour_a_keyword() {
+    for (info, code, keyword) in [
+        ("ts", "const x = 1;\n", "const"),
+        ("tsx", "const x = 1;\n", "const"),
+        ("typescript", "const x = 1;\n", "const"),
+        ("jsx", "const x = 1;\n", "const"),
+        ("mts", "const x = 1;\n", "const"),
+        ("cts", "const x = 1;\n", "const"),
+        ("pwsh", "function F {}\n", "function"),
+        ("ps1", "function F {}\n", "function"),
+        ("ps", "function F {}\n", "function"),
+        ("kt", "fun f() {}\n", "fun"),
+        ("kts", "fun f() {}\n", "fun"),
+        ("docker", "FROM a\n", "FROM"),
+    ] {
+        let found = tokens_of(info, code);
+        assert!(has(&found, keyword, Token::Key), "{info}: {found:?}");
+    }
+}
+
+#[test]
+fn typescript_is_drawn_exactly_as_javascript() {
+    let code = "const f = (a, b) => `t${a}`; // note\nlet s = \"x\";\n";
+    assert_eq!(highlight("ts", code), highlight("js", code));
+    assert!(highlight("js", code).is_some_and(|spans| !spans.is_empty()));
+}
+
+#[test]
+fn vendored_syntaxes_parse_their_samples() {
+    let own: [(&str, &[&str]); 4] = [
+        (
+            "TOML",
+            &[
+                "[server.tls]\nkey = \"v\" # c\nports = [1, 2]\nt = { a = 1.5, b = true }",
+                "dt = 1979-05-27T07:32:00Z\nmulti = '''\nline'''",
+            ],
+        ),
+        (
+            "Dockerfile",
+            &[
+                "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
+                "ENV A=b \\",
+                "    C=d",
+                "COPY --from=build /a /b\nCMD [\"x\", \"y\"]",
+            ],
+        ),
+        (
+            "Kotlin",
+            &[
+                "package a.b\nclass C<T>(val x: Int) : Base() { fun f(): String = \"$x ${x + 1}\" }",
+                "val r = \"\"\"raw\"\"\".trimIndent() // c\n@Suppress(\"x\") suspend fun g() = when (x) { is A -> 1; else -> 2 }",
+            ],
+        ),
+        (
+            "PowerShell",
+            &[
+                "function Get-Thing { param([string]$Name = 'x') Write-Host \"hi $Name\" }",
+                "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n<# block #>",
+            ],
+        ),
+    ];
+    let mut broken = Vec::new();
+    for (name, lines) in own {
+        let mut samples: Vec<&str> = OLD_SAMPLES.to_vec();
+        samples.extend(lines);
+        if !mdedit_highlight::syntaxes_that_error_in(&[name], &samples).is_empty() {
+            broken.push(name);
+        }
+    }
+    assert!(broken.is_empty(), "error under fancy-regex: {broken:?}");
+    let names = mdedit_highlight::language_names();
+    for name in VENDORED {
+        assert!(names.iter().any(|n| n == name), "{name} is not bundled");
+    }
+}
+
+#[test]
+fn vendored_syntaxes_use_no_features_syntect_5_ignores() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("syntaxes");
+    let mut checked = 0;
+    for dir in std::fs::read_dir(&root).unwrap() {
+        for file in std::fs::read_dir(dir.unwrap().path()).unwrap() {
+            let path = file.unwrap().path();
+            if path.extension().is_none_or(|e| e != "sublime-syntax") {
+                continue;
+            }
+            checked += 1;
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let key = line.trim_start().trim_start_matches("- ").trim_start();
+                let bad = key.starts_with("extends:")
+                    || key.starts_with("branch_point:")
+                    || key.starts_with("fail:")
+                    || key.strip_prefix("pop:").is_some_and(|v| {
+                        v.trim().chars().next().is_some_and(|c| c.is_ascii_digit())
+                    });
+                assert!(!bad, "{}:{}: {line}", path.display(), n + 1);
+            }
+        }
+    }
+    assert_eq!(checked, VENDORED.len());
+}
+
+/// Times each (syntax, sample line) pair, first call per syntax included, to find where
+/// `vendored_syntaxes_parse_their_samples` spends its time.
+#[test]
+#[ignore = "a measurement"]
+fn sample_timings() {
+    let started = std::time::Instant::now();
+    let _ = highlight("rust", "x\n");
+    println!("load: {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+    let lines = [
+        "// comment",
+        "let x = \"string\" + 12;",
+        "<div class=\"a\">text</div>",
+        "`${x}` \"\"\"doc\"\"\" r#\"raw\"# <<EOF",
+        "[server.tls]\nkey = \"v\" # c\nports = [1, 2]",
+        "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
+        "package a.b\nclass C<T>(val x: Int) : Base() { fun f(): String = \"$x ${x + 1}\" }",
+        "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n<# block #>",
+    ];
+    for info in ["toml", "dockerfile", "kotlin", "powershell"] {
+        for (i, line) in lines.iter().chain(lines.iter()).enumerate() {
+            let started = std::time::Instant::now();
+            let _ = highlight(info, line);
+            println!(
+                "{info:>10} sample {i}: {:>8.2} ms",
+                started.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+}

@@ -634,8 +634,8 @@ On a release, `package.yml` builds `mdedit.exe`, fails unless the embedded manif
 configured by `about.toml` and `about.hbs`) and appends `crates/highlight/NOTICE-syntaxes.txt`, the
 hand-written licences of the syntect syntax dump, to make `THIRD-PARTY-NOTICES.txt` in the zip and the
 installer. Nothing generated is committed. The `notices` job in `ci.yml` runs the same command, so a
-dependency whose licence is unresolved or not accepted fails its own PR. A newly vendored syntax
-(MDEDIT-201) must add its licence to `NOTICE-syntaxes.txt`.
+dependency whose licence is unresolved or not accepted fails its own PR. The four syntaxes vendored
+under `crates/highlight/syntaxes` (MDEDIT-201) are listed there; a new one must add its licence.
 
 A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files
 and keeps them as a workflow artifact for seven days, publishing nothing. CI cannot install anything

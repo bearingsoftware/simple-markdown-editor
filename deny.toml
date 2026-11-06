@@ -19,6 +19,7 @@ yanked = "deny"
 # ]
 ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is unmaintained; syntect reads only the dump built into the exe, never a user file - tracked in MDEDIT-199" },
+    { id = "RUSTSEC-2024-0320", reason = "yaml-rust is unmaintained; it is a build-dependency of mdedit-highlight only, through syntect yaml-load in build.rs, never linked into mdedit.exe, and it only reads the pinned vendored syntaxes in this repo, never user input - tracked in MDEDIT-199 (the syntect upgrade)" },
 ]
 
 [licenses]
