@@ -395,3 +395,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **Numbers (release).** First `highlight` call, 10-run median: 46 ms before (quiet machine) and 103
   ms after, but an interleaved run on a busy machine gave 103 against 113 ms, so no measurable change.
   `mdedit.exe`: 12,550,144 to 12,579,328 bytes (+29 KB). The set has 79 syntaxes.
+- **Costs, all on the worker thread, none on the UI thread** (the per-fence time budget is MDEDIT-202).
+  First touch of a syntax compiles its regexes lazily: PowerShell 230-310 ms and Kotlin 50-80 ms on
+  the first fence of a session; repeat lines take about 1 ms. Hostile 4 KB single lines (release):
+  PowerShell up to about 280 ms (`class a-a-...!`), Kotlin about 207 ms (4000 `a`), TOML about 96 ms
+  (`a = 1_1_...`), Dockerfile under 4 ms. Quadratic, not exponential, and no worse than the bundled
+  `rust` (401 ms) and `js` (852 ms) on the same kind of line.

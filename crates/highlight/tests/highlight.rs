@@ -357,7 +357,10 @@ fn vendored_syntaxes_parse_their_samples() {
             "Dockerfile",
             &[
                 "FROM rust:1 AS build\nRUN cargo build --release && echo \"done\"",
-                "ENV A=b \\n    C=d\nCOPY --from=build /a /b\nCMD [\"x\", \"y\"]",
+                "ENV A=b \\",
+                "    C=d
+COPY --from=build /a /b
+CMD [\"x\", \"y\"]",
             ],
         ),
         (
