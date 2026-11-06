@@ -1,0 +1,5 @@
+repo: https://github.com/guille/sublime-kotlin
+commit: 8c44d40c94610bd2cbe8a9d6b9c33cf478e6cabb
+path: Kotlin.sublime-syntax (licence: LICENSE.md, Unlicense)
+edits: none
+note: header says version: 2; syntect 5.3.0 ignores the key, and the file uses no v2-only feature that matters (a test checks for extends, branch_point, fail, pop: N)
