@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.2.0...v0.3.0) (2026-11-06)
+
+
+### Features
+
+* **MDEDIT-200:** ship third-party licence notices with the zip and installer ([2d5d102](https://github.com/bearingsoftware/simple-markdown-editor/commit/2d5d10205830ff737eedc594d40995b3a75f88ea))
+* **MDEDIT-201:** build the syntax set at compile time, highlight TypeScript fences as JavaScript ([3fb45d4](https://github.com/bearingsoftware/simple-markdown-editor/commit/3fb45d4d9b2e79c8622b4e264ad71935749dbcfe))
+* **MDEDIT-201:** vendor TOML, Dockerfile, Kotlin and PowerShell syntaxes ([231fc9a](https://github.com/bearingsoftware/simple-markdown-editor/commit/231fc9abe690b6d1014b9e1dd41f0d954b1cf938))
+
+
+### Bug Fixes
+
+* **MDEDIT-200:** blank line before the syntax notices ([a0fd5cc](https://github.com/bearingsoftware/simple-markdown-editor/commit/a0fd5cc6c6bcbd39bda2736df8dd3469ef7f1661))
+* **MDEDIT-201:** allow the build script's panic on a bad vendored file ([95ef586](https://github.com/bearingsoftware/simple-markdown-editor/commit/95ef586eb703e500fb170ca0e46a764dbd52e67f))
+
+
+### Documentation
+
+* **MDEDIT-201:** record first-touch and hostile-line costs ([23394bc](https://github.com/bearingsoftware/simple-markdown-editor/commit/23394bc3439ddf9601aad97e9505304351a2cf78))
+* **MDEDIT-201:** record the four fence languages and the build-time dump ([4338885](https://github.com/bearingsoftware/simple-markdown-editor/commit/4338885722f28f97170628db7e6aec970e54245e))
+
 ## [0.2.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.1.0...v0.2.0) (2026-11-05)
 
 
