@@ -2,7 +2,12 @@
 //! syntaxes vendored under `syntaxes/`, dumped to `OUT_DIR`. Doing it here keeps the YAML loader out
 //! of the binary.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stdout
+)]
 
 use std::env;
 use std::path::PathBuf;
