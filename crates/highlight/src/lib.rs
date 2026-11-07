@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use mdedit_language::Token;
 use mdedit_offsets::{ByteOffset, ByteSpan};
@@ -33,10 +34,17 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 /// this keeps one job on the worker thread under about half a second.
 pub const MAX_BODY_BYTES: usize = 128 * 1024;
 
-/// Past this many bytes a single line ends the highlighting, and the rest of the fence draws plain:
-/// a regex engine with backtracking can take far longer on one long line than its length suggests,
-/// and a 3,000-character line measured 121 ms.
-pub const MAX_LINE_BYTES: usize = 4096;
+/// Past this many bytes a single line ends the highlighting, and the rest of the fence draws plain.
+/// The regex engine's cost on one line grows faster than its length: a 4 KB line took about 280 ms
+/// in PowerShell and 401 ms in `rust` (MDEDIT-202), so 1 KB keeps the worst line near 16 times
+/// cheaper.
+pub const MAX_LINE_BYTES: usize = 1024;
+
+/// Wall-clock time one fence may spend in the parser, from the moment its syntax is resolved. It
+/// covers the first-touch regex compilation of a whole syntax (PowerShell's first fence costs 230 to
+/// 310 ms), so a smaller budget would leave a session's first fence half coloured until it is edited.
+/// Past it the rest of the fence draws plain, as an over-long line does.
+pub const BUDGET: Duration = Duration::from_millis(400);
 
 /// How many distinct info tokens are remembered before the table is cleared. A document chooses
 /// them, so the table must not grow with it.
@@ -111,7 +119,8 @@ pub fn is_loaded() -> bool {
 ///
 /// Spans are relative to `code`, sorted, non-overlapping and on character boundaries. Text with no
 /// colour of its own has no span. `None` means `info` names no known language — including when it
-/// is empty, in which case nothing is loaded.
+/// is empty, in which case nothing is loaded. A fence that runs past [`BUDGET`] or past a line over
+/// [`MAX_LINE_BYTES`] is coloured up to that point and plain after it.
 ///
 /// ```
 /// use mdedit_highlight::highlight;
@@ -121,6 +130,17 @@ pub fn is_loaded() -> bool {
 /// ```
 #[must_use]
 pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
+    highlight_within(info, code, BUDGET)
+}
+
+/// [`highlight`] with the time budget given, so a test can choose it rather than wait for it.
+#[doc(hidden)]
+#[must_use]
+pub fn highlight_within(
+    info: &str,
+    code: &str,
+    budget: Duration,
+) -> Option<Vec<(ByteSpan, Token)>> {
     let word = info.split_whitespace().next()?;
     if word.len() > MAX_TOKEN_BYTES {
         return None;
@@ -155,6 +175,7 @@ pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
     let mut spans: Vec<(ByteSpan, Token)> = Vec::new();
     let mut base = 0usize;
     let mut scratch = String::new();
+    let started = Instant::now();
 
     for line in code.split_inclusive('\n') {
         if line.len() > MAX_LINE_BYTES {
@@ -198,6 +219,9 @@ pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
             push(&mut spans, base + at, base + line.len(), token);
         }
         base += line.len();
+        if started.elapsed() >= budget {
+            break;
+        }
     }
 
     Some(spans)

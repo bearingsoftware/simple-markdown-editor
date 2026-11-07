@@ -8,17 +8,28 @@
     clippy::print_stdout
 )]
 
-use mdedit_highlight::highlight;
+use std::time::{Duration, Instant};
+
+use mdedit_highlight::{MAX_LINE_BYTES, highlight, highlight_within};
 use mdedit_language::Token;
 use mdedit_offsets::ByteSpan;
 use proptest::prelude::*;
 
-fn tokens_of(info: &str, code: &str) -> Vec<(String, Token)> {
-    highlight(info, code)
-        .unwrap_or_else(|| panic!("{info:?} should be a known language"))
-        .into_iter()
-        .map(|(span, token)| (span.slice(code).to_string(), token))
+fn drawn(code: &str, spans: &[(ByteSpan, Token)]) -> Vec<(String, Token)> {
+    spans
+        .iter()
+        .map(|(span, token)| (span.slice(code).to_string(), *token))
         .collect()
+}
+
+/// Colour tests are not budget tests. A first touch costs 2 to 7 s in a debug build, which the
+/// budget would cut short after one line, so they ask with a budget that never binds.
+const UNBOUNDED: Duration = Duration::from_secs(60);
+
+fn tokens_of(info: &str, code: &str) -> Vec<(String, Token)> {
+    let spans = highlight_within(info, code, UNBOUNDED)
+        .unwrap_or_else(|| panic!("{info:?} should be a known language"));
+    drawn(code, &spans)
 }
 
 fn has(found: &[(String, Token)], text: &str, token: Token) -> bool {
@@ -153,6 +164,51 @@ fn awkward_text_satisfies_the_invariants() {
     }
 }
 
+#[test]
+fn a_zero_budget_colours_only_the_first_line() {
+    let body = "// one\nfn f() {}\n// three\n";
+    let spans = highlight_within("rust", body, Duration::ZERO).unwrap();
+    assert_invariants(body, &spans);
+    let found = drawn(body, &spans);
+    assert!(has(&found, "// one", Token::Comment), "{found:?}");
+    assert!(
+        spans.iter().all(|(span, _)| span.end().get() <= 7),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn a_generous_budget_colours_every_line() {
+    let body = "// one\nfn f() {}\n// three\n";
+    let spans = highlight_within("rust", body, UNBOUNDED).unwrap();
+    assert_invariants(body, &spans);
+    let found = drawn(body, &spans);
+    assert!(has(&found, "// three", Token::Comment), "{found:?}");
+}
+
+#[test]
+fn a_line_just_over_the_cap_ends_colouring() {
+    for (long_len, coloured) in [(MAX_LINE_BYTES + 1, false), (MAX_LINE_BYTES, true)] {
+        let long = format!("// {}\n", "a".repeat(long_len - 4));
+        assert_eq!(long.len(), long_len);
+        let body = format!("// short\n{long}// last\n");
+        let spans = highlight_within("rust", &body, UNBOUNDED).unwrap();
+        assert_invariants(&body, &spans);
+        let found = drawn(&body, &spans);
+        assert!(has(&found, "// short", Token::Comment), "{found:?}");
+        assert_eq!(
+            has(&found, "aaaa", Token::Comment),
+            coloured,
+            "{long_len}: {found:?}"
+        );
+        assert_eq!(
+            has(&found, "// last", Token::Comment),
+            coloured,
+            "{long_len}: {found:?}"
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -229,17 +285,31 @@ fn bundled_languages() {
 #[test]
 #[ignore = "a measurement"]
 fn highlight_cost() {
+    let ps_line =
+        "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n";
+    let ps_code = ps_line.repeat(300);
+    let started = Instant::now();
+    let spans = highlight("powershell", &ps_code).unwrap();
+    let ps_last = ps_code.len() - ps_line.len();
+    println!(
+        "powershell first touch, 300 lines: {:.1} ms, last line coloured: {}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        spans.iter().any(|(span, _)| span.end().get() > ps_last)
+    );
+
     let line = "    let value_1: u32 = compute(\"name 1\", 1); // note 1\n";
     let _ = highlight("rust", "fn main() {}\n");
     for lines in [10, 30, 100, 300, 1000, 3000] {
         let code = line.repeat(lines);
         let started = std::time::Instant::now();
         let spans = highlight("rust", &code).unwrap();
+        let last = code.len() - line.len();
         println!(
-            "{lines:>5} lines ({:>6} bytes): {:>8.2} ms, {} spans",
+            "{lines:>5} lines ({:>6} bytes): {:>8.2} ms, {} spans, last line coloured: {}",
             code.len(),
             started.elapsed().as_secs_f64() * 1000.0,
-            spans.len()
+            spans.len(),
+            spans.iter().any(|(span, _)| span.end().get() > last)
         );
     }
     let long = format!("let s = \"{}\";\n", "a".repeat(3000));
@@ -248,6 +318,27 @@ fn highlight_cost() {
     println!(
         "one 3000 char line: {:.2} ms",
         started.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let hostile_line = format!("{}!\n", "a".repeat(1000));
+    let hostile = hostile_line.repeat(120 * 1024 / hostile_line.len());
+    let started = Instant::now();
+    let spans = highlight("rust", &hostile).unwrap();
+    println!(
+        "hostile fence ({} bytes): {:.1} ms, {} spans",
+        hostile.len(),
+        started.elapsed().as_secs_f64() * 1000.0,
+        spans.len()
+    );
+
+    let thousand = line.repeat(1000);
+    let started = Instant::now();
+    let spans = highlight_within("rust", &thousand, UNBOUNDED).unwrap();
+    println!(
+        "1000 lines unbounded ({} bytes): {:.1} ms, {} spans",
+        thousand.len(),
+        started.elapsed().as_secs_f64() * 1000.0,
+        spans.len()
     );
 }
 
@@ -339,8 +430,11 @@ fn aliases_name_a_language_and_colour_a_keyword() {
 #[test]
 fn typescript_is_drawn_exactly_as_javascript() {
     let code = "const f = (a, b) => `t${a}`; // note\nlet s = \"x\";\n";
-    assert_eq!(highlight("ts", code), highlight("js", code));
-    assert!(highlight("js", code).is_some_and(|spans| !spans.is_empty()));
+    assert_eq!(
+        highlight_within("ts", code, UNBOUNDED),
+        highlight_within("js", code, UNBOUNDED)
+    );
+    assert!(highlight_within("js", code, UNBOUNDED).is_some_and(|spans| !spans.is_empty()));
 }
 
 #[test]
