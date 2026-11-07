@@ -355,8 +355,9 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   suffix are kept shifted by the length delta (close enough until the answer lands), and spans
   overlapping the edit are dropped. A changed info string reuses nothing.
 - **Caps, on the worker:** a fence body over **128 KiB** is `Plain` (about half a second of work at
-  4 us a byte), and a line over **4,096 bytes** ends the highlighting there, the rest drawing plain
-  (a 3,000-character line took 121 ms). Both are `pub const` in `mdedit-highlight`.
+  4 us a byte), and a line over **1 KiB** ends the highlighting there, the rest drawing plain. MDEDIT-202
+  cut this from 4 KiB and added a 400 ms per-fence budget; see its section below. Both are `pub const`
+  in `mdedit-highlight`.
 - **Numbers, release build.** Worker, per job: 30 lines 6.9 ms, 300 lines 74 ms, 1,000 lines 224 ms
   (`highlight_cost`, quiet machine); the same sizes inside the app harness on a busier run took 25,
   263 and 811 ms, and the cold load 54 to 130 ms. UI, first frame holding a pending 300-line fence:
@@ -401,3 +402,12 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   PowerShell up to about 280 ms (`class a-a-...!`), Kotlin about 207 ms (4000 `a`), TOML about 96 ms
   (`a = 1_1_...`), Dockerfile under 4 ms. Quadratic, not exponential, and no worse than the bundled
   `rust` (401 ms) and `js` (852 ms) on the same kind of line.
+
+## MDEDIT-202: one fence is bounded by a line cap and a time budget
+
+- **Problem:** a 4 KiB hostile line took about 280 ms in PowerShell and 401 ms in `rust` (release), and the cost is quadratic, so a 128 KiB fence could hold the worker for 9 to 13 s with every other fence plain.
+- **Bounds:** `MAX_LINE_BYTES` is 1 KiB (was 4 KiB); `BUDGET` is 400 ms, checked after each line and timed from when the syntax resolves, so it covers first-touch regex compilation. The first line is always attempted.
+- **Partial, not plain:** a fence past either bound is coloured up to that point and plain after it.
+- **Measured (release, three runs):** hostile 122 KiB fence 422 to 485 ms, cut short (9 to 13 s before, by the estimate above); Rust 1000 lines (55 KiB) cut at the budget, 746 to 814 ms unbounded; Rust 300 lines 224 to 246 ms, full; PowerShell 300-line first touch 407 to 425 ms, last line plain.
+- **Not asserted in debug CI:** one 1 KiB line costs about 8 s in a debug build and the first line is always attempted, so the timed bound is measured in `highlight_cost` (release), and the logic is tested by `a_zero_budget_colours_only_the_first_line` and `a_line_just_over_the_cap_ends_colouring`.
+- **Remaining gap:** N hostile fences still cost N × the budget, since the worker has no per-document budget; accepted, because each fence is bounded and a newer request supersedes an older one.
