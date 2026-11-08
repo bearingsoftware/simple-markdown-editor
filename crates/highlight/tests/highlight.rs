@@ -8,7 +8,7 @@
     clippy::print_stdout
 )]
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use mdedit_highlight::{MAX_LINE_BYTES, highlight, highlight_within};
 use mdedit_language::Token;
@@ -22,12 +22,8 @@ fn drawn(code: &str, spans: &[(ByteSpan, Token)]) -> Vec<(String, Token)> {
         .collect()
 }
 
-/// Colour tests are not budget tests. A first touch costs 2 to 7 s in a debug build, which the
-/// budget would cut short after one line, so they ask with a budget that never binds.
-const UNBOUNDED: Duration = Duration::from_secs(60);
-
 fn tokens_of(info: &str, code: &str) -> Vec<(String, Token)> {
-    let spans = highlight_within(info, code, UNBOUNDED)
+    let spans = highlight_within(info, code, u64::MAX)
         .unwrap_or_else(|| panic!("{info:?} should be a known language"));
     drawn(code, &spans)
 }
@@ -165,9 +161,10 @@ fn awkward_text_satisfies_the_invariants() {
 }
 
 #[test]
-fn a_zero_budget_colours_only_the_first_line() {
+fn a_work_budget_of_one_line_colours_only_that_line() {
     let body = "// one\nfn f() {}\n// three\n";
-    let spans = highlight_within("rust", body, Duration::ZERO).unwrap();
+    let first = u64::try_from("// one\n".len()).unwrap();
+    let spans = highlight_within("rust", body, first * first).unwrap();
     assert_invariants(body, &spans);
     let found = drawn(body, &spans);
     assert!(has(&found, "// one", Token::Comment), "{found:?}");
@@ -178,12 +175,20 @@ fn a_zero_budget_colours_only_the_first_line() {
 }
 
 #[test]
-fn a_generous_budget_colours_every_line() {
+fn a_generous_work_budget_colours_every_line() {
     let body = "// one\nfn f() {}\n// three\n";
-    let spans = highlight_within("rust", body, UNBOUNDED).unwrap();
+    let spans = highlight_within("rust", body, u64::MAX).unwrap();
     assert_invariants(body, &spans);
     let found = drawn(body, &spans);
     assert!(has(&found, "// three", Token::Comment), "{found:?}");
+}
+
+#[test]
+fn a_work_budget_one_short_colours_nothing() {
+    let body = "// one\nfn f() {}\n// three\n";
+    let first = u64::try_from("// one\n".len()).unwrap();
+    let spans = highlight_within("rust", body, first * first - 1).unwrap();
+    assert!(spans.is_empty(), "{:?}", drawn(body, &spans));
 }
 
 #[test]
@@ -192,7 +197,7 @@ fn a_line_just_over_the_cap_ends_colouring() {
         let long = format!("// {}\n", "a".repeat(long_len - 4));
         assert_eq!(long.len(), long_len);
         let body = format!("// short\n{long}// last\n");
-        let spans = highlight_within("rust", &body, UNBOUNDED).unwrap();
+        let spans = highlight_within("rust", &body, u64::MAX).unwrap();
         assert_invariants(&body, &spans);
         let found = drawn(&body, &spans);
         assert!(has(&found, "// short", Token::Comment), "{found:?}");
@@ -324,21 +329,15 @@ fn highlight_cost() {
     let hostile = hostile_line.repeat(120 * 1024 / hostile_line.len());
     let started = Instant::now();
     let spans = highlight("rust", &hostile).unwrap();
+    let hostile_last = hostile.len() - hostile_line.len();
     println!(
-        "hostile fence ({} bytes): {:.1} ms, {} spans",
+        "hostile fence ({} bytes): {:.1} ms, {} spans, last line coloured: {}",
         hostile.len(),
         started.elapsed().as_secs_f64() * 1000.0,
-        spans.len()
-    );
-
-    let thousand = line.repeat(1000);
-    let started = Instant::now();
-    let spans = highlight_within("rust", &thousand, UNBOUNDED).unwrap();
-    println!(
-        "1000 lines unbounded ({} bytes): {:.1} ms, {} spans",
-        thousand.len(),
-        started.elapsed().as_secs_f64() * 1000.0,
-        spans.len()
+        spans.len(),
+        spans
+            .iter()
+            .any(|(span, _)| span.end().get() > hostile_last)
     );
 }
 
@@ -431,10 +430,10 @@ fn aliases_name_a_language_and_colour_a_keyword() {
 fn typescript_is_drawn_exactly_as_javascript() {
     let code = "const f = (a, b) => `t${a}`; // note\nlet s = \"x\";\n";
     assert_eq!(
-        highlight_within("ts", code, UNBOUNDED),
-        highlight_within("js", code, UNBOUNDED)
+        highlight_within("ts", code, u64::MAX),
+        highlight_within("js", code, u64::MAX)
     );
-    assert!(highlight_within("js", code, UNBOUNDED).is_some_and(|spans| !spans.is_empty()));
+    assert!(highlight_within("js", code, u64::MAX).is_some_and(|spans| !spans.is_empty()));
 }
 
 #[test]
