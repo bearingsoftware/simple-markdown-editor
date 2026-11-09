@@ -406,8 +406,8 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 ## MDEDIT-202: one fence is bounded by a line cap and a work budget
 
 - **Problem:** a 4 KiB hostile line took about 280 ms in PowerShell and 401 ms in `rust` (release); the cost is quadratic, so a 128 KiB fence could hold the worker for 9 to 13 s with every other fence plain.
-- **Bounds:** `MAX_LINE_BYTES` is 1 KiB (was 4 KiB), and `MAX_WORK` is 4 MiB, charged as the sum of each line's length squared; a line that would exceed it is not parsed. Past either bound the rest of the fence draws plain.
-- **Rejected: a 400 ms wall-clock budget.** It cut a 55 KiB Rust fence (unbounded it takes 746 to 814 ms), and debug CI went red on timing, since a debug first touch costs 2 to 7 s.
-- **Sized from measured cost:** about 250 ns a unit for normal code, and 470 ns predicted for hostile code (so 4 MiB predicts about 2 s). The 32 MiB draft gave a hostile fence 15.5 s; the 4 MiB run took 300 ms, so the hostile rate is uncertain.
-- **Measured (release, one run):** 1000-line Rust (55 KiB) 302 ms, not cut; 300 lines 118 ms, not cut; PowerShell 300-line first touch 341 ms, not cut; hostile 122 KiB fence 300 ms, cut after 4 lines (9 to 13 s before).
+- **Bounds:** `MAX_LINE_BYTES` is 1 KiB (was 4 KiB). `MAX_WORK` is 8 MiB, charged per line as `(len + 32)²`: the 32 is a fixed per-line parse cost, so a short line is not free. A line that would exceed the total is not parsed. Past either bound the rest of the fence draws plain.
+- **Rejected:** a 400 ms wall-clock budget, which cut a 55 KiB Rust fence and made debug CI timing-dependent. Charging `len²` alone, which let 2-byte lines (never cut, about 2.5 to 4.2 s per 120 KiB) through.
+- **Measured (release, 120 KiB fences, one run):** 1000 Rust lines of 55 bytes 234 ms, not cut; 300 lines 67 ms, not cut; PowerShell 300-line first touch 278 ms, not cut; hostile 1000-`a` lines 461 ms in `rust` and 1738 ms in `js`, cut after 7 lines; 2-byte lines cut after 7,256 lines, about 200 ms; 32-byte `js` comments 24 ms, cut after about 2,000 lines.
+- **Remaining gap:** N hostile fences still cost N × the bound, since the worker has no per-document budget; accepted, because each fence is bounded and a newer request supersedes an older one.
 - **Remaining gap:** N hostile fences still cost N × the bound, since the worker has no per-document budget; accepted, because each fence is bounded and a newer request supersedes an older one.
