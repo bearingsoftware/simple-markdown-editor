@@ -406,8 +406,8 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 ## MDEDIT-202: one fence is bounded by a line cap and a work budget
 
 - **Problem:** a 4 KiB hostile line took about 280 ms in PowerShell and 401 ms in `rust` (release); the cost is quadratic, so a 128 KiB fence could hold the worker for 9 to 13 s with every other fence plain.
-- **Bounds:** `MAX_LINE_BYTES` is 1 KiB (was 4 KiB), and `MAX_WORK` is 32 MiB, charged as the sum of each line's length squared; a line that would exceed it is not parsed. Past either bound the rest of the fence draws plain.
+- **Bounds:** `MAX_LINE_BYTES` is 1 KiB (was 4 KiB), and `MAX_WORK` is 4 MiB, charged as the sum of each line's length squared; a line that would exceed it is not parsed. Past either bound the rest of the fence draws plain.
 - **Rejected: a 400 ms wall-clock budget.** It cut a 55 KiB Rust fence (unbounded it takes 746 to 814 ms), and debug CI went red on timing, since a debug first touch costs 2 to 7 s.
-- **Measured (release, one run):** the 1000-line Rust fence (55 KiB) is not cut, 757 ms; 300 lines 231 ms; PowerShell 300-line first touch 893 ms, not cut.
-- **Hostile fence, after: worse, 15.5 s.** It stops after 33 lines of 1 KiB, about 470 ms each in release, so 32 MiB admits about 15 s of work; the time budget gave 0.45 s. A work limit near 1 MiB would bound it to about half a second. Not yet decided.
+- **Sized from measured cost:** about 250 ns a unit for normal code, and 470 ns predicted for hostile code (so 4 MiB predicts about 2 s). The 32 MiB draft gave a hostile fence 15.5 s; the 4 MiB run took 300 ms, so the hostile rate is uncertain.
+- **Measured (release, one run):** 1000-line Rust (55 KiB) 302 ms, not cut; 300 lines 118 ms, not cut; PowerShell 300-line first touch 341 ms, not cut; hostile 122 KiB fence 300 ms, cut after 4 lines (9 to 13 s before).
 - **Remaining gap:** N hostile fences still cost N × the bound, since the worker has no per-document budget; accepted, because each fence is bounded and a newer request supersedes an older one.
