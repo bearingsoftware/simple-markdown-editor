@@ -164,7 +164,7 @@ fn awkward_text_satisfies_the_invariants() {
 fn a_work_budget_of_one_line_colours_only_that_line() {
     let body = "// one\nfn f() {}\n// three\n";
     let first = u64::try_from("// one\n".len()).unwrap();
-    let spans = highlight_within("rust", body, first * first).unwrap();
+    let spans = highlight_within("rust", body, (first + 32) * (first + 32)).unwrap();
     assert_invariants(body, &spans);
     let found = drawn(body, &spans);
     assert!(has(&found, "// one", Token::Comment), "{found:?}");
@@ -187,7 +187,7 @@ fn a_generous_work_budget_colours_every_line() {
 fn a_work_budget_one_short_colours_nothing() {
     let body = "// one\nfn f() {}\n// three\n";
     let first = u64::try_from("// one\n".len()).unwrap();
-    let spans = highlight_within("rust", body, first * first - 1).unwrap();
+    let spans = highlight_within("rust", body, (first + 32) * (first + 32) - 1).unwrap();
     assert!(spans.is_empty(), "{:?}", drawn(body, &spans));
 }
 
@@ -286,58 +286,61 @@ fn bundled_languages() {
     }
 }
 
-/// Times `highlight` alone, in a release build, to choose the size cap.
+/// Times `highlight` in a release build on the fences the work budget has to bound. Each fence is
+/// about 120 KiB. Every syntax but PowerShell is warmed first, so regex compilation is not timed.
 #[test]
 #[ignore = "a measurement"]
 fn highlight_cost() {
-    let ps_line =
-        "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n";
-    let ps_code = ps_line.repeat(300);
-    let started = Instant::now();
-    let spans = highlight("powershell", &ps_code).unwrap();
-    let ps_last = ps_code.len() - ps_line.len();
-    println!(
-        "powershell first touch, 300 lines: {:.1} ms, last line coloured: {}",
-        started.elapsed().as_secs_f64() * 1000.0,
-        spans.iter().any(|(span, _)| span.end().get() > ps_last)
-    );
-
-    let line = "    let value_1: u32 = compute(\"name 1\", 1); // note 1\n";
-    let _ = highlight("rust", "fn main() {}\n");
-    for lines in [10, 30, 100, 300, 1000, 3000] {
-        let code = line.repeat(lines);
-        let started = std::time::Instant::now();
-        let spans = highlight("rust", &code).unwrap();
-        let last = code.len() - line.len();
+    fn warm(info: &str) {
+        let _ = highlight(info, "x\n");
+    }
+    fn timed(label: &str, info: &str, unit: &str, lines: usize) {
+        let code = unit.repeat(lines);
+        let started = Instant::now();
+        let spans = highlight(info, &code).unwrap();
+        let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+        let last = code.len() - unit.len();
+        let coloured = spans.iter().any(|(span, _)| span.end().get() > last);
         println!(
-            "{lines:>5} lines ({:>6} bytes): {:>8.2} ms, {} spans, last line coloured: {}",
+            "{label}: {} bytes, {elapsed:.1} ms, {} spans, last line coloured: {coloured}",
             code.len(),
-            started.elapsed().as_secs_f64() * 1000.0,
-            spans.len(),
-            spans.iter().any(|(span, _)| span.end().get() > last)
+            spans.len()
         );
     }
-    let long = format!("let s = \"{}\";\n", "a".repeat(3000));
-    let started = std::time::Instant::now();
-    let _ = highlight("rust", &long);
-    println!(
-        "one 3000 char line: {:.2} ms",
-        started.elapsed().as_secs_f64() * 1000.0
-    );
 
-    let hostile_line = format!("{}!\n", "a".repeat(1000));
-    let hostile = hostile_line.repeat(120 * 1024 / hostile_line.len());
-    let started = Instant::now();
-    let spans = highlight("rust", &hostile).unwrap();
-    let hostile_last = hostile.len() - hostile_line.len();
-    println!(
-        "hostile fence ({} bytes): {:.1} ms, {} spans, last line coloured: {}",
-        hostile.len(),
-        started.elapsed().as_secs_f64() * 1000.0,
-        spans.len(),
-        spans
-            .iter()
-            .any(|(span, _)| span.end().get() > hostile_last)
+    let ps = "$a = @{ k = 1; l = 0x1F }; if ($a -eq 2) { 1..3 | ForEach-Object { $_ * 2 } } # c\n";
+    timed("powershell first touch, 300 lines", "powershell", ps, 300);
+
+    let line = "    let value_1: u32 = compute(\"name 1\", 1); // note 1\n";
+    warm("rust");
+    timed("rust 300 lines", "rust", line, 300);
+    timed("rust 1000 lines", "rust", line, 1000);
+
+    let hostile = format!("{}!\n", "a".repeat(1000));
+    let hostile_lines = 120 * 1024 / hostile.len();
+    warm("rust");
+    timed("rust hostile", "rust", &hostile, hostile_lines);
+    warm("js");
+    timed("js hostile", "js", &hostile, hostile_lines);
+
+    warm("rust");
+    timed("rust a-newline, 2-byte lines", "rust", "a\n", 60_000);
+    timed(
+        "rust 1-newline, 2-byte lines (coloured)",
+        "rust",
+        "1\n",
+        60_000,
+    );
+    warm("js");
+    timed("js a-newline, 2-byte lines", "js", "a\n", 60_000);
+    timed("js 1-newline, 2-byte lines (coloured)", "js", "1\n", 60_000);
+
+    let comment32 = format!("// {}\n", "x".repeat(28));
+    timed(
+        "js 32-byte comment lines",
+        "js",
+        &comment32,
+        120 * 1024 / 32,
     );
 }
 
