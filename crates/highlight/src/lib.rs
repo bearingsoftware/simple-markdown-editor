@@ -40,11 +40,13 @@ pub const MAX_BODY_BYTES: usize = 128 * 1024;
 /// cheaper.
 pub const MAX_LINE_BYTES: usize = 1024;
 
-/// The most work one fence may cost, where a line costs its length squared: a line's cost is
-/// quadratic in its length (MDEDIT-202), so a fence is charged the sum of each line's `len²`. This
-/// fits 128 KiB of lines averaging 256 bytes, and a hostile fence of 1 KiB lines stops after about 32
-/// of them. There is no clock, so the result is the same on every machine.
-pub const MAX_WORK: u64 = 32 * 1024 * 1024;
+/// The most work one fence may cost, where a line costs its length squared, since a line's cost is
+/// quadratic in its length (MDEDIT-202). Measured in release: normal code is about 250 ns a unit
+/// (a 1000-line, 55 KB Rust fence is 3.0M units and 757 ms), and hostile code about 470 ns a unit.
+/// So the worst case is about `MAX_WORK` × 470 ns: 4 MiB admits that 1000-line fence and stops a
+/// hostile fence after about 4 lines, about 2 s. A normal fence past roughly 70 KB of 55-byte lines
+/// is cut. There is no clock, so the result is the same on every machine.
+pub const MAX_WORK: u64 = 4 * 1024 * 1024;
 
 /// How many distinct info tokens are remembered before the table is cleared. A document chooses
 /// them, so the table must not grow with it.
