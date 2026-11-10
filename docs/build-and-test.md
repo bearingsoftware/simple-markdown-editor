@@ -644,7 +644,6 @@ automated: fork `microsoft/winget-pkgs` first, then submit `packaging/winget/` b
 which upstream merges, median about 1.3 h. It needs `WINGET_TOKEN`, a classic PAT with `public_repo`
 scope. Komac uses the token's own account as the fork owner, so the fork must belong to that account.
 
-
 A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files
 and keeps them as a workflow artifact for seven days, publishing nothing. CI cannot install anything
 or open Explorer, so the installer is checked by hand, and the session pairs with the MDEDIT-6,
