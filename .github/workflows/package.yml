@@ -12,6 +12,10 @@ on:
         type: string
         required: false
         default: ""
+    secrets:
+      WINGET_TOKEN:
+        description: Classic PAT with public_repo scope, for the winget job (MDEDIT-139).
+        required: false
   pull_request:
     paths:
       - ".github/workflows/package.yml"
@@ -138,3 +142,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: gh release upload "$TAG" dist/* --clobber
+
+  # MDEDIT-139. Opens one PR on microsoft/winget-pkgs per release; stays off until the repository
+  # variable WINGET_ENABLED is 'true'. It can only update a package that is already there.
+  winget:
+    name: winget-pkgs pull request
+    needs: publish
+    if: inputs.tag != '' && vars.WINGET_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
+        with:
+          identifier: BearingSoftware.SimpleMarkdownEditor
+          installers-regex: '-setup\.exe$'
+          release-tag: ${{ inputs.tag }}
+          fork-user: ${{ vars.WINGET_FORK_USER || github.repository_owner }}
+          token: ${{ secrets.WINGET_TOKEN }}

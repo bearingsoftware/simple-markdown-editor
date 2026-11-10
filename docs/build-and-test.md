@@ -637,6 +637,13 @@ installer. Nothing generated is committed. The `notices` job in `ci.yml` runs th
 dependency whose licence is unresolved or not accepted fails its own PR. The four syntaxes vendored
 under `crates/highlight/syntaxes` (MDEDIT-201) are listed there; a new one must add its licence.
 
+**winget (MDEDIT-139).** The package is `BearingSoftware.SimpleMarkdownEditor`. The first version cannot be
+automated: submit `packaging/winget/` by hand once (`winget validate`, then a PR to `microsoft/winget-pkgs`).
+After that, the `winget` job in `package.yml` opens one PR per release with `vedantmgoyal9/winget-releaser`;
+upstream merges it, median about 1.3 h. It needs `WINGET_TOKEN`, a classic PAT with `public_repo` scope on an
+account that has forked `microsoft/winget-pkgs` (set variable `WINGET_FORK_USER` if that account is not the
+repository owner), and stays skipped until the variable `WINGET_ENABLED` is `true`.
+
 A pull request that touches `package.yml` or `crates/app/resources/windows/**` builds the same files
 and keeps them as a workflow artifact for seven days, publishing nothing. CI cannot install anything
 or open Explorer, so the installer is checked by hand, and the session pairs with the MDEDIT-6,

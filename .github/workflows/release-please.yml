@@ -38,5 +38,7 @@ jobs:
     uses: ./.github/workflows/package.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+    secrets:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
     permissions:
       contents: write
