@@ -45,9 +45,8 @@ const PER_LINE: u64 = 32;
 
 /// The most work one fence may cost. A line costs `(len + PER_LINE)²`, since a line's cost grows
 /// quadratically with its length (MDEDIT-202). There is no clock, so the result is the same on every
-/// machine. Measured in release on 120 KiB fences: 1000 Rust lines of 55 bytes (234 ms) are not cut;
-/// hostile 1000-`a` lines are cut after 7 lines (461 ms in `rust`, 1.74 s in `js`); 2-byte lines are
-/// cut after 7,256 lines (about 200 ms).
+/// machine. A 1000-line Rust fence of 55-byte lines is not cut; the worst shape measured, long lines in
+/// `js`, is cut at about 3.7 s in release, from 52 s unbounded. See `docs/decisions/languages.md`.
 pub const MAX_WORK: u64 = 8 * 1024 * 1024;
 
 /// How many distinct info tokens are remembered before the table is cleared. A document chooses
