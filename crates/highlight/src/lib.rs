@@ -19,7 +19,8 @@
 //! in a release build, and 54 ms to load the syntax set. The editor calls it from one worker thread.
 //!
 //! Highlighting is best effort. A line the regex engine refuses ends the highlighting there and the
-//! rest of the fence draws plain; nothing in here panics on what a file contains.
+//! rest of the fence draws plain; nothing in here panics on what a file contains. A fence is bounded
+//! by [`MAX_LINE_BYTES`] and by [`MAX_WORK`], and past either the rest draws plain.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -33,10 +34,20 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 /// this keeps one job on the worker thread under about half a second.
 pub const MAX_BODY_BYTES: usize = 128 * 1024;
 
-/// Past this many bytes a single line ends the highlighting, and the rest of the fence draws plain:
-/// a regex engine with backtracking can take far longer on one long line than its length suggests,
-/// and a 3,000-character line measured 121 ms.
-pub const MAX_LINE_BYTES: usize = 4096;
+/// Past this many bytes a single line ends the highlighting, and the rest of the fence draws plain.
+/// The regex engine's cost on one line grows faster than its length: a 4 KB line took about 280 ms
+/// in PowerShell and 401 ms in `rust` (MDEDIT-202), so 1 KB keeps the worst line near 16 times
+/// cheaper.
+pub const MAX_LINE_BYTES: usize = 1024;
+
+/// Every line has a fixed parse cost, so a line is charged as if it were this many bytes longer.
+const PER_LINE: u64 = 32;
+
+/// The most work one fence may cost. A line costs `(len + PER_LINE)²`, since a line's cost grows
+/// quadratically with its length (MDEDIT-202). There is no clock, so the result is the same on every
+/// machine. A 1000-line Rust fence of 55-byte lines is not cut; the worst shape measured, long lines in
+/// `js`, is cut at about 3.7 s in release, from 52 s unbounded. See `docs/decisions/languages.md`.
+pub const MAX_WORK: u64 = 8 * 1024 * 1024;
 
 /// How many distinct info tokens are remembered before the table is cleared. A document chooses
 /// them, so the table must not grow with it.
@@ -111,7 +122,9 @@ pub fn is_loaded() -> bool {
 ///
 /// Spans are relative to `code`, sorted, non-overlapping and on character boundaries. Text with no
 /// colour of its own has no span. `None` means `info` names no known language — including when it
-/// is empty, in which case nothing is loaded.
+/// is empty, in which case nothing is loaded. A fence is coloured up to the first line over
+/// [`MAX_LINE_BYTES`], or the first line that would take its total cost past [`MAX_WORK`], and is
+/// plain after that.
 ///
 /// ```
 /// use mdedit_highlight::highlight;
@@ -121,6 +134,13 @@ pub fn is_loaded() -> bool {
 /// ```
 #[must_use]
 pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
+    highlight_within(info, code, MAX_WORK)
+}
+
+/// [`highlight`] with the work budget given, so a test can choose it.
+#[doc(hidden)]
+#[must_use]
+pub fn highlight_within(info: &str, code: &str, max_work: u64) -> Option<Vec<(ByteSpan, Token)>> {
     let word = info.split_whitespace().next()?;
     if word.len() > MAX_TOKEN_BYTES {
         return None;
@@ -155,11 +175,17 @@ pub fn highlight(info: &str, code: &str) -> Option<Vec<(ByteSpan, Token)>> {
     let mut spans: Vec<(ByteSpan, Token)> = Vec::new();
     let mut base = 0usize;
     let mut scratch = String::new();
+    let mut spent = 0u64;
 
     for line in code.split_inclusive('\n') {
         if line.len() > MAX_LINE_BYTES {
             break;
         }
+        let cost = (line.len() as u64 + PER_LINE).pow(2);
+        if spent.saturating_add(cost) > max_work {
+            break;
+        }
+        spent += cost;
         // syntect's syntaxes expect every line to end in a newline, and the last line of a fence
         // may not; a copy with one added is parsed and the result clamped back to the real line.
         let parsed = if line.ends_with('\n') {
