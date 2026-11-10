@@ -116,7 +116,7 @@ jobs:
         with:
           name: windows-packages
           path: dist/*
-          retention-days: 7
+          retention-days: 1
           if-no-files-found: error
 
   publish:
