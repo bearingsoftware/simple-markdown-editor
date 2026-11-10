@@ -26,6 +26,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 OutputBaseFilename=mdedit-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\..\..\..\assets\icons\mdedit.ico
 UninstallDisplayIcon={app}\mdedit.exe
+; Without this Inno lists the app as "Simple Markdown Editor version X", a name that changes every
+; release, so winget would need it spelled out per version (MDEDIT-139).
+UninstallDisplayName=Simple Markdown Editor
 LicenseFile={#SourceDir}\LICENSE
 Compression=lzma2
 SolidCompression=yes
