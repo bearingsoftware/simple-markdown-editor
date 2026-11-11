@@ -68,6 +68,15 @@ jobs:
           }
           Select-String -Path manifest.xml -Pattern 'PerMonitorV2|requestedExecutionLevel'
 
+      # .cargo/config.toml links the CRT statically; an env RUSTFLAGS would silently undo it, and a
+      # machine without the VC++ redistributable then cannot even run --register (MDEDIT-139).
+      - name: Check the exe needs no VC++ runtime
+        shell: pwsh
+        run: |
+          if (Select-String -Path target\release\mdedit.exe -Pattern 'VCRUNTIME140' -SimpleMatch -Quiet) {
+            throw "mdedit.exe imports VCRUNTIME140.dll; the CRT is not statically linked"
+          }
+
       - name: Stage and zip
         id: stage
         shell: pwsh
