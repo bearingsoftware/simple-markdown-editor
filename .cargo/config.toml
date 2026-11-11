@@ -1,0 +1,6 @@
+# Link the C runtime statically so mdedit.exe runs on a machine without the VC++ redistributable.
+# Without it the installer's `mdedit.exe --register` stops on Windows' missing-DLL dialog, which is
+# how winget's unattended install test failed (MDEDIT-139). An env RUSTFLAGS replaces this, so
+# package.yml checks the built exe rather than trusting this file.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
