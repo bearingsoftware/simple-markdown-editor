@@ -55,7 +55,7 @@ mdedit-shell-win.workspace = true
 # Native dialogs, per the stack decision in AGENTS.md. Windows-only: rfd's Linux backend needs GTK
 # development headers, which would make the workspace unbuildable on CI for a dialog that only the
 # Windows build can ever show.
-rfd = { version = "0.17", default-features = false, features = ["common-controls-v6"] }
+rfd = { version = "0.18", default-features = false, features = ["common-controls-v6"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
