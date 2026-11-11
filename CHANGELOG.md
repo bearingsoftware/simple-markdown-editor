@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.4.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.3.0...v0.4.0) (2026-11-11)
+
+
+### Features
+
+* **MDEDIT-139:** publish each release to winget ([628a9ce](https://github.com/bearingsoftware/simple-markdown-editor/commit/628a9ce29b6024b14780c9322586d399adc6bfbc))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate rfd to 0.18 ([a40b537](https://github.com/bearingsoftware/simple-markdown-editor/commit/a40b537d5597083e8b5b798ac91cbd659bff8310))
+* **deps:** update rust crate rfd to 0.18 ([da959df](https://github.com/bearingsoftware/simple-markdown-editor/commit/da959df036c10f5daa5374d8795b60f5f6a0cec2))
+* **MDEDIT-139:** install a pinned, verified Komac instead of an action that fetches it unpinned ([ac8cac5](https://github.com/bearingsoftware/simple-markdown-editor/commit/ac8cac51ba4634bf158ab7e336f0ab8bc864c19b))
+* **MDEDIT-139:** let winget match the installed app by its listed name ([21354a6](https://github.com/bearingsoftware/simple-markdown-editor/commit/21354a6d315cc3bad2d2d194a12bd03d764e35d6))
+* **MDEDIT-139:** link the C runtime statically so the exe runs without the VC++ redistributable ([6cdfd98](https://github.com/bearingsoftware/simple-markdown-editor/commit/6cdfd9848b62235d77c86b23ecf60017d37dc026))
+* **MDEDIT-202:** bound a fence by work rather than time ([2534c88](https://github.com/bearingsoftware/simple-markdown-editor/commit/2534c88e348452aa61532f020ef18663096f4dfb))
+* **MDEDIT-202:** bound one fence's highlighting by a line cap and a time budget ([fcae536](https://github.com/bearingsoftware/simple-markdown-editor/commit/fcae5364a4cbcb1001d8fbe2fd7c6bed50b1d650))
+* **MDEDIT-202:** charge every line a fixed cost as well as its length ([a0f0bc8](https://github.com/bearingsoftware/simple-markdown-editor/commit/a0f0bc8e4a97f832ce059d8bd53da359e7bccc51))
+* **MDEDIT-202:** size the work budget from measured cost ([161a24a](https://github.com/bearingsoftware/simple-markdown-editor/commit/161a24a4ebf944c473024353871748998c62cd3f))
+
+
+### Documentation
+
+* **MDEDIT-139:** drop a doubled blank line ([61832a0](https://github.com/bearingsoftware/simple-markdown-editor/commit/61832a0688ecb1f396a83bae8f41e4ec552a3d39))
+* **MDEDIT-202:** record the 4 MiB work budget and its measurements ([0eb2a4a](https://github.com/bearingsoftware/simple-markdown-editor/commit/0eb2a4a46d0f48199a03bbd8ff5c9e9ccb0f0a94))
+* **MDEDIT-202:** record the line cap, the budget and their measurements ([b8e55bb](https://github.com/bearingsoftware/simple-markdown-editor/commit/b8e55bb2d32b5530d18d9d88d3d55737f7fbd2c6))
+* **MDEDIT-202:** record the per-line charge and its measurements ([12a221c](https://github.com/bearingsoftware/simple-markdown-editor/commit/12a221c424a3fbe3a391b35b452005fccbad0d57))
+* **MDEDIT-202:** record the work budget and the hostile-fence result ([a1e89bb](https://github.com/bearingsoftware/simple-markdown-editor/commit/a1e89bbcd1118042c9e6d2784712fa80fe61ca3a))
+* **MDEDIT-202:** record the worst case measured on a quiet machine ([df01b54](https://github.com/bearingsoftware/simple-markdown-editor/commit/df01b541c3f97b7d033a72e241a85e0ff1f0674b))
+
 ## [0.3.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.2.0...v0.3.0) (2026-11-06)
 
 
