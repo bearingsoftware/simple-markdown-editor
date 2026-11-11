@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: BearingSoftware.SimpleMarkdownEditor
-PackageVersion: 0.3.0
+PackageVersion: 0.4.0
 PackageLocale: en-US
 Publisher: Bearing Software
 PublisherUrl: https://github.com/bearingsoftware
@@ -9,7 +9,7 @@ PublisherSupportUrl: https://github.com/bearingsoftware/simple-markdown-editor/i
 PackageName: Simple Markdown Editor
 PackageUrl: https://github.com/bearingsoftware/simple-markdown-editor
 License: MIT
-LicenseUrl: https://github.com/bearingsoftware/simple-markdown-editor/blob/v0.3.0/LICENSE
+LicenseUrl: https://github.com/bearingsoftware/simple-markdown-editor/blob/v0.4.0/LICENSE
 Copyright: Copyright (c) 2026 Bearing Software
 ShortDescription: A native WYSIWYG Markdown editor in Rust.
 Moniker: mdedit
@@ -17,6 +17,6 @@ Tags:
 - editor
 - markdown
 - wysiwyg
-ReleaseNotesUrl: https://github.com/bearingsoftware/simple-markdown-editor/releases/tag/v0.3.0
+ReleaseNotesUrl: https://github.com/bearingsoftware/simple-markdown-editor/releases/tag/v0.4.0
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
