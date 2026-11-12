@@ -1,0 +1,39 @@
+{
+  "name": "simple-markdown-editor",
+  "displayName": "Simple Markdown Editor",
+  "description": "Open Markdown files in Simple Markdown Editor, the native Windows Markdown editor.",
+  "version": "0.1.0",
+  "publisher": "bearingsoftware",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bearingsoftware/simple-markdown-editor.git",
+    "directory": "extensions/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "check": "tsc --noEmit",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/vscode": "1.90.0",
+    "@vscode/vsce": "4.1.0",
+    "typescript": "5.9.3"
+  }
+}
