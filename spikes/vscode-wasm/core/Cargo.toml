@@ -17,4 +17,4 @@ mdedit-language = { path = "../../../crates/language" }
 mdedit-markers = { path = "../../../crates/markers" }
 mdedit-document = { path = "../../../crates/document" }
 mdedit-highlight = { path = "../../../crates/highlight", optional = true }
-wasm-bindgen = "=0.2.129"
+wasm-bindgen = "=0.2.130"
