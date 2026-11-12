@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import { isLocalFile, launchEditor } from './launch';
 import { locateExecutable, type LocateDeps, REG_KEY } from './locate';
 import { type FileInfo, keepExisting, readRecent, recentListPath } from './recent';
+import { filterMarkdownFiles } from './select';
 
 const INSTALL_COMMAND = 'winget install BearingSoftware.SimpleMarkdownEditor';
 const RELEASES_URL = 'https://github.com/bearingsoftware/simple-markdown-editor/releases';
@@ -19,6 +20,14 @@ async function stat(path: string): Promise<FileInfo | undefined> {
     return { size: info.size, isFile: info.isFile() };
   } catch {
     return undefined;
+  }
+}
+
+async function isFileUri(uri: vscode.Uri): Promise<boolean> {
+  try {
+    return (await vscode.workspace.fs.stat(uri)).type === vscode.FileType.File;
+  } catch {
+    return false;
   }
 }
 
@@ -64,6 +73,16 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
     return;
   }
 
+  const files = await Promise.all(targets.map(isFileUri));
+  const markdown = filterMarkdownFiles(
+    targets.map((uri, i) => ({ uri, isFile: files[i] === true })),
+    (item) => ({ path: item.uri.fsPath, isFile: item.isFile }),
+  ).map((item) => item.uri);
+  if (markdown.length === 0) {
+    await vscode.window.showInformationMessage('Select Markdown files to open.');
+    return;
+  }
+
   const exe = await locateExecutable(locateDeps());
   if (exe === undefined) {
     const choice = await vscode.window.showErrorMessage(
@@ -76,7 +95,7 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
     return;
   }
 
-  const wanted = new Set(targets.map((target) => target.toString()));
+  const wanted = new Set(markdown.map((target) => target.toString()));
   try {
     for (const doc of vscode.workspace.textDocuments) {
       if (doc.isDirty && wanted.has(doc.uri.toString()) && !(await doc.save())) {
@@ -86,7 +105,7 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
     }
     await launchEditor(
       exe,
-      targets.map((target) => target.fsPath),
+      markdown.map((target) => target.fsPath),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
