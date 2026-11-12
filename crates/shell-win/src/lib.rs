@@ -63,6 +63,8 @@ pub mod registry;
 mod com;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 /// Why shell integration could not do what was asked.
@@ -114,32 +116,95 @@ pub fn is_embedding(argument: &str) -> bool {
 pub const HAND_OFF_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// What came of offering files to a running editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandedOff {
     /// A running editor took them. This process has nothing left to do.
     Delivered,
+    /// A call into the running editor was made and its outcome is not known (it failed after
+    /// the files may have been delivered, or it had not answered when the wait ran out). The text
+    /// says why, for the log. **Treated as delivered**: opening twice is the worse failure.
+    Uncertain(String),
     /// No editor is running for this user, so the files are this process's to open.
     NobodyListening,
 }
 
-/// Runs `work` on its own thread and waits at most `limit` for the answer.
+/// Which side of a hand-off gets to decide what happened to the files.
+///
+/// Exactly one of the sender's wait expiring and the worker starting its call wins, because the
+/// alternative (the sender gives up and opens the files itself while the worker's call lands
+/// later) opens them twice.
+#[derive(Debug)]
+pub(crate) struct Claim(AtomicU8);
+
+impl Claim {
+    const IDLE: u8 = 0;
+    const DELIVERING: u8 = 1;
+    const ABANDONED: u8 = 2;
+
+    fn new() -> Self {
+        Self(AtomicU8::new(Self::IDLE))
+    }
+
+    /// The worker's: true if it may make the call that carries the files.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn begin_delivery(&self) -> bool {
+        self.0
+            .compare_exchange(
+                Self::IDLE,
+                Self::DELIVERING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// The sender's, on expiry: true if the worker never started, so nothing is in flight.
+    fn abandon(&self) -> bool {
+        self.0
+            .compare_exchange(
+                Self::IDLE,
+                Self::ABANDONED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+}
+
+/// Runs `work` on its own thread and waits at most `limit` for its answer.
 ///
 /// COM calls into another process block until it replies, and there is no timeout on them. The
 /// thread is abandoned on expiry rather than cancelled; the process is about to either exit or
 /// become the editor, and a stuck call cannot outlive it.
+///
+/// On expiry, if `work` never claimed delivery this is [`Error::TimedOut`] and the worker will
+/// skip its call. If it had, the files are in flight to an editor that has not answered, and the
+/// answer is [`HandedOff::Uncertain`]: **no fallback**, because that editor has them or will. The
+/// case left is an editor that then hangs forever: the person sees nothing, runs the command
+/// again, and gets a window after the next wait.
 #[cfg_attr(not(windows), allow(dead_code))]
-fn within<T: Send + 'static>(
+fn bounded(
     limit: Duration,
-    work: impl FnOnce() -> T + Send + 'static,
-) -> Option<T> {
+    work: impl FnOnce(&Claim) -> Result<HandedOff, Error> + Send + 'static,
+) -> Result<HandedOff, Error> {
+    let claim = Arc::new(Claim::new());
+    let worker = Arc::clone(&claim);
     let (send, receive) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name("hand-off".into())
         .spawn(move || {
-            let _ = send.send(work());
-        })
-        .ok()?;
-    receive.recv_timeout(limit).ok()
+            let _ = send.send(work(&worker));
+        });
+    if spawned.is_err() {
+        return Err(Error::Com("could not start the hand-off thread".into()));
+    }
+    match receive.recv_timeout(limit) {
+        Ok(answer) => answer,
+        Err(_) if claim.abandon() => Err(Error::TimedOut),
+        Err(_) => Ok(HandedOff::Uncertain(
+            "the running editor had not answered when the wait ran out".into(),
+        )),
+    }
 }
 
 /// A command line, sorted into what this process should treat as what.
@@ -195,16 +260,16 @@ pub fn decide(
         return Outcome::StartHere;
     }
     match hand_off(&sendable) {
-        Ok(HandedOff::Delivered) => Outcome::HandedOver,
+        Ok(HandedOff::Delivered | HandedOff::Uncertain(_)) => Outcome::HandedOver,
         Ok(HandedOff::NobodyListening) | Err(_) => Outcome::StartHere,
     }
 }
 
 /// Offers `paths` (absolute) to the editor already running for this user, if there is one.
 ///
-/// Bounded by [`HAND_OFF_TIMEOUT`]. If it expires the files may still arrive later, so a slow editor
-/// can end up with them and this process starting a second window too; opening a file already open
-/// just activates its tab, so that costs a window and not data.
+/// Bounded by [`HAND_OFF_TIMEOUT`]. If the wait expires before the call into the editor started,
+/// nothing is sent and the answer is [`Error::TimedOut`]; if the call had started, the answer is
+/// [`HandedOff::Uncertain`] and the caller must not open the files itself.
 ///
 /// # Errors
 ///
@@ -212,8 +277,20 @@ pub fn decide(
 /// failure. Either way the caller should open the files itself.
 #[cfg(windows)]
 pub fn hand_off(paths: &[PathBuf]) -> Result<HandedOff, Error> {
+    hand_off_within(paths, HAND_OFF_TIMEOUT, &com::CLSID_DROP_TARGET)
+}
+
+#[cfg(windows)]
+fn hand_off_within(
+    paths: &[PathBuf],
+    limit: Duration,
+    class: &windows_core::GUID,
+) -> Result<HandedOff, Error> {
     let paths = paths.to_vec();
-    within(HAND_OFF_TIMEOUT, move || com::hand_off(&paths)).unwrap_or(Err(Error::TimedOut))
+    let class = *class;
+    bounded(limit, move |claim| {
+        com::hand_off_class(&paths, claim, &class)
+    })
 }
 
 /// Writes the footprint in [`registry::plan`], pointing at `exe`.
@@ -307,6 +384,14 @@ mod elsewhere {
     /// Nothing, held so the caller compiles.
     #[derive(Debug)]
     pub struct Server;
+
+    impl Server {
+        /// Why a second launch cannot find this process, if it cannot.
+        #[must_use]
+        pub fn hand_off_unavailable(&self) -> Option<&str> {
+            None
+        }
+    }
 }
 
 #[cfg(not(windows))]
@@ -318,7 +403,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use super::{Error, HandedOff, Outcome, classify, decide, is_embedding, within};
+    use super::{Error, HandedOff, Outcome, bounded, classify, decide, is_embedding};
 
     fn launch(args: &[&str]) -> super::Launch {
         classify(args.iter().map(OsString::from))
@@ -393,18 +478,44 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_that_never_returns_is_abandoned_at_the_limit() {
-        let started = std::time::Instant::now();
-        let answer = within(Duration::from_millis(100), || {
-            std::thread::sleep(Duration::from_secs(30));
-        });
-        assert!(answer.is_none());
-        assert!(started.elapsed() < Duration::from_secs(5));
+    fn a_prompt_answer_is_returned() {
+        let answer = bounded(Duration::from_secs(5), |_| Ok(HandedOff::Delivered));
+        assert_eq!(answer.ok(), Some(HandedOff::Delivered));
     }
 
+    /// The sender's wait expires before the worker has started its call: the sender wins, the worker
+    /// is refused its call, and the caller starts normally.
     #[test]
-    fn a_prompt_answer_is_returned() {
-        assert_eq!(within(Duration::from_secs(5), || 7), Some(7));
+    fn when_the_sender_wins_the_worker_skips_delivery() {
+        let (tell, hear) = std::sync::mpsc::channel();
+        let answer = bounded(Duration::from_millis(50), move |claim| {
+            std::thread::sleep(Duration::from_millis(500));
+            let _ = tell.send(claim.begin_delivery());
+            Ok(HandedOff::Delivered)
+        });
+        assert!(matches!(answer, Err(Error::TimedOut)), "{answer:?}");
+        assert_eq!(hear.recv_timeout(Duration::from_secs(5)), Ok(false));
+    }
+
+    /// The worker has claimed delivery and the editor has not answered: no fallback.
+    #[test]
+    fn when_the_worker_wins_the_sender_does_not_fall_back() {
+        let answer = bounded(Duration::from_millis(50), |claim| {
+            let claimed = claim.begin_delivery();
+            std::thread::sleep(Duration::from_millis(500));
+            if claimed {
+                Ok(HandedOff::Delivered)
+            } else {
+                Err(Error::TimedOut)
+            }
+        });
+        assert!(matches!(answer, Ok(HandedOff::Uncertain(_))), "{answer:?}");
+        let outcome = decide(
+            &launch(&["a.md"]),
+            |p| Some(p.to_path_buf()),
+            |_| Ok(HandedOff::Uncertain(String::new())),
+        );
+        assert_eq!(outcome, Outcome::HandedOver);
     }
 
     /// COM's own argument, in the spellings the shell uses, must never reach the path parser.

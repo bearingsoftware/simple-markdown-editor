@@ -365,12 +365,47 @@ fn publish_shell(
         // deliver to and nothing to do about it — the same answer the menu's own forwarder gives.
         let _ = proxy.send_event(mdedit_app::editor::Wake::Open(paths));
     })) {
-        Ok(server) => Some(server),
+        Ok(server) => {
+            if let Some(why) = server.hand_off_unavailable() {
+                mdedit_app::log_error!("{why}");
+            }
+            Some(server)
+        }
         Err(err) => {
             mdedit_app::log_error!("no Explorer integration this run: {err}");
             None
         }
     }
+}
+
+/// Offers the command line's files to an editor that is already running, and reports whether one
+/// took them. Anything but a delivery means this process should start.
+///
+/// Before the text backend and the window, so the cost on a cold launch is one table lookup.
+#[cfg(windows)]
+fn hand_off_files(launch: &mdedit_shell_win::Launch) -> bool {
+    let outcome = mdedit_shell_win::decide(
+        launch,
+        |path| match mdedit_session::path::from_command_line(path) {
+            Ok(resolved) => Some(resolved),
+            Err(reason) => {
+                mdedit_app::log_error!("could not open: {reason}");
+                None
+            }
+        },
+        |paths| {
+            let answer = mdedit_shell_win::hand_off(paths);
+            match &answer {
+                Ok(mdedit_shell_win::HandedOff::Uncertain(why)) => {
+                    mdedit_app::log_error!("hand-off not confirmed, not opening twice: {why}");
+                }
+                Err(err) => mdedit_app::log_error!("hand-off failed, opening here: {err}"),
+                Ok(_) => {}
+            }
+            answer
+        },
+    );
+    outcome == mdedit_shell_win::Outcome::HandedOver
 }
 
 fn main() {
@@ -410,20 +445,8 @@ fn main() {
         let launch = mdedit_shell_win::classify(std::env::args_os().skip(1));
 
         // MDEDIT-204: files named on the command line go to the editor already running, if any, and
-        // this process exits. Before the text backend and the window, so the cost on a cold launch is
-        // one table lookup. Anything but a delivery starts here as before.
-        let handed = mdedit_shell_win::decide(
-            &launch,
-            |path| match mdedit_session::path::from_command_line(path) {
-                Ok(resolved) => Some(resolved),
-                Err(reason) => {
-                    mdedit_app::log_error!("could not open: {reason}");
-                    None
-                }
-            },
-            mdedit_shell_win::hand_off,
-        );
-        if handed == mdedit_shell_win::Outcome::HandedOver {
+        // this process exits. Before the text backend and the window.
+        if hand_off_files(&launch) {
             return;
         }
 

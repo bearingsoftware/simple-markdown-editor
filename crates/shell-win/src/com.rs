@@ -18,10 +18,10 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
-    CoAllowSetForegroundWindow, CoInitializeEx, CoRegisterClassObject, CoRevokeClassObject,
-    CoUninitialize, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IClassFactory, IClassFactory_Impl,
-    IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, REGCLS_MULTIPLEUSE, STGMEDIUM,
-    STGMEDIUM_0, TYMED_HGLOBAL,
+    CoAllowSetForegroundWindow, CoInitializeEx, CoLockObjectExternal, CoRegisterClassObject,
+    CoRevokeClassObject, CoUninitialize, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IClassFactory,
+    IClassFactory_Impl, IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA,
+    REGCLS_MULTIPLEUSE, STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL,
 };
 use windows::Win32::System::Memory::{
     GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock,
@@ -39,14 +39,15 @@ use windows::Win32::UI::Shell::{DROPFILES, DragQueryFileW, HDROP};
 use windows_core::{BOOL, GUID, IUnknown, Interface, PCWSTR, Ref, implement};
 
 use crate::registry::{CLASSES, Step};
-use crate::{Deliver, Error, HandedOff};
+use crate::{Claim, Deliver, Error, HandedOff};
 
 /// The class Explorer activates, as a GUID rather than as text.
 ///
 /// [`clsid_matches_the_registered_text`] holds it against [`crate::registry::CLSID`], because the
 /// two are written in different alphabets and a mismatch would be a registration that succeeds and
 /// an activation that finds nothing.
-const CLSID_DROP_TARGET: GUID = GUID::from_u128(0x9F2B_4C6D_1E3A_4F58_9B7C_2D5E_8A0F_1C34);
+pub(crate) const CLSID_DROP_TARGET: GUID =
+    GUID::from_u128(0x9F2B_4C6D_1E3A_4F58_9B7C_2D5E_8A0F_1C34);
 
 /// A UTF-16, NUL-terminated copy of `text`, for the Win32 calls that want one.
 fn wide(text: &str) -> Vec<u16> {
@@ -170,8 +171,18 @@ pub struct Server {
     // The Running Object Table entry that tells a second launch an editor is here. `None` if the
     // table refused, which costs the hand-off and nothing else.
     active: Option<u32>,
-    // A weak registration does not keep the object alive, so this does.
-    _target: IDropTarget,
+    // Why `active` is `None`, for the caller to log.
+    unavailable: Option<String>,
+    // A weak registration does not keep the object alive, so this does; `Drop` also unlocks it.
+    target: IDropTarget,
+}
+
+impl Server {
+    /// Why a second launch cannot find this process, if it cannot.
+    #[must_use]
+    pub fn hand_off_unavailable(&self) -> Option<&str> {
+        self.unavailable.as_deref()
+    }
 }
 
 impl Drop for Server {
@@ -183,12 +194,19 @@ impl Drop for Server {
             // SAFETY: `active` came from `RegisterActiveObject` and is revoked exactly once, for the
             // same reason as `cookie`.
             let _ = unsafe { RevokeActiveObject(active, None) };
+            // SAFETY: balances the lock taken after registering; the target is still alive.
+            let _ = unsafe { CoLockObjectExternal(&self.target, false, true) };
         }
     }
 }
 
 /// Publishes the class object. See [`crate::serve`].
 pub fn serve(deliver: Deliver) -> Result<Server, Error> {
+    serve_class(deliver, &CLSID_DROP_TARGET)
+}
+
+/// [`serve`] under a given class, so tests in parallel processes do not share one table entry.
+pub fn serve_class(deliver: Deliver, class: &GUID) -> Result<Server, Error> {
     // Apartment-threaded, because that is what a UI thread is and what `IDropTarget` requires. An
     // already-initialised apartment answers `S_FALSE`, and one initialised the *other* way answers
     // `RPC_E_CHANGED_MODE` — neither is a failure of ours, and winit initialises OLE itself when the
@@ -212,15 +230,9 @@ pub fn serve(deliver: Deliver) -> Result<Server, Error> {
     //
     // SAFETY: `factory` outlives the call — COM takes its own reference — and the GUID is a
     // 'static constant.
-    let cookie = unsafe {
-        CoRegisterClassObject(
-            &CLSID_DROP_TARGET,
-            &factory,
-            CLSCTX_LOCAL_SERVER,
-            REGCLS_MULTIPLEUSE,
-        )
-    }
-    .map_err(|err| Error::Com(format!("could not publish the class object: {err}")))?;
+    let cookie =
+        unsafe { CoRegisterClassObject(class, &factory, CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE) }
+            .map_err(|err| Error::Com(format!("could not publish the class object: {err}")))?;
 
     // The same target Explorer is handed, published where a second launch can find it without
     // asking the registry or starting anything: looking in the table asks only whether a live
@@ -229,19 +241,24 @@ pub fn serve(deliver: Deliver) -> Result<Server, Error> {
     let target: IDropTarget = Target { deliver }.into();
     let mut active = 0u32;
     // SAFETY: `target` is a live COM object, the GUID is a constant and `active` is a live local.
-    let registered = unsafe {
-        RegisterActiveObject(
-            &target,
-            &CLSID_DROP_TARGET,
-            ACTIVEOBJECT_WEAK,
-            &raw mut active,
-        )
-    };
+    let registered =
+        unsafe { RegisterActiveObject(&target, class, ACTIVEOBJECT_WEAK, &raw mut active) };
 
+    if registered.is_ok() {
+        // A weak registration lets go of the stub when the last external connection does, so the
+        // second hand-off of an editor's life would find nothing. The lock keeps it for as long as
+        // the entry is published; `Drop` undoes it.
+        //
+        // SAFETY: `target` is a live COM object.
+        let _ = unsafe { CoLockObjectExternal(&target, true, false) };
+    }
     Ok(Server {
         cookie,
         active: registered.is_ok().then_some(active),
-        _target: target,
+        unavailable: registered
+            .err()
+            .map(|err| format!("a second launch cannot hand files to this editor: {err}")),
+        target,
     })
 }
 
@@ -249,7 +266,7 @@ pub fn serve(deliver: Deliver) -> Result<Server, Error> {
 ///
 /// Runs on a thread of its own, so it joins the multithreaded apartment: nothing here needs a message
 /// loop, and the call into the editor's apartment is marshalled and waits for its UI thread.
-pub fn hand_off(paths: &[PathBuf]) -> Result<HandedOff, Error> {
+pub fn hand_off_class(paths: &[PathBuf], claim: &Claim, class: &GUID) -> Result<HandedOff, Error> {
     // SAFETY: no arguments are borrowed. Balanced below only when it succeeded; a thread already in
     // the other mode answers an error and is left as it was.
     let initialised = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
@@ -257,7 +274,7 @@ pub fn hand_off(paths: &[PathBuf]) -> Result<HandedOff, Error> {
 
     let mut found: Option<IUnknown> = None;
     // SAFETY: the GUID is a constant and `found` is a live local the call writes through.
-    let looked = unsafe { GetActiveObject(&CLSID_DROP_TARGET, None, &raw mut found) };
+    let looked = unsafe { GetActiveObject(class, None, &raw mut found) };
     let Some(running) = found.filter(|_| looked.is_ok()) else {
         return Ok(HandedOff::NobodyListening);
     };
@@ -277,15 +294,24 @@ pub fn hand_off(paths: &[PathBuf]) -> Result<HandedOff, Error> {
     .into();
     let mut effect = DROPEFFECT_COPY;
     let at = POINTL { x: 0, y: 0 };
+    // The sender may already have given up; if so nothing is sent, so nothing can arrive late.
+    if !claim.begin_delivery() {
+        return Ok(HandedOff::NobodyListening);
+    }
     // SAFETY: a live data object, a live `POINTL` and a live `DROPEFFECT`, which is the whole of what
     // these calls read and write. Enter then drop is the sequence Explorer uses.
-    unsafe {
-        target
-            .DragEnter(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect)
-            .and_then(|()| target.Drop(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect))
+    unsafe { target.DragEnter(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect) }
+        .map_err(|err| Error::Com(format!("the running editor refused the files: {err}")))?;
+    // SAFETY: as above.
+    match unsafe { target.Drop(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect) } {
+        Ok(()) => Ok(HandedOff::Delivered),
+        // The receiver delivers before it returns, so an error here (a dropped connection, a panic
+        // contained on its side) may come after the tabs opened. Starting a window as well would
+        // open them twice, which is worse than the rare case where they never opened.
+        Err(err) => Ok(HandedOff::Uncertain(format!(
+            "the drop failed after the editor was offered the files: {err}"
+        ))),
     }
-    .map_err(|err| Error::Com(format!("the running editor refused the files: {err}")))?;
-    Ok(HandedOff::Delivered)
 }
 
 /// Balances a successful `CoInitializeEx` on this thread.
@@ -1093,43 +1119,28 @@ mod tests {
         );
     }
 
-    /// Nobody has published the entry, so there is nobody to hand to, and nothing was started.
-    #[test]
-    fn with_no_editor_published_nobody_is_listening() {
-        let answer = std::thread::spawn(|| super::hand_off(&[PathBuf::from(r"C:\a.md")]))
-            .join()
-            .expect("the thread should not panic");
-        assert!(matches!(answer, Ok(crate::HandedOff::NobodyListening)));
+    // ---- the whole route. Each test publishes under a class of its own: the table is shared by
+    // every test process running at once, and an editor from another test must not answer. ----
+
+    use std::time::Duration;
+
+    fn serve_in(
+        class: &windows_core::GUID,
+        deliver: impl Fn(Vec<PathBuf>) + Send + Sync + 'static,
+    ) -> super::Server {
+        super::serve_class(Box::new(deliver), class).expect("the class should publish")
     }
 
-    /// The whole route in one process: this thread is the editor's UI thread, publishing through
-    /// `serve`; another thread is the second launch, finding it in the Running Object Table. They are
-    /// different apartments, so COM marshals the call as it would between processes.
-    #[test]
-    fn a_hand_off_reaches_a_published_server_across_apartments() {
+    /// Pumps this thread's messages (the STA's obligation to the calls routed to it) until `result`
+    /// has an answer.
+    fn pump_until<T>(result: &std::sync::mpsc::Receiver<T>) -> T {
         use windows::Win32::UI::WindowsAndMessaging::{
             DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
         };
-
-        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
-        let recorder = Arc::clone(&seen);
-        let _server = super::serve(Box::new(move |paths| {
-            recorder.lock().expect("uncontended").extend(paths);
-        }))
-        .expect("the class should publish");
-
-        let sent = vec![
-            PathBuf::from(r"C:\my notes\one.md"),
-            PathBuf::from(r"C:\日本語\two.md"),
-        ];
-        let to_send = sent.clone();
-        let (done, result) = std::sync::mpsc::channel();
-        std::thread::spawn(move || done.send(super::hand_off(&to_send)));
-
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        let answer = loop {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
             let mut message = MSG::default();
-            // SAFETY: a live `MSG`; this is the pump an STA owes the calls routed to it.
+            // SAFETY: a live `MSG`.
             while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
                 // SAFETY: the message came from the call above.
                 unsafe {
@@ -1138,16 +1149,97 @@ mod tests {
                 }
             }
             if let Ok(answer) = result.try_recv() {
-                break answer;
+                return answer;
             }
             assert!(std::time::Instant::now() < deadline, "the hand-off hung");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        };
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Runs one hand-off from a second thread while this one pumps, as an editor's UI thread does.
+    fn hand_off_while_pumping(
+        paths: Vec<PathBuf>,
+        limit: Duration,
+        class: windows_core::GUID,
+    ) -> Result<crate::HandedOff, crate::Error> {
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(crate::hand_off_within(&paths, limit, &class)));
+        pump_until(&result)
+    }
+
+    fn sent_paths() -> Vec<PathBuf> {
+        vec![
+            PathBuf::from(r"C:\my notes\one.md"),
+            PathBuf::from(r"C:\日本語\two.md"),
+        ]
+    }
+
+    /// Nobody has published the entry, so there is nobody to hand to, and nothing was started.
+    #[test]
+    fn with_no_editor_published_nobody_is_listening() {
+        let class = windows_core::GUID::new().expect("a fresh GUID");
+        let answer = crate::hand_off_within(&sent_paths(), Duration::from_secs(5), &class);
+        assert!(
+            matches!(answer, Ok(crate::HandedOff::NobodyListening)),
+            "{answer:?}"
+        );
+    }
+
+    /// This thread is the editor's UI thread, publishing through `serve`; another thread is the
+    /// second launch, finding it in the Running Object Table. **In one process COM hands out the
+    /// object directly** (a `#[implement]` object is agile), so this proves the lookup, the data
+    /// object and the receiver, not cross-process marshalling; that is checked by hand.
+    #[test]
+    fn a_hand_off_reaches_a_published_server_across_apartments() {
+        let class = windows_core::GUID::new().expect("a fresh GUID");
+        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let _server = serve_in(&class, move |paths| {
+            recorder.lock().expect("uncontended").extend(paths);
+        });
+
+        let answer = hand_off_while_pumping(sent_paths(), Duration::from_secs(20), class);
 
         assert!(
             matches!(answer, Ok(crate::HandedOff::Delivered)),
             "{answer:?}"
         );
-        assert_eq!(*seen.lock().expect("uncontended"), sent);
+        assert_eq!(*seen.lock().expect("uncontended"), sent_paths());
+    }
+
+    /// The entry outlives its first client: a second hand-off finds it.
+    #[test]
+    fn a_second_hand_off_still_finds_the_server() {
+        let class = windows_core::GUID::new().expect("a fresh GUID");
+        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let _server = serve_in(&class, move |paths| {
+            recorder.lock().expect("uncontended").extend(paths);
+        });
+
+        for _ in 0..2 {
+            let answer = hand_off_while_pumping(sent_paths(), Duration::from_secs(20), class);
+            assert!(
+                matches!(answer, Ok(crate::HandedOff::Delivered)),
+                "{answer:?}"
+            );
+        }
+        assert_eq!(seen.lock().expect("uncontended").len(), 4);
+    }
+
+    /// **The timeout path through the hand-off itself.** Delivery is in flight and the editor is busy
+    /// past the bound: not a fallback, because the files are on their way. Without the bounded wait
+    /// this waits out the editor and answers `Delivered`, so the assertion fails.
+    #[test]
+    fn a_busy_editor_past_the_bound_is_not_a_fallback() {
+        let class = windows_core::GUID::new().expect("a fresh GUID");
+        let _server = serve_in(&class, |_| std::thread::sleep(Duration::from_millis(1500)));
+
+        let answer = hand_off_while_pumping(sent_paths(), Duration::from_millis(300), class);
+
+        assert!(
+            matches!(answer, Ok(crate::HandedOff::Uncertain(_))),
+            "{answer:?}"
+        );
     }
 }
