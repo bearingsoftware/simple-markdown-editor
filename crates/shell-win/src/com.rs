@@ -13,27 +13,33 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use windows::Win32::Foundation::{
-    E_NOINTERFACE, E_UNEXPECTED, ERROR_FILE_NOT_FOUND, HGLOBAL, POINTL,
+    DV_E_FORMATETC, E_NOINTERFACE, E_NOTIMPL, E_OUTOFMEMORY, E_UNEXPECTED, ERROR_FILE_NOT_FOUND,
+    GlobalFree, HGLOBAL, POINT, POINTL,
 };
 use windows::Win32::System::Com::{
-    CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoInitializeEx, CoRegisterClassObject,
-    CoRevokeClassObject, DVASPECT_CONTENT, FORMATETC, IClassFactory, IClassFactory_Impl,
-    IDataObject, REGCLS_MULTIPLEUSE, STGMEDIUM, TYMED_HGLOBAL,
+    CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED,
+    CoAllowSetForegroundWindow, CoInitializeEx, CoRegisterClassObject, CoRevokeClassObject,
+    CoUninitialize, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IClassFactory, IClassFactory_Impl,
+    IDataObject, IDataObject_Impl, IEnumFORMATETC, IEnumSTATDATA, REGCLS_MULTIPLEUSE, STGMEDIUM,
+    STGMEDIUM_0, TYMED_HGLOBAL,
+};
+use windows::Win32::System::Memory::{
+    GMEM_MOVEABLE, GMEM_ZEROINIT, GlobalAlloc, GlobalLock, GlobalUnlock,
 };
 use windows::Win32::System::Ole::{
-    CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE, IDropTarget, IDropTarget_Impl,
-    ReleaseStgMedium,
+    ACTIVEOBJECT_WEAK, CF_HDROP, DROPEFFECT, DROPEFFECT_COPY, DROPEFFECT_NONE, GetActiveObject,
+    IDropTarget, IDropTarget_Impl, RegisterActiveObject, ReleaseStgMedium, RevokeActiveObject,
 };
 use windows::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, KEY_WRITE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey,
     RegCreateKeyExW, RegDeleteKeyValueW, RegDeleteTreeW, RegSetValueExW,
 };
 use windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS;
-use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
-use windows_core::{BOOL, GUID, Interface, PCWSTR, Ref, implement};
+use windows::Win32::UI::Shell::{DROPFILES, DragQueryFileW, HDROP};
+use windows_core::{BOOL, GUID, IUnknown, Interface, PCWSTR, Ref, implement};
 
 use crate::registry::{CLASSES, Step};
-use crate::{Deliver, Error};
+use crate::{Deliver, Error, HandedOff};
 
 /// The class Explorer activates, as a GUID rather than as text.
 ///
@@ -161,6 +167,11 @@ pub fn remove(steps: &[Step]) -> Result<(), Error> {
 #[derive(Debug)]
 pub struct Server {
     cookie: u32,
+    // The Running Object Table entry that tells a second launch an editor is here. `None` if the
+    // table refused, which costs the hand-off and nothing else.
+    active: Option<u32>,
+    // A weak registration does not keep the object alive, so this does.
+    _target: IDropTarget,
 }
 
 impl Drop for Server {
@@ -168,6 +179,11 @@ impl Drop for Server {
         // SAFETY: `cookie` came from `CoRegisterClassObject` and is revoked exactly once, because
         // `Server` is not `Clone` and this is its only drop.
         let _ = unsafe { CoRevokeClassObject(self.cookie) };
+        if let Some(active) = self.active {
+            // SAFETY: `active` came from `RegisterActiveObject` and is revoked exactly once, for the
+            // same reason as `cookie`.
+            let _ = unsafe { RevokeActiveObject(active, None) };
+        }
     }
 }
 
@@ -183,8 +199,9 @@ pub fn serve(deliver: Deliver) -> Result<Server, Error> {
     // windows on this thread would be the bug.
     let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
 
+    let deliver = Arc::new(deliver);
     let factory: IClassFactory = Factory {
-        deliver: Arc::new(deliver),
+        deliver: Arc::clone(&deliver),
     }
     .into();
 
@@ -205,7 +222,213 @@ pub fn serve(deliver: Deliver) -> Result<Server, Error> {
     }
     .map_err(|err| Error::Com(format!("could not publish the class object: {err}")))?;
 
-    Ok(Server { cookie })
+    // The same target Explorer is handed, published where a second launch can find it without
+    // asking the registry or starting anything: looking in the table asks only whether a live
+    // process holds the entry. That is what keeps the cold path "this process becomes the editor"
+    // rather than "COM starts a server first".
+    let target: IDropTarget = Target { deliver }.into();
+    let mut active = 0u32;
+    // SAFETY: `target` is a live COM object, the GUID is a constant and `active` is a live local.
+    let registered = unsafe {
+        RegisterActiveObject(
+            &target,
+            &CLSID_DROP_TARGET,
+            ACTIVEOBJECT_WEAK,
+            &raw mut active,
+        )
+    };
+
+    Ok(Server {
+        cookie,
+        active: registered.is_ok().then_some(active),
+        _target: target,
+    })
+}
+
+/// Offers `paths` to the editor in the Running Object Table. See [`crate::hand_off`].
+///
+/// Runs on a thread of its own, so it joins the multithreaded apartment: nothing here needs a message
+/// loop, and the call into the editor's apartment is marshalled and waits for its UI thread.
+pub fn hand_off(paths: &[PathBuf]) -> Result<HandedOff, Error> {
+    // SAFETY: no arguments are borrowed. Balanced below only when it succeeded; a thread already in
+    // the other mode answers an error and is left as it was.
+    let initialised = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let _guard = initialised.then_some(Apartment);
+
+    let mut found: Option<IUnknown> = None;
+    // SAFETY: the GUID is a constant and `found` is a live local the call writes through.
+    let looked = unsafe { GetActiveObject(&CLSID_DROP_TARGET, None, &raw mut found) };
+    let Some(running) = found.filter(|_| looked.is_ok()) else {
+        return Ok(HandedOff::NobodyListening);
+    };
+
+    let target: IDropTarget = running
+        .cast()
+        .map_err(|err| Error::Com(format!("the running editor is not a drop target: {err}")))?;
+    // A foreground-lock exemption for the server, which is what lets its window come forward rather
+    // than flash in the taskbar. Failing only costs focus.
+    //
+    // SAFETY: `running` is a live interface pointer for the call.
+    let _ = unsafe { CoAllowSetForegroundWindow(&running, None) };
+
+    let data: IDataObject = Outgoing {
+        paths: paths.to_vec(),
+    }
+    .into();
+    let mut effect = DROPEFFECT_COPY;
+    let at = POINTL { x: 0, y: 0 };
+    // SAFETY: a live data object, a live `POINTL` and a live `DROPEFFECT`, which is the whole of what
+    // these calls read and write. Enter then drop is the sequence Explorer uses.
+    unsafe {
+        target
+            .DragEnter(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect)
+            .and_then(|()| target.Drop(&data, MODIFIERKEYS_FLAGS(0), at, &raw mut effect))
+    }
+    .map_err(|err| Error::Com(format!("the running editor refused the files: {err}")))?;
+    Ok(HandedOff::Delivered)
+}
+
+/// Balances a successful `CoInitializeEx` on this thread.
+struct Apartment;
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        // SAFETY: only constructed after a `CoInitializeEx` that succeeded on this thread.
+        unsafe { CoUninitialize() };
+    }
+}
+
+/// A `CF_HDROP` data object over a list of paths: what Explorer hands `Drop`, built by the sender.
+#[implement(IDataObject)]
+struct Outgoing {
+    paths: Vec<PathBuf>,
+}
+
+/// Whether a `FORMATETC` asks for a file list in global memory.
+///
+/// # Safety
+///
+/// `wanted` must be null or point at a live `FORMATETC`, which is COM's side of the contract.
+unsafe fn asks_for_files(wanted: *const FORMATETC) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { wanted.as_ref() }.is_some_and(|format| {
+        format.cfFormat == CF_HDROP.0 && format.tymed & TYMED_HGLOBAL.0.cast_unsigned() != 0
+    })
+}
+
+impl IDataObject_Impl for Outgoing_Impl {
+    fn GetData(&self, wanted: *const FORMATETC) -> windows_core::Result<STGMEDIUM> {
+        // SAFETY: COM passes a live `FORMATETC`.
+        if !unsafe { asks_for_files(wanted) } {
+            return Err(DV_E_FORMATETC.into());
+        }
+        Ok(STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+            u: STGMEDIUM_0 {
+                hGlobal: hdrop_global(&self.paths)?,
+            },
+            // `None` hands ownership of the allocation to the receiver, who releases it.
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        })
+    }
+
+    fn QueryGetData(&self, wanted: *const FORMATETC) -> windows_core::HRESULT {
+        // SAFETY: COM passes a live `FORMATETC`.
+        if unsafe { asks_for_files(wanted) } {
+            windows_core::HRESULT(0)
+        } else {
+            DV_E_FORMATETC
+        }
+    }
+
+    // Everything else is `E_NOTIMPL`: a receiver needing more is asking for something Explorer's
+    // selection does not offer either.
+    fn GetDataHere(&self, _f: *const FORMATETC, _m: *mut STGMEDIUM) -> windows_core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn GetCanonicalFormatEtc(
+        &self,
+        _in: *const FORMATETC,
+        _out: *mut FORMATETC,
+    ) -> windows_core::HRESULT {
+        E_NOTIMPL
+    }
+    fn SetData(
+        &self,
+        _f: *const FORMATETC,
+        _m: *const STGMEDIUM,
+        _release: BOOL,
+    ) -> windows_core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumFormatEtc(&self, _direction: u32) -> windows_core::Result<IEnumFORMATETC> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DAdvise(
+        &self,
+        _f: *const FORMATETC,
+        _advf: u32,
+        _sink: Ref<'_, IAdviseSink>,
+    ) -> windows_core::Result<u32> {
+        Err(E_NOTIMPL.into())
+    }
+    fn DUnadvise(&self, _connection: u32) -> windows_core::Result<()> {
+        Err(E_NOTIMPL.into())
+    }
+    fn EnumDAdvise(&self) -> windows_core::Result<IEnumSTATDATA> {
+        Err(E_NOTIMPL.into())
+    }
+}
+
+/// A `CF_HDROP` block in movable global memory: a `DROPFILES` header and a double-NUL-terminated list
+/// of wide paths, in the order given and cut at [`MAX_FILES`], which is what the receiver reads.
+///
+/// Wide units are taken from the `OsStr` as they are, so names with unpaired surrogates survive. A
+/// NUL inside a name would end the list early, so such a name is left out rather than split.
+fn hdrop_global(paths: &[PathBuf]) -> windows_core::Result<HGLOBAL> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut list: Vec<u16> = Vec::new();
+    for path in paths.iter().take(MAX_FILES as usize) {
+        let name: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if name.is_empty() || name.contains(&0) {
+            continue;
+        }
+        list.extend(name);
+        list.push(0);
+    }
+    list.push(0);
+
+    let header = size_of::<DROPFILES>();
+    let bytes = header + list.len() * 2;
+    // SAFETY: an allocation of a size that fits both parts, freed on every path below that does not
+    // hand it to the caller.
+    let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes) }?;
+    // SAFETY: `handle` is the live allocation from above.
+    let base = unsafe { GlobalLock(handle) };
+    if base.is_null() {
+        // SAFETY: allocated above and not yet shared.
+        let _ = unsafe { GlobalFree(Some(handle)) };
+        return Err(E_OUTOFMEMORY.into());
+    }
+    // SAFETY: `base` points at `bytes` writable bytes, locked until the unlock below. Unaligned
+    // writes, so nothing depends on where the allocator put the block.
+    unsafe {
+        base.cast::<DROPFILES>().write_unaligned(DROPFILES {
+            pFiles: u32::try_from(header).unwrap_or(0),
+            pt: POINT { x: 0, y: 0 },
+            fNC: BOOL(0),
+            fWide: BOOL(1),
+        });
+        std::ptr::copy_nonoverlapping(
+            list.as_ptr().cast::<u8>(),
+            base.cast::<u8>().add(header),
+            list.len() * 2,
+        );
+        // The remaining lock count is the answer, and is expected to be zero.
+        let _ = GlobalUnlock(handle);
+    }
+    Ok(handle)
 }
 
 /// Hands out drop targets.
@@ -814,5 +1037,117 @@ mod tests {
             answer.is_err(),
             "the failure is reported to the shell rather than swallowed"
         );
+    }
+
+    // ---- the sender (MDEDIT-204) ----
+
+    fn round_trip(paths: &[PathBuf]) -> Vec<PathBuf> {
+        let handle = super::hdrop_global(paths).expect("the allocation should succeed");
+        let mut medium = STGMEDIUM {
+            tymed: TYMED_HGLOBAL.0.cast_unsigned(),
+            u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: handle },
+            pUnkForRelease: std::mem::ManuallyDrop::new(None),
+        };
+        let read = paths_in(&medium);
+        // SAFETY: the medium owns `handle`, is an HGLOBAL one, and is released once.
+        unsafe { windows::Win32::System::Ole::ReleaseStgMedium(&raw mut medium) };
+        read
+    }
+
+    /// What the sender builds, the receiver's own reader takes apart: order, spaces and non-ASCII
+    /// kept.
+    #[test]
+    fn what_the_sender_builds_the_receiver_reads() {
+        let paths: Vec<PathBuf> = [
+            r"C:\notes\one.md",
+            r"C:\my notes\two words.md",
+            r"C:\日本語\ünï cödé.md",
+            r"\server\share\x.md",
+        ]
+        .map(PathBuf::from)
+        .into();
+        assert_eq!(round_trip(&paths), paths);
+        assert!(round_trip(&[]).is_empty());
+    }
+
+    #[test]
+    fn the_sender_cuts_at_the_same_cap_the_receiver_reads() {
+        let paths: Vec<PathBuf> = (0..MAX_FILES + 10)
+            .map(|index| PathBuf::from(format!(r"C:\n\{index}.md")))
+            .collect();
+        let read = round_trip(&paths);
+        assert_eq!(read.len(), MAX_FILES as usize);
+        assert_eq!(read[..], paths[..MAX_FILES as usize]);
+    }
+
+    #[test]
+    fn a_name_with_a_nul_is_left_out_not_split() {
+        let paths = vec![
+            PathBuf::from(r"C:\a.md"),
+            PathBuf::from("C:\\b\0c.md"),
+            PathBuf::from(r"C:\d.md"),
+        ];
+        assert_eq!(
+            round_trip(&paths),
+            vec![PathBuf::from(r"C:\a.md"), PathBuf::from(r"C:\d.md")]
+        );
+    }
+
+    /// Nobody has published the entry, so there is nobody to hand to, and nothing was started.
+    #[test]
+    fn with_no_editor_published_nobody_is_listening() {
+        let answer = std::thread::spawn(|| super::hand_off(&[PathBuf::from(r"C:\a.md")]))
+            .join()
+            .expect("the thread should not panic");
+        assert!(matches!(answer, Ok(crate::HandedOff::NobodyListening)));
+    }
+
+    /// The whole route in one process: this thread is the editor's UI thread, publishing through
+    /// `serve`; another thread is the second launch, finding it in the Running Object Table. They are
+    /// different apartments, so COM marshals the call as it would between processes.
+    #[test]
+    fn a_hand_off_reaches_a_published_server_across_apartments() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DispatchMessageW, MSG, PM_REMOVE, PeekMessageW, TranslateMessage,
+        };
+
+        let seen: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let _server = super::serve(Box::new(move |paths| {
+            recorder.lock().expect("uncontended").extend(paths);
+        }))
+        .expect("the class should publish");
+
+        let sent = vec![
+            PathBuf::from(r"C:\my notes\one.md"),
+            PathBuf::from(r"C:\日本語\two.md"),
+        ];
+        let to_send = sent.clone();
+        let (done, result) = std::sync::mpsc::channel();
+        std::thread::spawn(move || done.send(super::hand_off(&to_send)));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let answer = loop {
+            let mut message = MSG::default();
+            // SAFETY: a live `MSG`; this is the pump an STA owes the calls routed to it.
+            while unsafe { PeekMessageW(&raw mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                // SAFETY: the message came from the call above.
+                unsafe {
+                    let _ = TranslateMessage(&raw const message);
+                    DispatchMessageW(&raw const message);
+                }
+            }
+            if let Ok(answer) = result.try_recv() {
+                break answer;
+            }
+            assert!(std::time::Instant::now() < deadline, "the hand-off hung");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+
+        assert!(
+            matches!(answer, Ok(crate::HandedOff::Delivered)),
+            "{answer:?}"
+        );
+        assert_eq!(*seen.lock().expect("uncontended"), sent);
     }
 }
