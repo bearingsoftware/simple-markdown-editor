@@ -19,7 +19,10 @@ The extension finds the editor through its registry entry. Registry output is de
 install path containing non-ASCII characters is not matched; the extension then uses the default
 location under `%LOCALAPPDATA%`, or `mdedit.executablePath` if you set it.
 
-Only local files are supported. Untitled, remote, WSL and virtual documents are refused with a message.
+Local files and files in a WSL window are supported. A file in a WSL window (`wsl+<distro>`) opens through
+`\\wsl.localhost\<distro>\...`, so the extension installs and runs in the Windows UI side of a WSL window.
+The editor does not restore WSL files after a restart or list them in its recent files, so they do not
+appear in Open Recent. Untitled, other remote and virtual documents are refused with a message.
 Unsaved changes are saved before the file opens in the editor; if the save fails, nothing opens.
 
 If the editor is installed somewhere the extension cannot find it, set `mdedit.executablePath` in your
