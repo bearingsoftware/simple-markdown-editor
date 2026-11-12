@@ -365,12 +365,47 @@ fn publish_shell(
         // deliver to and nothing to do about it — the same answer the menu's own forwarder gives.
         let _ = proxy.send_event(mdedit_app::editor::Wake::Open(paths));
     })) {
-        Ok(server) => Some(server),
+        Ok(server) => {
+            if let Some(why) = server.hand_off_unavailable() {
+                mdedit_app::log_error!("{why}");
+            }
+            Some(server)
+        }
         Err(err) => {
             mdedit_app::log_error!("no Explorer integration this run: {err}");
             None
         }
     }
+}
+
+/// Offers the command line's files to an editor that is already running, and reports whether one
+/// took them. Anything but a delivery means this process should start.
+///
+/// Before the text backend and the window, so the cost on a cold launch is one table lookup.
+#[cfg(windows)]
+fn hand_off_files(launch: &mdedit_shell_win::Launch) -> bool {
+    let outcome = mdedit_shell_win::decide(
+        launch,
+        |path| match mdedit_session::path::from_command_line(path) {
+            Ok(resolved) => Some(resolved),
+            Err(reason) => {
+                mdedit_app::log_error!("could not open: {reason}");
+                None
+            }
+        },
+        |paths| {
+            let answer = mdedit_shell_win::hand_off(paths);
+            match &answer {
+                Ok(mdedit_shell_win::HandedOff::Uncertain(why)) => {
+                    mdedit_app::log_error!("hand-off not confirmed, not opening twice: {why}");
+                }
+                Err(err) => mdedit_app::log_error!("hand-off failed, opening here: {err}"),
+                Ok(_) => {}
+            }
+            answer
+        },
+    );
+    outcome == mdedit_shell_win::Outcome::HandedOver
 }
 
 fn main() {
@@ -404,6 +439,17 @@ fn main() {
         // not just the part after the window exists.
         let launched = std::time::Instant::now();
 
+        // Everything left after the two registration flags, sorted. `-Embedding` is what COM adds when
+        // *it* started this process rather than a person; treating it as a path would open a tab named
+        // after it on every Explorer launch.
+        let launch = mdedit_shell_win::classify(std::env::args_os().skip(1));
+
+        // MDEDIT-204: files named on the command line go to the editor already running, if any, and
+        // this process exits. Before the text backend and the window.
+        if hand_off_files(&launch) {
+            return;
+        }
+
         let text = match mdedit_text_dwrite::DirectWriteText::new() {
             Ok(text) => text,
             Err(err) => {
@@ -426,18 +472,7 @@ fn main() {
         // burn a core and distort the very latency numbers this slice exists to measure.
         event_loop.set_control_flow(ControlFlow::Wait);
 
-        // Everything left after the two registration flags and COM's own switch. `-Embedding` is
-        // what COM adds when *it* started this process rather than a person; treating it as a path
-        // would open a tab named after it on every Explorer launch.
-        let arguments: Vec<std::path::PathBuf> = std::env::args_os()
-            .skip(1)
-            .filter(|argument| {
-                !argument
-                    .to_str()
-                    .is_some_and(mdedit_shell_win::is_embedding)
-            })
-            .map(Into::into)
-            .collect();
+        let arguments = launch.paths;
         let session_path = mdedit_session::default_session_path();
         // Resolved paths from the command line or Explorer, to go into the recent list once there
         // is one. It is read in `give_it_dialogs`, below, which is after this.

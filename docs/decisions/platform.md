@@ -139,3 +139,77 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   **This is the least CI-able thing in the repo.** The registry footprint, the flag parsing and the
   twenty-file open are unit-tested; COM activation is not testable at all without a shell, and was
   driven by hand through `CoCreateInstance` + a hand-built `CF_HDROP` — which is what Explorer does.
+
+- **A launch that names files hands them to the running editor** (MDEDIT-204). `mdedit a.md b.md`
+  with an editor already running for this user sends the paths to it, which opens them as tabs and
+  comes forward, and the new process exits 0. No editor, no paths, or `-Embedding`: unchanged. This
+  partly reverses "a second hand-launch always opens a second window": a bare launch still does, a
+  launch with paths no longer does, because two processes write one session file and one
+  `recent.json` (last writer wins) and the VS Code pop-out (MDEDIT-205) needs "open this" to reach the
+  editor that is there. **Still no mutex.**
+
+  **Mechanism.** The server publishes its `IDropTarget` in the Running Object Table
+  (`RegisterActiveObject`, `ACTIVEOBJECT_WEAK`, the same CLSID) beside the class object. The sender
+  calls `GetActiveObject`, queries `IDropTarget`, builds a `CF_HDROP` `IDataObject` and calls
+  `DragEnter` then `Drop`: the receiver's one `Drop` path, with its MAX_FILES cap and `paths_in`
+  checks, exactly as for Explorer. One way in, not two. The sender resolves each path through
+  `from_command_line` and sends none it rejects; the receiver validates as for any drop.
+
+  Answers to the brief's questions:
+  1. **Only a running editor is asked.** `CoCreateInstance(CLSCTX_LOCAL_SERVER)` would start the
+     registered `LocalServer32` when nobody is there, so a cold launch would pay a process start and
+     hand off to a server COM just made. A ROT lookup answers "does a live process hold the entry"
+     and starts nothing, so the cold path is this process becoming the editor. A liveness signal,
+     not a lock: nothing it says can stop a second process. A crashed editor's entry is purged by
+     the table; a stale one that answers badly is a hand-off error, which falls back to starting.
+  2. **Registered exe differs from this exe.** The target is whatever is running, which is right.
+  3. **Unregistered portable copy.** Works: the ROT needs no registry entry, and the drop target is
+     marshalled by ole32's own proxy. Hand-off needs neither `--register` nor an installed build.
+  4. **Foreground.** The sender calls `CoAllowSetForegroundWindow` on the proxy before `Drop`; the
+     receiver already calls `focus_window` on `Wake::Open`, reused unchanged.
+  5. **Bounded wait, and exactly one side decides.** The whole hand-off runs on a worker thread and
+     the launcher waits `HAND_OFF_TIMEOUT` (3 s: a responsive local round trip is milliseconds, a
+     busy load about a second, and a longer wait looks like a hang). A shared claim (compare and
+     swap) makes the two outcomes exclusive: the worker claims "delivering" just before
+     `DragEnter`/`Drop`, the sender on expiry claims "abandoned". If the sender wins, the worker
+     skips its calls, so nothing can arrive late and this process starts normally. If the worker
+     had already claimed, the files are in flight, so the sender reports `Uncertain`, logs it, and
+     exits 0 without starting: that editor has them or will. **What is left:** a call in flight to an
+     editor that then hangs forever. The person sees nothing, runs the command again, and gets a
+     window after the next wait.
+
+  **A `Drop` error after a successful `DragEnter` is also `Uncertain`, not a fallback.** The
+  receiver delivers before it returns, so the error (a dropped connection, a panic contained on its
+  side) can come after the tabs opened. Opening twice is the worse failure: a duplicate window and a
+  second writer on the session file, against the rare case where the files never opened and the
+  person re-runs the command. An error from `DragEnter` or earlier carried nothing and does fall back.
+
+  **Publishing.** `RegisterActiveObject` is weak, so `serve` also takes `CoLockObjectExternal` (released
+  in `Drop`): Microsoft's remarks on weak registration say OLE releases the stub when the last
+  external connection goes, which would make the second hand-off of an editor's life find nothing. A
+  failed registration is logged by the app (`Server::hand_off_unavailable`) and costs only the
+  hand-off. In one process COM hands the object out directly (a `#[implement]` object is agile), so
+  the in-process tests prove lookup, data object and receiver but not cross-process marshalling.
+
+  **Who can see the entry.** Microsoft documents that a ROT entry made without
+  `ROTFLAGS_ALLOWANYCLIENT` is reachable only by "clients in the window station that registered the
+  object" ([IRunningObjectTable::Register](https://learn.microsoft.com/en-us/windows/win32/api/objidl/nf-objidl-irunningobjecttable-register));
+  `RegisterActiveObject` ([docs](https://learn.microsoft.com/en-us/windows/win32/api/oleauto/nf-oleauto-registeractiveobject))
+  has no such flag and states nothing about users, sessions or integrity levels, so this is the
+  default: this user's session and window station, and **the docs do not say whether a low-integrity
+  process of the same user can bind to it**. If it can, it can do what any local process can already
+  do through the class object (`CoCreateInstance` on the CLSID is documented in `com.rs` as open to
+  any local process): offer paths, which the receiver caps and validates as for an Explorer drop, so
+  at worst a file that exists is opened. No wider exposure than the class object, so no code change.
+  COM also removes stale entries of dead servers itself (same page), and a stale one that answers
+  badly is a hand-off error, which falls back.
+
+  **Rejected.** `CoCreateInstance` on the class (extra process start cold; needs registration, so
+  fails for an unregistered portable copy). A named mutex or pipe (a second channel, and a mutex is
+  the single-instance feature this project declined). A window message to the first window
+  (`WM_COPYDATA`: untyped, a second validation path).
+
+  **Tests.** The sender's data object round-trips through `paths_in` (order, spaces, non-ASCII, cap,
+  embedded NUL). One test publishes with `serve` on an STA thread and hands off from a second thread,
+  which in one process COM routes directly, as above. The decision and the bound are pure functions
+  with fakes, including one that never returns.

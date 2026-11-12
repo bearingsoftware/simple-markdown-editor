@@ -32,5 +32,9 @@ windows = { version = "0.62", features = [
 ] }
 windows-core = "0.62"
 
+# The in-process hand-off test is the UI thread, and a UI thread pumps messages.
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62", features = ["Win32_UI_WindowsAndMessaging"] }
+
 [lints]
 workspace = true
