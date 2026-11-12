@@ -29,6 +29,7 @@ fn main() {
         println!("  analyze_count  {}", time(runs, || { std::hint::black_box(analyze_count(&text)); }));
         println!("  analyze_flat   {}", time(runs, || { std::hint::black_box(analyze(&text)); }));
         println!("  session_new    {}", time(runs, || { std::hint::black_box(Session::new(&text)); }));
+        println!("  clone_1x_string {}", time(runs, || { std::hint::black_box(text.clone()); }));
         let mut s = Session::new(&text);
         let mid = text[text.len() / 2..].find("Some prose").unwrap() + text.len() / 2 + 5;
         let (mut ins, mut rec) = (Vec::new(), Vec::new());

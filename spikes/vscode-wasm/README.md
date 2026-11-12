@@ -13,7 +13,7 @@ export CARGO_TARGET_DIR='C:\Users\craig\projects\bearingsoftware\sme-target-wasm
 cargo install --locked --root "$PWD/.tools" wasm-bindgen-cli --version 0.2.129   # must equal the wasm-bindgen crate
 npm install                          # binaryen (wasm-opt), jsdom, @vscode/test-electron, @vscode/vsce
 ./build.sh nohl && ./build.sh hl     # pkg/ and pkg-hl/, each with opt.wasm
-npm test                             # 16 Node tests: DOM structure (probe 4) and caret mapping (probe 5)
+npm test                             # 22 Node tests: DOM (probe 4), caret mapping (probe 5), line-ending detector
 node test/bench.mjs pkg-hl           # probe 3 in Node; args: <pkg dir> [wasm file]
 cargo run -p sme-vscode-core --release --example native --no-default-features   # native reference
 ./stage.sh hl                        # copy a variant into extension/media/core
