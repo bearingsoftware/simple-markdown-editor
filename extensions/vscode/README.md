@@ -15,6 +15,10 @@ Requires Windows and the editor installed:
 winget install BearingSoftware.SimpleMarkdownEditor
 ```
 
+The extension finds the editor through its registry entry. Registry output is decoded as UTF-8, so an
+install path containing non-ASCII characters is not matched; the extension then uses the default
+location under `%LOCALAPPDATA%`, or `mdedit.executablePath` if you set it.
+
 Only local files are supported. Untitled, remote, WSL and virtual documents are refused with a message.
 Unsaved changes are saved before the file opens in the editor; if the save fails, nothing opens.
 

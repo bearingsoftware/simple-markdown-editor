@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { win32 } from 'node:path';
+import { join, win32 } from 'node:path';
 import * as vscode from 'vscode';
 import { isLocalFile, launchEditor } from './launch';
-import { locateExecutable, type LocateDeps, REG_KEY } from './locate';
+import { configuredExecutable, locateExecutable, type LocateDeps, REG_KEY } from './locate';
 import { type FileInfo, keepExisting, readRecent, recentListPath } from './recent';
 import { filterMarkdownFiles } from './select';
 
@@ -31,10 +31,13 @@ async function isFileUri(uri: vscode.Uri): Promise<boolean> {
   }
 }
 
+// reg.exe writes in the console's OEM code page, which Node cannot decode without a library. A
+// non-ASCII install path therefore comes back mangled, fails the isFile check, and the lookup falls
+// through to the default location or the machine setting.
 function readRegistry(): Promise<string | undefined> {
   return new Promise((resolve) => {
     execFile(
-      'reg.exe',
+      join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'reg.exe'),
       ['query', REG_KEY, '/v', 'InstallLocation'],
       { windowsHide: true },
       (error, stdout) => resolve(error ? undefined : stdout),
@@ -45,7 +48,9 @@ function readRegistry(): Promise<string | undefined> {
 function locateDeps(): LocateDeps {
   return {
     env: process.env,
-    configured: vscode.workspace.getConfiguration('mdedit').get<string>('executablePath') || undefined,
+    configured: configuredExecutable(
+      vscode.workspace.getConfiguration('mdedit').inspect<string>('executablePath'),
+    ),
     readRegistry,
     isFile: async (path) => (await stat(path))?.isFile === true,
   };
