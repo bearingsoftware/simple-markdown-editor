@@ -7,7 +7,7 @@ import { launchEditor } from './launch';
 import { configuredExecutable, locateExecutable, type LocateDeps, REG_KEY } from './locate';
 import { type FileInfo, keepExisting, readRecent, recentListPath } from './recent';
 import { filterMarkdownFiles } from './select';
-import { launchPath, remoteRecentPath } from './wsl';
+import { launchPath, remoteRecentPath, wslAuthority } from './wsl';
 
 const INSTALL_COMMAND = 'winget install BearingSoftware.SimpleMarkdownEditor';
 const RELEASES_URL = 'https://github.com/bearingsoftware/simple-markdown-editor/releases';
@@ -175,8 +175,12 @@ async function openRecent(): Promise<void> {
   if (target === undefined) {
     return;
   }
-  const doc = await vscode.workspace.openTextDocument(target);
-  await vscode.window.showTextDocument(doc);
+  try {
+    const doc = await vscode.workspace.openTextDocument(target);
+    await vscode.window.showTextDocument(doc);
+  } catch {
+    await vscode.window.showErrorMessage(`Could not open ${win32.basename(picked.path)}.`);
+  }
 }
 
 // The recent list holds Windows paths, but a WSL window's `file:` URIs name the Linux filesystem, so
@@ -190,10 +194,11 @@ function recentTarget(windowsPath: string): vscode.Uri | undefined {
     void vscode.window.showInformationMessage('Open Recent works in local and WSL windows only.');
     return undefined;
   }
-  const authority =
-    vscode.workspace.workspaceFolders?.[0]?.uri.authority ||
-    vscode.window.activeTextEditor?.document.uri.authority;
-  if (!authority) {
+  const authority = wslAuthority(
+    vscode.workspace.workspaceFolders?.[0]?.uri.authority,
+    vscode.window.activeTextEditor?.document.uri.authority,
+  );
+  if (authority === undefined) {
     void vscode.window.showInformationMessage('Open Recent could not find this WSL window to open the file in.');
     return undefined;
   }

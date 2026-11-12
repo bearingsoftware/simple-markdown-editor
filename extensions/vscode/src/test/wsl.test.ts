@@ -1,6 +1,21 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { launchPath, remoteRecentPath, type UriParts } from '../wsl';
+import { launchPath, remoteRecentPath, type UriParts, wslAuthority } from '../wsl';
+
+test('wslAuthority takes the folder authority first and requires the wsl+ prefix', () => {
+  const cases: Array<[string | undefined, string | undefined, string | undefined]> = [
+    ['wsl+Ubuntu-24.04', 'wsl+other', 'wsl+Ubuntu-24.04'],
+    [undefined, 'wsl+Ubuntu', 'wsl+Ubuntu'],
+    ['', 'wsl+Ubuntu', 'wsl+Ubuntu'],
+    ['ssh-remote+host', 'wsl+Ubuntu', undefined],
+    [undefined, undefined, undefined],
+    [undefined, '', undefined],
+    ['WSL+x', undefined, undefined],
+  ];
+  for (const [folder, editor, want] of cases) {
+    assert.equal(wslAuthority(folder, editor), want, `${folder} ${editor}`);
+  }
+});
 
 function remote(path: string, authority = 'wsl+Ubuntu-24.04'): UriParts {
   return { scheme: 'vscode-remote', authority, path, fsPath: path };

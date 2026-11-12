@@ -39,6 +39,11 @@ export function launchPath(uri: UriParts): string | undefined {
   return `\\\\wsl.localhost\\${distro}${uri.path.replaceAll('/', '\\')}`;
 }
 
+export function wslAuthority(folder: string | undefined, editor: string | undefined): string | undefined {
+  const chosen = folder || editor;
+  return chosen?.startsWith(WSL_AUTHORITY) ? chosen : undefined;
+}
+
 // Maps a Windows path from the editor's recent list to where the same file sits under WSL's /mnt.
 export function remoteRecentPath(windowsPath: string): string | undefined {
   const match = /^([A-Za-z]):\\(.*)$/.exec(windowsPath);
