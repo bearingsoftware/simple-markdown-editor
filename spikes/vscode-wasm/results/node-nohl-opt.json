@@ -1,0 +1,93 @@
+{
+ "wasm": "opt.wasm",
+ "bytes": 279447,
+ "compile_ms": {
+  "n": 10,
+  "median": 0.295,
+  "p99": 1.028,
+  "max": 1.028
+ },
+ "initSync_first_ms": 0.691,
+ "100KB": {
+  "bytes": 102604,
+  "first_analyze_cold_ms": 19.101,
+  "analyze_count": {
+   "n": 100,
+   "median": 4.334,
+   "p99": 7.639,
+   "max": 8.357
+  },
+  "analyze_flat": {
+   "n": 100,
+   "median": 4.302,
+   "p99": 4.794,
+   "max": 4.944
+  },
+  "session_new": {
+   "n": 100,
+   "median": 4.046,
+   "p99": 5.665,
+   "max": 5.833
+  },
+  "edit_replace": {
+   "n": 100,
+   "median": 0.348,
+   "p99": 0.514,
+   "max": 0.541
+  },
+  "edit_marshal_after": {
+   "n": 100,
+   "median": 0.294,
+   "p99": 0.567,
+   "max": 1.207
+  },
+  "edit_reconcile": {
+   "n": 100,
+   "median": 4.916,
+   "p99": 7.353,
+   "max": 7.632
+  },
+  "scoped_after_edit": true
+ },
+ "1MB": {
+  "bytes": 1048740,
+  "first_analyze_cold_ms": 56.34,
+  "analyze_count": {
+   "n": 40,
+   "median": 41.916,
+   "p99": 49.586,
+   "max": 49.586
+  },
+  "analyze_flat": {
+   "n": 40,
+   "median": 43.468,
+   "p99": 63.498,
+   "max": 63.498
+  },
+  "session_new": {
+   "n": 40,
+   "median": 43.56,
+   "p99": 46.612,
+   "max": 46.612
+  },
+  "edit_replace": {
+   "n": 40,
+   "median": 2.206,
+   "p99": 3.608,
+   "max": 3.608
+  },
+  "edit_marshal_after": {
+   "n": 40,
+   "median": 1.715,
+   "p99": 3.198,
+   "max": 3.198
+  },
+  "edit_reconcile": {
+   "n": 40,
+   "median": 41.968,
+   "p99": 57.767,
+   "max": 57.767
+  },
+  "scoped_after_edit": true
+ }
+}

@@ -51,6 +51,7 @@ oracle to test parley against.
 | [05 — Windows platform](05-windows-platform.md) | Notepad++ analysis, shell integration, code signing, distribution |
 | [06 — Performance targets](06-performance-targets.md) | Measured competitor baselines and the numbers to hit |
 | [07 — Rendering in CI](07-rendering-in-ci.md) | MDEDIT-123, measured 2026-08-15: a hosted runner *can* lay out and render a frame without a window |
+| [08 — The core in a VS Code webview](08-vscode-webview.md) | MDEDIT-206, measured: the headless crates compile to wasm unchanged and run in a real webview; VS Code normalises mixed line endings, which is the finding that decides it |
 
 ## The three riskiest parts
 
