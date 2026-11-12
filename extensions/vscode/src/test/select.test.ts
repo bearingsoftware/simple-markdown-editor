@@ -30,6 +30,17 @@ test('filterMarkdownFiles keeps only Markdown files and drops directories and ot
   );
 });
 
+test('filterMarkdownFiles keeps mapped WSL paths', () => {
+  const items = [
+    { path: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\craig\\a.md', isFile: true },
+    { path: '\\\\wsl.localhost\\Ubuntu-24.04\\home\\craig\\b.json', isFile: true },
+  ];
+  assert.deepEqual(
+    filterMarkdownFiles(items, (item) => item).map((item) => item.path),
+    ['\\\\wsl.localhost\\Ubuntu-24.04\\home\\craig\\a.md'],
+  );
+});
+
 test('filterMarkdownFiles projects items through the view', () => {
   const items = [{ uri: { fsPath: 'C:\\x\\a.md' }, kind: 'file' as const }];
   assert.deepEqual(

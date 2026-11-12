@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { test } from 'node:test';
-import { editorArguments, type FileRef, isLocalFile, launchEditor, type Spawner } from '../launch';
+import { editorArguments, launchEditor, type Spawner } from '../launch';
 
 const EXE = 'C:\\Users\\craig\\AppData\\Local\\Programs\\Simple Markdown Editor\\mdedit.exe';
 
@@ -33,16 +33,19 @@ function fakeSpawner(outcome: 'spawn' | 'error'): Fake {
   return { spawner, calls, unrefCount: () => unrefs };
 }
 
-test('isLocalFile accepts only file scheme with no authority', () => {
-  const cases: Array<[FileRef, boolean]> = [
-    [{ scheme: 'file', authority: '', fsPath: 'C:\\notes\\a.md' }, true],
-    [{ scheme: 'untitled', authority: '', fsPath: 'Untitled-1' }, false],
-    [{ scheme: 'vscode-remote', authority: 'wsl+Ubuntu', fsPath: '/home/a.md' }, false],
-    [{ scheme: 'file', authority: 'server', fsPath: '\\share\\a.md' }, false],
-    [{ scheme: 'file', authority: '', fsPath: '' }, false],
+test('editorArguments accepts a mapped WSL path and refuses other UNC paths', () => {
+  const ok = ['\\\\wsl.localhost\\Ubuntu-24.04\\home\\craig\\a b.md'];
+  assert.deepEqual(editorArguments(ok), ok);
+  const bad = [
+    '\\\\server\\share\\a.md',
+    '\\\\wsl.localhost.evil\\x\\a.md',
+    '\\\\wsl$\\Ubuntu\\a.md',
+    '\\\\wsl.localhost\\Ubuntu\\home\\a.md.',
+    '\\\\wsl.localhost\\Ubuntu\\home\\..\\a.md',
+    '\\\\wsl.localhost\\Ubuntu\\home\\a:b.md',
   ];
-  for (const [ref, want] of cases) {
-    assert.equal(isLocalFile(ref), want, JSON.stringify(ref));
+  for (const path of bad) {
+    assert.throws(() => editorArguments([path]), Error, path);
   }
 });
 

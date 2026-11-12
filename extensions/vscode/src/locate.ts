@@ -15,7 +15,7 @@ export interface LocateDeps {
   readonly isFile: (path: string) => Promise<boolean>;
 }
 
-// Only the global (user or machine) value counts. A workspace value is never read here, so a
+// Only the user (global) value counts. A workspace value is never read here, so a
 // repository cannot point the extension at an executable.
 export function configuredExecutable(
   inspected: { readonly globalValue?: unknown } | undefined,

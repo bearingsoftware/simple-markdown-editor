@@ -1,18 +1,14 @@
 import { type ChildProcess, type SpawnOptions, spawn as nodeSpawn } from 'node:child_process';
-
-export interface FileRef {
-  readonly scheme: string;
-  readonly authority: string;
-  readonly fsPath: string;
-}
+import { isSafeSegment } from './wsl';
 
 export type Spawner = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 
 // A drive path cannot begin with `-`, so this also keeps every argument clear of editor flags.
 const ABSOLUTE_DRIVE = /^[A-Za-z]:\\/;
+const WSL_PREFIX = '\\\\wsl.localhost\\';
 
-export function isLocalFile(ref: FileRef): boolean {
-  return ref.scheme === 'file' && ref.authority === '' && ref.fsPath !== '';
+function isWslArgument(path: string): boolean {
+  return path.startsWith(WSL_PREFIX) && path.slice(WSL_PREFIX.length).split('\\').every(isSafeSegment);
 }
 
 export function editorArguments(paths: readonly string[]): string[] {
@@ -20,8 +16,8 @@ export function editorArguments(paths: readonly string[]): string[] {
     throw new Error('no files to open');
   }
   for (const path of paths) {
-    if (!ABSOLUTE_DRIVE.test(path)) {
-      throw new Error(`not an absolute local path: ${JSON.stringify(path)}`);
+    if (!ABSOLUTE_DRIVE.test(path) && !isWslArgument(path)) {
+      throw new Error(`not an absolute local or WSL path: ${JSON.stringify(path)}`);
     }
   }
   return [...paths];

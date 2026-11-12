@@ -5,6 +5,7 @@ import { test } from 'node:test';
 
 interface Manifest {
   activationEvents: string[];
+  extensionKind: string[];
   engines: { vscode: string };
   devDependencies: Record<string, string>;
   dependencies?: Record<string, string>;
@@ -18,8 +19,12 @@ const manifest: Manifest = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8'),
 ) as Manifest;
 
-test('mdedit.executablePath is machine-scoped so a workspace cannot name the executable', () => {
-  assert.equal(manifest.contributes.configuration.properties['mdedit.executablePath']?.scope, 'machine');
+test('mdedit.executablePath is application-scoped so a workspace cannot name the executable', () => {
+  assert.equal(manifest.contributes.configuration.properties['mdedit.executablePath']?.scope, 'application');
+});
+
+test('the extension runs on the UI side so it loads in a WSL remote window', () => {
+  assert.deepEqual(manifest.extensionKind, ['ui']);
 });
 
 test('activation is implied by commands, with no wildcard', () => {

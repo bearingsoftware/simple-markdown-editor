@@ -3,10 +3,11 @@ import { promises as fs } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import { join, win32 } from 'node:path';
 import * as vscode from 'vscode';
-import { isLocalFile, launchEditor } from './launch';
+import { launchEditor } from './launch';
 import { configuredExecutable, locateExecutable, type LocateDeps, REG_KEY } from './locate';
 import { type FileInfo, keepExisting, readRecent, recentListPath } from './recent';
 import { filterMarkdownFiles } from './select';
+import { launchPath, remoteRecentPath, wslAuthority } from './wsl';
 
 const INSTALL_COMMAND = 'winget install BearingSoftware.SimpleMarkdownEditor';
 const RELEASES_URL = 'https://github.com/bearingsoftware/simple-markdown-editor/releases';
@@ -34,7 +35,7 @@ async function isFileUri(uri: vscode.Uri): Promise<boolean> {
 
 // reg.exe writes in the console's OEM code page, which Node cannot decode without a library. A
 // non-ASCII install path therefore comes back mangled, fails the isFile check, and the lookup falls
-// through to the default location or the machine setting.
+// through to the default location or the user setting.
 function readRegistry(): Promise<string | undefined> {
   return new Promise((resolve) => {
     execFile(
@@ -98,16 +99,20 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
   if (targets.length === 0) {
     return;
   }
-  if (!targets.every(isLocalFile)) {
-    await vscode.window.showInformationMessage('Simple Markdown Editor opens local files only.');
+  const located = targets.flatMap((uri) => {
+    const path = launchPath(uri);
+    return path === undefined ? [] : [{ uri, path }];
+  });
+  if (located.length !== targets.length) {
+    await vscode.window.showInformationMessage('Simple Markdown Editor opens local and WSL files only.');
     return;
   }
 
-  const files = await Promise.all(targets.map(isFileUri));
+  const files = await Promise.all(located.map((item) => isFileUri(item.uri)));
   const markdown = filterMarkdownFiles(
-    targets.map((uri, i) => ({ uri, isFile: files[i] === true })),
-    (item) => ({ path: item.uri.fsPath, isFile: item.isFile }),
-  ).map((item) => item.uri);
+    located.map((item, i) => ({ ...item, isFile: files[i] === true })),
+    (item) => ({ path: item.path, isFile: item.isFile }),
+  );
   if (markdown.length === 0) {
     await vscode.window.showInformationMessage('Select Markdown files to open.');
     return;
@@ -125,7 +130,7 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
     return;
   }
 
-  const wanted = new Set(markdown.map((target) => target.toString()));
+  const wanted = new Set(markdown.map((target) => target.uri.toString()));
   try {
     for (const doc of vscode.workspace.textDocuments) {
       if (doc.isDirty && wanted.has(doc.uri.toString()) && !(await doc.save())) {
@@ -135,7 +140,7 @@ async function openExternal(uri: vscode.Uri | undefined, uris: readonly vscode.U
     }
     await launchEditor(
       exe,
-      markdown.map((target) => target.fsPath),
+      markdown.map((target) => target.path),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -166,8 +171,43 @@ async function openRecent(): Promise<void> {
   if (picked === undefined) {
     return;
   }
-  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(picked.path));
-  await vscode.window.showTextDocument(doc);
+  const target = recentTarget(picked.path);
+  if (target === undefined) {
+    return;
+  }
+  try {
+    const doc = await vscode.workspace.openTextDocument(target);
+    await vscode.window.showTextDocument(doc);
+  } catch {
+    await vscode.window.showErrorMessage(`Could not open ${win32.basename(picked.path)}.`);
+  }
+}
+
+// The recent list holds Windows paths, but a WSL window's `file:` URIs name the Linux filesystem, so
+// the file is opened through the window's own remote authority.
+function recentTarget(windowsPath: string): vscode.Uri | undefined {
+  const remote = vscode.env.remoteName;
+  if (remote === undefined) {
+    return vscode.Uri.file(windowsPath);
+  }
+  if (remote !== 'wsl') {
+    void vscode.window.showInformationMessage('Open Recent works in local and WSL windows only.');
+    return undefined;
+  }
+  const authority = wslAuthority(
+    vscode.workspace.workspaceFolders?.[0]?.uri.authority,
+    vscode.window.activeTextEditor?.document.uri.authority,
+  );
+  if (authority === undefined) {
+    void vscode.window.showInformationMessage('Open Recent could not find this WSL window to open the file in.');
+    return undefined;
+  }
+  const path = remoteRecentPath(windowsPath);
+  if (path === undefined) {
+    void vscode.window.showInformationMessage('Open Recent could not map that file into WSL.');
+    return undefined;
+  }
+  return vscode.Uri.from({ scheme: 'vscode-remote', authority, path });
 }
 
 export function activate(context: vscode.ExtensionContext): void {
