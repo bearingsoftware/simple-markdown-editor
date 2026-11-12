@@ -1,0 +1,8 @@
+.tools/
+node_modules/
+.vscode-test/
+target/
+pkg/
+*.vsix
+pkg-hl/
+extension/media/core/

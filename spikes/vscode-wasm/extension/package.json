@@ -1,0 +1,22 @@
+{
+  "name": "mdedit-spike",
+  "displayName": "MDEDIT spike (not for release)",
+  "description": "MDEDIT-206: the headless editor core in a VS Code webview. A probe, never published.",
+  "version": "0.0.1",
+  "publisher": "bearingsoftware",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/bearingsoftware/simple-markdown-editor" },
+  "engines": { "vscode": "^1.90.0" },
+  "main": "./src/extension.js",
+  "categories": ["Other"],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "mdeditSpike.editor",
+        "displayName": "MDEDIT spike preview",
+        "selector": [{ "filenamePattern": "*.md" }],
+        "priority": "option"
+      }
+    ]
+  }
+}
