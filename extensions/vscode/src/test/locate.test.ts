@@ -30,7 +30,7 @@ test('parseInstallLocation returns undefined when the value is absent', () => {
   assert.equal(parseInstallLocation('ERROR: The system was unable to find the specified value.'), undefined);
 });
 
-test('locateExecutable applies machine setting, registry, then LOCALAPPDATA in order', async () => {
+test('locateExecutable applies user setting, registry, then LOCALAPPDATA in order', async () => {
   const configured = 'D:\\Portable\\mdedit.exe';
   const registryExe = `${INSTALL_DIR}mdedit.exe`;
   const fallbackExe = `${LOCAL}\\Programs\\Simple Markdown Editor\\mdedit.exe`;

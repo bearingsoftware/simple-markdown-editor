@@ -26,4 +26,4 @@ appear in Open Recent. Untitled, other remote and virtual documents are refused 
 Unsaved changes are saved before the file opens in the editor; if the save fails, nothing opens.
 
 If the editor is installed somewhere the extension cannot find it, set `mdedit.executablePath` in your
-user settings to the full path of `mdedit.exe`. That setting is machine-scoped, so a workspace cannot set it.
+user settings to the full path of `mdedit.exe`. That is a user setting, so a workspace cannot set it.

@@ -77,8 +77,8 @@
         "mdedit.executablePath": {
           "type": "string",
           "default": "",
-          "scope": "machine",
-          "markdownDescription": "Full path to `mdedit.exe`. Leave empty to use the installed editor. Machine-scoped, so a workspace cannot set it."
+          "scope": "application",
+          "markdownDescription": "Full path to `mdedit.exe`. Leave empty to use the installed editor. A user setting, so a workspace cannot set it."
         }
       }
     }
