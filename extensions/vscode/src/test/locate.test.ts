@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { type LocateDeps, locateExecutable, parseInstallLocation } from '../locate';
+import { configuredExecutable, type LocateDeps, locateExecutable, parseInstallLocation } from '../locate';
 
 const INSTALL_DIR = 'C:\\Users\\craig\\AppData\\Local\\Programs\\Simple Markdown Editor\\';
 const REG_OUTPUT =
@@ -68,6 +68,19 @@ test('locateExecutable applies machine setting, registry, then LOCALAPPDATA in o
 
   for (const c of cases) {
     assert.equal(await locateExecutable(deps(c.over)), c.want, c.name);
+  }
+});
+
+test('configuredExecutable reads only the global value, ignoring a workspace value', () => {
+  const cases: Array<[{ globalValue?: unknown; workspaceValue?: unknown } | undefined, string | undefined]> = [
+    [undefined, undefined],
+    [{ workspaceValue: 'C:\\evil\\mdedit.exe' }, undefined],
+    [{ globalValue: 'D:\\Portable\\mdedit.exe', workspaceValue: 'C:\\evil\\mdedit.exe' }, 'D:\\Portable\\mdedit.exe'],
+    [{ globalValue: '' }, undefined],
+    [{ globalValue: 42 }, undefined],
+  ];
+  for (const [inspected, want] of cases) {
+    assert.equal(configuredExecutable(inspected), want, JSON.stringify(inspected));
   }
 });
 
