@@ -24,6 +24,61 @@
     },
     "virtualWorkspaces": false
   },
+  "contributes": {
+    "commands": [
+      {
+        "command": "mdedit.openExternal",
+        "title": "Open in Simple Markdown Editor"
+      },
+      {
+        "command": "mdedit.openRecent",
+        "title": "Open Recent from Simple Markdown Editor"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "mdedit.openExternal",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "mdedit.openExternal",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "mdedit.openExternal",
+          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "mdedit.openExternal",
+          "when": "resourceExtname == .md || resourceExtname == .markdown"
+        },
+        {
+          "command": "mdedit.openRecent"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Simple Markdown Editor",
+      "properties": {
+        "mdedit.executablePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Full path to `mdedit.exe`. Leave empty to use the installed editor. Machine-scoped, so a workspace cannot set it."
+        }
+      }
+    }
+  },
   "scripts": {
     "compile": "tsc -p ./",
     "check": "tsc --noEmit",
