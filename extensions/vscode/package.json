@@ -2,7 +2,7 @@
   "name": "simple-markdown-editor",
   "displayName": "Simple Markdown Editor",
   "description": "Open Markdown files in Simple Markdown Editor, the native Windows Markdown editor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "bearingsoftware",
   "license": "MIT",
   "repository": {
@@ -15,6 +15,9 @@
   },
   "categories": [
     "Other"
+  ],
+  "extensionKind": [
+    "ui"
   ],
   "main": "./out/extension.js",
   "activationEvents": [],
