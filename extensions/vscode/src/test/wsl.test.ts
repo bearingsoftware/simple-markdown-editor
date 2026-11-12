@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { launchPath, type UriParts } from '../wsl';
+import { launchPath, remoteRecentPath, type UriParts } from '../wsl';
 
 function remote(path: string, authority = 'wsl+Ubuntu-24.04'): UriParts {
   return { scheme: 'vscode-remote', authority, path, fsPath: path };
@@ -57,6 +57,47 @@ test('a WSL path with a dot-dot or dot segment is refused', () => {
 test('a WSL path with NUL, backslash or no leading slash is refused', () => {
   for (const path of ['/home/a\0.md', '/home/a\\b.md', 'home/a.md']) {
     assert.equal(launchPath(remote(path)), undefined, JSON.stringify(path));
+  }
+});
+
+test('a distro containing @ or a backslash, or ending in a dot, is refused', () => {
+  for (const authority of ['wsl+a@b', 'wsl+a\\b', 'wsl+Ubuntu.']) {
+    assert.equal(launchPath(remote('/home/a.md', authority)), undefined, authority);
+  }
+});
+
+test('the wsl+ prefix is case-sensitive', () => {
+  for (const authority of ['WSL+x', 'Wsl+x']) {
+    assert.equal(launchPath(remote('/home/a.md', authority)), undefined, authority);
+  }
+});
+
+test('a path segment ending in a dot or a space is refused', () => {
+  for (const path of ['/home/a./b.md', '/home/a /b.md', '/home/craig/a.md.', '/home/craig/a.md ']) {
+    assert.equal(launchPath(remote(path)), undefined, JSON.stringify(path));
+  }
+});
+
+test('an empty, trailing-slash, colon or triple-dot segment is refused', () => {
+  for (const path of ['/home//a.md', '/home/a.md/', '/', '/home/a:b.md', '/home/...', '/home/.../a.md']) {
+    assert.equal(launchPath(remote(path)), undefined, JSON.stringify(path));
+  }
+});
+
+test('remoteRecentPath maps a Windows drive path under /mnt with a lowercase drive', () => {
+  const cases: Array<[string, string]> = [
+    ['C:\\a\\b.md', '/mnt/c/a/b.md'],
+    ['D:\\My Notes\\é.md', '/mnt/d/My Notes/é.md'],
+    ['X:\\a.md', '/mnt/x/a.md'],
+  ];
+  for (const [windows, want] of cases) {
+    assert.equal(remoteRecentPath(windows), want, windows);
+  }
+});
+
+test('remoteRecentPath refuses UNC, drive-relative, and unsafe segments', () => {
+  for (const windows of ['\\\\server\\share\\a.md', 'C:', 'C:a.md', 'C:\\a\\..\\b.md', 'C:\\a\\b.md.', 'C:\\']) {
+    assert.equal(remoteRecentPath(windows), undefined, windows);
   }
 });
 

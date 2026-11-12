@@ -36,7 +36,14 @@ function fakeSpawner(outcome: 'spawn' | 'error'): Fake {
 test('editorArguments accepts a mapped WSL path and refuses other UNC paths', () => {
   const ok = ['\\\\wsl.localhost\\Ubuntu-24.04\\home\\craig\\a b.md'];
   assert.deepEqual(editorArguments(ok), ok);
-  const bad = ['\\\\server\\share\\a.md', '\\\\wsl.localhost.evil\\x\\a.md', '\\\\wsl$\\Ubuntu\\a.md'];
+  const bad = [
+    '\\\\server\\share\\a.md',
+    '\\\\wsl.localhost.evil\\x\\a.md',
+    '\\\\wsl$\\Ubuntu\\a.md',
+    '\\\\wsl.localhost\\Ubuntu\\home\\a.md.',
+    '\\\\wsl.localhost\\Ubuntu\\home\\..\\a.md',
+    '\\\\wsl.localhost\\Ubuntu\\home\\a:b.md',
+  ];
   for (const path of bad) {
     assert.throws(() => editorArguments([path]), Error, path);
   }
