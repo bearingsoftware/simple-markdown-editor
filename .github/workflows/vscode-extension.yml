@@ -1,0 +1,46 @@
+# The extension's modules are platform-independent (path handling is `path.win32` and every
+# process call is injected), so the tests run on Linux, which is the cheaper runner. Nothing here
+# publishes: the job uploads the .vsix and stops, and it holds no token.
+name: VS Code extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "extensions/vscode/**"
+      - ".github/workflows/vscode-extension.yml"
+  pull_request:
+    paths:
+      - "extensions/vscode/**"
+      - ".github/workflows/vscode-extension.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vscode-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: check · test · package
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extensions/vscode
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: extensions/vscode/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npx vsce package
+      - uses: actions/upload-artifact@v7
+        with:
+          name: vscode-extension-vsix
+          path: extensions/vscode/*.vsix
+          retention-days: 7
