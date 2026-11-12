@@ -5,7 +5,7 @@
   "description": "MDEDIT-206 spike tooling. Not published.",
   "type": "module",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "binaryen": "^132.0.0",
