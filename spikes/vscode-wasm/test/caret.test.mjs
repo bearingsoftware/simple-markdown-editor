@@ -136,3 +136,16 @@ test("byteFromPosition inverts positionFromByte at every character boundary", ()
     assert.equal(byteFromPosition(bytes, p.line, p.character), here, JSON.stringify(p));
   }
 });
+
+test("the wasm Session.position agrees with the JS conversion at every character boundary", () => {
+  const bytes = enc.encode(MIXED);
+  const session = new core.Session(MIXED);
+  let at = 0, n = 0;
+  for (const ch of dec.decode(bytes)) {
+    const p = positionFromByte(bytes, at);
+    assert.deepEqual([...session.position(at)], [p.line, p.character], `byte ${at}`);
+    at += enc.encode(ch).length;
+    n++;
+  }
+  assert.ok(n > 100);
+});

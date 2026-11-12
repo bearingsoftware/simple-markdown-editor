@@ -1,0 +1,139 @@
+{
+ "vscode": "1.145.3",
+ "tests": [
+  {
+   "name": "the editor opens with strict CSP and the wasm boots",
+   "ok": true
+  },
+  {
+   "name": "fact: what VS Code does to mixed line endings on open",
+   "ok": true
+  },
+  {
+   "name": "webview and document agree before any edit",
+   "ok": true
+  },
+  {
+   "name": "edit: after the star emphasis text is exactly one inserted byte span",
+   "ok": true
+  },
+  {
+   "name": "edit: after a 4-byte emoji, on a later line is exactly one inserted byte span",
+   "ok": true
+  },
+  {
+   "name": "edit: at the start of a line that has CRLF above and trailing spaces is exactly one inserted byte span",
+   "ok": true
+  },
+  {
+   "name": "undo in the source view reverts the webview-made edits and the webview follows",
+   "ok": true
+  },
+  {
+   "name": "a source-view edit reaches the webview",
+   "ok": true
+  },
+  {
+   "name": "fact: saved bytes versus the original file (mixed endings)",
+   "ok": true
+  },
+  {
+   "name": "bench: wasm timings and postMessage cost inside the real webview",
+   "ok": true
+  }
+ ],
+ "facts": {
+  "boot": {
+   "fetch": "blocked: Failed to fetch",
+   "fetchRefusedMs": 0.8999999910593033,
+   "hostWasmMs": 19.700000002980232,
+   "instantiateMs": 5.299999997019768,
+   "wasmBytes": 1737640
+  },
+  "diskBytes": 98,
+  "docBytes": 95,
+  "docEol": "LF",
+  "docKeepsMixedEndings": false,
+  "docCountsCR": 0,
+  "diskCountsCR": 3,
+  "undosNeededForThreeEdits": 3,
+  "savedBytes": 96,
+  "savedEqualsOriginalPlusQ": false,
+  "savedEqualsDocumentText": true,
+  "postMessage_1MB_webview_to_host_ms": {
+   "n": 10,
+   "median": 10.800048828125,
+   "max": 19.2001953125,
+   "note": "wall clock across two processes, 1 ms resolution"
+  }
+ },
+ "bench": {
+  "boot": {
+   "fetch": "blocked: Failed to fetch",
+   "fetchRefusedMs": 0.8999999910593033,
+   "hostWasmMs": 19.700000002980232,
+   "instantiateMs": 5.299999997019768,
+   "wasmBytes": 1737640
+  },
+  "100KB": {
+   "bytes": 102604,
+   "analyze_count": {
+    "n": 100,
+    "median": 4.4,
+    "p99": 7.9,
+    "max": 8.9
+   },
+   "session_new": {
+    "n": 100,
+    "median": 4.1,
+    "p99": 6.1,
+    "max": 6.2
+   },
+   "edit_replace": {
+    "n": 100,
+    "median": 0.3,
+    "p99": 0.5,
+    "max": 0.6
+   },
+   "edit_reconcile": {
+    "n": 100,
+    "median": 3.8,
+    "p99": 7,
+    "max": 7.7
+   }
+  },
+  "1MB": {
+   "bytes": 1048740,
+   "analyze_count": {
+    "n": 40,
+    "median": 69.4,
+    "p99": 94.6,
+    "max": 94.6
+   },
+   "session_new": {
+    "n": 40,
+    "median": 67.7,
+    "p99": 82.2,
+    "max": 82.2
+   },
+   "edit_replace": {
+    "n": 40,
+    "median": 3.3,
+    "p99": 3.7,
+    "max": 3.7
+   },
+   "edit_reconcile": {
+    "n": 40,
+    "median": 61.7,
+    "p99": 70.9,
+    "max": 70.9
+   }
+  },
+  "postMessage_1MB_roundtrip_ms": {
+   "n": 10,
+   "median": 23.5,
+   "p99": 36.6,
+   "max": 36.6
+  }
+ }
+}

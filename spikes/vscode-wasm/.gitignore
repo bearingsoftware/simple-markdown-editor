@@ -5,3 +5,4 @@ target/
 pkg/
 *.vsix
 pkg-hl/
+extension/media/core/

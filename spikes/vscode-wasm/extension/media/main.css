@@ -1,0 +1,10 @@
+body { font-family: var(--vscode-editor-font-family, sans-serif); color: var(--vscode-editor-foreground); background: var(--vscode-editor-background); padding: 0 1.5em; }
+.doc { white-space: pre-wrap; outline: none; max-width: 52em; }
+.doc pre.source, .doc pre { background: var(--vscode-textCodeBlock-background); padding: 0.5em; }
+.doc code { font-family: var(--vscode-editor-font-family, monospace); }
+.doc blockquote { border-left: 3px solid var(--vscode-textBlockQuote-border); margin-left: 0; padding-left: 1em; }
+.doc li > span, .doc p, .doc h1, .doc h2, .doc h3 { white-space: pre-wrap; }
+.tok-key, .tok-tag { color: var(--vscode-symbolIcon-keywordForeground, #c586c0); }
+.tok-string { color: var(--vscode-symbolIcon-stringForeground, #ce9178); }
+.tok-number, .tok-literal { color: var(--vscode-symbolIcon-numberForeground, #b5cea8); }
+.tok-comment { color: var(--vscode-editorLineNumber-foreground); font-style: italic; }

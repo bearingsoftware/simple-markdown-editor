@@ -158,6 +158,19 @@ impl Session {
         self.doc.is_scoped()
     }
 
+    /// VS Code position of a byte: `[line, UTF-16 column]`. A byte between a CRLF pair steps back to before the CR.
+    pub fn position(&self, byte: u32) -> Vec<u32> {
+        let rope = self.doc.rope();
+        let mut byte = (byte as usize).min(rope.len_bytes());
+        if byte > 0 && byte < rope.len_bytes() && rope.byte(byte) == 0x0a && rope.byte(byte - 1) == 0x0d {
+            byte -= 1;
+        }
+        let char_idx = rope.byte_to_char(byte);
+        let line = rope.char_to_line(char_idx);
+        let column = rope.char_to_utf16_cu(char_idx) - rope.char_to_utf16_cu(rope.line_to_char(line));
+        vec![line as u32, column as u32]
+    }
+
     pub fn undo(&mut self) -> bool {
         self.doc.undo()
     }
