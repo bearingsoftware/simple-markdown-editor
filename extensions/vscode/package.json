@@ -39,31 +39,32 @@
       "explorer/context": [
         {
           "command": "mdedit.openExternal",
-          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "when": "isWindows && resourceFilename =~ /\\.(md|markdown)$/i",
           "group": "navigation"
         }
       ],
       "editor/title/context": [
         {
           "command": "mdedit.openExternal",
-          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "when": "isWindows && resourceFilename =~ /\\.(md|markdown)$/i",
           "group": "navigation"
         }
       ],
       "editor/title": [
         {
           "command": "mdedit.openExternal",
-          "when": "resourceExtname == .md || resourceExtname == .markdown",
+          "when": "isWindows && resourceFilename =~ /\\.(md|markdown)$/i",
           "group": "navigation"
         }
       ],
       "commandPalette": [
         {
           "command": "mdedit.openExternal",
-          "when": "resourceExtname == .md || resourceExtname == .markdown"
+          "when": "isWindows && resourceFilename =~ /\\.(md|markdown)$/i"
         },
         {
-          "command": "mdedit.openRecent"
+          "command": "mdedit.openRecent",
+          "when": "isWindows"
         }
       ]
     },

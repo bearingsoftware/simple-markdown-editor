@@ -26,8 +26,16 @@ test('activation is implied by commands, with no wildcard', () => {
   assert.deepEqual(manifest.activationEvents, []);
 });
 
-test('every extension-scoped when clause matches exactly .md and .markdown', () => {
-  const wanted = 'resourceExtname == .md || resourceExtname == .markdown';
+test('every menu entry is gated on isWindows', () => {
+  const entries = Object.values(manifest.contributes.menus).flat();
+  assert.equal(entries.length, 5);
+  for (const entry of entries) {
+    assert.ok(entry.when?.startsWith('isWindows'), entry.command);
+  }
+});
+
+test('the openExternal when clauses match exactly .md and .markdown by filename', () => {
+  const wanted = 'isWindows && resourceFilename =~ /\\.(md|markdown)$/i';
   const whens = Object.values(manifest.contributes.menus)
     .flat()
     .filter((item) => item.command === 'mdedit.openExternal')
