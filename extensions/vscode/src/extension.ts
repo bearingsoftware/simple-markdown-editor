@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { join, win32 } from 'node:path';
 import * as vscode from 'vscode';
 import { isLocalFile, launchEditor } from './launch';
@@ -54,6 +55,30 @@ function locateDeps(): LocateDeps {
     readRegistry,
     isFile: async (path) => (await stat(path))?.isFile === true,
   };
+}
+
+// Undefined when the file is missing. Stops at `limit` so an oversized file is never read whole.
+async function readBounded(path: string, limit: number): Promise<Uint8Array | undefined> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(path, 'r');
+  } catch {
+    return undefined;
+  }
+  try {
+    const buffer = Buffer.alloc(limit);
+    let total = 0;
+    while (total < limit) {
+      const { bytesRead } = await handle.read(buffer, total, limit - total, total);
+      if (bytesRead === 0) {
+        break;
+      }
+      total += bytesRead;
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    await handle.close();
+  }
 }
 
 function windowsOnly(): boolean {
@@ -123,7 +148,7 @@ async function openRecent(): Promise<void> {
     return;
   }
   const file = recentListPath(process.env);
-  const listed = file === undefined ? [] : await readRecent(file, { stat, read: (path) => fs.readFile(path, 'utf8') });
+  const listed = file === undefined ? [] : await readRecent(file, { readBounded });
   const existing = await keepExisting(listed, stat);
   if (existing.length === 0) {
     await vscode.window.showInformationMessage('Simple Markdown Editor has no recent files to offer.');

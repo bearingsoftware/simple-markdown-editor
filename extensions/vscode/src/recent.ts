@@ -11,8 +11,7 @@ export interface FileInfo {
 }
 
 export interface RecentDeps {
-  readonly stat: (path: string) => Promise<FileInfo | undefined>;
-  readonly read: (path: string) => Promise<string>;
+  readonly readBounded: (path: string, limit: number) => Promise<Uint8Array | undefined>;
 }
 
 export function recentListPath(env: Readonly<Record<string, string | undefined>>): string | undefined {
@@ -38,19 +37,24 @@ export function parseRecent(text: string): string[] {
     .slice(0, MAX_ENTRIES);
 }
 
+// One byte past the limit is read so that a file exactly at the limit is told apart from a larger one.
 export async function readRecent(file: string, deps: RecentDeps): Promise<string[]> {
-  const info = await deps.stat(file);
-  if (!info?.isFile || info.size > MAX_BYTES) {
-    return [];
-  }
+  let bytes: Uint8Array | undefined;
   try {
-    return parseRecent(await deps.read(file));
+    bytes = await deps.readBounded(file, MAX_BYTES + 1);
   } catch {
     return [];
   }
+  if (bytes === undefined || bytes.byteLength > MAX_BYTES) {
+    return [];
+  }
+  return parseRecent(new TextDecoder().decode(bytes));
 }
 
-export async function keepExisting(paths: readonly string[], stat: RecentDeps['stat']): Promise<string[]> {
+export async function keepExisting(
+  paths: readonly string[],
+  stat: (path: string) => Promise<FileInfo | undefined>,
+): Promise<string[]> {
   const infos = await Promise.all(paths.map(stat));
   return paths.filter((_, i) => infos[i]?.isFile === true);
 }
