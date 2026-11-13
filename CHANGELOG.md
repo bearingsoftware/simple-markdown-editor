@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.4.0...v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **MDEDIT-204:** hand command-line files to a running editor before starting one ([f9e7605](https://github.com/bearingsoftware/simple-markdown-editor/commit/f9e76050b6f153842d92bcef5ceaa0182204faea))
+* **MDEDIT-204:** publish the drop target in the running object table and add a sender ([9344232](https://github.com/bearingsoftware/simple-markdown-editor/commit/9344232cb16fcff7111aa4f5ea557d8e95d322a9))
+* **MDEDIT-206:** minimal custom editor and a real-VS-Code test of edit, undo and messaging ([9cc1296](https://github.com/bearingsoftware/simple-markdown-editor/commit/9cc1296ac9be7639d3fc56ca2c212be39852cd56))
+* **MDEDIT-206:** render the marker partition to DOM and map the caret back to bytes ([d47ec64](https://github.com/bearingsoftware/simple-markdown-editor/commit/d47ec642332993307a963044ed864cf8363e6873))
+
+
+### Bug Fixes
+
+* **deps:** update rust crate skrifa to 0.50 ([a6cd065](https://github.com/bearingsoftware/simple-markdown-editor/commit/a6cd065f29ce32ba7bee5d90dc1852f6076bb5e6))
+* **deps:** update rust crate skrifa to 0.50 ([e43bf89](https://github.com/bearingsoftware/simple-markdown-editor/commit/e43bf89e86cb4325b87b9168e12db5cef3f22f2e))
+* **deps:** update rust crate wasm-bindgen to v0.2.130 ([fee94ea](https://github.com/bearingsoftware/simple-markdown-editor/commit/fee94eaefb7a2d8a9ba44424e9b82ee944afbd94))
+* **deps:** update rust crate wasm-bindgen to v0.2.130 ([95d8474](https://github.com/bearingsoftware/simple-markdown-editor/commit/95d847467e4c586aa2c7ca986b922d9ed3c93eb7))
+* **MDEDIT-204:** one side decides a timed-out hand-off, and an unsure delivery is not retried ([13392c4](https://github.com/bearingsoftware/simple-markdown-editor/commit/13392c4becc6e90beec78496c13aa4fbea970fb6))
+
+
+### Documentation
+
+* **MDEDIT-204:** record the hand-off mechanism and why it is not a single-instance lock ([2ac416b](https://github.com/bearingsoftware/simple-markdown-editor/commit/2ac416b7dbb67d6572e81816a762ea9203726542))
+* **MDEDIT-206:** research note, spike README and saved results ([b864103](https://github.com/bearingsoftware/simple-markdown-editor/commit/b864103740f8f598819fbeaaa3bd4cd4b75ae810))
+* **MDEDIT-206:** review fixes: native numbers, reconcile cost, conditional recommendation, EOL detector ([2392cb2](https://github.com/bearingsoftware/simple-markdown-editor/commit/2392cb275259792685498fb27dc92328fbf27fc9))
+
 ## [0.4.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.3.0...v0.4.0) (2026-11-11)
 
 
