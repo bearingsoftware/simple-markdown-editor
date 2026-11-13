@@ -8,7 +8,7 @@ description = "Spike (MDEDIT-5): does parley/fontique resolve mixed-script text 
 
 [dependencies]
 parley = "0.12"
-skrifa = "0.49"
+skrifa = "0.50"
 
 # Standalone: kept out of the main workspace so the spike never enters CI.
 [workspace]
