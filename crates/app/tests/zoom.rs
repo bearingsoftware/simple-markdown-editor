@@ -284,7 +284,10 @@ fn the_distance_into_a_chunk_scales_with_the_text() {
 
 /// One chunk far taller than the window, so the viewport rests deep inside it.
 fn one_long_paragraph() -> String {
-    (0..300)
-        .map(|line| format!("line {line} of one long paragraph\n"))
-        .collect()
+    use std::fmt::Write as _;
+
+    (0..300).fold(String::new(), |mut out, line| {
+        let _ = writeln!(out, "line {line} of one long paragraph");
+        out
+    })
 }
