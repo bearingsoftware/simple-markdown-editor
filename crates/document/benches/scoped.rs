@@ -2,6 +2,8 @@
 //! public edit API, which is the path that re-parses only a scope. Prints the median and p99 of
 //! each size, because the latency target is a p99 and criterion reports a mean.
 
+#![allow(clippy::expect_used, clippy::print_stdout)]
+
 use std::time::{Duration, Instant};
 
 use mdedit_document::Document;
