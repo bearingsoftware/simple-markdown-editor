@@ -56,7 +56,7 @@ impl Language for NeverConceals {
         tiling(source)
     }
 
-    fn analyze_region(&self, _source: &str, _region: ByteSpan) -> Option<Analysis> {
+    fn analyze_region(&self, _text: &str, _at: ByteOffset) -> Option<Analysis> {
         // No safe restart boundary, which is the answer JSON will give inside a deep object.
         None
     }
@@ -151,10 +151,7 @@ fn markdown_is_a_language_like_any_other() {
     assert!(
         document
             .language()
-            .analyze_region(
-                "# Title\n",
-                ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(8))
-            )
+            .analyze_region("# Title\n", ByteOffset::ZERO)
             .is_some(),
         "a top-level block boundary is a safe restart, which is what MDEDIT-18 rests on"
     );

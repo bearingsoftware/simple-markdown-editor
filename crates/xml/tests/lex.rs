@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use mdedit_language::{Language, SegmentKind, Token};
-use mdedit_offsets::{ByteOffset, ByteSpan};
+use mdedit_offsets::ByteOffset;
 use mdedit_xml::{Xml, analyze};
 use proptest::prelude::*;
 
@@ -235,8 +235,7 @@ fn a_grandchild_is_not_a_block() {
 fn a_region_is_refused_because_there_is_no_safe_place_to_restart() {
     let source = "<root><item>one</item></root>";
     assert!(
-        Xml.analyze_region(source, ByteSpan::new(ByteOffset::ZERO, ByteOffset::new(6)))
-            .is_none(),
+        Xml.analyze_region(&source[..6], ByteOffset::ZERO).is_none(),
         "depth is the whole of the state and no offset carries it"
     );
 }
@@ -307,4 +306,17 @@ proptest! {
             prop_assert!(block.span().end().get() <= source.len());
         }
     }
+}
+
+/// MDEDIT-207: the trait takes the region's text, and XML still refuses it at a block start and at
+/// byte zero alike.
+#[test]
+fn a_slice_at_a_block_start_or_byte_zero_is_refused() {
+    let source = "<root>\n<item>one</item>\n<item>two</item>\n</root>\n";
+    let first_block = analyze(source).blocks[0].span().start().get();
+    assert!(Xml.analyze_region(source, ByteOffset::ZERO).is_none());
+    assert!(
+        Xml.analyze_region(&source[first_block..], ByteOffset::new(first_block))
+            .is_none()
+    );
 }

@@ -84,8 +84,8 @@ impl Language for Xml {
     /// is, and depth is the whole of the state — an element at depth one is a block and the same
     /// element at depth two is not. So the honest answer is a whole-document parse that is merely
     /// slower, rather than a fast wrong one.
-    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
-        let _ = (source, region);
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<Analysis> {
+        let _ = (text, at);
         None
     }
 

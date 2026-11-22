@@ -65,11 +65,11 @@ impl Language for Markdown {
         analyze(source)
     }
 
-    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<Analysis> {
         // Markdown always has one: a top-level block boundary is a safe place to restart, which is
         // what MDEDIT-18 is built on. The caller still owes a whole-document parse when the typing
         // stops, because a region cannot see an unclosed fence above it — see `analyze_region`.
-        Some(analyze_region(source, region))
+        Some(analyze_at(text, at))
     }
 
     fn conceals(&self) -> bool {
@@ -178,9 +178,15 @@ pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
     let start = floor_boundary(source, region.start().get().min(source.len()));
     let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
 
+    analyze_at(&source[start..end], ByteOffset::new(start))
+}
+
+/// [`analyze_region`] for text that is already only the region, which begins at `at`.
+fn analyze_at(text: &str, at: ByteOffset) -> Analysis {
+    let start = at.get();
     // Contained, like [`analyze`] — a region of a document that panics the parser is exactly as
     // likely to panic it, and this is the one a keystroke reaches.
-    let mut analysis = contained(&source[start..end]);
+    let mut analysis = contained(text);
     if start == 0 {
         return analysis;
     }

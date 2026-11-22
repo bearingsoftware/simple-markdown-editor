@@ -90,8 +90,8 @@ impl Language for Yaml {
         analyze(source)
     }
 
-    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
-        Some(analyze_region(source, region))
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<Analysis> {
+        Some(analyze_at(text, at))
     }
 
     fn conceals(&self) -> bool {
@@ -138,7 +138,13 @@ pub fn analyze_region(source: &str, region: ByteSpan) -> Analysis {
     let start = floor_boundary(source, region.start().get().min(source.len()));
     let end = floor_boundary(source, region.end().get().clamp(start, source.len()));
 
-    let mut analysis = analyze(&source[start..end]);
+    analyze_at(&source[start..end], ByteOffset::new(start))
+}
+
+/// [`analyze_region`] for text that is already only the region, which begins at `at`.
+fn analyze_at(text: &str, at: ByteOffset) -> Analysis {
+    let start = at.get();
+    let mut analysis = analyze(text);
     if start == 0 {
         return analysis;
     }
