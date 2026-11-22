@@ -264,8 +264,8 @@ fn a_stored_zoom_is_applied_on_open() {
 #[test]
 fn the_distance_into_a_chunk_scales_with_the_text() {
     for (steps, grows) in [(1, true), (-1, false)] {
-        let mut editor = editor(&document(400));
-        editor.scroll_by(1013.0);
+        let mut editor = editor(&one_long_paragraph());
+        editor.scroll_by(1500.0);
         editor.build_frame(WIDTH, HEIGHT, 1.0);
         let before = editor.scroll_offset();
         assert!(before > 0.0);
@@ -280,4 +280,11 @@ fn the_distance_into_a_chunk_scales_with_the_text() {
             assert!(after < before, "zoomed out: {before} then {after}");
         }
     }
+}
+
+/// One chunk far taller than the window, so the viewport rests deep inside it.
+fn one_long_paragraph() -> String {
+    (0..300)
+        .map(|line| format!("line {line} of one long paragraph\n"))
+        .collect()
 }

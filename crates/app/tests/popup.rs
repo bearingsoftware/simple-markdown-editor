@@ -1038,3 +1038,24 @@ fn every_row_of_a_list_draws_its_name_from_the_text_column() {
         }
     }
 }
+
+/// A zoom throws away every laid-out label, the open list's among them. The list stays open, so its
+/// next frame has to lay its row names out again rather than draw rows of icons with no words.
+#[test]
+fn a_list_still_names_its_rows_after_a_zoom() {
+    let mut editor = editor("prose\n", WIDE);
+    open(&mut editor, Action::Lists);
+    editor.zoom_by(1);
+    let quads = editor.build_frame(WIDE, HEIGHT, 1.0);
+    let (x, y) = editor.menu_at().expect("a zoom leaves the list open");
+
+    let names = quads
+        .iter()
+        .filter(|quad| {
+            quad.rect[0] >= x + popup::ICON_COLUMN
+                && quad.rect[1] >= y
+                && quad.rect[1] < y + popup::height_of(2)
+        })
+        .count();
+    assert!(names > 0, "the rows have no words after a zoom");
+}
