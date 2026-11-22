@@ -307,3 +307,16 @@ proptest! {
         }
     }
 }
+
+/// MDEDIT-207: the trait takes the region's text, and XML still refuses it at a block start and at
+/// byte zero alike.
+#[test]
+fn a_slice_at_a_block_start_or_byte_zero_is_refused() {
+    let source = "<root>\n<item>one</item>\n<item>two</item>\n</root>\n";
+    let second = analyze(source).blocks[0].span().start().get();
+    assert!(Xml.analyze_region(source, ByteOffset::ZERO).is_none());
+    assert!(
+        Xml.analyze_region(&source[second..], ByteOffset::new(second))
+            .is_none()
+    );
+}

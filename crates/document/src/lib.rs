@@ -730,11 +730,19 @@ impl Document {
         // straddling an edge is trimmed rather than dropped: dropping it would leave those bytes
         // covered by nothing, which is the one thing this crate guarantees against. The neighbour on
         // each side is carried into the replacement so `push_merged` joins the seam.
+        // The splice merges only at the two seams, so it relies on every language emitting coalesced
+        // segments, which the data-language proptests in `scope_tests` check.
+        debug_assert!(
+            fresh.segments.windows(2).all(|pair| {
+                pair[0].kind() != pair[1].kind() || pair[0].span().end() != pair[1].span().start()
+            }),
+            "a language handed back adjacent same-kind segments"
+        );
         let old = &self.segments;
         let first = old.partition_point(|segment| segment.span().end().get() <= scope.start);
         let after = old.partition_point(|segment| segment.span().start().get() < scope.end);
         let from = first.saturating_sub(1);
-        let to = (after + 1).min(old.len());
+        let to = (after + 1).min(old.len()).max(from);
 
         let mut middle: Vec<Segment> = Vec::with_capacity(fresh.segments.len() + 3);
         if first > 0 {

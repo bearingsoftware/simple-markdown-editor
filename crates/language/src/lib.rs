@@ -562,3 +562,36 @@ impl Language for Plain {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_text_answers_a_slice_with_one_run_where_the_slice_sits() {
+        let source = "one\ntwo\nthree\n";
+        let from = 4;
+        let analysis = PLAIN
+            .analyze_region(&source[from..], ByteOffset::new(from))
+            .unwrap();
+        let whole = ByteSpan::new(ByteOffset::new(from), ByteOffset::new(source.len()));
+        assert_eq!(
+            analysis.segments,
+            [Segment::new(whole, SegmentKind::Content)]
+        );
+        assert!(
+            PLAIN
+                .analyze_region("", ByteOffset::new(3))
+                .unwrap()
+                .segments
+                .is_empty()
+        );
+        assert_eq!(
+            PLAIN
+                .analyze_region(source, ByteOffset::ZERO)
+                .unwrap()
+                .segments,
+            PLAIN.analyze(source).segments
+        );
+    }
+}

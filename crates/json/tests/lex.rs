@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use mdedit_json::{Json, analyze};
+use mdedit_json::{Json, analyze, analyze_region};
 use mdedit_language::{Language, SegmentKind, Token};
 use mdedit_offsets::{ByteOffset, ByteSpan};
 use proptest::prelude::*;
@@ -247,5 +247,33 @@ proptest! {
             prop_assert!(source.is_char_boundary(segment.span().start().get()));
             prop_assert!(source.is_char_boundary(segment.span().end().get()));
         }
+    }
+}
+
+/// MDEDIT-207: the trait method takes only the region's text, and has to say what the free function
+/// said about the same region of the whole source.
+#[test]
+fn the_trait_on_a_slice_equals_the_free_function_on_the_whole_source() {
+    let source = "{\n  \"a\": 1,\n  \"b\": [1, 2],\n  \"c\": \"é\"\n}\n";
+    let mut regions = vec![ByteSpan::new(
+        ByteOffset::ZERO,
+        ByteOffset::new(source.len()),
+    )];
+    regions.extend(
+        analyze(source)
+            .blocks
+            .iter()
+            .map(|block| ByteSpan::new(block.span().start(), ByteOffset::new(source.len()))),
+    );
+    assert!(
+        regions.len() > 2,
+        "the fixture should have several block starts"
+    );
+    for region in regions {
+        assert_eq!(
+            Json.analyze_region(region.slice(source), region.start()),
+            Some(analyze_region(source, region)),
+            "region {region}"
+        );
     }
 }

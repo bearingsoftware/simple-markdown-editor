@@ -355,3 +355,31 @@ proptest! {
         }
     }
 }
+
+/// MDEDIT-207: the trait method takes only the region's text, and has to say what the free function
+/// said about the same region of the whole source.
+#[test]
+fn the_trait_on_a_slice_equals_the_free_function_on_the_whole_source() {
+    let source = "[a]\nx = 1\n\n[b]\ny = \"é\"\nz = [1,\n  2]\n";
+    let mut regions = vec![ByteSpan::new(
+        ByteOffset::ZERO,
+        ByteOffset::new(source.len()),
+    )];
+    regions.extend(
+        analyze(source)
+            .blocks
+            .iter()
+            .map(|block| ByteSpan::new(block.span().start(), ByteOffset::new(source.len()))),
+    );
+    assert!(
+        regions.len() > 2,
+        "the fixture should have several block starts"
+    );
+    for region in regions {
+        assert_eq!(
+            Toml.analyze_region(region.slice(source), region.start()),
+            Some(analyze_region(source, region)),
+            "region {region}"
+        );
+    }
+}
