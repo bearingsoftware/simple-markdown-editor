@@ -18,20 +18,21 @@ use super::{Document, push_merged};
 
 /// `resegment_scope` as it was before MDEDIT-207: copy the whole rope, rebuild both lists by cloning.
 fn reference(
-    language: &dyn Language,
-    old_segments: &[Segment],
-    old_blocks: &[Block],
+    before: &Document,
     text: &str,
     scope: Range<usize>,
     removed: usize,
     inserted: usize,
 ) -> Option<(Vec<Segment>, Vec<Block>)> {
+    let (old_segments, old_blocks) = (&before.segments, &before.blocks);
     let delta = inserted.cast_signed() - removed.cast_signed();
     let shift = |offset: usize| -> usize { offset.saturating_add_signed(delta) };
 
     let start = snap(text, scope.start);
     let end = snap(text, shift(scope.end).min(text.len())).max(start);
-    let fresh = language.analyze_region(&text[start..end], ByteOffset::new(start))?;
+    let fresh = before
+        .language
+        .analyze_region(&text[start..end], ByteOffset::new(start))?;
 
     let mut segments: Vec<Segment> = Vec::new();
     for segment in old_segments {
@@ -112,9 +113,7 @@ fn edit_and_compare(doc: &mut Document, span: ByteSpan, replacement: &str) {
 
     let expected = scope.and_then(|scope| {
         reference(
-            before.language,
-            &before.segments,
-            &before.blocks,
+            &before,
             &text,
             scope,
             span.end().get() - span.start().get(),
