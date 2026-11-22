@@ -780,3 +780,40 @@ fn the_boxs_caret_draws_where_the_caret_is() {
         seen.push(now);
     }
 }
+
+/// The lit "match case" ground is drawn at the button's own place, whatever the device scale. At a
+/// scale of one the sum `left + x` and the product agree only by luck of the numbers.
+#[test]
+fn the_lit_case_button_sits_on_its_button_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let mut editor = editor("Alpha alpha\n");
+        editor.with_config(mdedit_app::config::Config {
+            theme: mdedit_app::view::ThemeChoice::Light,
+            ..mdedit_app::config::Config::default()
+        });
+        search(&mut editor, "alpha");
+        editor.toggle_find_case();
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let layout = panel(&editor);
+        let (left, top) = layout.origin;
+        let case = layout
+            .buttons
+            .iter()
+            .find(|rect| rect.button == find::Button::Case)
+            .expect("the bar has a case button");
+        let lit = Theme::light().tab_active;
+        let wanted = [
+            (left + case.x) * scale,
+            (top + case.y + 3.0) * scale,
+            case.width * scale,
+            (find::HEIGHT - 6.0) * scale,
+        ];
+        assert!(
+            quads
+                .iter()
+                .any(|quad| quad.colour == [lit.r, lit.g, lit.b, lit.a] && quad.rect == wanted),
+            "no lit ground at {wanted:?} at scale {scale}"
+        );
+    }
+}

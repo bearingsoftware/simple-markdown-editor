@@ -41,6 +41,9 @@ pub struct Grid {
     /// every test exercises the fallback unless it asks otherwise — see the comment on the glyph
     /// below.
     icon_font: bool,
+    /// The `left` every rasterised glyph reports. Zero by default, which hides any code that adds or
+    /// subtracts a bitmap offset the wrong way round.
+    bearing: i32,
 }
 
 impl Grid {
@@ -55,6 +58,13 @@ impl Grid {
     pub fn with_icon_font() -> Self {
         Self {
             icon_font: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn with_bearing(bearing: i32) -> Self {
+        Self {
+            bearing,
             ..Self::default()
         }
     }
@@ -191,7 +201,7 @@ impl TextLayout for Grid {
         Ok(Some(GlyphImage {
             width: 1,
             height: 1,
-            left: 0,
+            left: self.bearing,
             top: -1,
             coverage: vec![255],
         }))
@@ -214,4 +224,30 @@ fn new_line(row: usize) -> LayoutLine {
         glyphs: Vec::new(),
         rules: Vec::new(),
     }
+}
+
+/// Asserts a hairline quad of colour `line` frames `panel` one logical pixel proud on every side.
+///
+/// A relation rather than a magnitude, and meant to be called at a scale other than one: at one,
+/// `x * scale` and `x / scale` are the same number and half the arithmetic is invisible.
+pub fn assert_halo(
+    quads: &[mdedit_app::gpu::QuadInstance],
+    panel: &mdedit_app::gpu::QuadInstance,
+    line: [f32; 4],
+    scale: f32,
+) {
+    let [x, y, width, height] = panel.rect;
+    let wanted = [
+        x - scale,
+        y - scale,
+        width + 2.0 * scale,
+        height + 2.0 * scale,
+    ];
+    assert!(
+        quads
+            .iter()
+            .any(|quad| quad.colour == line && quad.rect == wanted),
+        "no hairline {wanted:?} around the panel {:?} at scale {scale}",
+        panel.rect
+    );
 }

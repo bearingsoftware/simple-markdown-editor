@@ -961,3 +961,80 @@ fn with_the_icon_font_each_list_row_draws_its_icon() {
         );
     }
 }
+
+// ---- what a list draws, at a scale that is not one ----
+
+fn dark_list(
+    scale: f32,
+    button: Action,
+    rows: usize,
+) -> (
+    Vec<mdedit_app::gpu::QuadInstance>,
+    mdedit_app::gpu::QuadInstance,
+) {
+    let mut editor = Editor::new("prose\n", Grid::new());
+    editor.with_config(mdedit_app::config::Config {
+        theme: mdedit_app::view::ThemeChoice::Dark,
+        ..mdedit_app::config::Config::default()
+    });
+    let _ = editor.build_frame(WIDE, HEIGHT, 1.0);
+    open(&mut editor, button);
+    let quads = editor.build_frame(WIDE * scale, HEIGHT * scale, scale);
+
+    let width = editor.menu_width().expect("a list should be open");
+    let theme = mdedit_app::view::Theme::dark();
+    let panel = quads
+        .iter()
+        .find(|quad| {
+            quad.colour == [theme.panel.r, theme.panel.g, theme.panel.b, theme.panel.a]
+                && quad.rect[2] == width * scale
+                && quad.rect[3] == popup::height_of(rows) * scale
+        })
+        .copied()
+        .expect("the list's panel is drawn");
+    (quads, panel)
+}
+
+/// One logical pixel of hairline on every side, whatever the device scale: `height + 2` and
+/// `height * 2` agree only for a panel two pixels tall.
+#[test]
+fn the_list_is_framed_one_pixel_proud_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let (quads, panel) = dark_list(scale, Action::Lists, 2);
+        let line = mdedit_app::view::Theme::dark().line;
+        stub::assert_halo(&quads, &panel, [line.r, line.g, line.b, line.a], scale);
+    }
+}
+
+/// Every row says what it does, in the column after the icons. A row whose label was never laid out
+/// is a row of icons with no names, and the stub's fixed-width glyphs make that countable.
+#[test]
+fn every_row_of_a_list_draws_its_name_from_the_text_column() {
+    for scale in [1.0, 2.0] {
+        let (quads, panel) = dark_list(scale, Action::Lists, 2);
+        let text = mdedit_app::view::Theme::dark().text;
+        let text = [text.r, text.g, text.b, text.a];
+
+        for row in 0..2 {
+            let top = panel.rect[1] + popup::row_top(row) * scale;
+            let name: Vec<f32> = quads
+                .iter()
+                .filter(|quad| {
+                    quad.colour == text
+                        && quad.rect[0] >= panel.rect[0] + popup::ICON_COLUMN * scale
+                        && quad.rect[1] >= top
+                        && quad.rect[1] < top + popup::ROW_HEIGHT * scale
+                })
+                .map(|quad| quad.rect[0])
+                .collect();
+
+            assert!(!name.is_empty(), "row {row} has no name at scale {scale}");
+            let first = name.iter().copied().fold(f32::MAX, f32::min);
+            assert_eq!(
+                first,
+                panel.rect[0] + popup::ICON_COLUMN * scale,
+                "row {row}'s name starts where the column does, at scale {scale}"
+            );
+        }
+    }
+}

@@ -255,3 +255,29 @@ fn a_stored_zoom_is_applied_on_open() {
 
     assert_eq!(zoomed.body_size(), normal * 2.0);
 }
+
+/// Mid-chunk, the viewport's top is some way *into* a chunk, and that distance is a length: it
+/// grows with the text. The stub's chunks do not change height, so what is left to see is the
+/// direction. Zoomed in, the top edge sits further into the chunk it was resting on; zoomed out,
+/// nearer its start. Dividing where the text was multiplied makes both go the wrong way, which the
+/// loose proportion in `the_viewport_does_not_jump` cannot tell.
+#[test]
+fn the_distance_into_a_chunk_scales_with_the_text() {
+    for (steps, grows) in [(1, true), (-1, false)] {
+        let mut editor = editor(&document(400));
+        editor.scroll_by(1013.0);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let before = editor.scroll_offset();
+        assert!(before > 0.0);
+
+        editor.zoom_by(steps);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let after = editor.scroll_offset();
+
+        if grows {
+            assert!(after > before, "zoomed in: {before} then {after}");
+        } else {
+            assert!(after < before, "zoomed out: {before} then {after}");
+        }
+    }
+}

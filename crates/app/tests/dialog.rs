@@ -29,6 +29,7 @@ use mdedit_app::gpu::QuadInstance;
 use mdedit_app::view::{Rgba, Theme, ThemeChoice};
 use mdedit_document::Selection;
 use mdedit_offsets::ByteOffset;
+use winit::keyboard::{Key, NamedKey};
 
 use crate::stub;
 use stub::{Grid, MARGIN};
@@ -483,4 +484,60 @@ fn the_dim_is_translucent_and_keeps_the_page_colour() {
         alpha > 0.0 && alpha < theme.background.a,
         "the dim is {alpha} alpha, which is not translucent"
     );
+}
+
+// ---- the keyboard, and the edge at a scale that is not one ----
+
+/// Enter is the fast path's last keystroke: copy, select, Ctrl+K, Enter. Without its arm it fell
+/// into the swallow-everything catch-all, so the key was eaten and the panel never closed.
+#[test]
+fn enter_writes_the_link_and_closes_the_panel() {
+    let mut editor = editor("prose\n");
+    editor.link();
+    type_into(&mut editor, "https://example.com");
+
+    assert!(editor.press_dialog_key(&Key::Named(NamedKey::Enter)));
+
+    assert!(editor.dialog().is_none(), "Enter closes it");
+    assert!(
+        editor
+            .document()
+            .to_string()
+            .contains("(https://example.com)"),
+        "and writes it: {:?}",
+        editor.document().to_string()
+    );
+}
+
+/// The refusal is the same through the key as through the method: nothing to write, so it stays up.
+#[test]
+fn enter_with_no_destination_leaves_the_panel_open() {
+    let mut editor = editor("prose\n");
+    editor.link();
+
+    assert!(editor.press_dialog_key(&Key::Named(NamedKey::Enter)));
+
+    assert!(editor.dialog().is_some());
+    assert_eq!(editor.document().to_string(), "prose\n");
+}
+
+/// The hairline sits one logical pixel outside the panel on every side. At a scale of one the top
+/// edge `y - 1` and `y / 1` differ, but a hairline that merely covers the panel passes a looser
+/// check, so this names the exact edge and runs at two scales.
+#[test]
+fn the_edge_frames_the_panel_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let mut editor = dark("");
+        editor.link();
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let theme = Theme::dark();
+        let panels: Vec<_> = matching(&quads, theme.panel)
+            .into_iter()
+            .filter(|quad| quad.rect[2] == dialog::WIDTH * scale)
+            .collect();
+        assert_eq!(panels.len(), 1, "one panel at scale {scale}");
+        let line = [theme.line.r, theme.line.g, theme.line.b, theme.line.a];
+        stub::assert_halo(&quads, &panels[0], line, scale);
+    }
 }

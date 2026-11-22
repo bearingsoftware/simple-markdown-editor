@@ -378,3 +378,92 @@ fn the_mark_lands_on_the_line_the_error_is_on() {
         "the trailing comma is on the second line, which is row 1"
     );
 }
+
+// ---- at a scale and a font that are not the stub's defaults ----
+
+/// The `(x, y, width, height)` of every rose quad wider than a glyph's single pixel, which is to say
+/// the squiggles: the stub's glyphs are one pixel square, so nothing else rose is that wide.
+fn squiggles(editor: &mut Editor<Grid>, scale: f32) -> Vec<[f32; 4]> {
+    let rose = mdedit_app::view::Theme::dark().span_error;
+    let wanted = [rose.r, rose.g, rose.b, rose.a];
+    editor
+        .build_frame(WIDTH * scale, HEIGHT * scale, scale)
+        .iter()
+        .filter(|quad| quad.colour == wanted && quad.rect[2] > 1.0)
+        .map(|quad| quad.rect)
+        .collect()
+}
+
+/// The wave's thickness is a logical size, so it grows with the device scale. At one the grown and
+/// the shrunk thickness are both a pixel, which is why this runs at two.
+#[test]
+fn a_squiggle_is_as_much_thicker_as_the_scale_is_bigger() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\"a\": 1,}\n");
+    editor.on_idle();
+
+    let one = squiggles(&mut editor, 1.0);
+    let two = squiggles(&mut editor, 2.0);
+
+    assert!(!one.is_empty(), "the test needs a squiggle to measure");
+    assert_eq!(one.len(), two.len(), "the same wave at both scales");
+    for (small, large) in one.iter().zip(&two) {
+        assert_eq!(
+            large[3],
+            small[3] * 2.0,
+            "thickness: {small:?} then {large:?}"
+        );
+        assert_eq!(
+            large[2],
+            small[2] * 2.0,
+            "dash length: {small:?} then {large:?}"
+        );
+    }
+}
+
+/// The gutter's `!` is placed by its own bitmap's offset from the pen, added to the pen's position.
+/// The stub reports an offset of nothing, which hides the sign, so this one reports three: every
+/// mark in the gutter must then sit exactly three pixels right of where it sits with none.
+#[test]
+fn the_flagged_mark_is_offset_by_its_own_bearing_rightwards() {
+    fn gutter_rose(bearing: i32) -> Vec<[f32; 4]> {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("data.json");
+        std::fs::write(&path, "{\n  \"a\": 1,\n}\n").unwrap();
+        let mut workspace = Workspace::new();
+        workspace.add(path);
+        let mut editor = Editor::with_workspace(workspace, Grid::with_bearing(bearing));
+        editor.activate_saved_tab();
+        editor.with_config(mdedit_app::config::Config {
+            theme: mdedit_app::view::ThemeChoice::Dark,
+            line_numbers: true,
+            ..mdedit_app::config::Config::default()
+        });
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        editor.on_idle();
+
+        let rose = mdedit_app::view::Theme::dark().span_error;
+        let wanted = [rose.r, rose.g, rose.b, rose.a];
+        let text_left = editor.content_rect().left_edge();
+        editor
+            .build_frame(WIDTH, HEIGHT, 1.0)
+            .iter()
+            .filter(|quad| {
+                quad.colour == wanted
+                    && quad.rect[0] + quad.rect[2] <= text_left + 3.0
+                    && quad.rect[1] < HEIGHT - mdedit_app::status::BAR_HEIGHT
+            })
+            .map(|quad| quad.rect)
+            .collect()
+    }
+
+    let flat = gutter_rose(0);
+    let bearing = gutter_rose(3);
+
+    assert!(flat.len() >= 2, "a flagged number and its mark: {flat:?}");
+    assert_eq!(flat.len(), bearing.len());
+    for (flat, bearing) in flat.iter().zip(&bearing) {
+        assert_eq!(bearing[0] - flat[0], 3.0, "{flat:?} then {bearing:?}");
+        assert_eq!(bearing[1..], flat[1..]);
+    }
+}
