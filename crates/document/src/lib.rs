@@ -730,8 +730,11 @@ impl Document {
         // straddling an edge is trimmed rather than dropped: dropping it would leave those bytes
         // covered by nothing, which is the one thing this crate guarantees against. The neighbour on
         // each side is carried into the replacement so `push_merged` joins the seam.
-        // The splice merges only at the two seams, so it relies on every language emitting coalesced
-        // segments, which the data-language proptests in `scope_tests` check.
+        //
+        // That is the only merging done, so it relies on every language emitting coalesced segments,
+        // which the data-language proptests in `scope_tests` check. For Markdown the seams are also
+        // all there is: every line ending is content (`normalise_line_syntax` in `mdedit_markers`), so
+        // a run never ends in a marker at a block start and the right seam never has to join a marker.
         debug_assert!(
             fresh.segments.windows(2).all(|pair| {
                 pair[0].kind() != pair[1].kind() || pair[0].span().end() != pair[1].span().start()
