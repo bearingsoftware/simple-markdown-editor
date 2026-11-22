@@ -419,7 +419,8 @@ jobs:
         run: |
           free -m
           df -h / "$GITHUB_WORKSPACE"
-# nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
+
+      # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
       # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
