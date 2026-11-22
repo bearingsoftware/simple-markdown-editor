@@ -51,6 +51,7 @@
 //! cover is a construct that changes the meaning of the whole document — an unclosed fence, a link
 //! reference definition — and that is exactly what the reconcile is for.
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 pub mod format;
@@ -676,20 +677,48 @@ impl Document {
         (start < end).then_some(start..end)
     }
 
+    /// The bytes of `start..end` as a string, borrowed when they sit in one rope chunk.
+    ///
+    /// Both ends are snapped down to a character boundary first, exactly as the languages'
+    /// `analyze_region` free functions do, because `Rope::byte_slice` *panics* on a boundary it does
+    /// not like — it reports `ByteRangeNotCharBoundary` through `byte_slice` and only
+    /// `get_byte_slice` returns `None`.
+    fn region_text(&self, start: usize, end: usize) -> (Cow<'_, str>, usize) {
+        let snap = |at: usize| {
+            let at = at.min(self.text.len_bytes());
+            self.text.char_to_byte(self.text.byte_to_char(at))
+        };
+        let start = snap(start);
+        let end = snap(end).max(start);
+        let slice = self.text.byte_slice(start..end);
+        let text = slice
+            .as_str()
+            .map_or_else(|| Cow::Owned(slice.to_string()), Cow::Borrowed);
+        (text, start)
+    }
+
     /// Re-parses `scope` alone and splices the result into the analysis.
     ///
     /// `scope` is in the coordinates the buffer had *before* the edit; everything after it moves by
     /// the difference between what was removed and what was inserted.
+    ///
+    /// Only the region's text is copied and only the overlapped segments are replaced, so the cost
+    /// is the scope plus an in-place shift of what follows, not the size of the document.
     fn resegment_scope(&mut self, scope: Range<usize>, removed: usize, inserted: usize) {
         let delta = inserted.cast_signed() - removed.cast_signed();
         let shift = |offset: usize| -> usize { offset.saturating_add_signed(delta) };
+        let moved = |span: ByteSpan| {
+            ByteSpan::new(
+                ByteOffset::new(shift(span.start().get())),
+                ByteOffset::new(shift(span.end().get())),
+            )
+        };
 
-        let text = self.text.to_string();
-        let region = ByteSpan::new(
-            ByteOffset::new(scope.start),
-            ByteOffset::new(shift(scope.end).min(text.len())),
-        );
-        let Some(fresh) = self.language.analyze_region(&text, region) else {
+        let fresh = {
+            let (text, at) = self.region_text(scope.start, shift(scope.end));
+            self.language.analyze_region(&text, ByteOffset::new(at))
+        };
+        let Some(fresh) = fresh else {
             // This language has no safe place to restart here — JSON nests without limit, so an edit
             // deep inside an object may have no boundary short of the top. A whole-document parse is
             // the correct answer, merely a slower one, and saying so beats a fast wrong one.
@@ -697,16 +726,26 @@ impl Document {
             return;
         };
 
-        // Segments tile, so one straddling an edge is trimmed rather than dropped: dropping it would
-        // leave those bytes covered by nothing, which is the one thing this crate guarantees against.
-        let mut segments: Vec<Segment> = Vec::with_capacity(self.segments.len() + 8);
-        for segment in &self.segments {
+        // Segments tile and are ordered, so the ones the scope overlaps are a contiguous run. One
+        // straddling an edge is trimmed rather than dropped: dropping it would leave those bytes
+        // covered by nothing, which is the one thing this crate guarantees against. The neighbour on
+        // each side is carried into the replacement so `push_merged` joins the seam.
+        let old = &self.segments;
+        let first = old.partition_point(|segment| segment.span().end().get() <= scope.start);
+        let after = old.partition_point(|segment| segment.span().start().get() < scope.end);
+        let from = first.saturating_sub(1);
+        let to = (after + 1).min(old.len());
+
+        let mut middle: Vec<Segment> = Vec::with_capacity(fresh.segments.len() + 3);
+        if first > 0 {
+            middle.push(old[first - 1].clone());
+        }
+        if first < after {
+            let segment = &old[first];
             let span = segment.span();
-            if span.end().get() <= scope.start {
-                push_merged(&mut segments, segment.clone());
-            } else if span.start().get() < scope.start {
+            if span.start().get() < scope.start {
                 push_merged(
-                    &mut segments,
+                    &mut middle,
                     segment
                         .clone()
                         .moved_to(ByteSpan::new(span.start(), ByteOffset::new(scope.start))),
@@ -714,21 +753,14 @@ impl Document {
             }
         }
         for segment in fresh.segments {
-            push_merged(&mut segments, segment);
+            push_merged(&mut middle, segment);
         }
-        for segment in &self.segments {
+        if first < after {
+            let segment = &old[after - 1];
             let span = segment.span();
-            if span.start().get() >= scope.end {
+            if span.end().get() > scope.end {
                 push_merged(
-                    &mut segments,
-                    segment.clone().moved_to(ByteSpan::new(
-                        ByteOffset::new(shift(span.start().get())),
-                        ByteOffset::new(shift(span.end().get())),
-                    )),
-                );
-            } else if span.end().get() > scope.end {
-                push_merged(
-                    &mut segments,
+                    &mut middle,
                     segment.clone().moved_to(ByteSpan::new(
                         ByteOffset::new(shift(scope.end)),
                         ByteOffset::new(shift(span.end().get())),
@@ -736,37 +768,35 @@ impl Document {
                 );
             }
         }
+        if let Some(segment) = old.get(after) {
+            push_merged(&mut middle, segment.clone().moved_to(moved(segment.span())));
+        }
+
+        let tail = from + middle.len();
+        self.segments.splice(from..to, middle);
+        if delta != 0 {
+            for segment in &mut self.segments[tail..] {
+                *segment = segment.clone().moved_to(moved(segment.span()));
+            }
+        }
 
         // Blocks need no trimming: the scope's edges are top-level block starts, so no block spans
         // one — a nested block is inside its parent, and its parent is inside the scope or outside
         // it entirely.
-        let mut blocks: Vec<Block> = Vec::with_capacity(self.blocks.len() + 4);
-        blocks.extend(
-            self.blocks
-                .iter()
-                .filter(|block| block.span().end().get() <= scope.start)
-                .copied(),
-        );
-        blocks.extend(fresh.blocks);
-        blocks.extend(
-            self.blocks
-                .iter()
-                .filter(|block| block.span().start().get() >= scope.end)
-                .map(|block| {
-                    block.moved_to(ByteSpan::new(
-                        ByteOffset::new(shift(block.span().start().get())),
-                        ByteOffset::new(shift(block.span().end().get())),
-                    ))
-                }),
-        );
+        let old = &self.blocks;
+        let first = old.partition_point(|block| block.span().end().get() <= scope.start);
+        let after = old.partition_point(|block| block.span().start().get() < scope.end);
+        let tail = first + fresh.blocks.len();
+        self.blocks.splice(first..after.max(first), fresh.blocks);
         // Ids number a block within one analysis, so a spliced list has to be renumbered or two
-        // blocks would answer to the same one.
-        for (index, block) in blocks.iter_mut().enumerate() {
+        // blocks would answer to the same one. Everything before the splice already is.
+        for (index, block) in self.blocks.iter_mut().enumerate().skip(first) {
+            if index >= tail && delta != 0 {
+                *block = block.moved_to(moved(block.span()));
+            }
             *block = block.with_id(BlockId::new(u32::try_from(index).unwrap_or(u32::MAX)));
         }
 
-        self.segments = segments;
-        self.blocks = blocks;
         self.scoped = true;
     }
 

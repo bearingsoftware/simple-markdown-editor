@@ -30,7 +30,7 @@
 //!   in MDEDIT-17 and MDEDIT-18 keep working unchanged.
 //! - **Whether syntax is ever concealed**, which decides how it is drawn.
 
-use mdedit_offsets::{BlockId, ByteSpan};
+use mdedit_offsets::{BlockId, ByteOffset, ByteSpan};
 
 /// A run of bytes with a single role.
 ///
@@ -394,11 +394,17 @@ pub trait Language: std::fmt::Debug + Send + Sync {
     /// rather than a nicety — a language whose segments do not tile is not renderable safely.
     fn analyze(&self, source: &str) -> Analysis;
 
-    /// Analyses only `region`, as if the rest of `source` were not there, in `source`'s coordinates.
+    /// Analyses only a region of a document, as if the rest of it were not there.
+    ///
+    /// `text` is exactly the region's bytes and `at` is where they start in the document, so the
+    /// caller copies the region rather than the document and the result is in document
+    /// coordinates. The one thing any language took from outside the slice was whether it begins at
+    /// byte zero, which `at` says. Each language crate's free `analyze_region` clamps and snaps a
+    /// span of a whole source, then calls the same code this does.
     ///
     /// # What the caller must guarantee
     ///
-    /// **`region` begins at the start of a depth-zero [`Block`] from a previous
+    /// **The region begins at the start of a depth-zero [`Block`] from a previous
     /// [`analyze`](Self::analyze), or at byte zero.** Not a courtesy — it is the whole of the state
     /// an implementation is given, and every language here needs some. JSON recovers its nesting
     /// depth from it (a top-level member is one container deep, byte zero is none); YAML recovers
@@ -418,7 +424,7 @@ pub trait Language: std::fmt::Debug + Send + Sync {
     /// inserted above it shifts JSON's depth; a changed indent above it re-parents YAML's lines. A
     /// caller using this on the keystroke path therefore owes the document a whole-document parse
     /// when the typing stops, which is what `mdedit_document`'s `Document::reconcile` is for.
-    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis>;
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<Analysis>;
 
     /// Everything wrong with `source`, or nothing if the language has no notion of wrong.
     ///
@@ -535,14 +541,16 @@ impl Language for Plain {
         }
     }
 
-    fn analyze_region(&self, source: &str, region: ByteSpan) -> Option<Analysis> {
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<Analysis> {
         // Any offset is a safe restart when there is no state to recover, so this answers for the
         // region rather than sending the caller back to a whole-document parse it does not need.
-        let _ = source;
-        let segments = if region.is_empty() {
+        let segments = if text.is_empty() {
             Vec::new()
         } else {
-            vec![Segment::new(region, SegmentKind::Content)]
+            vec![Segment::new(
+                ByteSpan::new(at, ByteOffset::new(at.get() + text.len())),
+                SegmentKind::Content,
+            )]
         };
         Some(Analysis {
             segments,
