@@ -144,7 +144,8 @@ fn example() -> u32 { 42 }
 
 ";
 
-const PIECES: [&str; 8] = [
+const PIECES: [&str; 9] = [
+    "[foo]\n\n[foo]: /url\n\n",
     UNIT,
     "é — 汉字 and a crab 🦀\n\n",
     "# \n\n",
@@ -184,12 +185,34 @@ fn target(doc: &Document, text: &str, kind: u8, at: usize) -> usize {
     }
 }
 
+/// The edit that puts a fresh run beside an untouched one of the same kind at the region's left edge,
+/// which a uniformly random edit almost never finds in a document this size.
+///
+/// Breaking a link definition turns the `[foo]` above it from link markers back into content, which
+/// meets the blank line before it. The right edge has no Markdown equivalent: a marker never holds
+/// a line ending, so the byte before a block start is always content, and the toy language below is
+/// what reaches that seam.
+fn aimed(text: &str, kind: u8, at: usize) -> Option<(usize, usize, &'static str)> {
+    let (needle, offset, len, replacement) = match kind % 6 {
+        4 => ("[foo]:", 5, 1, ""),
+        _ => return None,
+    };
+    let found: Vec<usize> = text.match_indices(needle).map(|(index, _)| index).collect();
+    let start = *found.get(at % found.len().max(1))? + offset;
+    Some((start, start + len, replacement))
+}
+
 type Edit = (u8, usize, usize, String);
 
 fn run(language: &'static dyn Language, text: &str, edits: &[Edit]) {
     let mut doc = Document::with_text(text, language);
     for (kind, at, len, replacement) in edits {
         let current = doc.to_string();
+        if let Some((start, end, replacement)) = aimed(&current, *kind, *at) {
+            let span = ByteSpan::new(ByteOffset::new(start), ByteOffset::new(end));
+            edit_and_compare(&mut doc, span, replacement);
+            continue;
+        }
         let start = target(&doc, &current, *kind, *at);
         let end = snap(&current, start + len);
         edit_and_compare(
