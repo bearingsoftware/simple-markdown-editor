@@ -414,30 +414,12 @@ jobs:
           fi
 
       # MDEDIT-209: the sweep loses shards to "The runner has received a shutdown signal" well inside
-      # the budget, and a dead runner takes its own steps with it. So the sampler echoes each line to
-      # the live log as well as to a file, and the file is uploaded for the runs that survive.
-      - name: Resource sampler and baseline
+      # the budget. The Mutate step samples memory and disk itself, so its lines reach the live log.
+      - name: Memory and disk before
         run: |
           free -m
           df -h / "$GITHUB_WORKSPACE"
-          nohup setsid bash -c '
-            log=/tmp/resource-samples.log
-            while :; do
-              avail=$(awk "/MemAvailable/ {print \$2}" /proc/meminfo)
-              swap=$(awk "/SwapFree/ {print \$2}" /proc/meminfo)
-              root=$(df --output=avail -B1 / | tail -1 | tr -d " ")
-              ws=$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1 | tr -d " ")
-              tgt=$(du -sb "$GITHUB_WORKSPACE/target" 2>/dev/null | cut -f1)
-              scratch=$(du -scb /tmp/cargo-mutants-* 2>/dev/null | tail -1 | cut -f1)
-              top=$(ps -eo rss,comm --sort=-rss | sed -n 2p | tr -s " ")
-              line="$(date -u +%FT%TZ) MemAvailableKB=$avail SwapFreeKB=$swap rootAvailB=$root wsAvailB=$ws targetB=${tgt:-0} mutantsScratchB=${scratch:-0} topRssKB_comm=$top"
-              echo "sample $line"
-              echo "$line" >> "$log"
-              sleep 30
-            done
-          ' > /dev/null 2>&1 &
-
-      # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
+# nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
       # **The exit status is swallowed here, not by `continue-on-error`.** That flag keeps the
@@ -480,6 +462,25 @@ jobs:
           SLICE: ${{ needs.plan.outputs.slice }}
         run: |
           set +e
+          # MDEDIT-209: sampled from inside this step so the lines stream to its live log and survive
+          # a runner that dies; a separate step's background output would never reach it.
+          (
+            while :; do
+              avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+              swap=$(awk '/SwapFree/ {print $2}' /proc/meminfo)
+              root=$(df --output=avail -B1 / | tail -1 | tr -d ' ')
+              ws=$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')
+              tgt=$(du -sb "$GITHUB_WORKSPACE/target" 2>/dev/null | cut -f1)
+              scratch=$(du -scb /tmp/cargo-mutants-* 2>/dev/null | tail -1 | cut -f1)
+              top=$(ps -eo rss,comm --sort=-rss | sed -n 2p | tr -s ' ')
+              line="$(date -u +%FT%TZ) MemAvailableKB=$avail SwapFreeKB=$swap rootAvailB=$root wsAvailB=$ws targetB=${tgt:-0} mutantsScratchB=${scratch:-0} topRssKB_comm=$top"
+              echo "sample $line"
+              echo "$line" >> /tmp/resource-samples.log
+              sleep 30
+            done
+          ) &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null' EXIT
           # **The only difference between the two modes is the scope.** A diff shard mutates its
           # share of the diff; a sweep shard mutates its round-robin share of the whole workspace,
           # which is global shard `slice * MAX_SHARDS + shard` of `N * MAX_SHARDS`.
