@@ -235,8 +235,7 @@ fn a_grandchild_is_not_a_block() {
 fn a_region_is_refused_because_there_is_no_safe_place_to_restart() {
     let source = "<root><item>one</item></root>";
     assert!(
-        Xml.analyze_region(&source[..6], ByteOffset::ZERO)
-            .is_none(),
+        Xml.analyze_region(&source[..6], ByteOffset::ZERO).is_none(),
         "depth is the whole of the state and no offset carries it"
     );
 }

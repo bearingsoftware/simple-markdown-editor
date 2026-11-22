@@ -236,7 +236,11 @@ fn data_document(which: usize, entries: usize) -> (&'static dyn Language, String
         }
         2 => {
             for n in 0..entries {
-                writeln!(text, "[key_{n}]\nname = \"value é {n}\"\nn = {n}\nok = true\n").unwrap();
+                writeln!(
+                    text,
+                    "[key_{n}]\nname = \"value é {n}\"\nn = {n}\nok = true\n"
+                )
+                .unwrap();
             }
             (&mdedit_toml::TOML, text)
         }
@@ -289,7 +293,10 @@ fn a_region_inside_one_chunk_is_borrowed_and_one_across_a_seam_is_copied() {
     let whole = doc.to_string();
 
     let (inside, at) = doc.region_text(chunk_start + 2, end - 2);
-    assert!(matches!(inside, Cow::Borrowed(_)), "one chunk should borrow");
+    assert!(
+        matches!(inside, Cow::Borrowed(_)),
+        "one chunk should borrow"
+    );
     assert_eq!(at, chunk_start + 2);
     assert_eq!(inside, whole[chunk_start + 2..end - 2]);
 
@@ -329,4 +336,82 @@ fn a_region_off_a_character_boundary_is_snapped_not_a_panic() {
     }
     let (region, start) = doc.region_text(doc.len_bytes() + 9, doc.len_bytes() + 12);
     assert_eq!((region.as_ref(), start), ("", doc.len_bytes()));
+}
+
+/// A language where a line's neighbours decide its kind, so an edit can change what the region's
+/// first or last segment *is* and make it meet the unchanged segment beside it.
+///
+/// A `#` line is a token unless the next line starts with `^` or the previous one with `~`; either
+/// of those makes it content. Every line is one top-level block.
+#[derive(Debug)]
+struct Neighbours;
+
+static NEIGHBOURS: Neighbours = Neighbours;
+
+impl Language for Neighbours {
+    fn name(&self) -> &'static str {
+        "Neighbours"
+    }
+
+    fn analyze(&self, source: &str) -> mdedit_language::Analysis {
+        self.analyze_region(source, ByteOffset::ZERO).unwrap()
+    }
+
+    fn analyze_region(&self, text: &str, at: ByteOffset) -> Option<mdedit_language::Analysis> {
+        use mdedit_language::{BlockKind, SegmentKind, Token};
+
+        let lines: Vec<&str> = text.split_inclusive('\n').collect();
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut blocks = Vec::new();
+        let mut offset = at.get();
+        for (index, line) in lines.iter().enumerate() {
+            let after_tilde = index > 0 && lines[index - 1].starts_with('~');
+            let before_caret = lines
+                .get(index + 1)
+                .is_some_and(|next| next.starts_with('^'));
+            let kind = if line.starts_with('#') && !after_tilde && !before_caret {
+                SegmentKind::Token(Token::Key)
+            } else {
+                SegmentKind::Content
+            };
+            let span = ByteSpan::new(
+                ByteOffset::new(offset),
+                ByteOffset::new(offset + line.len()),
+            );
+            push_merged(&mut segments, Segment::new(span, kind));
+            blocks.push(Block::new(
+                BlockId::new(u32::try_from(index).unwrap()),
+                BlockKind::Paragraph,
+                span,
+                0,
+            ));
+            offset += line.len();
+        }
+        Some(mdedit_language::Analysis { segments, blocks })
+    }
+
+    fn conceals(&self) -> bool {
+        false
+    }
+}
+
+/// The two seams of the splice. `push_merged` has to join the fresh run to the untouched segment
+/// beside it when an edit makes them the same kind, which no generated Markdown edit can arrange.
+#[test]
+fn a_seam_between_fresh_and_untouched_segments_is_merged() {
+    let pad = "ab\n".repeat(3000);
+    for (text, edit_at, inserted) in [
+        // `^` turns the `#t` above it into content, which then meets the content before it.
+        (format!("{pad}#t\nb\nc\n{pad}"), pad.len() + 3, "^"),
+        // `~` turns the `#u` below it into content, which then meets the content after it.
+        (format!("{pad}a\nb\n#u\nc\n{pad}"), pad.len() + 2, "~"),
+    ] {
+        let mut doc = Document::with_text(&text, &NEIGHBOURS);
+        let at = ByteOffset::new(edit_at);
+        edit_and_compare(&mut doc, ByteSpan::new(at, at), inserted);
+        assert!(doc.is_scoped());
+
+        let rebuilt = NEIGHBOURS.analyze(&doc.to_string());
+        assert_eq!(doc.segments(), rebuilt.segments, "seam left two runs");
+    }
 }
