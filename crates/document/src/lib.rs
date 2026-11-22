@@ -1354,3 +1354,6 @@ impl Document {
         true
     }
 }
+
+#[cfg(test)]
+mod scope_tests;
