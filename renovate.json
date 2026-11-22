@@ -6,6 +6,11 @@
       "description": "windows-core ships in lockstep with the `windows` crate and is not adoptable on its own. `windows` is at 0.62.x; windows-core has run ahead to 0.100. Taking it alone leaves the DirectWrite interfaces from `windows` implementing a different windows_core::Interface, so the trait bound is unsatisfied and IDWriteTextRenderer's methods stop matching (MDEDIT-189, PR #198). Raise this bound when `windows` itself moves, and move both crates in one PR. crates/shell-win/Cargo.toml says the same thing about `windows`, for the same reason.",
       "matchPackageNames": ["windows-core"],
       "allowedVersions": "~0.62"
+    },
+    {
+      "description": "@types/vscode must equal the engines.vscode minimum (extensions/vscode/package.json): types newer than the oldest VS Code the extension claims to support let it call APIs that VS Code lacks, and package.test.ts asserts the two match. Renovate bumps the types alone, so every such PR fails that test (#262). Move both by hand when raising the minimum.",
+      "matchPackageNames": ["@types/vscode"],
+      "enabled": false
     }
   ]
 }
