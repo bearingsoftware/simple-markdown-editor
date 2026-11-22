@@ -3315,6 +3315,7 @@ impl<T: TextLayout> Editor<T> {
 
     /// [`dialog_key`](Self::dialog_key) from the key alone, so a test can send Enter: a winit
     /// `KeyEvent` cannot be constructed outside winit.
+    #[doc(hidden)] // for the integration tests only
     pub fn press_dialog_key(&mut self, key: &Key) -> bool {
         let shift = self.modifiers.shift_key();
 
@@ -11939,6 +11940,7 @@ fn list_pieces(doc: &Document, span: ByteSpan, text: &str) -> Vec<(ByteSpan, boo
     let first = blocks.partition_point(|block| block.span().start() < span.start());
     for block in blocks[first..]
         .iter()
+        // `<` and `<=` agree: `quote::units` spans end on a line start, so a list starting at span.end adds nothing.
         .take_while(|block| block.span().start() < span.end())
     {
         // Outermost lists only: a nested one starts inside the piece already taken.

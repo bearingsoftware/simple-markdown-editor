@@ -291,3 +291,29 @@ fn one_long_paragraph() -> String {
         out
     })
 }
+
+/// The anchor is only applied while the offset still matches the one it was taken at, and a zoom
+/// rescales both. Scaling one without the other makes the anchor look stale, so the view is merely
+/// multiplied by the ratio. The stub's chunks keep their height, so the anchored view lands
+/// somewhere else, which is what separates the two.
+#[test]
+fn a_zoom_applies_the_anchor_rather_than_just_scaling_the_offset() {
+    let source = format!("{}{}", document(40), one_long_paragraph());
+    for steps in [1, -1] {
+        let mut editor = editor(&source);
+        editor.scroll_by(2400.0);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let before = editor.scroll_offset();
+        let size = editor.body_size();
+
+        editor.zoom_by(steps);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let ratio = editor.body_size() / size;
+
+        assert!(
+            editor.scroll_offset() > before * ratio + 1.0,
+            "steps {steps}: the offset was only scaled: {before} then {}",
+            editor.scroll_offset()
+        );
+    }
+}

@@ -1,5 +1,4 @@
 MISSED crates/app/src/blocks.rs: replace += with *= in visible
-MISSED crates/app/src/blocks.rs: replace match guard *last >= start with false in split
 MISSED crates/app/src/config.rs: replace > with >= in Config::load_from
 MISSED crates/app/src/dialog.rs: replace && with || in contains
 MISSED crates/app/src/dialog.rs: replace * with + in height_of
@@ -64,7 +63,6 @@ MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_table
 MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_table
 MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_toolbar
 MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_toolbar
-MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::draw_tooltip
 MISSED crates/app/src/editor.rs: replace * with / in Editor<T>::stamp
 MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_buttons
 MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_dialog_buttons
@@ -136,7 +134,6 @@ MISSED crates/app/src/editor.rs: replace match guard grid.is_none() with true in
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::dismiss_panels
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::find_origin
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::warm
-MISSED crates/app/src/find.rs: delete match arm (Mode::GoTo, _) in Bar::active
 MISSED crates/app/src/find.rs: delete match arm (Mode::Replace, Focus::Secondary) in Bar::active
 MISSED crates/app/src/find.rs: replace < with <= in Layout::over_field
 MISSED crates/app/src/find.rs: replace Bar::active -> &Field with Box::leak(Box::new(Default::default()))
