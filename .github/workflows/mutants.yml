@@ -413,6 +413,30 @@ jobs:
             cargo install cargo-mutants --locked --force
           fi
 
+      # MDEDIT-209: the sweep loses shards to "The runner has received a shutdown signal" well inside
+      # the budget, and a dead runner takes its own steps with it. So the sampler echoes each line to
+      # the live log as well as to a file, and the file is uploaded for the runs that survive.
+      - name: Resource sampler and baseline
+        run: |
+          free -m
+          df -h / "$GITHUB_WORKSPACE"
+          nohup setsid bash -c '
+            log=/tmp/resource-samples.log
+            while :; do
+              avail=$(awk "/MemAvailable/ {print \$2}" /proc/meminfo)
+              swap=$(awk "/SwapFree/ {print \$2}" /proc/meminfo)
+              root=$(df --output=avail -B1 / | tail -1 | tr -d " ")
+              ws=$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1 | tr -d " ")
+              tgt=$(du -sb "$GITHUB_WORKSPACE/target" 2>/dev/null | cut -f1)
+              scratch=$(du -scb /tmp/cargo-mutants-* 2>/dev/null | tail -1 | cut -f1)
+              top=$(ps -eo rss,comm --sort=-rss | sed -n 2p | tr -s " ")
+              line="$(date -u +%FT%TZ) MemAvailableKB=$avail SwapFreeKB=$swap rootAvailB=$root wsAvailB=$ws targetB=${tgt:-0} mutantsScratchB=${scratch:-0} topRssKB_comm=$top"
+              echo "sample $line"
+              echo "$line" >> "$log"
+              sleep 30
+            done
+          ' > /dev/null 2>&1 &
+
       # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
@@ -557,6 +581,29 @@ jobs:
           name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
           # A re-run of a failed job uploads the same name again; without this it fails the upload.
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Memory and disk after
+        if: always()
+        run: |
+          free -m
+          df -h / "$GITHUB_WORKSPACE"
+          echo "last samples:"
+          tail -n 20 /tmp/resource-samples.log || true
+
+      - name: Out-of-memory check
+        if: always()
+        run: |
+          { dmesg 2>/dev/null || sudo dmesg 2>/dev/null || true; } | grep -iE "out of memory|oom-kill|killed process" | tail -n 20 || echo "no OOM lines in dmesg"
+          { sudo journalctl -k --no-pager 2>/dev/null || true; } | grep -iE "out of memory|oom-kill|killed process" | tail -n 20 || true
+
+      - name: Keep the resource samples
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants-resources-shard-${{ matrix.shard }}
+          path: /tmp/resource-samples.log
           overwrite: true
           if-no-files-found: ignore
 
