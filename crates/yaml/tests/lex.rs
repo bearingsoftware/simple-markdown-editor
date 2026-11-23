@@ -399,3 +399,12 @@ fn a_comment_after_a_value_does_not_make_a_key() {
 fn a_hash_inside_a_word_is_part_of_the_key() {
     assert!(has("a#b: c\n", Token::Key, "a#b"));
 }
+
+/// The hash is inside the key, so the key ends at its colon and the `|` after it opens a block
+/// scalar whose lines are text, not keys.
+#[test]
+fn a_key_with_a_hash_still_opens_its_block_scalar() {
+    let source = "a#b: |\n  text: x\n";
+    assert!(has(source, Token::Key, "a#b"));
+    assert!(!has(source, Token::Key, "text"));
+}
