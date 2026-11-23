@@ -481,20 +481,25 @@ jobs:
             done
           ) &
           sampler=$!
-          # **A runaway mutant is killed before it wedges the runner (MDEDIT-209).** Some mutants make a
-          # test loop and allocate without bound. Diagnostic run 45082401215 sampled it: shard 4's
-          # `lex` test binary went 6.4 GB to 13.0 GB RSS in 30 s and MemAvailable fell 14.7 GB to 2.1 GB
-          # with no swap; shard 5's `app` binary held 4.0 GB at MemAvailable 169 MB. The 16 GB runner
-          # then stops answering and GitHub reports a shutdown signal, long before the 60 s test timeout
-          # (84 s auto-set on shard 4) fires. Killing the biggest test binary under the mutants scratch
-          # dir turns it into a failed test, which cargo-mutants counts as caught, as a timeout would.
+          # **A runaway mutant's test is killed before it wedges the runner (MDEDIT-209).** Some mutants
+          # make a test loop and allocate without bound. Run 45082401215: shard 4's `lex` binary went
+          # 6.4 GB to 13.0 GB RSS in 30 s with MemAvailable 14.7 GB to 2.1 GB and no swap, and the
+          # runner was lost before the 60 s test timeout. It kills only when MemAvailable is under 2 GB
+          # AND the largest test binary alone holds over 3 GB, so a build or link using the memory is
+          # never the victim. The healthy shards' top process never passed 0.68 GB (rustc, samples
+          # every 30 s), shard 5's `app` binary at 4.0 GB had already passed 3 GB.
+          # **A killed mutant counts as caught, not timed out, on purpose:** a test that blows past
+          # 3 GB is behaviour a test observed, which is what "caught" means.
           (
             while :; do
               if [ "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -lt 2000000 ]; then
-                victim=$(ps -eo pid=,rss=,args= --sort=-rss | awk 'index($3, "cargo-mutants-") && index($3, "/deps/") {print $1; exit}')
-                if [ -n "$victim" ]; then
-                  echo "memory watchdog: MemAvailable under 2 GB, killing pid $victim: $(ps -o rss=,args= -p "$victim" | cut -c1-200)"
+                read -r victim rss < <(ps -eo pid=,rss=,args= --sort=-rss \
+                  | awk 'index($3, "cargo-mutants-") && index($3, "/deps/") {print $1, $2; exit}')
+                if [ -n "${victim:-}" ] && [ "$rss" -gt 3000000 ]; then
+                  echo "memory watchdog: MemAvailable under 2 GB, killing pid $victim at ${rss} KB: $(ps -o args= -p "$victim" | cut -c1-200)"
                   kill -KILL "$victim" 2>/dev/null
+                else
+                  echo "memory watchdog: low memory, no runaway test"
                 fi
               fi
               sleep 1
