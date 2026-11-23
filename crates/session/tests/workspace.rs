@@ -834,7 +834,11 @@ fn every_tab_has_its_own_snapshot_id() {
     for path in &paths {
         workspace.add(path.clone());
     }
-    let ids: Vec<u64> = workspace.tabs().iter().map(|tab| tab.snapshot_id()).collect();
+    let ids: Vec<u64> = workspace
+        .tabs()
+        .iter()
+        .map(mdedit_session::Tab::snapshot_id)
+        .collect();
 
     assert_ne!(ids[0], ids[1]);
     assert_ne!(ids[1], ids[2]);
