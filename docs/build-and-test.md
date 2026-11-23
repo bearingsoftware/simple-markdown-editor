@@ -620,8 +620,8 @@ artifacts, and `sample` lines in the Mutate step's log): the hosted runner has 1
 to 13.0 GB in 30 s and MemAvailable fell from 14.7 GB to 2.1 GB; shard 5's `app` binary held 4.0 GB
 at 169 MB available. A mutant that turns a loop counter's `+=` into `*=` or `-=` makes the test
 allocate until the machine stops answering, and the runner is lost before the 60 s test timeout
-fires. The Mutate step now runs a one-second watchdog that kills the largest test binary under the
-mutants scratch directory when MemAvailable is under 2 GB and that binary alone holds over 3 GB; the mutant counts as caught. The
+fires. The Mutate step now runs a one-second watchdog that kills the test processes under the
+mutants scratch directory when MemAvailable is under 2 GB and together they hold over 3 GB; the mutant counts as caught. Run 45090484912 showed the first version (matching `args`, one process) never fired: shard 5 lost 14 GB with its largest process at 4.2 GB, so nextest's parallel test processes are summed, and found by executable path. The
 30-second sampler stays, since it costs under a second a sample.
 
 ## Releases (MDEDIT-140, MDEDIT-137)
