@@ -255,3 +255,65 @@ fn a_stored_zoom_is_applied_on_open() {
 
     assert_eq!(zoomed.body_size(), normal * 2.0);
 }
+
+/// Mid-chunk, the viewport's top is some way *into* a chunk, and that distance is a length: it
+/// grows with the text. The stub's chunks do not change height, so what is left to see is the
+/// direction. Zoomed in, the top edge sits further into the chunk it was resting on; zoomed out,
+/// nearer its start. Dividing where the text was multiplied makes both go the wrong way, which the
+/// loose proportion in `the_viewport_does_not_jump` cannot tell.
+#[test]
+fn the_distance_into_a_chunk_scales_with_the_text() {
+    for (steps, grows) in [(1, true), (-1, false)] {
+        let mut editor = editor(&one_long_paragraph());
+        editor.scroll_by(1500.0);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let before = editor.scroll_offset();
+        assert!(before > 0.0);
+
+        editor.zoom_by(steps);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let after = editor.scroll_offset();
+
+        if grows {
+            assert!(after > before, "zoomed in: {before} then {after}");
+        } else {
+            assert!(after < before, "zoomed out: {before} then {after}");
+        }
+    }
+}
+
+/// One chunk far taller than the window, so the viewport rests deep inside it.
+fn one_long_paragraph() -> String {
+    use std::fmt::Write as _;
+
+    (0..300).fold(String::new(), |mut out, line| {
+        let _ = writeln!(out, "line {line} of one long paragraph");
+        out
+    })
+}
+
+/// The anchor is only applied while the offset still matches the one it was taken at, and a zoom
+/// rescales both. Scaling one without the other makes the anchor look stale, so the view is merely
+/// multiplied by the ratio. The stub's chunks keep their height, so the anchored view lands
+/// somewhere else, which is what separates the two.
+#[test]
+fn a_zoom_applies_the_anchor_rather_than_just_scaling_the_offset() {
+    let source = format!("{}{}", document(40), one_long_paragraph());
+    for steps in [1, -1] {
+        let mut editor = editor(&source);
+        editor.scroll_by(2400.0);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let before = editor.scroll_offset();
+        let size = editor.body_size();
+
+        editor.zoom_by(steps);
+        editor.build_frame(WIDTH, HEIGHT, 1.0);
+        let ratio = editor.body_size() / size;
+
+        assert!(
+            editor.scroll_offset() > before * ratio + 1.0,
+            "steps {steps}: the offset was only scaled: {before} then {}",
+            editor.scroll_offset()
+        );
+    }
+}

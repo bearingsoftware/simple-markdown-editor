@@ -183,3 +183,49 @@ macro_rules! log_error {
         $crate::log::write(&format!($($arg)*))
     };
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{MAX_BYTES, rotate_if_large};
+
+    fn sized(directory: &tempfile::TempDir, bytes: u64) -> std::path::PathBuf {
+        let path = directory.path().join("mdedit.log");
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn a_log_past_the_cap_is_moved_aside() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = sized(&directory, MAX_BYTES + 1);
+
+        rotate_if_large(&path);
+
+        assert!(!path.exists());
+        assert!(directory.path().join("mdedit.log.old").exists());
+    }
+
+    #[test]
+    fn a_log_at_or_under_the_cap_stays_put() {
+        for bytes in [0, 10, MAX_BYTES] {
+            let directory = tempfile::TempDir::new().unwrap();
+            let path = sized(&directory, bytes);
+
+            rotate_if_large(&path);
+
+            assert!(path.exists(), "{bytes} bytes should not rotate");
+            assert!(!directory.path().join("mdedit.log.old").exists());
+        }
+    }
+
+    #[test]
+    fn a_missing_log_is_left_alone() {
+        let directory = tempfile::TempDir::new().unwrap();
+        rotate_if_large(&directory.path().join("mdedit.log"));
+        assert!(!directory.path().join("mdedit.log.old").exists());
+    }
+}

@@ -531,3 +531,21 @@ fn the_search_term_survives_a_trip_through_go_to_line() {
     bar.mode = find::Mode::Find;
     assert_eq!(bar.field.text(), "alpha");
 }
+
+/// `active` is what a key lands in, so in Go to Line it has to be the line box whichever field the
+/// bar last had focus on. Reading it on its own (rather than through `press`, which has its own
+/// copy of the same match) is what pins it.
+#[test]
+fn go_to_line_reads_the_line_box_whichever_field_had_focus() {
+    for focus in [find::Focus::Primary, find::Focus::Secondary] {
+        let mut bar = Bar::default();
+        bar.field.insert("alpha");
+        bar.replace.insert("beta");
+        bar.line.insert("42");
+        bar.focus = focus;
+        bar.mode = find::Mode::GoTo;
+
+        assert_eq!(bar.active().text(), "42", "{focus:?}");
+        assert_eq!(bar.active_mut().text(), "42", "{focus:?}");
+    }
+}

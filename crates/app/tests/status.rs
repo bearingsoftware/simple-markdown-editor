@@ -277,3 +277,25 @@ fn a_wide_window_truncates_nothing() {
         wide.len()
     );
 }
+
+/// The strip is anchored to the foot of the window at any device scale: its top is the window's
+/// height less its own, both in pixels. At a scale of one `top * scale` and `top / scale` agree.
+#[test]
+fn the_bar_is_anchored_to_the_foot_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let mut editor = Editor::new("# Title\n\ntext\n", Grid::new());
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let strip = quads
+            .iter()
+            .find(|quad| {
+                quad.rect[2] == WIDTH * scale && quad.rect[3] == BAR_HEIGHT.mul_add(scale, 1.0)
+            })
+            .unwrap_or_else(|| panic!("a full-width strip at scale {scale}"));
+        assert_eq!(
+            strip.rect[1],
+            HEIGHT * scale - BAR_HEIGHT * scale,
+            "scale {scale}"
+        );
+    }
+}

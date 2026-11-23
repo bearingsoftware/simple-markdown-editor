@@ -483,3 +483,64 @@ fn the_dwell_deadline_is_about_a_dwell_away() {
     assert!(at >= before + tooltip::DWELL);
     assert!(at <= Instant::now() + tooltip::DWELL);
 }
+
+// ---- what the panel draws, at a scale that is not one ----
+
+/// The panel, its hairline and its text all place by the same logical origin, so at any device scale
+/// the hairline is one logical pixel proud of the panel and the first glyph is one padding in.
+#[test]
+fn the_panel_and_its_text_are_placed_alike_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let mut editor = Editor::new("prose\n", Grid::new());
+        editor.with_config(mdedit_app::config::Config {
+            theme: mdedit_app::view::ThemeChoice::Dark,
+            ..mdedit_app::config::Config::default()
+        });
+        let _ = editor.build_frame(WIDTH, HEIGHT, 1.0);
+        rest_on(&mut editor, Action::Bold);
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let theme = Theme::dark();
+        let panels = matching(&quads, theme.panel, scale);
+        assert_eq!(panels.len(), 1, "one tooltip panel at scale {scale}");
+        let panel = panels[0];
+        stub::assert_halo(
+            &quads,
+            &panel,
+            [theme.line.r, theme.line.g, theme.line.b, theme.line.a],
+            scale,
+        );
+
+        let text = [theme.text.r, theme.text.g, theme.text.b, theme.text.a];
+        let first = quads
+            .iter()
+            .filter(|quad| {
+                quad.colour == text
+                    && quad.rect[1] >= panel.rect[1]
+                    && quad.rect[1] < panel.rect[1] + panel.rect[3]
+            })
+            .map(|quad| quad.rect[0])
+            .fold(f32::MAX, f32::min);
+        assert_eq!(
+            first,
+            panel.rect[0] + tooltip::PADDING * scale,
+            "the text starts one padding in at scale {scale}"
+        );
+    }
+}
+
+/// Panel-coloured quads exactly as tall as a tooltip.
+fn matching(
+    quads: &[mdedit_app::gpu::QuadInstance],
+    colour: Rgba,
+    scale: f32,
+) -> Vec<mdedit_app::gpu::QuadInstance> {
+    quads
+        .iter()
+        .filter(|quad| {
+            quad.colour == [colour.r, colour.g, colour.b, colour.a]
+                && quad.rect[3] == tooltip::HEIGHT * scale
+        })
+        .copied()
+        .collect()
+}

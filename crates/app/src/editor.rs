@@ -3310,13 +3310,20 @@ impl<T: TextLayout> Editor<T> {
     /// exists to prevent. A chord that is not one of the field's own is dropped rather than
     /// performed: Ctrl+S while a dialog is open should not save.
     fn dialog_key(&mut self, event: &KeyEvent) -> bool {
+        self.press_dialog_key(&event.logical_key)
+    }
+
+    /// [`dialog_key`](Self::dialog_key) from the key alone, so a test can send Enter: a winit
+    /// `KeyEvent` cannot be constructed outside winit.
+    #[doc(hidden)] // for the integration tests only
+    pub fn press_dialog_key(&mut self, key: &Key) -> bool {
         let shift = self.modifiers.shift_key();
 
         // The same gate the find field uses, and for the same reason: a URL box that could not be
         // pasted into would be useless, and one that could not be typed `@` into would be
         // MDEDIT-102 with a smaller blast radius.
         if is_chord(self.modifiers.control_key(), self.modifiers.alt_key()) {
-            let Key::Character(character) = &event.logical_key else {
+            let Key::Character(character) = key else {
                 return true;
             };
             return match character.as_str() {
@@ -3335,7 +3342,7 @@ impl<T: TextLayout> Editor<T> {
             };
         }
 
-        match &event.logical_key {
+        match key {
             Key::Named(NamedKey::Escape) => {
                 self.cancel_dialog();
                 true
@@ -11933,6 +11940,7 @@ fn list_pieces(doc: &Document, span: ByteSpan, text: &str) -> Vec<(ByteSpan, boo
     let first = blocks.partition_point(|block| block.span().start() < span.start());
     for block in blocks[first..]
         .iter()
+        // `<` and `<=` agree: `quote::units` spans end on a line start, so a list starting at span.end adds nothing.
         .take_while(|block| block.span().start() < span.end())
     {
         // Outermost lists only: a nested one starts inside the piece already taken.

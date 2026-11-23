@@ -190,3 +190,20 @@ fn a_zero_height_chunk_does_not_capture_the_viewport() {
         "the chunk with the pixels in it must be drawn: {range:?}"
     );
 }
+
+/// Two top-level blocks can start on one line (a footnote definition opening another), and the
+/// second must not cut a second chunk at the same place: that chunk would be empty.
+#[test]
+fn two_blocks_on_one_line_are_one_chunk() {
+    let source = "[^1]:[^1]:\n\ntext\n";
+    let doc = Document::from(source);
+    let chunks = blocks::split(&doc, source);
+
+    assert_tiles(source, &chunks);
+    assert!(
+        chunks
+            .iter()
+            .all(|chunk| chunk.span.start() != chunk.span.end()),
+        "an empty chunk in {chunks:?}"
+    );
+}
