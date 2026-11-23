@@ -77,6 +77,25 @@ fn nesting_is_reported_by_depth() {
     );
 }
 
+/// An inline element closing must not count as a block closing, or the second paragraph would
+/// report itself at the quote's own depth.
+#[test]
+fn an_inline_element_does_not_pull_the_next_block_out_of_its_parent() {
+    let found = blocks("> one *em*\n>\n> two\n");
+    let quote = found
+        .iter()
+        .find(|b| b.kind() == BlockKind::BlockQuote)
+        .expect("a quote");
+    let paragraphs: Vec<_> = found
+        .iter()
+        .filter(|b| b.kind() == BlockKind::Paragraph)
+        .collect();
+
+    assert_eq!(paragraphs.len(), 2);
+    assert_eq!(paragraphs[0].depth(), paragraphs[1].depth());
+    assert!(paragraphs[1].depth() > quote.depth());
+}
+
 #[test]
 fn a_list_contains_items_which_contain_paragraphs() {
     let found = blocks("- one\n- two\n");
