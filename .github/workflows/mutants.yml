@@ -481,7 +481,27 @@ jobs:
             done
           ) &
           sampler=$!
-          trap 'kill "$sampler" 2>/dev/null' EXIT
+          # **A runaway mutant is killed before it wedges the runner (MDEDIT-209).** Some mutants make a
+          # test loop and allocate without bound. Diagnostic run 45082401215 sampled it: shard 4's
+          # `lex` test binary went 6.4 GB to 13.0 GB RSS in 30 s and MemAvailable fell 14.7 GB to 2.1 GB
+          # with no swap; shard 5's `app` binary held 4.0 GB at MemAvailable 169 MB. The 16 GB runner
+          # then stops answering and GitHub reports a shutdown signal, long before the 60 s test timeout
+          # (84 s auto-set on shard 4) fires. Killing the biggest test binary under the mutants scratch
+          # dir turns it into a failed test, which cargo-mutants counts as caught, as a timeout would.
+          (
+            while :; do
+              if [ "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -lt 2000000 ]; then
+                victim=$(ps -eo pid=,rss=,args= --sort=-rss | awk 'index($3, "cargo-mutants-") && index($3, "/deps/") {print $1; exit}')
+                if [ -n "$victim" ]; then
+                  echo "memory watchdog: MemAvailable under 2 GB, killing pid $victim: $(ps -o rss=,args= -p "$victim" | cut -c1-200)"
+                  kill -KILL "$victim" 2>/dev/null
+                fi
+              fi
+              sleep 1
+            done
+          ) &
+          watchdog=$!
+          trap 'kill "$sampler" "$watchdog" 2>/dev/null' EXIT
           # **The only difference between the two modes is the scope.** A diff shard mutates its
           # share of the diff; a sweep shard mutates its round-robin share of the whole workspace,
           # which is global shard `slice * MAX_SHARDS + shard` of `N * MAX_SHARDS`.

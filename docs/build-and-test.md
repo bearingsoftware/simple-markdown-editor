@@ -612,6 +612,18 @@ ref. A sweep and a diff run never share a group.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
 restarts, and the baseline's slice numbers need recomputing too.
 
+**The weekly sweep lost shards to runaway mutants, not to time or disk (MDEDIT-209).** Three
+scheduled or dispatched runs lost shards to `The runner has received a shutdown signal`, with no
+other message. Run 45082401215 sampled the runner every 30 s (the `mutants-resources-shard-N`
+artifacts, and `sample` lines in the Mutate step's log): the hosted runner has 16 GB, no swap or
+3 GB, and about 90 GB of free disk, so disk is not it. Shard 4's `lex` test binary grew from 6.4 GB
+to 13.0 GB in 30 s and MemAvailable fell from 14.7 GB to 2.1 GB; shard 5's `app` binary held 4.0 GB
+at 169 MB available. A mutant that turns a loop counter's `+=` into `*=` or `-=` makes the test
+allocate until the machine stops answering, and the runner is lost before the 60 s test timeout
+fires. The Mutate step now runs a one-second watchdog that kills the largest test binary under the
+mutants scratch directory when MemAvailable drops under 2 GB; the mutant counts as caught. The
+30-second sampler stays, since it costs under a second a sample.
+
 ## Releases (MDEDIT-140, MDEDIT-137)
 
 `release-please.yml` runs on every push to `main`. It keeps a release PR open that carries the next
