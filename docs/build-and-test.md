@@ -612,6 +612,24 @@ ref. A sweep and a diff run never share a group.
 The plan job says so. Changing `N` changes which slice each week maps to, so a lap in progress
 restarts, and the baseline's slice numbers need recomputing too.
 
+**The weekly sweep lost shards to runaway mutants, not to time or disk (MDEDIT-209).** Three
+scheduled or dispatched runs lost shards to `The runner has received a shutdown signal`, with no
+other message. Run 45082401215 sampled the runner every 30 s (the `mutants-resources-shard-N`
+artifacts, and `sample` lines in the Mutate step's log). The hosted runner has 16 GB of RAM, about
+3 GB of swap and about 90 GB of free disk, so disk is not it. Shard 4's `lex` test binary grew from
+6.4 GB to 13.0 GB in 30 s and MemAvailable fell from 14.7 GB to 2.1 GB. Shard 5 lost 14 GB with its
+largest process at 4.2 GB, because nextest runs one process per test, in parallel. Two mutants
+allocate without bound: `crates/toml/src/lib.rs:390:9` and `crates/app/src/editor.rs:8416:9`. The
+runner stops answering before the 60 s test timeout fires.
+
+The Mutate step runs a one-second watchdog. When MemAvailable is under 4 GB and the processes whose
+executable path contains `cargo-mutants-` (the scratch tree, so build scripts match too, but they
+never reach 3 GB) together hold over 3 GB, it kills them all, and the mutant counts as caught. Run
+45094735750 had four kills, each of 3 or 4 test processes holding 13.5 to 15.4 GB in total. The first
+version matched on `args` and never fired (run 45090484912). The floor was 2 GB until shard 5 fell to
+176 MB after a kill, so it is 4 GB now. If a run still dips below 1 GB, the next step is a cgroup
+`MemoryMax` backstop. Capping nextest's threads would cost shard time and nothing shows it is needed.
+
 ## Releases (MDEDIT-140, MDEDIT-137)
 
 `release-please.yml` runs on every push to `main`. It keeps a release PR open that carries the next
