@@ -413,13 +413,6 @@ jobs:
             cargo install cargo-mutants --locked --force
           fi
 
-      # MDEDIT-209: the sweep loses shards to "The runner has received a shutdown signal" well inside
-      # the budget. The Mutate step samples memory and disk itself, so its lines reach the live log.
-      - name: Memory and disk before
-        run: |
-          free -m
-          df -h / "$GITHUB_WORKSPACE"
-
       # nextest as the runner, for the same isolation reason CI uses it: a mutant that makes a test
       # hang or abort must take down its own process and nothing else.
       #
@@ -486,13 +479,11 @@ jobs:
               avail=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
               swap=$(awk '/SwapFree/ {print $2}' /proc/meminfo)
               root=$(df --output=avail -B1 / | tail -1 | tr -d ' ')
-              ws=$(df --output=avail -B1 "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')
-              tgt=$(du -sb "$GITHUB_WORKSPACE/target" 2>/dev/null | cut -f1)
               scratch=$(du -scb /tmp/cargo-mutants-* 2>/dev/null | tail -1 | cut -f1)
               top=$(ps -eo rss,comm --sort=-rss | sed -n 2p | tr -s ' ')
               group=$(testprocs | awk '{n++; s+=$2} END {print n+0, s+0}')
               current=$(ls -t mutants.out/log 2>/dev/null | head -1)
-              line="$(date -u +%FT%TZ) MemAvailableKB=$avail SwapFreeKB=$swap rootAvailB=$root wsAvailB=$ws targetB=${tgt:-0} mutantsScratchB=${scratch:-0} topRssKB_comm=$top testProcs_RssKB=$group mutant_log=$current"
+              line="$(date -u +%FT%TZ) MemAvailableKB=$avail SwapFreeKB=$swap rootAvailB=$root mutantsScratchB=${scratch:-0} topRssKB_comm=$top testProcs_RssKB=$group mutant_log=$current"
               echo "sample $line"
               echo "$line" >> /tmp/resource-samples.log
               sleep 30
@@ -501,20 +492,22 @@ jobs:
           sampler=$!
           # **A runaway mutant's tests are killed before they wedge the runner (MDEDIT-209).** Some
           # mutants make tests loop and allocate without bound. Run 45082401215: shard 4's `lex` binary
-          # went 6.4 GB to 13.0 GB RSS in 30 s with MemAvailable 14.7 GB to 2.1 GB and no swap, and the
-          # runner was lost before the 60 s test timeout. It kills only when MemAvailable is under 2 GB
-          # AND the processes executing from the mutants scratch dir together hold over 3 GB, so a build or link using the memory is never
-          # the victim. Healthy shards' top process never passed 0.68 GB (rustc, samples every 30 s).
-          # **A killed mutant counts as caught, not timed out, on purpose:** tests that blow past 3 GB
-          # are behaviour a test observed, which is what "caught" means.
+          # went 6.4 GB to 13.0 GB RSS in 30 s with MemAvailable 14.7 GB to 2.1 GB, and the runner was
+          # lost before the 60 s test timeout. It kills only when MemAvailable is under 4 GB AND the
+          # processes whose executable path contains `cargo-mutants-` (the scratch tree, so build
+          # scripts match too, but never reach 3 GB) together hold over 3 GB. The floor was 2 GB until
+          # run 45094735750, where shard 5 fell to 176 MB after a kill. If a run dips below 1 GB, a
+          # cgroup `MemoryMax` backstop is the next step; capping nextest threads costs shard time and
+          # nothing shows it is needed. **A killed mutant counts as caught, not timed out, on
+          # purpose:** tests that blow past 3 GB are behaviour a test observed.
           (
             last_log=0
             while :; do
-              if [ "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -lt 2000000 ]; then
+              if [ "$(awk '/MemAvailable/ {print $2}' /proc/meminfo)" -lt 4000000 ]; then
                 procs=$(testprocs)
                 total=$(echo "$procs" | awk '{s+=$2} END {print s+0}')
                 if [ "$total" -gt 3000000 ]; then
-                  echo "memory watchdog: MemAvailable under 2 GB, killing $(echo "$procs" | wc -l) test process(es) holding ${total} KB: $(echo $procs | cut -c1-200)"
+                  echo "memory watchdog: MemAvailable under 4 GB, killing $(echo "$procs" | wc -l) test process(es) holding ${total} KB: $(echo $procs | cut -c1-200)"
                   echo "$procs" | awk '{print $1}' | xargs kill -KILL 2>/dev/null
                 elif [ $((SECONDS - last_log)) -ge 60 ]; then
                   last_log=$SECONDS
@@ -637,12 +630,6 @@ jobs:
           df -h / "$GITHUB_WORKSPACE"
           echo "last samples:"
           tail -n 20 /tmp/resource-samples.log || true
-
-      - name: Out-of-memory check
-        if: always()
-        run: |
-          { dmesg 2>/dev/null || sudo dmesg 2>/dev/null || true; } | grep -iE "out of memory|oom-kill|killed process" | tail -n 20 || echo "no OOM lines in dmesg"
-          { sudo journalctl -k --no-pager 2>/dev/null || true; } | grep -iE "out of memory|oom-kill|killed process" | tail -n 20 || true
 
       - name: Keep the resource samples
         if: always()

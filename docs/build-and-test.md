@@ -615,14 +615,20 @@ restarts, and the baseline's slice numbers need recomputing too.
 **The weekly sweep lost shards to runaway mutants, not to time or disk (MDEDIT-209).** Three
 scheduled or dispatched runs lost shards to `The runner has received a shutdown signal`, with no
 other message. Run 45082401215 sampled the runner every 30 s (the `mutants-resources-shard-N`
-artifacts, and `sample` lines in the Mutate step's log): the hosted runner has 16 GB, no swap or
-3 GB, and about 90 GB of free disk, so disk is not it. Shard 4's `lex` test binary grew from 6.4 GB
-to 13.0 GB in 30 s and MemAvailable fell from 14.7 GB to 2.1 GB; shard 5's `app` binary held 4.0 GB
-at 169 MB available. A mutant that turns a loop counter's `+=` into `*=` or `-=` makes the test
-allocate until the machine stops answering, and the runner is lost before the 60 s test timeout
-fires. The Mutate step now runs a one-second watchdog that kills the test processes under the
-mutants scratch directory when MemAvailable is under 2 GB and together they hold over 3 GB; the mutant counts as caught. Run 45090484912 showed the first version (matching `args`, one process) never fired: shard 5 lost 14 GB with its largest process at 4.2 GB, so nextest's parallel test processes are summed, and found by executable path. The
-30-second sampler stays, since it costs under a second a sample.
+artifacts, and `sample` lines in the Mutate step's log). The hosted runner has 16 GB of RAM, about
+3 GB of swap and about 90 GB of free disk, so disk is not it. Shard 4's `lex` test binary grew from
+6.4 GB to 13.0 GB in 30 s and MemAvailable fell from 14.7 GB to 2.1 GB. Shard 5 lost 14 GB with its
+largest process at 4.2 GB, because nextest runs one process per test, in parallel. Two mutants
+allocate without bound: `crates/toml/src/lib.rs:390:9` and `crates/app/src/editor.rs:8416:9`. The
+runner stops answering before the 60 s test timeout fires.
+
+The Mutate step runs a one-second watchdog. When MemAvailable is under 4 GB and the processes whose
+executable path contains `cargo-mutants-` (the scratch tree, so build scripts match too, but they
+never reach 3 GB) together hold over 3 GB, it kills them all, and the mutant counts as caught. Run
+45094735750 had four kills, each of 3 or 4 test processes holding 13.5 to 15.4 GB in total. The first
+version matched on `args` and never fired (run 45090484912). The floor was 2 GB until shard 5 fell to
+176 MB after a kill, so it is 4 GB now. If a run still dips below 1 GB, the next step is a cgroup
+`MemoryMax` backstop. Capping nextest's threads would cost shard time and nothing shows it is needed.
 
 ## Releases (MDEDIT-140, MDEDIT-137)
 
