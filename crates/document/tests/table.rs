@@ -53,6 +53,19 @@ fn the_caret_knows_which_cell_it_is_in() {
     assert_eq!(at("just prose\n", "prose").caret_cell(), None);
 }
 
+/// A row's span runs from just inside its first pipe to just before its last. The table starts
+/// after prose, so a span counted from the wrong base lands on the wrong bytes.
+#[test]
+fn a_row_span_covers_its_cells_between_the_outer_pipes() {
+    let source = format!("intro\n\n{TABLE}");
+    let doc = at(&source, "Ctrl+B");
+    let table = doc.table_at(doc.selection().head()).expect("in a table");
+    let text = doc.to_string();
+
+    assert_eq!(table.row_span(0).unwrap().slice(&text), " Keys   | Does ");
+    assert_eq!(table.row_span(1).unwrap().slice(&text), " Ctrl+B | Bold ");
+}
+
 // ---- the operations ----
 
 #[test]

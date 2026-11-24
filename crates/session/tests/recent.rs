@@ -211,3 +211,22 @@ fn a_list_with_nowhere_to_live_still_remembers_within_the_run() {
     recent.record(&a_path(&dir, "one.md"));
     assert_eq!(recent.paths().len(), 1);
 }
+
+/// The size cap is a bound: a list file exactly at it is read, and one byte over is refused.
+#[test]
+fn a_list_file_is_refused_only_above_its_size_cap() {
+    const CAP: usize = 64 * 1024;
+    let dir = TempDir::new().unwrap();
+    let kept = a_path(&dir, "kept.md");
+    let entry = format!("\"{}\"", kept.display().to_string().replace('\\', "\\\\"));
+    let body = format!(r#"{{"paths":[{entry}]}}"#);
+    let padded = |size: usize| format!("{body}{}", " ".repeat(size - body.len()));
+
+    let at_cap = dir.path().join("at-cap.json");
+    std::fs::write(&at_cap, padded(CAP)).unwrap();
+    assert_eq!(Recent::at(at_cap).paths().len(), 1);
+
+    let over = dir.path().join("over.json");
+    std::fs::write(&over, padded(CAP + 1)).unwrap();
+    assert!(Recent::at(over).paths().is_empty());
+}

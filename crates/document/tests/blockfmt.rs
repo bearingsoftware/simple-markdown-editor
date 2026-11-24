@@ -595,6 +595,22 @@ fn an_atx_heading_still_takes_the_prefix_path() {
     assert_eq!(doc.to_string(), "#### A heading\n\nprose\n");
 }
 
+/// The caret lands at the end of the converted heading's text, so typing continues there rather
+/// than at the top of the document.
+#[test]
+fn converting_a_setext_heading_leaves_the_caret_at_the_end_of_its_text() {
+    let mut doc = at("intro\n\nA heading\n=========\n\nprose\n", 9);
+    assert!(doc.set_block(Block::Heading(3)));
+    assert_eq!(doc.selection().head(), ByteOffset::new(20));
+}
+
+/// The quote button lights from this, so a plain line must answer no.
+#[test]
+fn is_quoted_follows_the_caret_line() {
+    assert!(at("> quoted\n", 3).is_quoted());
+    assert!(!at("plain\n", 2).is_quoted());
+}
+
 // ---- states a document passes through while it is being typed (MDEDIT-107) ----
 
 /// **Data loss.** An unclosed fence is what a fence looks like halfway through being typed, and

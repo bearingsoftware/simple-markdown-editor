@@ -2,8 +2,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use mdedit_language::Language;
 use mdedit_session::{PathRejected, Workspace, path};
 use tempfile::TempDir;
 
@@ -820,4 +821,48 @@ mod window_placement {
         );
         assert!(Workspace::restore_session(&session).is_err());
     }
+}
+
+/// A snapshot file is named for its tab's id, so two tabs sharing one would overwrite each other's
+/// recovery.
+#[test]
+fn every_tab_has_its_own_snapshot_id() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 3);
+
+    let mut workspace = Workspace::new();
+    for path in &paths {
+        workspace.add(path.clone());
+    }
+    let ids: Vec<u64> = workspace
+        .tabs()
+        .iter()
+        .map(mdedit_session::Tab::snapshot_id)
+        .collect();
+
+    assert_ne!(ids[0], ids[1]);
+    assert_ne!(ids[1], ids[2]);
+    assert_ne!(ids[0], ids[2]);
+}
+
+fn as_plain(_path: &Path) -> &'static dyn Language {
+    &mdedit_language::PLAIN
+}
+
+/// The resolver is how a path becomes a language. Without one every file is read as Markdown, so
+/// this is the only place the wiring is seen.
+#[test]
+fn the_resolver_decides_what_language_a_file_is_read_as() {
+    let dir = TempDir::new().unwrap();
+    let paths = files(&dir, 1);
+
+    let mut workspace = Workspace::new();
+    workspace.with_language_resolver(as_plain);
+    workspace.add(paths[0].clone());
+    let open = workspace.activate(0).unwrap();
+
+    assert_eq!(
+        open.document.language().name(),
+        mdedit_language::PLAIN.name()
+    );
 }

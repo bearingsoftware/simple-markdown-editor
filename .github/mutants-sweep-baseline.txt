@@ -225,6 +225,7 @@ TIMEOUT crates/json/src/validate.rs: replace += with *= in is_json_number
 TIMEOUT crates/json/src/validate.rs: replace += with -= in Checker<'a>::escape
 TIMEOUT crates/json/src/validate.rs: replace += with -= in Checker<'a>::string
 TIMEOUT crates/json/src/validate.rs: replace Checker<'a>::escape with ()
+TIMEOUT crates/toml/src/lib.rs: replace + with * in Lexer<'a>::run
 TIMEOUT crates/xml/src/lib.rs: replace + with * in Lexer<'a>::word_end
 TIMEOUT crates/xml/src/lib.rs: replace += with *= in Lexer<'a>::declaration
 TIMEOUT crates/xml/src/lib.rs: replace += with -= in Lexer<'a>::declaration
@@ -232,6 +233,8 @@ TIMEOUT crates/xml/src/lib.rs: replace += with -= in Lexer<'a>::declaration
 TIMEOUT crates/xml/src/lib.rs: replace < with == in Lexer<'a>::text
 TIMEOUT crates/xml/src/lib.rs: replace < with > in Lexer<'a>::text
 TIMEOUT crates/xml/src/lib.rs: replace == with != in Lexer<'a>::run
+TIMEOUT crates/xml/src/lib.rs: replace > with >= in Lexer<'a>::word_end
 TIMEOUT crates/xml/src/lib.rs: replace Lexer<'a>::text with ()
+TIMEOUT crates/xml/src/lib.rs: replace match guard byte.is_ascii_whitespace() with true in Lexer<'a>::attributes
 TIMEOUT crates/yaml/src/lib.rs: replace Lexer<'a>::boundary -> usize with 0
 TIMEOUT crates/yaml/src/lib.rs: replace Lexer<'a>::boundary -> usize with 1

@@ -373,3 +373,38 @@ fn the_trait_on_a_slice_equals_the_free_function_on_the_whole_source() {
         );
     }
 }
+
+/// A colon inside quotes does not end a key, so the whole quoted text is the key.
+#[test]
+fn a_quoted_key_may_hold_a_colon() {
+    assert!(has("\"a: b\": c\n", Token::Key, "\"a: b\""));
+}
+
+/// A colon ends a key only before a space or at the end of the line, so `a:b` is one key.
+#[test]
+fn a_colon_not_followed_by_a_space_does_not_end_a_key() {
+    assert!(has("a:b: c\n", Token::Key, "a:b"));
+}
+
+/// A `#` after a space starts a comment, and a colon inside that comment does not make a key.
+#[test]
+fn a_comment_after_a_value_does_not_make_a_key() {
+    let source = "value # note: x\n";
+    assert!(has(source, Token::Comment, "# note: x"));
+    assert!(!tokens(source).iter().any(|(token, _)| *token == Token::Key));
+}
+
+/// A `#` inside a word is part of the key, not the start of a comment.
+#[test]
+fn a_hash_inside_a_word_is_part_of_the_key() {
+    assert!(has("a#b: c\n", Token::Key, "a#b"));
+}
+
+/// The hash is inside the key, so the key ends at its colon and the `|` after it opens a block
+/// scalar whose lines are text, not keys.
+#[test]
+fn a_key_with_a_hash_still_opens_its_block_scalar() {
+    let source = "a#b: |\n  text: x\n";
+    assert!(has(source, Token::Key, "a#b"));
+    assert!(!has(source, Token::Key, "text"));
+}
