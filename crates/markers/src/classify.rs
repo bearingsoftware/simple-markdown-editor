@@ -455,8 +455,13 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
             let plausible = byte.is_ascii_whitespace()
                 || match marker {
                     Marker::BlockQuote => byte == b'>',
+                    // `.` and `)` only delimit an ordered marker, so they need a digit before them.
                     Marker::ListItem => {
-                        byte.is_ascii_digit() || matches!(byte, b'-' | b'*' | b'+' | b'.' | b')')
+                        byte.is_ascii_digit()
+                            || matches!(byte, b'-' | b'*' | b'+')
+                            || (matches!(byte, b'.' | b')')
+                                && i > 0
+                                && bytes[i - 1].is_ascii_digit())
                     }
                     _ => byte == b':',
                 };
