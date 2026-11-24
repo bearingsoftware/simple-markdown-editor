@@ -612,11 +612,16 @@ fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
                 );
             }
             #[allow(clippy::cast_precision_loss, reason = "twelve rows")]
-            let baseline = first_row_top + index as f32 * stub::LINE_HEIGHT + stub::ASCENT;
+            let rows_down = index as f32;
             assert_eq!(
-                digits[0].rect[1],
-                baseline * scale - 1.0,
-                "row {index}'s baseline at scale {scale}"
+                digits[0].rect[1] - rows[0][0].rect[1],
+                rows_down * stub::LINE_HEIGHT * scale,
+                "row {index} is its row's height below row 0 at scale {scale}"
+            );
+            let band = (first_row_top + rows_down * stub::LINE_HEIGHT) * scale;
+            assert!(
+                digits[0].rect[1] >= band && digits[0].rect[1] < band + stub::LINE_HEIGHT * scale,
+                "row {index}'s number is outside its row at scale {scale}"
             );
         }
     }
