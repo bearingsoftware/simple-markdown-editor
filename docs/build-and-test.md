@@ -540,12 +540,41 @@ mutants, roughly half the work, which leaves room for an overrun.
 
 **The mechanism has no state.** `mutants.yml` runs on a Sunday schedule. The slice is the number of
 whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (16). It is not the ISO week, because
-ISO week numbers restart each January and would repeat or skip a slice across New Year. Run `k`
-executes global shards `k*6` to `k*6+5` of `N*6` (`--shard g/T --sharding round-robin`, with no
-`--in-diff`). Round-robin gives every shard the same mix of crates, so no shard inherits the
-expensive `mdedit-app` mutants alone. With `N` = 16 that is 96 shards of 73 mutants each, and **one
-lap is sixteen weeks**, after which every mutant has been run once. The plan job counts each shard,
-warns above `MUTANTS_SWEEP_PER_SHARD` (80), and fails if `cargo mutants --list` fails.
+ISO week numbers restart each January and would repeat or skip a slice across New Year. **One lap is
+sixteen weeks**, after which every mutant has been run once. The plan job counts each shard, warns
+above `MUTANTS_SWEEP_PER_SHARD` (80), and fails if `cargo mutants --list` fails.
+
+**A slice is a set of files, not a stretch of the mutant list (MDEDIT-217).** The first design took
+`--shard g/96` over the global mutant index, so one mutant added anywhere moved every later mutant
+into a different shard. Runs 45128546666 and 45399084717 were two laps of the same slice over trees
+a few commits apart, and their shards had almost nothing in common, so a survivor could not be
+compared across laps or reproduced by re-running the slice. `.github/scripts/sweep-scope.sh` now
+decides the scope, and both `plan` (to count) and `mutate` (to run) call it:
+
+- The file set is `cargo mutants --list-files $MUTANTS_EXCLUDES`, never a hand-written glob.
+- A file belongs to slice `cksum(path) mod 10`, where the path is repo-relative with `/` and `10` is
+  `MUTANTS_SWEEP_RUNS - MUTANTS_HEAVY_SLICES`. `cksum` is POSIX and needs no install.
+- Within a slice the six shards run `--shard k/6 --sharding round-robin` over that slice's files,
+  passed as repeated `--file <path>`. A glob containing a `/` matches the whole path, so
+  `crates/ini/src/lib.rs` does not match any other crate's `lib.rs`.
+- **`crates/app/src/editor.rs` is the exception.** It holds 2702 of the 7392 mutants (37 percent), more
+  than one slice can carry, so it takes slices 10 to 15 for itself: `--file crates/app/src/editor.rs
+  --shard p/36 --sharding round-robin`, 75 mutants a shard. Only those six slices reshuffle when
+  `editor.rs` changes, which is the most that can be kept stable for a file that big without a
+  per-function key.
+
+An edit now moves mutants only inside its own file's slice. A new file lands in the slice its path
+hashes to, and nothing else moves. The weights, from `cargo mutants --list` at the time of writing:
+
+| Slices | Mutants a slice | A shard |
+| --- | --- | --- |
+| 0 to 9, by hash | 90, 147, 200, 221, 348, 535, 583, 629, 940, 997 (median 442) | 15 to 166 |
+| 10 to 15, `editor.rs` | 450 each | 75 |
+
+The hash is not balanced: 997 is 2.3 times the median of all sixteen slices (450), inside the
+three-times line but over the 80 cap, so the plan will annotate slices 5 and 7. At the 8 to 15 s a
+mutant measured since MDEDIT-182 that is 20 to 40 minutes, inside the 40-minute budget. If those two
+start running out of time, add shards for them or raise `MUTANTS_SWEEP_RUNS`; do not hand-assign files.
 
 To re-run one slice by hand: `gh workflow run mutants.yml -f sweep=3`. An empty `sweep` input is
 an ordinary diff run, unchanged.
@@ -581,11 +610,9 @@ for, or append its line to the baseline in a commit that says why it is equivale
 here (a window or a device, for example). Then sort the file. Re-run the slice to confirm
 it is green.
 
-The baseline covers slices 0 and 8 of 16. Under round-robin, the 48-shard split of the first run
-is the same as the 96-shard split: old shards 0 to 5 of 48 are new shards 0 to 5 and 48 to 53 of 96,
-which are slices 0 and 8. The exception is old shard 2's untested remainder, which the first slice-0
-run never reached, so its mutants show as new in those slices. The first lap will be red on most
-other slices. That is expected: each red run is one triage.
+The baseline is by mutation text, so it survives the move to file slices (MDEDIT-217), but the old
+slice numbers mean nothing now: every slice changed membership once, so expect the first lap after
+that change to be red on survivors that were never triaged. Each red run is one triage.
 
 **The sweep's other checks stay strict.** `sweep-report` also fails when fewer than
 `MUTANTS_MAX_SHARDS` (6) `mutants-report-shard-*` artifacts come back, or one lacks its `shard-done`

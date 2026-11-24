@@ -50,14 +50,25 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # **The sweep's lap length, and the per-shard cap that sizes it** (MDEDIT-191). A lap is
-  # `MUTANTS_SWEEP_RUNS` weekly runs of `MUTANTS_MAX_SHARDS` shards each, so the workspace is split
-  # into `MUTANTS_SWEEP_RUNS * MUTANTS_MAX_SHARDS` round-robin shards. Raise the first as the
-  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated. Sized from run 40408425052
+  # `MUTANTS_SWEEP_RUNS` weekly runs of `MUTANTS_MAX_SHARDS` shards each. Raise the first as the
+  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated.
+  #
+  # **A slice is a set of source files, not a stretch of the mutant list (MDEDIT-217).** It used to
+  # be `--shard g/96` over the global mutant index, so one mutant added anywhere moved every later
+  # one into another shard: runs 45128546666 and 45399084717 were two laps over a different tree
+  # and their shards had no mutants in common. Now `.github/scripts/sweep-scope.sh` gives each file
+  # to slice `cksum(path) mod (RUNS - HEAVY_SLICES)`, and the six shards split that slice's own
+  # mutants. An edit moves mutants only inside its file's slice. `MUTANTS_HEAVY_FILE` holds 2702 of
+  # the workspace's 7392 mutants, more than a whole slice can carry, so it gets the last
+  # `MUTANTS_HEAVY_SLICES` slices to itself, round-robin over their shards (so only its own
+  # slices reshuffle). Sized from run 40408425052
   # (slice 0 at N=8): a mutant costs about 15 s on the heavy shards, and 146 mutants a shard ran shard
   # 2 out of its 40-minute budget with 35 survivors found and the rest untested. Sixteen slices halve
   # the work per shard, and 80 is the cap that keeps a shard inside the budget at that cost.
   MUTANTS_SWEEP_RUNS: 16
   MUTANTS_SWEEP_PER_SHARD: 80
+  MUTANTS_HEAVY_FILE: crates/app/src/editor.rs
+  MUTANTS_HEAVY_SLICES: 6
   # **One copy, read by both jobs**, because the count `plan` emits and the set the shards run have
   # to be the same set. Two lists that must agree is how MDEDIT-155 happened.
   #
@@ -279,24 +290,28 @@ jobs:
           set -o pipefail
 
           if [ "$MODE" = sweep ]; then
-            # **Each global shard is counted with the same flags the mutate step will use**, so the
-            # count is of the set that shard runs. A shard over the cap is annotated, not failed: the
-            # cap is a budget, and the sweep's own report is what says whether the budget held.
-            T=$((MUTANTS_SWEEP_RUNS * MUTANTS_MAX_SHARDS))
+            # **Each shard is counted with the same scope the mutate step will use**, from the same
+            # script, so the count is of the set that shard runs. A shard over the cap is annotated,
+            # not failed: the cap is a budget, and the sweep's own report is what says whether it held.
+            T=$MUTANTS_MAX_SHARDS
             total=0
             for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
-              g=$((SLICE * MUTANTS_MAX_SHARDS + s))
-              if ! cargo mutants --list $MUTANTS_EXCLUDES --shard "$g/$T" --sharding round-robin > /tmp/sweep-$s.list; then
-                echo "::error title=Sweep list failed::cargo-mutants --list failed for global shard $g of $T. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
+              if ! mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$SLICE" "$s") || [ "${#scope[@]}" -eq 0 ]; then
+                echo "::error title=Sweep scope failed::sweep-scope.sh failed for slice $SLICE shard $s. A count of zero here would hide it, so the plan fails (MDEDIT-217)."
+                echo "shards=[]" >> "$GITHUB_OUTPUT"
+                exit 1
+              fi
+              if ! cargo mutants --list $MUTANTS_EXCLUDES "${scope[@]}" --sharding round-robin > /tmp/sweep-$s.list; then
+                echo "::error title=Sweep list failed::cargo-mutants --list failed for slice $SLICE shard $s. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
                 echo "shards=[]" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
               n=$(grep -c '' /tmp/sweep-$s.list || true)
               n=${n:-0}
               total=$((total + n))
-              echo "global shard $g of $T: $n mutant(s)"
+              echo "slice $SLICE shard $s of $T: $n mutant(s)"
               if [ "$n" -gt "$MUTANTS_SWEEP_PER_SHARD" ]; then
-                echo "::warning title=Sweep shard over its cap::global shard $g of $T has $n mutants, over the $MUTANTS_SWEEP_PER_SHARD cap. Raise MUTANTS_SWEEP_RUNS so each slice is smaller (MDEDIT-191)."
+                echo "::warning title=Sweep shard over its cap::slice $SLICE shard $s has $n mutants, over the $MUTANTS_SWEEP_PER_SHARD cap. Raise MUTANTS_SWEEP_RUNS so each slice is smaller (MDEDIT-191)."
               fi
             done
             if [ "$total" -eq 0 ]; then
@@ -308,7 +323,7 @@ jobs:
             echo "mutants=$total" >> "$GITHUB_OUTPUT"
             echo "total=$T" >> "$GITHUB_OUTPUT"
             echo "shards=[$(seq -s, 0 $((MUTANTS_MAX_SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
-            echo "$total mutants over $MUTANTS_MAX_SHARDS shard(s) of global slice $SLICE, round-robin of $T"
+            echo "$total mutants over $MUTANTS_MAX_SHARDS shard(s) of slice $SLICE"
             exit 0
           fi
 
@@ -520,12 +535,15 @@ jobs:
           watchdog=$!
           trap 'kill "$sampler" "$watchdog" 2>/dev/null' EXIT
           # **The only difference between the two modes is the scope.** A diff shard mutates its
-          # share of the diff; a sweep shard mutates its round-robin share of the whole workspace,
-          # which is global shard `slice * MAX_SHARDS + shard` of `N * MAX_SHARDS`.
+          # share of the diff; a sweep shard mutates its share of its slice's files, as the plan
+          # counted them (MDEDIT-217).
           if [ "$MODE" = sweep ]; then
-            g=$(( SLICE * MUTANTS_MAX_SHARDS + SHARD ))
-            scope=(--shard "$g/$SHARDS")
-            where="global shard $g of $SHARDS (sweep slice $SLICE)"
+            mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$SLICE" "$SHARD")
+            if [ "${#scope[@]}" -eq 0 ]; then
+              echo "::error title=Sweep scope failed::sweep-scope.sh gave slice $SLICE shard $SHARD no scope (MDEDIT-217)."
+              exit 1
+            fi
+            where="shard $SHARD of $SHARDS (sweep slice $SLICE)"
             advice="Raise MUTANTS_SWEEP_RUNS so each slice is smaller:"
             advice+=" the sweep cap is deliberate, and the job's own 55-minute limit"
             advice+=" is the ceiling (MDEDIT-171, MDEDIT-191)."
