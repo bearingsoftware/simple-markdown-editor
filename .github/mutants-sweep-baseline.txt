@@ -6,6 +6,7 @@ MISSED crates/app/src/dialog.rs: replace * with / in height_of
 MISSED crates/app/src/dialog.rs: replace - with + in height_of
 MISSED crates/app/src/dialog.rs: replace - with / in height_of
 MISSED crates/app/src/dialog.rs: replace < with <= in contains
+MISSED crates/app/src/editor.rs: delete ! in <impl ApplicationHandler<Wake> for Editor<T>>::new_events
 MISSED crates/app/src/editor.rs: delete ! in Editor<T>::dialog_key
 MISSED crates/app/src/editor.rs: delete - in Editor<T>::apply_chord
 MISSED crates/app/src/editor.rs: delete match arm Key::Character(character) in Editor<T>::dialog_key
@@ -122,17 +123,25 @@ MISSED crates/app/src/editor.rs: replace < with <= in Editor<T>::draw_dialog_tex
 MISSED crates/app/src/editor.rs: replace < with <= in list_pieces
 MISSED crates/app/src/editor.rs: replace < with == in Editor<T>::draw_find_term
 MISSED crates/app/src/editor.rs: replace < with == in list_pieces
+MISSED crates/app/src/editor.rs: replace <= with > in <impl ApplicationHandler<Wake> for Editor<T>>::new_events
+MISSED crates/app/src/editor.rs: replace <= with > in <impl ApplicationHandler<Wake> for Editor<T>>::new_events
+MISSED crates/app/src/editor.rs: replace <impl ApplicationHandler<Wake> for Editor<T>>::new_events with ()
 MISSED crates/app/src/editor.rs: replace == with != in Editor<T>::draw_pane
 MISSED crates/app/src/editor.rs: replace == with != in Editor<T>::toggle_menu
 MISSED crates/app/src/editor.rs: replace > with < in Editor<T>::title
 MISSED crates/app/src/editor.rs: replace > with == in Editor<T>::title
 MISSED crates/app/src/editor.rs: replace > with >= in Editor<T>::pan_by
+MISSED crates/app/src/editor.rs: replace Editor<T>::build_latency -> &Latency with Box::leak(Box::new(Default::default()))
+MISSED crates/app/src/editor.rs: replace Editor<T>::dialog_key -> bool with false
 MISSED crates/app/src/editor.rs: replace Editor<T>::draw_size_picker with ()
 MISSED crates/app/src/editor.rs: replace Editor<T>::find_key -> bool with false
 MISSED crates/app/src/editor.rs: replace Editor<T>::find_key -> bool with true
 MISSED crates/app/src/editor.rs: replace Editor<T>::first_paint -> Option<Instant> with None
 MISSED crates/app/src/editor.rs: replace Editor<T>::gpu_error -> Option<&GpuError> with None
+MISSED crates/app/src/editor.rs: replace Editor<T>::latency -> &Latency with Box::leak(Box::new(Default::default()))
 MISSED crates/app/src/editor.rs: replace match guard grid.is_none() with true in Editor<T>::lay_out
+MISSED crates/app/src/editor.rs: replace |= with &= in <impl ApplicationHandler<Wake> for Editor<T>>::new_events
+MISSED crates/app/src/editor.rs: replace |= with &= in <impl ApplicationHandler<Wake> for Editor<T>>::new_events
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::dismiss_panels
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::find_origin
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::warm
