@@ -292,7 +292,6 @@ jobs:
           set -o pipefail
 
           if [ "$MODE" = sweep ]; then
-          if [ "$MODE" = sweep ]; then
             # **Each shard is counted with the same scope the mutate step will use**, from the same
             # script, so the count is of the set that shard runs. A light slice gets as many shards as
             # keep each under `MUTANTS_SWEEP_PER_SHARD`, between 1 and `MUTANTS_SWEEP_MAX_SHARDS`
