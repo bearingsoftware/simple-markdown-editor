@@ -75,6 +75,7 @@ MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_size_picker
 MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_size_picker
 MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_tab
 MISSED crates/app/src/editor.rs: replace + with * in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace + with * in list_pieces
 MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_buttons
 MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_buttons
 MISSED crates/app/src/editor.rs: replace + with - in Editor<T>::draw_dialog_field
@@ -117,6 +118,7 @@ MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::build_frame
 MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::build_frame
 MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::draw_dialog_buttons
 MISSED crates/app/src/editor.rs: replace / with * in Editor<T>::draw_tooltip
+MISSED crates/app/src/editor.rs: replace < with <= in Editor<T>::draw_dialog_text
 MISSED crates/app/src/editor.rs: replace < with <= in list_pieces
 MISSED crates/app/src/editor.rs: replace < with == in Editor<T>::draw_find_term
 MISSED crates/app/src/editor.rs: replace < with == in list_pieces
@@ -135,6 +137,9 @@ MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::dismiss_panels
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::find_origin
 MISSED crates/app/src/editor.rs: replace || with && in Editor<T>::warm
 MISSED crates/app/src/find.rs: delete match arm (Mode::Replace, Focus::Secondary) in Bar::active
+MISSED crates/app/src/find.rs: replace - with + in layout
+MISSED crates/app/src/find.rs: replace - with / in layout
+MISSED crates/app/src/find.rs: replace - with / in layout
 MISSED crates/app/src/find.rs: replace < with <= in Layout::over_field
 MISSED crates/app/src/find.rs: replace Bar::active -> &Field with Box::leak(Box::new(Default::default()))
 MISSED crates/app/src/gpu.rs: replace + with * in Atlas::insert
@@ -143,6 +148,8 @@ MISSED crates/app/src/gpu.rs: replace + with - in Atlas::insert
 MISSED crates/app/src/gpu.rs: replace += with *= in Atlas::insert
 MISSED crates/app/src/gpu.rs: replace += with -= in Atlas::insert
 MISSED crates/app/src/gpu.rs: replace > with >= in Atlas::insert
+MISSED crates/app/src/gpu.rs: replace | with & in create_image_parts
+MISSED crates/app/src/gpu.rs: replace | with ^ in create_image_parts
 MISSED crates/app/src/hit.rs: replace < with <= in row_at
 MISSED crates/app/src/latency.rs: replace Latency::is_empty -> bool with true
 MISSED crates/app/src/latency.rs: replace Latency::len -> usize with 0
