@@ -368,6 +368,18 @@ fn cycling_one_tab_does_nothing() {
     assert!(!editor.apply_chord("\t", true));
 }
 
+/// Two tabs are the smallest cycle there is: forward and back both land on the other one.
+#[test]
+fn two_tabs_are_enough_to_cycle() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = tabs(&dir, 2);
+
+    assert!(editor.apply_chord("\t", false));
+    assert_eq!(editor.workspace().active(), Some(1));
+    assert!(editor.apply_chord("\t", true));
+    assert_eq!(editor.workspace().active(), Some(0));
+}
+
 // ---- the arms nothing pressed (MDEDIT-101) ----
 
 /// Ctrl+N, Ctrl+W and Ctrl+O move tabs about, and none of them had a test.

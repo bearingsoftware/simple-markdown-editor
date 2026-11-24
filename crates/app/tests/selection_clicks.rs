@@ -277,3 +277,22 @@ fn a_double_click_on_whitespace_selects_the_run() {
 
     assert_eq!(selected(&editor), "    ");
 }
+
+/// Dragging inside the word that was double-clicked leaves it selected the way it was: the caret
+/// still at its end. Reversed, the next Shift+Arrow would shrink the word from the wrong side.
+#[test]
+fn dragging_within_the_selected_word_keeps_the_caret_at_its_end() {
+    let mut editor = editor("alpha beta\n");
+    let now = Instant::now();
+    let (x, y) = at(1, 0);
+
+    editor.click_at_time(x, y, now);
+    editor.click_at_time(x, y, now + Duration::from_millis(80));
+    let (dx, dy) = at(3, 0);
+    editor.drag_to(dx, dy);
+
+    assert_eq!(selected(&editor), "alpha");
+    let selection = editor.document().selection();
+    assert_eq!(selection.anchor().get(), 0);
+    assert_eq!(selection.head().get(), 5);
+}

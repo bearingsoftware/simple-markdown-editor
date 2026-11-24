@@ -216,3 +216,18 @@ fn the_document_is_reparsed_after_a_conversion() {
         "the heading must still be a heading after the whole buffer was replaced"
     );
 }
+
+/// The Line Endings menu is ticked for the style a document uses and for no style when it has
+/// none, which is what a Mixed one is.
+#[test]
+fn the_menu_ticks_the_style_the_document_uses() {
+    for (contents, ticks) in [
+        ("a\nb\n", (true, false)),
+        ("a\r\nb\r\n", (false, true)),
+        ("a\nb\r\n", (false, false)),
+    ] {
+        let dir = TempDir::new().unwrap();
+        let (editor, _) = open(&dir, contents);
+        assert_eq!(editor.endings_ticks(), Some(ticks), "{contents:?}");
+    }
+}

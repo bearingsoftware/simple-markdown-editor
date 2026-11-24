@@ -303,3 +303,13 @@ fn leftmost_quad(quads: &[mdedit_app::gpu::QuadInstance]) -> Option<i32> {
         .map(|x| (x * 100.0) as i32)
         .min()
 }
+
+/// The getter says what was set, not what it started as.
+#[test]
+fn the_getter_follows_the_setter() {
+    let mut editor = editor("hello\n");
+    editor.set_wrap(false);
+    assert!(!editor.wrap());
+    editor.toggle_wrap();
+    assert!(editor.wrap());
+}
