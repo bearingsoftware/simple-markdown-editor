@@ -612,3 +612,36 @@ fn the_pane_runs_down_to_the_status_bar_at_any_scale() {
         );
     }
 }
+
+/// The close mark sits in the middle of its region, at any scale: the glyph's own width counted, as
+/// much room either side.
+#[test]
+fn the_close_mark_is_centred_in_its_region_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let dir = TempDir::new().unwrap();
+        let mut editor = editor_with_files(&dir, 3, "# One\n\ntext\n");
+        editor.toggle_chrome();
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let row = row_of(&editor, 0).expect("the first file's row");
+        let (close_x, close_width) = row.close_region();
+        let top = (mdedit_app::toolbar::HEIGHT + row.y) * scale;
+        let marks: Vec<f32> = quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= close_x * scale
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + ROW_HEIGHT * scale
+            })
+            .map(|quad| quad.rect[0])
+            .collect();
+
+        assert_eq!(marks.len(), 1, "one mark in the region at scale {scale}");
+        assert_eq!(
+            marks[0] + ADVANCE * scale / 2.0,
+            (close_x + close_width / 2.0) * scale,
+            "scale {scale}"
+        );
+    }
+}

@@ -535,14 +535,23 @@ fn gutter_rows(editor: &mut Editor<Grid>, scale: f32) -> Vec<Vec<mdedit_app::gpu
 /// borrowed from the code that does it.
 #[test]
 fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
-    for scale in [1.0, 2.0] {
+    // A one-digit flagged number as well as a two-digit one: the mark of a two-digit number sits at
+    // the gutter's very left edge, where multiplying and dividing by the scale agree.
+    let documents = [
+        (flagged_eleventh(), 10),
+        ("{\n  \"a\": 1,\n}\n".to_owned(), 1),
+    ];
+    for ((source, flagged_row), scale) in documents
+        .iter()
+        .flat_map(|doc| [1.0, 2.0].map(|scale| (doc, scale)))
+    {
         let dir = TempDir::new().unwrap();
-        let mut editor = json(&dir, &flagged_eleventh());
+        let mut editor = json(&dir, source);
         editor.toggle_line_numbers();
         editor.on_idle();
 
         let rows = gutter_rows(&mut editor, scale);
-        assert!(rows.len() >= 12, "{} rows at scale {scale}", rows.len());
+        assert!(rows.len() > *flagged_row, "{} rows at scale {scale}", rows.len());
 
         let rose = mdedit_app::view::Theme::dark().span_error;
         let rose = [rose.r, rose.g, rose.b, rose.a];
@@ -556,9 +565,14 @@ fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
         let mut padding = None;
         for (index, row) in rows.iter().enumerate() {
             let flagged = row[0].colour == rose;
-            assert_eq!(flagged, index == 10, "row {index} at scale {scale}");
+            assert_eq!(flagged, index == *flagged_row, "row {index} at scale {scale}");
             let digits = if flagged { &row[1..] } else { &row[..] };
             if flagged {
+                assert_eq!(
+                    digits.len(),
+                    (index + 1).to_string().len(),
+                    "a mark and every digit of the number, at scale {scale}"
+                );
                 assert_eq!(
                     row[0].rect[0] + advance,
                     digits[0].rect[0],

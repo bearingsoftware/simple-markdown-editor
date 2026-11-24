@@ -1118,7 +1118,7 @@ fn a_rows_icon_is_centred_in_the_icon_column() {
 
     for index in 0..toolbar::LISTS.len() {
         let top = y + popup::row_top(index);
-        let icon: Vec<f32> = quads
+        let icon: Vec<[f32; 2]> = quads
             .iter()
             .filter(|quad| {
                 quad.uv != [0.0, 0.0, 1.0, 1.0]
@@ -1127,12 +1127,20 @@ fn a_rows_icon_is_centred_in_the_icon_column() {
                     && quad.rect[1] >= top
                     && quad.rect[1] < top + popup::ROW_HEIGHT
             })
-            .map(|quad| quad.rect[0])
+            .map(|quad| [quad.rect[0], quad.rect[1]])
             .collect();
         assert_eq!(icon.len(), 1, "row {index}");
 
-        let before = icon[0] - x;
-        let after = (x + popup::ICON_COLUMN) - (icon[0] + stub::ADVANCE);
+        let before = icon[0][0] - x;
+        let after = (x + popup::ICON_COLUMN) - (icon[0][0] + stub::ADVANCE);
         assert_eq!(before, after, "row {index}'s icon is off-centre");
+
+        // The stub's glyph sits a pixel above its baseline, and an icon's baseline is below the
+        // row's middle, so that its ink is centred rather than hung from it.
+        let baseline = icon[0][1] + 1.0;
+        assert!(
+            baseline > top + popup::ROW_HEIGHT / 2.0 && baseline < top + popup::ROW_HEIGHT,
+            "row {index}'s icon baseline {baseline} is not in the lower half of its row"
+        );
     }
 }
