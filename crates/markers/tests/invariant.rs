@@ -590,23 +590,23 @@ fn mdedit_216_a_lazy_line_holds_no_list_syntax() {
 
 #[test]
 fn mdedit_216_real_list_markers_survive() {
-    for (source, marker) in [
-        ("1. a", "1."),
-        ("1) a", "1)"),
-        ("0. a", "0."),
-        ("123456789. a", "123456789."),
-        ("> 1) a", "1)"),
-        ("- a\n  - b", "-"),
-        ("- a\n\n  b\n- c", "-"),
-        ("- a\n\n  b\n1. c", "-"),
+    for (source, expected) in [
+        ("1. a", vec!["1. "]),
+        ("1) a", vec!["1) "]),
+        ("0. a", vec!["0. "]),
+        ("123456789. a", vec!["123456789. "]),
+        ("> 1) a", vec!["1) "]),
+        ("- a\n  - b", vec!["- ", "  - "]),
+        ("- a\n\n  b\n- c", vec!["- ", "  ", "- "]),
+        ("- a\n\n  b\n1. c", vec!["- ", "  ", "1. "]),
+        ("1. a\n\n   more\n\n2. b", vec!["1. ", "   ", "2. "]),
     ] {
         let segments = assert_partitions(source, "mdedit-216 real");
-        assert!(
-            segments.iter().any(|seg| {
-                matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem))
-                    && source[seg.span().start().get()..seg.span().end().get()].contains(marker)
-            }),
-            "{source:?}: no ListItem marker containing {marker:?}"
-        );
+        let found: Vec<&str> = segments
+            .iter()
+            .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem)))
+            .map(|seg| &source[seg.span().start().get()..seg.span().end().get()])
+            .collect();
+        assert_eq!(found, expected, "{source:?}");
     }
 }
