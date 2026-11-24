@@ -10817,6 +10817,24 @@ impl<T: TextLayout> Editor<T> {
         counts
     }
 
+    /// For a test: holds or releases Ctrl, which a winit `ModifiersChanged` would otherwise do.
+    #[doc(hidden)] // for the integration tests only
+    pub fn hold_control(&mut self, held: bool) {
+        self.modifiers = if held {
+            ModifiersState::CONTROL
+        } else {
+            ModifiersState::empty()
+        };
+    }
+
+    /// For a test: the `(LF, CRLF)` ticks the Line Endings menu was last told, once a document has
+    /// been shown. There is no menu to read them back from without a window.
+    #[must_use]
+    #[doc(hidden)] // for the integration tests only
+    pub fn endings_ticks(&self) -> Option<(bool, bool)> {
+        self.endings_state.map(|state| (state.lf, state.crlf))
+    }
+
     /// For a test: how many fences' last answered versions are remembered for reuse.
     #[must_use]
     #[doc(hidden)] // for the integration tests only

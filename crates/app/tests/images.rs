@@ -1059,3 +1059,18 @@ fn the_waited_on_set_goes_when_the_layouts_do() {
         "laid out again, so waited on again"
     );
 }
+
+#[test]
+fn the_device_scale_multiplies_where_the_picture_is_too() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = one_picture(&dir, (100, 50));
+
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let at_one = editor.drawn_pictures()[0].rect;
+    editor.build_frame(WIDTH * 2.0, HEIGHT * 2.0, 2.0);
+    let at_two = editor.drawn_pictures()[0].rect;
+
+    assert!(at_one[0] > 0.0 && at_one[1] > 0.0, "{at_one:?}");
+    assert_eq!(at_two[0], at_one[0] * 2.0, "x");
+    assert_eq!(at_two[1], at_one[1] * 2.0, "y");
+}

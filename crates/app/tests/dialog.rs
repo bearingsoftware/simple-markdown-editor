@@ -541,3 +541,109 @@ fn the_edge_frames_the_panel_at_any_scale() {
         stub::assert_halo(&quads, &panels[0], line, scale);
     }
 }
+
+/// Each edge on its own: a point past one edge and inside the other three is outside. A test with
+/// the point outside on two axes at once passes however the four comparisons are joined.
+#[test]
+fn the_panel_contains_exactly_its_own_rectangle() {
+    let at = (100.0, 50.0);
+    let (right, bottom) = (at.0 + dialog::WIDTH, at.1 + dialog::height_of(2));
+    let (mid_x, mid_y) = (at.0 + 10.0, at.1 + 10.0);
+
+    assert!(dialog::contains(2, at.0, at.1, at), "top-left corner");
+    assert!(dialog::contains(2, right - 0.5, bottom - 0.5, at));
+    assert!(!dialog::contains(2, at.0 - 0.5, mid_y, at), "left");
+    assert!(!dialog::contains(2, right, mid_y, at), "right edge");
+    assert!(!dialog::contains(2, mid_x, at.1 - 0.5, at), "above");
+    assert!(!dialog::contains(2, mid_x, bottom, at), "bottom edge");
+}
+
+// ---- the keys a field answers ----
+
+/// A clipboard that holds one thing, so Ctrl+V has something to paste.
+struct Holding(String);
+
+impl mdedit_app::clipboard::Clipboard for Holding {
+    fn read(&mut self) -> Option<String> {
+        Some(self.0.clone())
+    }
+
+    fn write(&mut self, _text: &str) {}
+}
+
+fn character(text: &str) -> Key {
+    Key::Character(text.into())
+}
+
+/// Escape is the way out that writes nothing: the panel closes and the document is as it was.
+#[test]
+fn escape_closes_the_panel_and_writes_nothing() {
+    let mut editor = editor("prose\n");
+    editor.link();
+    type_into(&mut editor, "https://example.com");
+
+    assert!(editor.press_dialog_key(&Key::Named(NamedKey::Escape)));
+
+    assert!(editor.dialog().is_none());
+    assert_eq!(editor.document().to_string(), "prose\n");
+}
+
+/// Ctrl+A selects the field's text, in either case, so the next key replaces all of it.
+#[test]
+fn ctrl_a_selects_everything_in_the_field() {
+    for key in ["a", "A"] {
+        let mut editor = editor("prose\n");
+        editor.link();
+        type_into(&mut editor, "https://example.com");
+        assert_eq!(
+            editor.dialog().unwrap().fields()[0].selected_text(),
+            None,
+            "nothing is selected to begin with"
+        );
+
+        editor.hold_control(true);
+        assert!(editor.press_dialog_key(&character(key)));
+
+        assert_eq!(
+            editor.dialog().unwrap().fields()[0].selected_text(),
+            Some("https://example.com"),
+            "Ctrl+{key}"
+        );
+    }
+}
+
+/// Ctrl+V pastes the clipboard's first line, and only that: a destination with a newline in it is
+/// not a destination.
+#[test]
+fn ctrl_v_pastes_the_first_line_of_the_clipboard() {
+    for key in ["v", "V"] {
+        let mut editor = editor("prose\n");
+        editor.link();
+        editor.with_clipboard(Box::new(Holding(
+            "https://pasted.example\nsecond line\n".to_owned(),
+        )));
+        type_into(&mut editor, "x");
+
+        editor.hold_control(true);
+        assert!(editor.press_dialog_key(&character(key)));
+
+        assert_eq!(
+            editor.dialog().unwrap().fields()[0].text(),
+            "xhttps://pasted.example",
+            "Ctrl+{key}"
+        );
+    }
+}
+
+/// A chord that is not the field's own is dropped rather than performed.
+#[test]
+fn another_chord_is_swallowed_while_the_panel_is_up() {
+    let mut editor = editor("prose\n");
+    editor.link();
+    editor.hold_control(true);
+
+    assert!(editor.press_dialog_key(&character("z")));
+
+    assert!(editor.dialog().is_some());
+    assert_eq!(editor.dialog().unwrap().fields()[0].text(), "");
+}

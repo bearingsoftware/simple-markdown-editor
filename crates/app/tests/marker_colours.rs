@@ -378,3 +378,29 @@ fn tilde_unterminated_and_indented_fences_are_found() {
         assert_eq!(run_of(&runs, "fn").colour, theme.token_key, "{source:?}");
     }
 }
+
+/// The info string and body of the first fence in `source`, if `fence_of` finds one.
+fn fence_in(source: &str) -> Option<(String, String)> {
+    let doc = Document::from(source);
+    doc.blocks()
+        .iter()
+        .find(|block| block.kind() == mdedit_language::BlockKind::CodeBlock)
+        .and_then(|block| mdedit_app::view::fence_of(block, source))
+        .map(|fence| (fence.info.to_owned(), fence.body.slice(source).to_owned()))
+}
+
+/// Three spaces of indent is the most CommonMark allows a fence, and it is still one.
+#[test]
+fn a_fence_indented_three_spaces_is_still_a_fence() {
+    let (info, body) = fence_in("   ```rust\nfn main() {}\n   ```\n").expect("a fence");
+    assert_eq!(info, "rust");
+    assert_eq!(body, "fn main() {}\n");
+}
+
+/// A closer indented four spaces is code, not a closer: the fence runs on, and the line stays in
+/// the body.
+#[test]
+fn a_closer_indented_four_spaces_does_not_close_the_fence() {
+    let (_, body) = fence_in("```\ncode\n    ```\n").expect("a fence");
+    assert_eq!(body, "code\n    ```\n");
+}

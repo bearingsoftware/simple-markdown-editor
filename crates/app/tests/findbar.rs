@@ -817,3 +817,85 @@ fn the_lit_case_button_sits_on_its_button_at_any_scale() {
         );
     }
 }
+
+/// The lit ground belongs to Match Case alone, and only while it is on. Told apart from every other
+/// quad by its colour and its height, in the panel's own band.
+#[test]
+fn only_the_case_button_is_lit_and_only_when_it_is_on() {
+    let mut editor = editor("Alpha alpha\n");
+    editor.with_config(mdedit_app::config::Config {
+        theme: mdedit_app::view::ThemeChoice::Light,
+        ..mdedit_app::config::Config::default()
+    });
+    search(&mut editor, "alpha");
+
+    let lit = Theme::light().tab_active;
+    let lit = [lit.r, lit.g, lit.b, lit.a];
+    let lit_grounds = |editor: &mut Editor<Grid>| {
+        let (_, top) = panel(editor).origin;
+        editor
+            .build_frame(WIDTH, HEIGHT, 1.0)
+            .iter()
+            .filter(|quad| {
+                quad.colour == lit
+                    && quad.rect[3] == find::HEIGHT - 6.0
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + find::HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .collect::<Vec<_>>()
+    };
+
+    assert!(lit_grounds(&mut editor).is_empty(), "case is off");
+
+    editor.toggle_find_case();
+    let case = panel(&editor)
+        .buttons
+        .iter()
+        .find(|rect| rect.button == find::Button::Case)
+        .map(|rect| rect.x)
+        .unwrap();
+    let (left, _) = panel(&editor).origin;
+    assert_eq!(lit_grounds(&mut editor), vec![left + case], "case is on");
+}
+
+/// A button's word is centred in its cell: as much room either side of its glyphs. The word's
+/// glyphs are placed left to right from where the label starts, so one placed backwards from it
+/// would end where it should begin.
+#[test]
+fn a_buttons_word_is_centred_in_its_cell() {
+    let mut editor = editor("alpha\n");
+    editor.apply_chord("h", false);
+    frame(&mut editor);
+    let layout = panel(&editor);
+    let (left, top) = layout.origin;
+    let quads = editor.build_frame(WIDTH, HEIGHT, 1.0);
+
+    for button in [find::Button::Replace, find::Button::ReplaceAll] {
+        let rect = layout
+            .buttons
+            .iter()
+            .find(|rect| rect.button == button)
+            .expect("replace mode has its two words");
+        let xs: Vec<f32> = quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= left + rect.x
+                    && quad.rect[0] < left + rect.x + rect.width
+                    && quad.rect[1] >= top + find::HEIGHT
+                    && quad.rect[1] < top + find::HEIGHT * 2.0
+            })
+            .map(|quad| quad.rect[0])
+            .collect();
+
+        assert_eq!(xs.len(), button.glyph().len(), "{button:?}'s letters");
+        let first = xs.iter().copied().fold(f32::MAX, f32::min);
+        let last = xs.iter().copied().fold(f32::MIN, f32::max);
+        assert_eq!(
+            first - (left + rect.x),
+            (left + rect.x + rect.width) - (last + stub::ADVANCE),
+            "{button:?} is off-centre in its cell"
+        );
+    }
+}
