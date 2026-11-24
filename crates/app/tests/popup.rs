@@ -1142,5 +1142,24 @@ fn a_rows_icon_is_centred_in_the_icon_column() {
             baseline > top + popup::ROW_HEIGHT / 2.0 && baseline < top + popup::ROW_HEIGHT,
             "row {index}'s icon baseline {baseline} is not in the lower half of its row"
         );
+
+        // The row's words hang from the same middle: every glyph of them is in the lower half too.
+        let words: Vec<f32> = quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= x + popup::ICON_COLUMN
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + popup::ROW_HEIGHT
+            })
+            .map(|quad| quad.rect[1] + 1.0)
+            .collect();
+        assert!(!words.is_empty(), "row {index} has words");
+        assert!(
+            words
+                .iter()
+                .all(|baseline| *baseline > top + popup::ROW_HEIGHT / 2.0),
+            "row {index}'s words sit above the middle of their row: {words:?}"
+        );
     }
 }
