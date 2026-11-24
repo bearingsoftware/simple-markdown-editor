@@ -228,4 +228,34 @@ mod tests {
         rotate_if_large(&directory.path().join("mdedit.log"));
         assert!(!directory.path().join("mdedit.log.old").exists());
     }
+
+    #[test]
+    fn a_line_written_reaches_the_open_log() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("mdedit.log");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        assert!(
+            super::SINK
+                .set(std::sync::Mutex::new(super::Sink {
+                    file,
+                    path: path.clone(),
+                }))
+                .is_ok(),
+            "nothing else in this process opens the log"
+        );
+
+        super::write("first");
+        super::write("second");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = written.lines().collect();
+        assert_eq!(lines.len(), 2, "{written:?}");
+        assert!(lines[0].starts_with('[') && lines[0].ends_with("] first"), "{written:?}");
+        assert!(lines[1].ends_with("] second"), "{written:?}");
+        assert_eq!(super::path(), Some(path));
+    }
 }
