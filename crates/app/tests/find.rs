@@ -589,7 +589,10 @@ fn each_row_is_packed_against_the_right_edge_and_its_field_stops_short_of_it() {
             .iter()
             .filter(|rect| rect.button.row() == row)
             .collect();
-        let end = rects.iter().map(|rect| rect.x + rect.width).fold(0.0, f32::max);
+        let end = rects
+            .iter()
+            .map(|rect| rect.x + rect.width)
+            .fold(0.0, f32::max);
         assert_eq!(end, 800.0 - PAD, "row {row} ends at the padding");
     }
 
@@ -611,7 +614,11 @@ fn each_row_is_packed_against_the_right_edge_and_its_field_stops_short_of_it() {
 #[test]
 fn a_field_with_no_room_for_the_count_still_stops_short_of_the_buttons() {
     let layout = laid_out(find::Mode::Find, 160.0, 50.0);
-    let first = layout.buttons.iter().map(|rect| rect.x).fold(f32::MAX, f32::min);
+    let first = layout
+        .buttons
+        .iter()
+        .map(|rect| rect.x)
+        .fold(f32::MAX, f32::min);
 
     assert_eq!(layout.field.0 + layout.field.1, first - PAD);
 }

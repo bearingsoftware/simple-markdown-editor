@@ -518,7 +518,11 @@ fn gutter_rows(editor: &mut Editor<Grid>, scale: f32) -> Vec<Vec<mdedit_app::gpu
         })
         .copied()
         .collect();
-    digits.sort_by(|a, b| a.rect[1].total_cmp(&b.rect[1]).then(a.rect[0].total_cmp(&b.rect[0])));
+    digits.sort_by(|a, b| {
+        a.rect[1]
+            .total_cmp(&b.rect[1])
+            .then(a.rect[0].total_cmp(&b.rect[0]))
+    });
     let mut rows: Vec<Vec<mdedit_app::gpu::QuadInstance>> = Vec::new();
     for quad in digits {
         match rows.last_mut() {
@@ -551,7 +555,11 @@ fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
         editor.on_idle();
 
         let rows = gutter_rows(&mut editor, scale);
-        assert!(rows.len() > *flagged_row, "{} rows at scale {scale}", rows.len());
+        assert!(
+            rows.len() > *flagged_row,
+            "{} rows at scale {scale}",
+            rows.len()
+        );
 
         let rose = mdedit_app::view::Theme::dark().span_error;
         let rose = [rose.r, rose.g, rose.b, rose.a];
@@ -565,7 +573,11 @@ fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
         let mut padding = None;
         for (index, row) in rows.iter().enumerate() {
             let flagged = row[0].colour == rose;
-            assert_eq!(flagged, index == *flagged_row, "row {index} at scale {scale}");
+            assert_eq!(
+                flagged,
+                index == *flagged_row,
+                "row {index} at scale {scale}"
+            );
             let digits = if flagged { &row[1..] } else { &row[..] };
             if flagged {
                 assert_eq!(

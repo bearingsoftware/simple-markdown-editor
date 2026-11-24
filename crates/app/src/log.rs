@@ -254,7 +254,10 @@ mod tests {
         let written = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = written.lines().collect();
         assert_eq!(lines.len(), 2, "{written:?}");
-        assert!(lines[0].starts_with('[') && lines[0].ends_with("] first"), "{written:?}");
+        assert!(
+            lines[0].starts_with('[') && lines[0].ends_with("] first"),
+            "{written:?}"
+        );
         assert!(lines[1].ends_with("] second"), "{written:?}");
         assert_eq!(super::path(), Some(path));
     }
