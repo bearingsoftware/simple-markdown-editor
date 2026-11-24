@@ -91,6 +91,7 @@ pub(crate) fn analyze_with(source: &str, options: Options) -> Analysis {
         contents,
         verbatim,
         blocks,
+        item_starts,
     } = walk(source, options);
 
     // Outermost first so a nested construct overwrites its parent's classification: in `**a *b* c**`
@@ -104,7 +105,7 @@ pub(crate) fn analyze_with(source: &str, options: Options) -> Analysis {
         fill(&mut marks, range, None);
     }
 
-    normalise_line_syntax(source, &mut marks);
+    normalise_line_syntax(source, &item_starts, &mut marks);
     mark_escapes(source, verbatim, &mut marks);
 
     Analysis {
@@ -120,6 +121,8 @@ struct Walk {
     verbatim: Vec<Range<usize>>,
     /// Block structure, outermost first, in document order.
     blocks: Vec<Block>,
+    /// Where each list item begins, in document order.
+    item_starts: Vec<usize>,
 }
 
 /// The block kind a start tag opens, if it opens one at all.
@@ -193,6 +196,7 @@ fn walk(source: &str, options: Options) -> Walk {
     let mut constructs = Vec::with_capacity(estimate);
     let mut contents = Vec::with_capacity(estimate);
     let mut verbatim = Vec::new();
+    let mut item_starts = Vec::new();
 
     let mut blocks: Vec<Block> = Vec::new();
     let mut depth: u16 = 0;
@@ -200,6 +204,9 @@ fn walk(source: &str, options: Options) -> Walk {
     for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
         match event {
             Event::Start(tag) => {
+                if matches!(tag, Tag::Item) {
+                    item_starts.push(range.start);
+                }
                 if matches!(tag, Tag::CodeBlock(_)) {
                     verbatim.push(range.clone());
                 }
@@ -276,6 +283,7 @@ fn walk(source: &str, options: Options) -> Walk {
         contents,
         verbatim,
         blocks,
+        item_starts,
     }
 }
 
@@ -345,22 +353,32 @@ fn backtick_run(text: &str) -> usize {
 /// Each is described where it is applied below. They were three separate walks; fused because they
 /// are all line-aware and each reads only positions at or before the one it writes, so a single pass
 /// gives identical results for a third of the memory traffic.
-fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
+fn normalise_line_syntax(source: &str, item_starts: &[usize], marks: &mut [Option<Marker>]) {
     let bytes = source.as_bytes();
     let mut content_started = false;
     // Whether the walk is still in the run of bytes that could be this line's block prefix. Cleared
     // by the first byte that could not be part of one — **including a content byte**, which is why
     // it is updated before the content branch below rather than after it.
     let mut in_block_prefix = true;
+    // Whether an item begins on this line: only there is list syntax other than indent a marker.
+    let mut item_on_line = false;
+    let mut next_item = 0;
+    let mut line_start = 0;
 
     for i in 0..bytes.len() {
         let byte = bytes[i];
+        while next_item < item_starts.len() && item_starts[next_item] <= i {
+            item_on_line |= item_starts[next_item] >= line_start;
+            next_item += 1;
+        }
 
         // A newline is never syntax to conceal — concealing one would join two lines.
         if byte == b'\n' || byte == b'\r' {
             marks[i] = None;
             content_started = false;
             in_block_prefix = true;
+            item_on_line = false;
+            line_start = i + 1;
             continue;
         }
 
@@ -455,13 +473,14 @@ fn normalise_line_syntax(source: &str, marks: &mut [Option<Marker>]) {
             let plausible = byte.is_ascii_whitespace()
                 || match marker {
                     Marker::BlockQuote => byte == b'>',
-                    // `.` and `)` only delimit an ordered marker, so they need a digit before them.
+                    // A bullet or number is syntax only on the line the item starts; a later line of
+                    // its range is a continuation, whose only marker is indent.
                     Marker::ListItem => {
-                        byte.is_ascii_digit()
-                            || matches!(byte, b'-' | b'*' | b'+')
-                            || (matches!(byte, b'.' | b')')
-                                && i > 0
-                                && bytes[i - 1].is_ascii_digit())
+                        item_on_line
+                            && (byte.is_ascii_digit()
+                                || matches!(byte, b'-' | b'*' | b'+')
+                                || (matches!(byte, b'.' | b')')
+                                    && bytes[..i].last().is_some_and(u8::is_ascii_digit)))
                     }
                     _ => byte == b':',
                 };
