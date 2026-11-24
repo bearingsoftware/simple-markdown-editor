@@ -300,6 +300,9 @@ const FRAGMENTS: &[&str] = &[
     // property test runs over an alphabet that cannot spell a footnote, and the flags would be
     // covered by fixtures alone — which is where a misaligned span is least likely to be.
     "[^", "]:", "{#", "}", ":", "^",
+    // MDEDIT-216: an ordered marker cannot be spelt without these, so the generator never reached a
+    // lazy line that begins like one.
+    "1)", "1",
 ];
 
 proptest::proptest! {
@@ -548,5 +551,62 @@ fn mdedit_216_a_lazy_paren_line_is_not_a_list_marker() {
     ] {
         let segments = assert_partitions(source, "mdedit-216");
         assert_marker_shapes(source, &segments, "mdedit-216");
+    }
+}
+
+fn list_markers_after_first_line<'a>(source: &'a str, segments: &[Segment]) -> Vec<&'a str> {
+    let first_line_end = source.find('\n').unwrap_or(source.len());
+    segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem)))
+        .filter(|seg| seg.span().start().get() > first_line_end)
+        .map(|seg| &source[seg.span().start().get()..seg.span().end().get()])
+        .collect()
+}
+
+#[test]
+fn mdedit_216_a_lazy_line_holds_no_list_syntax() {
+    for source in [
+        "- [  \n)]:*",
+        "- [  \n1)]:*",
+        "- [  \n1.]:*",
+        "- [  \n12)]:*",
+        "- [  \n 1)]:*",
+        "- [  \n-]:*",
+        "- [  \n+]:*",
+        "- [  \n*]:*",
+        "- [  \r\n1)]:*",
+        "> - [  \n> 1)]:*",
+    ] {
+        let segments = assert_partitions(source, "mdedit-216 lazy");
+        for text in list_markers_after_first_line(source, &segments) {
+            assert!(
+                text.trim().is_empty(),
+                "{source:?}: a lazy line carries list marker {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mdedit_216_real_list_markers_survive() {
+    for (source, marker) in [
+        ("1. a", "1."),
+        ("1) a", "1)"),
+        ("0. a", "0."),
+        ("123456789. a", "123456789."),
+        ("> 1) a", "1)"),
+        ("- a\n  - b", "-"),
+        ("- a\n\n  b\n- c", "-"),
+        ("- a\n\n  b\n1. c", "-"),
+    ] {
+        let segments = assert_partitions(source, "mdedit-216 real");
+        assert!(
+            segments.iter().any(|seg| {
+                matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem))
+                    && source[seg.span().start().get()..seg.span().end().get()].contains(marker)
+            }),
+            "{source:?}: no ListItem marker containing {marker:?}"
+        );
     }
 }
