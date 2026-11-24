@@ -576,3 +576,39 @@ fn a_hand_scroll_is_not_undone_by_the_next_frame() {
         "the active file has not changed, so the list stays where it was put"
     );
 }
+
+/// The pane ends where the status bar begins, at any device scale. At a scale of one the window's
+/// height divided by it and multiplied by it are the same number.
+#[test]
+fn the_pane_runs_down_to_the_status_bar_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let dir = TempDir::new().unwrap();
+        let mut editor = editor_with_files(&dir, 3, "# One\n\ntext\n");
+        editor.with_config(mdedit_app::config::Config {
+            theme: mdedit_app::view::ThemeChoice::Dark,
+            ..mdedit_app::config::Config::default()
+        });
+        editor.toggle_chrome();
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let panel = mdedit_app::view::Theme::dark().panel;
+        let panel = [panel.r, panel.g, panel.b, panel.a];
+        let pane = quads
+            .iter()
+            .find(|quad| {
+                quad.colour == panel && quad.rect[0] == 0.0 && quad.rect[2] == PANE_WIDTH * scale
+            })
+            .unwrap_or_else(|| panic!("a pane at scale {scale}"));
+
+        assert_eq!(
+            pane.rect[1],
+            mdedit_app::toolbar::HEIGHT * scale,
+            "it starts under the formatting bar"
+        );
+        assert_eq!(
+            pane.rect[1] + pane.rect[3],
+            (HEIGHT - mdedit_app::status::BAR_HEIGHT) * scale,
+            "and ends at the status bar's top, at scale {scale}"
+        );
+    }
+}

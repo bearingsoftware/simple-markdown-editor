@@ -317,3 +317,26 @@ fn a_zoom_applies_the_anchor_rather_than_just_scaling_the_offset() {
         );
     }
 }
+
+/// The view is rescaled by the ratio of the new text size to the one it was *on*, not to normal.
+/// From normal the two are the same number, which is why only a second step shows it.
+#[test]
+fn a_second_zoom_rescales_by_the_step_and_not_by_the_total() {
+    let mut editor = editor(&one_long_paragraph());
+    editor.zoom_by(1);
+    editor.scroll_by(1500.0);
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let before = editor.scroll_offset();
+    let size = editor.body_size();
+    assert!(before > 0.0);
+
+    editor.zoom_by(1);
+    editor.build_frame(WIDTH, HEIGHT, 1.0);
+    let ratio = editor.body_size() / size;
+
+    let moved = editor.scroll_offset() / before;
+    assert!(
+        (moved - ratio).abs() < 0.01,
+        "the text grew by {ratio} and the view by {moved}"
+    );
+}

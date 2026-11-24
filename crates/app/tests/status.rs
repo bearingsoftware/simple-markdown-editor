@@ -299,3 +299,35 @@ fn the_bar_is_anchored_to_the_foot_at_any_scale() {
         );
     }
 }
+
+/// The right-hand fields end one padding short of the window's right edge, at any device scale, and
+/// run left from there glyph by glyph. The last glyph of a label is the one furthest right, so a
+/// label whose glyphs were placed backwards from its origin ends at its origin instead.
+#[test]
+fn the_right_hand_text_ends_at_the_padding_at_any_scale() {
+    for scale in [1.0, 2.0] {
+        let mut editor = Editor::new("# Title\n\ntext\n", Grid::new());
+        let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+
+        let bar_top = (HEIGHT - BAR_HEIGHT) * scale;
+        let mut glyphs: Vec<f32> = quads
+            .iter()
+            .filter(|quad| quad.uv != [0.0, 0.0, 1.0, 1.0] && quad.rect[1] > bar_top)
+            .map(|quad| quad.rect[0])
+            .collect();
+        glyphs.sort_by(f32::total_cmp);
+        let furthest = *glyphs.last().expect("text in the bar");
+
+        assert_eq!(
+            furthest + stub::ADVANCE * scale,
+            (WIDTH - status::PADDING) * scale,
+            "scale {scale}"
+        );
+        let before_it = glyphs[glyphs.len() - 2];
+        assert_eq!(
+            furthest - before_it,
+            stub::ADVANCE * scale,
+            "the last two glyphs of the text are one advance apart, in order, at scale {scale}"
+        );
+    }
+}

@@ -20,7 +20,7 @@ use mdedit_session::Workspace;
 use tempfile::TempDir;
 
 use crate::stub;
-use stub::Grid;
+use stub::{Grid, MARGIN};
 
 const WIDTH: f32 = 600.0;
 const HEIGHT: f32 = 400.0;
@@ -465,5 +465,133 @@ fn the_flagged_mark_is_offset_by_its_own_bearing_rightwards() {
     for (flat, bearing) in flat.iter().zip(&bearing) {
         assert_eq!(bearing[0] - flat[0], 3.0, "{flat:?} then {bearing:?}");
         assert_eq!(bearing[1..], flat[1..]);
+    }
+}
+
+/// Where the wave is, and not only how thick: its origin scales like the rest. Written against the
+/// same document at two scales, since at one `x * scale` and `x / scale` are the same number.
+#[test]
+fn a_squiggle_starts_as_much_further_along_as_the_scale_is_bigger() {
+    let dir = TempDir::new().unwrap();
+    let mut editor = json(&dir, "{\"a\": 1,}\n");
+    editor.on_idle();
+
+    let one = squiggles(&mut editor, 1.0);
+    let two = squiggles(&mut editor, 2.0);
+
+    assert!(!one.is_empty(), "the test needs a squiggle to measure");
+    assert_eq!(one.len(), two.len(), "the same wave at both scales");
+    for (small, large) in one.iter().zip(&two) {
+        assert!(small[0] > 0.0 && small[1] > 0.0, "{small:?}");
+        assert_eq!(large[0], small[0] * 2.0, "x: {small:?} then {large:?}");
+        assert_eq!(large[1], small[1] * 2.0, "y: {small:?} then {large:?}");
+    }
+}
+
+/// A document of twelve JSON lines whose eleventh carries a trailing comma, so the gutter has a
+/// flagged two-digit number among one- and two-digit plain ones.
+fn flagged_eleventh() -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::from("{\n");
+    for key in 0..9 {
+        let _ = writeln!(text, "  \"k{key}\": {key},");
+    }
+    text.push_str("  \"z\": 1,\n}\n");
+    text
+}
+
+/// Every number in the gutter, one group of quads per row, left to right, at `scale`.
+fn gutter_rows(editor: &mut Editor<Grid>, scale: f32) -> Vec<Vec<mdedit_app::gpu::QuadInstance>> {
+    let quads = editor.build_frame(WIDTH * scale, HEIGHT * scale, scale);
+    let left = editor.content_rect().left_edge() * scale;
+    let top = editor.content_rect().top_edge() * scale;
+    let bar_top = (HEIGHT - mdedit_app::status::BAR_HEIGHT) * scale;
+
+    let mut digits: Vec<_> = quads
+        .iter()
+        .filter(|quad| {
+            quad.rect[0] + quad.rect[2] <= left
+                && quad.rect[1] >= top
+                && quad.rect[1] < bar_top
+                && quad.rect[2] < 20.0 * scale
+        })
+        .copied()
+        .collect();
+    digits.sort_by(|a, b| a.rect[1].total_cmp(&b.rect[1]).then(a.rect[0].total_cmp(&b.rect[0])));
+    let mut rows: Vec<Vec<mdedit_app::gpu::QuadInstance>> = Vec::new();
+    for quad in digits {
+        match rows.last_mut() {
+            Some(row) if row[0].rect[1] == quad.rect[1] => row.push(quad),
+            _ => rows.push(vec![quad]),
+        }
+    }
+    rows
+}
+
+/// **Where each digit and the `!` sit**, at two scales: the digits of a number one advance apart, the
+/// `!` one advance before the first, every number ending the same distance short of the gutter's
+/// edge, and a two-digit one centred in it. Relations rather than coordinates, so no arithmetic is
+/// borrowed from the code that does it.
+#[test]
+fn the_numbers_and_their_mark_are_where_the_gutter_puts_them() {
+    for scale in [1.0, 2.0] {
+        let dir = TempDir::new().unwrap();
+        let mut editor = json(&dir, &flagged_eleventh());
+        editor.toggle_line_numbers();
+        editor.on_idle();
+
+        let rows = gutter_rows(&mut editor, scale);
+        assert!(rows.len() >= 12, "{} rows at scale {scale}", rows.len());
+
+        let rose = mdedit_app::view::Theme::dark().span_error;
+        let rose = [rose.r, rose.g, rose.b, rose.a];
+        let advance = stub::ADVANCE * scale;
+        let gutter_right = (editor.content_rect().left_edge() - MARGIN) * scale;
+        let first_row_top = editor
+            .content_rect()
+            .to_window(0.0, 0.0, mdedit_app::content::Offset::down(0.0))
+            .1;
+
+        let mut padding = None;
+        for (index, row) in rows.iter().enumerate() {
+            let flagged = row[0].colour == rose;
+            assert_eq!(flagged, index == 10, "row {index} at scale {scale}");
+            let digits = if flagged { &row[1..] } else { &row[..] };
+            if flagged {
+                assert_eq!(
+                    row[0].rect[0] + advance,
+                    digits[0].rect[0],
+                    "the mark sits one advance before the number at scale {scale}"
+                );
+            }
+            for pair in digits.windows(2) {
+                assert_eq!(
+                    pair[1].rect[0] - pair[0].rect[0],
+                    advance,
+                    "row {index}'s digits at scale {scale}"
+                );
+            }
+            let last = digits.last().unwrap().rect[0] + advance;
+            let gap = gutter_right - last;
+            assert_eq!(
+                *padding.get_or_insert(gap),
+                gap,
+                "row {index} ends where the others do, at scale {scale}"
+            );
+            if digits.len() == 2 {
+                assert_eq!(
+                    digits[0].rect[0], gap,
+                    "a full-width number is centred, at scale {scale}"
+                );
+            }
+            #[allow(clippy::cast_precision_loss, reason = "twelve rows")]
+            let baseline = first_row_top + index as f32 * stub::LINE_HEIGHT + stub::ASCENT;
+            assert_eq!(
+                digits[0].rect[1],
+                baseline * scale - 1.0,
+                "row {index}'s baseline at scale {scale}"
+            );
+        }
     }
 }

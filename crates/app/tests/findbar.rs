@@ -817,3 +817,44 @@ fn the_lit_case_button_sits_on_its_button_at_any_scale() {
         );
     }
 }
+
+/// The lit ground belongs to Match Case alone, and only while it is on. Told apart from every other
+/// quad by its colour and its height, in the panel's own band.
+#[test]
+fn only_the_case_button_is_lit_and_only_when_it_is_on() {
+    let mut editor = editor("Alpha alpha\n");
+    editor.with_config(mdedit_app::config::Config {
+        theme: mdedit_app::view::ThemeChoice::Light,
+        ..mdedit_app::config::Config::default()
+    });
+    search(&mut editor, "alpha");
+
+    let lit = Theme::light().tab_active;
+    let lit = [lit.r, lit.g, lit.b, lit.a];
+    let lit_grounds = |editor: &mut Editor<Grid>| {
+        let (_, top) = panel(editor).origin;
+        editor
+            .build_frame(WIDTH, HEIGHT, 1.0)
+            .iter()
+            .filter(|quad| {
+                quad.colour == lit
+                    && quad.rect[3] == find::HEIGHT - 6.0
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + find::HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .collect::<Vec<_>>()
+    };
+
+    assert!(lit_grounds(&mut editor).is_empty(), "case is off");
+
+    editor.toggle_find_case();
+    let case = panel(&editor)
+        .buttons
+        .iter()
+        .find(|rect| rect.button == find::Button::Case)
+        .map(|rect| rect.x)
+        .unwrap();
+    let (left, _) = panel(&editor).origin;
+    assert_eq!(lit_grounds(&mut editor), vec![left + case], "case is on");
+}
