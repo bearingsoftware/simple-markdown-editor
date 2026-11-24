@@ -533,3 +533,20 @@ fn ordinary_markdown_is_unchanged_by_the_extensions() {
         "no extension construct is in this document, so none should be reported"
     );
 }
+
+/// MDEDIT-216: found by the delimiter-soup property test.
+#[test]
+fn mdedit_216_a_lazy_paren_line_is_not_a_list_marker() {
+    for source in [
+        "- [  \n)]:*",
+        "- [ \n)",
+        "* [\n)",
+        "+ [  \n)]:x",
+        "1. [  \n)]:*",
+        "- [  \r\n)]:*",
+        "> - [  \n> )]:*",
+    ] {
+        let segments = assert_partitions(source, "mdedit-216");
+        assert_marker_shapes(source, &segments, "mdedit-216");
+    }
+}
