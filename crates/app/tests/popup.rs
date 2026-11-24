@@ -1059,3 +1059,80 @@ fn a_list_still_names_its_rows_after_a_zoom() {
         .count();
     assert!(names > 0, "the rows have no words after a zoom");
 }
+
+/// The grid's own edges: the margin's inner edge is the first cell's, and the caption strip and the
+/// right margin, though on the panel, belong to no cell.
+#[test]
+fn the_picker_has_no_cell_in_its_caption_or_right_margin() {
+    let at = (10.0, 50.0);
+    let rows = f32::from(u8::try_from(popup::grid::ROWS).unwrap());
+    let columns = f32::from(u8::try_from(popup::grid::COLUMNS).unwrap());
+    let first = (at.0 + popup::MARGIN, at.1 + popup::MARGIN);
+
+    assert_eq!(
+        popup::grid::hit_test(first.0, first.1, at),
+        Some((0, 0)),
+        "the margin's inner edge is the first cell"
+    );
+    assert_eq!(
+        popup::grid::hit_test(first.0 - 0.5, first.1, at),
+        None,
+        "left margin"
+    );
+    assert_eq!(
+        popup::grid::hit_test(first.0, first.1 - 0.5, at),
+        None,
+        "top margin"
+    );
+    assert_eq!(
+        popup::grid::hit_test(first.0, first.1 + rows * popup::grid::PITCH, at),
+        None,
+        "caption strip"
+    );
+    assert_eq!(
+        popup::grid::hit_test(first.0 + columns * popup::grid::PITCH, first.1, at),
+        None,
+        "right margin"
+    );
+    assert_eq!(
+        popup::grid::hit_test(
+            first.0 + columns * popup::grid::PITCH - 0.5,
+            first.1 + rows * popup::grid::PITCH - 0.5,
+            at
+        ),
+        Some((popup::grid::ROWS - 1, popup::grid::COLUMNS - 1)),
+        "the last cell"
+    );
+}
+
+/// An icon is centred in its column: as much room before it as after. Left-aligned it would hug one
+/// side, which is what the heading list did before it was fixed.
+#[test]
+fn a_rows_icon_is_centred_in_the_icon_column() {
+    let mut editor = Editor::new("prose\n", Grid::with_icon_font());
+    let _ = editor.build_frame(WIDE, HEIGHT, 1.0);
+    caret_at(&mut editor, 2);
+    open(&mut editor, Action::Lists);
+    let quads = editor.build_frame(WIDE, HEIGHT, 1.0);
+    let (x, y) = editor.menu_at().expect("the list is open");
+
+    for index in 0..toolbar::LISTS.len() {
+        let top = y + popup::row_top(index);
+        let icon: Vec<f32> = quads
+            .iter()
+            .filter(|quad| {
+                quad.uv != [0.0, 0.0, 1.0, 1.0]
+                    && quad.rect[0] >= x
+                    && quad.rect[0] < x + popup::ICON_COLUMN
+                    && quad.rect[1] >= top
+                    && quad.rect[1] < top + popup::ROW_HEIGHT
+            })
+            .map(|quad| quad.rect[0])
+            .collect();
+        assert_eq!(icon.len(), 1, "row {index}");
+
+        let before = icon[0] - x;
+        let after = (x + popup::ICON_COLUMN) - (icon[0] + stub::ADVANCE);
+        assert_eq!(before, after, "row {index}'s icon is off-centre");
+    }
+}

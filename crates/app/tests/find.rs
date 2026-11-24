@@ -549,3 +549,69 @@ fn go_to_line_reads_the_line_box_whichever_field_had_focus() {
         assert_eq!(bar.active_mut().text(), "42", "{focus:?}");
     }
 }
+
+// ---- how much room each part gets ----
+
+/// The padding either side of a measured glyph, which is also the panel's own edge padding.
+const PAD: f32 = 6.0;
+
+/// A symbol is a square and a word is what it measures plus a padding each side. Run in Replace
+/// mode, which is the one with words in it.
+#[test]
+fn a_word_button_is_its_glyph_and_two_paddings_and_a_symbol_is_a_square() {
+    let mode = find::Mode::Replace;
+    let measured = widths(mode);
+    let layout = laid_out(mode, 800.0, 50.0);
+
+    let mut words = 0;
+    for (button, glyph) in find::buttons(mode).iter().zip(&measured) {
+        let rect = layout.buttons.iter().find(|r| r.button == *button).unwrap();
+        if *glyph > 12.0 {
+            words += 1;
+            assert_eq!(rect.width, glyph + PAD * 2.0, "{:?}", rect.button);
+        } else {
+            assert_eq!(rect.width, 24.0, "{:?}", rect.button);
+        }
+    }
+    assert!(words >= 2, "the mode has its two words");
+}
+
+/// Every row's buttons end one padding short of the panel's right edge, and the field of a row ends
+/// one padding short of that row's first button: the fields and the buttons are one packing.
+#[test]
+fn each_row_is_packed_against_the_right_edge_and_its_field_stops_short_of_it() {
+    let mode = find::Mode::Replace;
+    let layout = laid_out(mode, 800.0, 50.0);
+
+    for row in 0..2 {
+        let rects: Vec<_> = layout
+            .buttons
+            .iter()
+            .filter(|rect| rect.button.row() == row)
+            .collect();
+        let end = rects.iter().map(|rect| rect.x + rect.width).fold(0.0, f32::max);
+        assert_eq!(end, 800.0 - PAD, "row {row} ends at the padding");
+    }
+
+    let first_of = |row: usize| {
+        layout
+            .buttons
+            .iter()
+            .filter(|rect| rect.button.row() == row)
+            .map(|rect| rect.x)
+            .fold(f32::MAX, f32::min)
+    };
+    let replace = layout.replace.expect("replace mode has a second field");
+    assert_eq!(replace.0 + replace.1, first_of(1) - PAD);
+    assert_eq!(layout.count, first_of(0) - PAD - 50.0);
+    assert_eq!(layout.field.0 + layout.field.1, layout.count - PAD);
+}
+
+/// With no room for the count the field runs up to its row's buttons and stops one padding short.
+#[test]
+fn a_field_with_no_room_for_the_count_still_stops_short_of_the_buttons() {
+    let layout = laid_out(find::Mode::Find, 160.0, 50.0);
+    let first = layout.buttons.iter().map(|rect| rect.x).fold(f32::MAX, f32::min);
+
+    assert_eq!(layout.field.0 + layout.field.1, first - PAD);
+}

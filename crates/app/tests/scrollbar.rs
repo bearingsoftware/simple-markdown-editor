@@ -274,3 +274,15 @@ fn the_thumb_is_the_last_thing_drawn() {
     );
     assert_eq!(last.rect[2], WIDTH);
 }
+
+/// The bar owns `[x, x + WIDTH)`: its left edge in, its right edge out, and nothing beyond.
+#[test]
+fn the_bar_owns_exactly_its_width() {
+    let bar = scrollbar::layout(WINDOW, 0.0, VIEWPORT, VIEWPORT * 4.0, 0.0).unwrap();
+
+    assert!(bar.contains_x(bar.x));
+    assert!(bar.contains_x(bar.x + WIDTH - 0.5));
+    assert!(!bar.contains_x(bar.x + WIDTH));
+    assert!(!bar.contains_x(bar.x + WIDTH + 50.0));
+    assert!(!bar.contains_x(bar.x - 0.5));
+}
