@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Prints the cargo-mutants scope arguments for one sweep shard, one argument per line (MDEDIT-217).
-# Usage: sweep-scope.sh SLICE SHARD. Read by `plan` (to count) and `mutate` (to run), so the two
+# Usage: sweep-scope.sh SLICE SHARD SHARDS. SHARDS is how many shards a light slice runs (the plan sizes it);
+# a heavy slice always has MUTANTS_MAX_SHARDS. Read by `plan` (to count) and `mutate` (to run), so the two
 # cannot disagree. Needs MUTANTS_SWEEP_RUNS, MUTANTS_MAX_SHARDS, MUTANTS_HEAVY_FILE,
 # MUTANTS_HEAVY_SLICES and MUTANTS_EXCLUDES from the workflow env.
 set -euo pipefail
 
 slice=$1
 shard=$2
+shards=$3
 light=$((MUTANTS_SWEEP_RUNS - MUTANTS_HEAVY_SLICES))
 
 # The last HEAVY_SLICES slices are the one big file, split round-robin across all their shards.
@@ -34,4 +36,4 @@ if [ "$found" -eq 0 ]; then
   echo "no source file hashes to sweep slice $slice of $light" >&2
   exit 1
 fi
-printf '%s\n' --shard "$shard/$MUTANTS_MAX_SHARDS"
+printf '%s\n' --shard "$shard/$shards"

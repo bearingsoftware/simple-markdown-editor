@@ -50,14 +50,15 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # **The sweep's lap length, and the per-shard cap that sizes it** (MDEDIT-191). A lap is
-  # `MUTANTS_SWEEP_RUNS` weekly runs of `MUTANTS_MAX_SHARDS` shards each. Raise the first as the
-  # workspace grows; a shard over `MUTANTS_SWEEP_PER_SHARD` is annotated.
+  # `MUTANTS_SWEEP_RUNS` weekly runs. Raise it as the workspace grows, but it rehashes every file into a new slice
+  # (MDEDIT-217), so a slice that is too heavy gets more shards first: the plan runs
+  # `ceil(mutants / MUTANTS_SWEEP_PER_SHARD)` of them, at most `MUTANTS_SWEEP_MAX_SHARDS`.
   #
   # **A slice is a set of source files, not a stretch of the mutant list (MDEDIT-217).** It used to
   # be `--shard g/96` over the global mutant index, so one mutant added anywhere moved every later
   # one into another shard: runs 45128546666 and 45399084717 were two laps over a different tree
   # and their shards had no mutants in common. Now `.github/scripts/sweep-scope.sh` gives each file
-  # to slice `cksum(path) mod (RUNS - HEAVY_SLICES)`, and the six shards split that slice's own
+  # to slice `cksum(path) mod (RUNS - HEAVY_SLICES)`, and its shards split that slice's own
   # mutants. An edit moves mutants only inside its file's slice. `MUTANTS_HEAVY_FILE` holds 2702 of
   # the workspace's 7392 mutants, more than a whole slice can carry, so it gets the last
   # `MUTANTS_HEAVY_SLICES` slices to itself, round-robin over their shards (so only its own
@@ -69,6 +70,7 @@ env:
   MUTANTS_SWEEP_PER_SHARD: 80
   MUTANTS_HEAVY_FILE: crates/app/src/editor.rs
   MUTANTS_HEAVY_SLICES: 6
+  MUTANTS_SWEEP_MAX_SHARDS: 12
   # **One copy, read by both jobs**, because the count `plan` emits and the set the shards run have
   # to be the same set. Two lists that must agree is how MDEDIT-155 happened.
   #
@@ -290,29 +292,43 @@ jobs:
           set -o pipefail
 
           if [ "$MODE" = sweep ]; then
+          if [ "$MODE" = sweep ]; then
             # **Each shard is counted with the same scope the mutate step will use**, from the same
-            # script, so the count is of the set that shard runs. A shard over the cap is annotated,
-            # not failed: the cap is a budget, and the sweep's own report is what says whether it held.
-            T=$MUTANTS_MAX_SHARDS
-            total=0
-            for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
-              if ! mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$SLICE" "$s") || [ "${#scope[@]}" -eq 0 ]; then
-                echo "::error title=Sweep scope failed::sweep-scope.sh failed for slice $SLICE shard $s. A count of zero here would hide it, so the plan fails (MDEDIT-217)."
+            # script, so the count is of the set that shard runs. A light slice gets as many shards as
+            # keep each under `MUTANTS_SWEEP_PER_SHARD`, between 1 and `MUTANTS_SWEEP_MAX_SHARDS`
+            # (MDEDIT-217); a heavy slice is a fixed `MUTANTS_MAX_SHARDS` of the one big file.
+            scope_of() {
+              mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$@")
+              if [ "${#scope[@]}" -eq 0 ]; then
+                echo "::error title=Sweep scope failed::sweep-scope.sh gave slice $SLICE no scope for '$*'. A count of zero here would hide it, so the plan fails (MDEDIT-217)."
                 echo "shards=[]" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
-              if ! cargo mutants --list $MUTANTS_EXCLUDES "${scope[@]}" --sharding round-robin > /tmp/sweep-$s.list; then
-                echo "::error title=Sweep list failed::cargo-mutants --list failed for slice $SLICE shard $s. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
+            }
+            list_scope() {
+              if ! cargo mutants --list $MUTANTS_EXCLUDES "${scope[@]}" --sharding round-robin > "$1"; then
+                echo "::error title=Sweep list failed::cargo-mutants --list failed for slice $SLICE. A count of zero here would hide it, so the plan fails (MDEDIT-191)."
                 echo "shards=[]" >> "$GITHUB_OUTPUT"
                 exit 1
               fi
-              n=$(grep -c '' /tmp/sweep-$s.list || true)
+              n=$(grep -c '' "$1" || true)
               n=${n:-0}
+            }
+            if [ "$SLICE" -ge $((MUTANTS_SWEEP_RUNS - MUTANTS_HEAVY_SLICES)) ]; then
+              T=$MUTANTS_MAX_SHARDS
+            else
+              scope_of "$SLICE" 0 1
+              list_scope /tmp/sweep-all.list
+              T=$(( (n + MUTANTS_SWEEP_PER_SHARD - 1) / MUTANTS_SWEEP_PER_SHARD ))
+              [ "$T" -lt 1 ] && T=1
+              [ "$T" -gt "$MUTANTS_SWEEP_MAX_SHARDS" ] && T=$MUTANTS_SWEEP_MAX_SHARDS
+            fi
+            total=0
+            for s in $(seq 0 $((T - 1))); do
+              scope_of "$SLICE" "$s" "$T"
+              list_scope /tmp/sweep-$s.list
               total=$((total + n))
               echo "slice $SLICE shard $s of $T: $n mutant(s)"
-              if [ "$n" -gt "$MUTANTS_SWEEP_PER_SHARD" ]; then
-                echo "::warning title=Sweep shard over its cap::slice $SLICE shard $s has $n mutants, over the $MUTANTS_SWEEP_PER_SHARD cap. Raise MUTANTS_SWEEP_RUNS so each slice is smaller (MDEDIT-191)."
-              fi
             done
             if [ "$total" -eq 0 ]; then
               echo "::error title=Sweep generated no mutants::cargo-mutants listed nothing for slice $SLICE of $MUTANTS_SWEEP_RUNS. The whole workspace cannot generate none, so something is wrong with the list (MDEDIT-191)."
@@ -322,8 +338,8 @@ jobs:
             fi
             echo "mutants=$total" >> "$GITHUB_OUTPUT"
             echo "total=$T" >> "$GITHUB_OUTPUT"
-            echo "shards=[$(seq -s, 0 $((MUTANTS_MAX_SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
-            echo "$total mutants over $MUTANTS_MAX_SHARDS shard(s) of slice $SLICE"
+            echo "shards=[$(seq -s, 0 $((T - 1)))]" >> "$GITHUB_OUTPUT"
+            echo "$total mutants over $T shard(s) of slice $SLICE"
             exit 0
           fi
 
@@ -538,13 +554,13 @@ jobs:
           # share of the diff; a sweep shard mutates its share of its slice's files, as the plan
           # counted them (MDEDIT-217).
           if [ "$MODE" = sweep ]; then
-            mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$SLICE" "$SHARD")
+            mapfile -t scope < <(bash .github/scripts/sweep-scope.sh "$SLICE" "$SHARD" "$SHARDS")
             if [ "${#scope[@]}" -eq 0 ]; then
               echo "::error title=Sweep scope failed::sweep-scope.sh gave slice $SLICE shard $SHARD no scope (MDEDIT-217)."
               exit 1
             fi
             where="shard $SHARD of $SHARDS (sweep slice $SLICE)"
-            advice="Raise MUTANTS_SWEEP_RUNS so each slice is smaller:"
+            advice="Raise MUTANTS_SWEEP_MAX_SHARDS or lower MUTANTS_SWEEP_PER_SHARD so the slice has more shards:"
             advice+=" the sweep cap is deliberate, and the job's own 55-minute limit"
             advice+=" is the ceiling (MDEDIT-171, MDEDIT-191)."
           else
@@ -686,6 +702,7 @@ jobs:
         id: compare
         env:
           SLICE: ${{ needs.plan.outputs.slice }}
+          EXPECTED: ${{ needs.plan.outputs.total }}
           PLAN_RESULT: ${{ needs.plan.result }}
           MUTANTS_RESULT: ${{ needs.mutants.result }}
         run: |
@@ -696,12 +713,12 @@ jobs:
             count=$(find /tmp/reports -mindepth 1 -maxdepth 1 -type d -name 'mutants-report-shard-*' | wc -l)
           fi
           missing=""
-          for s in $(seq 0 $((MUTANTS_MAX_SHARDS - 1))); do
+          for s in $(seq 0 $((${EXPECTED:-0} - 1))); do
             [ -f "/tmp/reports/mutants-report-shard-$s/shard-done" ] || missing="$missing $s"
           done
-          if [ "$count" -ne "$MUTANTS_MAX_SHARDS" ] || [ -n "$missing" ]; then
+          if [ "$count" -ne "${EXPECTED:-0}" ] || [ -n "$missing" ]; then
             reports_ok=0
-            echo "::error title=Sweep shards did not all finish::Expected $MUTANTS_MAX_SHARDS mutants-report-shard-* artifacts, each with a shard-done marker. Found $count artifact(s); shard(s) without a marker:${missing:- none}. A shard that ran out of time, failed its baseline or failed to install does not finish, and an unfinished shard leaves part of the workspace unchecked (MDEDIT-191)."
+            echo "::error title=Sweep shards did not all finish::Expected $EXPECTED mutants-report-shard-* artifacts, each with a shard-done marker. Found $count artifact(s); shard(s) without a marker:${missing:- none}. A shard that ran out of time, failed its baseline or failed to install does not finish, and an unfinished shard leaves part of the workspace unchecked (MDEDIT-191)."
           fi
           echo "reports_ok=$reports_ok" >> "$GITHUB_OUTPUT"
 
@@ -726,9 +743,10 @@ jobs:
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
           # Baseline entries for the files this slice mutated, that did not reappear. Another slice
-          # may own them, so this is a list to read, not a failure.
+          # may own them, so this is a list to read, not a failure. The heavy file is left out: it is
+          # spread over several slices, so its entries would read as fixed in every slice but one.
           cat /tmp/missed.txt /tmp/timeout.txt /tmp/caught.txt | sed -E 's/^([^:]+):.*/\1/' \
-            | LC_ALL=C sort -u > /tmp/slice-files.txt
+            | grep -vxF "$MUTANTS_HEAVY_FILE" | LC_ALL=C sort -u > /tmp/slice-files.txt
           awk 'NR == FNR { f[$0] = 1; next } { p = $0; sub(/^[A-Z]+ /, "", p); sub(/:.*/, "", p); if (p in f) print }' \
             /tmp/slice-files.txt /tmp/baseline.txt > /tmp/baseline-slice.txt
           LC_ALL=C comm -23 /tmp/baseline-slice.txt /tmp/current.txt > /tmp/fixed.txt
@@ -738,7 +756,7 @@ jobs:
           {
             echo "## Mutants sweep: slice $SLICE of $MUTANTS_SWEEP_RUNS (MDEDIT-191)"
             echo
-            echo "- Shards with a shard-done marker: $count of $MUTANTS_MAX_SHARDS"
+            echo "- Shards with a shard-done marker: $count of $EXPECTED"
             echo "- Known survivors and timeouts (in the baseline): $known"
             echo "- New, not in the baseline: $new"
             echo "- Plan: $PLAN_RESULT, shards: $MUTANTS_RESULT"

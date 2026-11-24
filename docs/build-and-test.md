@@ -541,8 +541,7 @@ mutants, roughly half the work, which leaves room for an overrun.
 **The mechanism has no state.** `mutants.yml` runs on a Sunday schedule. The slice is the number of
 whole weeks since the Unix epoch, mod `MUTANTS_SWEEP_RUNS` (16). It is not the ISO week, because
 ISO week numbers restart each January and would repeat or skip a slice across New Year. **One lap is
-sixteen weeks**, after which every mutant has been run once. The plan job counts each shard, warns
-above `MUTANTS_SWEEP_PER_SHARD` (80), and fails if `cargo mutants --list` fails.
+sixteen weeks**, after which every mutant has been run once. The plan job sizes each slice's shards, counts each one, and fails if `cargo mutants --list` fails.
 
 **A slice is a set of files, not a stretch of the mutant list (MDEDIT-217).** The first design took
 `--shard g/96` over the global mutant index, so one mutant added anywhere moved every later mutant
@@ -554,8 +553,9 @@ decides the scope, and both `plan` (to count) and `mutate` (to run) call it:
 - The file set is `cargo mutants --list-files $MUTANTS_EXCLUDES`, never a hand-written glob.
 - A file belongs to slice `cksum(path) mod 10`, where the path is repo-relative with `/` and `10` is
   `MUTANTS_SWEEP_RUNS - MUTANTS_HEAVY_SLICES`. `cksum` is POSIX and needs no install.
-- Within a slice the six shards run `--shard k/6 --sharding round-robin` over that slice's files,
-  passed as repeated `--file <path>`. A glob containing a `/` matches the whole path, so
+- Within a slice the shards run `--shard k/N --sharding round-robin` over that slice's files,
+  passed as repeated `--file <path>`. The plan sets `N = ceil(mutants / 80)`, between 1 and
+  `MUTANTS_SWEEP_MAX_SHARDS` (12), and the report job expects that many artifacts. A glob containing a `/` matches the whole path, so
   `crates/ini/src/lib.rs` does not match any other crate's `lib.rs`.
 - **`crates/app/src/editor.rs` is the exception.** It holds 2702 of the 7392 mutants (37 percent), more
   than one slice can carry, so it takes slices 10 to 15 for itself: `--file crates/app/src/editor.rs
@@ -568,13 +568,16 @@ hashes to, and nothing else moves. The weights, from `cargo mutants --list` at t
 
 | Slices | Mutants a slice | A shard |
 | --- | --- | --- |
-| 0 to 9, by hash | 90, 147, 200, 221, 348, 535, 583, 629, 940, 997 (median 442) | 15 to 166 |
+| 0 to 9, by hash | 90, 147, 200, 221, 348, 535, 583, 629, 940, 997 (median 442) | 8, 7, 3, 2, 3, 12, 8, 12, 2, 5 shards, 45 to 83 a shard |
 | 10 to 15, `editor.rs` | 450 each | 75 |
 
-The hash is not balanced: 997 is 2.3 times the median of all sixteen slices (450), inside the
-three-times line but over the 80 cap, so the plan will annotate slices 5 and 7. At the 8 to 15 s a
-mutant measured since MDEDIT-182 that is 20 to 40 minutes, inside the 40-minute budget. If those two
-start running out of time, add shards for them or raise `MUTANTS_SWEEP_RUNS`; do not hand-assign files.
+The hash is not balanced: 997 is about 2.2 times the median of all sixteen slices (450). So a slice
+has as many shards as keep each near the 80 cap: run 45477747829 put 166 mutants in one shard of slice 7 and
+it took 32 of its 40 minutes. A slice that outgrows 12 shards gets bigger shards, so watch its shard time. To shrink a slice, raise `MUTANTS_SWEEP_MAX_SHARDS` or lower `MUTANTS_SWEEP_PER_SHARD`; raising
+`MUTANTS_SWEEP_RUNS` rehashes every file into a different slice. Do not hand-assign files.
+
+The "possibly fixed" list in the step summary leaves `editor.rs` out, because its baseline entries
+are spread over six slices and would read as fixed in five of them.
 
 To re-run one slice by hand: `gh workflow run mutants.yml -f sweep=3`. An empty `sweep` input is
 an ordinary diff run, unchanged.
