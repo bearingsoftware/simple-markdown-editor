@@ -300,6 +300,9 @@ const FRAGMENTS: &[&str] = &[
     // property test runs over an alphabet that cannot spell a footnote, and the flags would be
     // covered by fixtures alone — which is where a misaligned span is least likely to be.
     "[^", "]:", "{#", "}", ":", "^",
+    // MDEDIT-216: an ordered marker cannot be spelt without these, so the generator never reached a
+    // lazy line that begins like one.
+    "1)", "1",
 ];
 
 proptest::proptest! {
@@ -532,4 +535,78 @@ fn ordinary_markdown_is_unchanged_by_the_extensions() {
         )),
         "no extension construct is in this document, so none should be reported"
     );
+}
+
+/// MDEDIT-216: found by the delimiter-soup property test.
+#[test]
+fn mdedit_216_a_lazy_paren_line_is_not_a_list_marker() {
+    for source in [
+        "- [  \n)]:*",
+        "- [ \n)",
+        "* [\n)",
+        "+ [  \n)]:x",
+        "1. [  \n)]:*",
+        "- [  \r\n)]:*",
+        "> - [  \n> )]:*",
+    ] {
+        let segments = assert_partitions(source, "mdedit-216");
+        assert_marker_shapes(source, &segments, "mdedit-216");
+    }
+}
+
+fn list_markers_after_first_line<'a>(source: &'a str, segments: &[Segment]) -> Vec<&'a str> {
+    let first_line_end = source.find('\n').unwrap_or(source.len());
+    segments
+        .iter()
+        .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem)))
+        .filter(|seg| seg.span().start().get() > first_line_end)
+        .map(|seg| &source[seg.span().start().get()..seg.span().end().get()])
+        .collect()
+}
+
+#[test]
+fn mdedit_216_a_lazy_line_holds_no_list_syntax() {
+    for source in [
+        "- [  \n)]:*",
+        "- [  \n1)]:*",
+        "- [  \n1.]:*",
+        "- [  \n12)]:*",
+        "- [  \n 1)]:*",
+        "- [  \n-]:*",
+        "- [  \n+]:*",
+        "- [  \n*]:*",
+        "- [  \r\n1)]:*",
+        "> - [  \n> 1)]:*",
+    ] {
+        let segments = assert_partitions(source, "mdedit-216 lazy");
+        for text in list_markers_after_first_line(source, &segments) {
+            assert!(
+                text.trim().is_empty(),
+                "{source:?}: a lazy line carries list marker {text:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn mdedit_216_real_list_markers_survive() {
+    for (source, expected) in [
+        ("1. a", vec!["1. "]),
+        ("1) a", vec!["1) "]),
+        ("0. a", vec!["0. "]),
+        ("123456789. a", vec!["123456789. "]),
+        ("> 1) a", vec!["1) "]),
+        ("- a\n  - b", vec!["- ", "  - "]),
+        ("- a\n\n  b\n- c", vec!["- ", "  ", "- "]),
+        ("- a\n\n  b\n1. c", vec!["- ", "  ", "1. "]),
+        ("1. a\n\n   more\n\n2. b", vec!["1. ", "   ", "2. "]),
+    ] {
+        let segments = assert_partitions(source, "mdedit-216 real");
+        let found: Vec<&str> = segments
+            .iter()
+            .filter(|seg| matches!(seg.kind(), SegmentKind::Marker(Marker::ListItem)))
+            .map(|seg| &source[seg.span().start().get()..seg.span().end().get()])
+            .collect();
+        assert_eq!(found, expected, "{source:?}");
+    }
 }
