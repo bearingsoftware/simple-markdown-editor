@@ -47,3 +47,28 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   `~~struck~~` itself from the marker spans. It could have — but the position and the thickness are
   the font's answers, not the marker's, and doing it the other way would have been the same job in
   two places.
+
+## Parley is not used for Windows text layout
+
+- **Do not use parley for text layout on Windows** until `spikes/font-fallback` passes there against a
+  *released* fontique. [parley#689](https://github.com/linebender/parley/pull/689) is the fix and is
+  verified to work against its branch, but is unmerged — so there is nothing to depend on.
+
+## Newtyped offsets
+
+- **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
+  codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
+  positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the
+  whole project. They live in `mdedit-offsets`, which depends on nothing.
+
+## IME and the buffer trait
+
+- IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an
+  `ITextStoreACP`** — retrofitting TSF onto a buffer not designed for it is expensive.
+
+## ByteSpan and the orphan rule
+
+- **A byte range is a `ByteSpan`, not a `Range`.** `Range<ByteOffset>` cannot index a `str` — the
+  orphan rule bars `impl Index<Range<ByteOffset>> for str` — so spans carry their own type and slice
+  via `ByteSpan::slice`. Converting raw offsets in or out is deliberate and confined to boundaries:
+  `pulldown-cmark` event ranges, `ropey`'s character indices, and test fixtures.

@@ -20,9 +20,7 @@ there and a link here only if the link is load-bearing.
 - Rust: `code-standards/standards/rust.md` · review: `code-standards/review/rust.md`
 - Reviewing a PR: `code-standards/review/_template.md`
 
-Rust landed in the baseline at `v1.2.0` ([#20](https://github.com/bearingsoftware/code-standards/pull/20),
-[#21](https://github.com/bearingsoftware/code-standards/pull/21), MDEDIT-1). Tool configs are vendored
-from that tag — see [Configs](#configs).
+Tool configs are vendored from that tag — see [Configs](#configs).
 
 ## Where everything is written down
 
@@ -46,10 +44,7 @@ flow).
 
 ## Repo state
 
-**A working editor on Windows.** It opens, edits and saves files without changing a byte nobody
-touched; it has a window, a renderer, menus, tabs, a file pane, a scrollbar, a status bar, undo,
-inline formatting, crash recovery and a settings file. It finds, replaces and goes to a line. It does
-not run at all off Windows — there is no portable text backend, which is the first known gap.
+**A working editor on Windows.** It does not run at all off Windows — there is no portable text backend, which is the first known gap.
 
 The crates below the app are headless and platform-agnostic, and that is the line worth keeping:
 everything that can be tested without a window is.
@@ -97,8 +92,7 @@ Nothing in this file supersedes them; they are the detail this one deliberately 
 
 ## Stack
 
-Decided in [`docs/research/02-gui-toolkits.md`](docs/research/02-gui-toolkits.md). No GUI toolkit —
-none of them has a rich-text editing widget, so the text view is ours regardless.
+Decided in [`docs/research/02-gui-toolkits.md`](docs/research/02-gui-toolkits.md). The text view is ours; no toolkit has a rich-text editing widget.
 
 ```
 Window/input      winit + muda (native menus) + rfd (dialogs)
@@ -111,13 +105,7 @@ Code fences       syntect + two-face, lazy, per-block cached
 Accessibility     accesskit
 ```
 
-Rejected, with evidence, so nobody re-proposes them: **Slint** (plain-text-only `TextEdit`, rich
-text explicitly display-only, unusable past ~5k lines, broken text rendering at fractional DPI),
-**Tauri/webview** (webview typing latency ~20–31 ms vs a ≤3 ms target; open CJK IME freeze on
-Windows), **GPUI** (unresolved GPL-contamination issue against its Apache-2.0 claim; publicly
-deprioritized by Zed), **Xilem/Vello** (alpha; Vello mandates compute shaders), **iced** (no
-per-run font size — no variable heading sizes), **tree-sitter-md** (self-disclaims correctness;
-open stack-corrupting overflow in `serialize()`).
+Rejected, with evidence, so nobody re-proposes them: **Slint**, **Tauri/webview**, **GPUI**, **Xilem/Vello**, **iced**, **tree-sitter-md**. The evidence is in [`docs/research/02-gui-toolkits.md`](docs/research/02-gui-toolkits.md).
 
 ## Build & test
 
@@ -141,27 +129,15 @@ Both of the last two are easy to skip and expensive to miss. **CI cannot open a 
 rendering and hit-testing are verified by hand on Windows — which is where this project's defects
 actually come from.
 
-**But rendering needs a device, not a window** (MDEDIT-123, measured). A hosted runner lays out a
-real `Editor<DirectWriteText>` frame in 3 ms and renders this project's own shader and atlas on WARP
-in 2.5 ms a frame — read
-[`docs/research/07-rendering-in-ci.md`](docs/research/07-rendering-in-ci.md) before assuming the
-sentence above closes the question.
+**But rendering needs a device, not a window** (MDEDIT-123). Read [`docs/research/07-rendering-in-ci.md`](docs/research/07-rendering-in-ci.md) before assuming the sentence above closes the question.
 
-**`crates/app/tests/render.rs` builds on that** (MDEDIT-153): the real pipelines and bind groups, one
+**`crates/app/tests/render.rs` draws a real frame** (MDEDIT-153): the real pipelines and bind groups, one
 frame on WARP, asserting ink. **Add to it rather than assuming rendering is unreachable.** What it
 still cannot see is whether the result *looks* right — see `docs/build-and-test.md`.
 
-**Some tests ask the real font instead of the stub**, all Windows-only: `icons.rs` (MDEDIT-92) for
-what is in a font, `table_metrics.rs` for column widths, `geometry.rs` (MDEDIT-133) for the frame as
-a whole, and a test apiece in `quotes.rs`, `images.rs` and `thematic_break.rs`. An assertion goes
-there **only if real metrics are what answer it** — three of the toolbar wave's five defects were
-cases where the stub itself was the lie — and it asserts a relation, never a magnitude, because a
-font update moves every advance in the file.
+**Some tests ask the real font instead of the stub**, all Windows-only: `icons.rs` (MDEDIT-92) for what is in a font, `table_metrics.rs` for column widths, `geometry.rs` (MDEDIT-133) for the frame as a whole, and a test apiece in `quotes.rs`, `images.rs` and `thematic_break.rs`. An assertion goes there **only if real metrics are what answer it**, and it asserts a relation, never a magnitude, because a font update moves every advance in the file.
 
-**`mdedit-app`'s integration tests are one binary**, `crates/app/tests/main.rs` (MDEDIT-182): each
-binary is a full link of the editor, and seventy-five of them made every mutant cost minutes. **A new
-test file is declared in `main.rs` or it never compiles** — `every_test_file_is_declared_here` fails
-on one that was forgotten. One file's tests: `cargo nextest run -p mdedit-app -E 'test(/^quotes::/)'`.
+**`mdedit-app`'s integration tests are one binary**, `crates/app/tests/main.rs` (MDEDIT-182). **A new test file is declared in `main.rs` or it never compiles** — `every_test_file_is_declared_here` fails on one that was forgotten. One file's tests: `cargo nextest run -p mdedit-app -E 'test(/^quotes::/)'`.
 
 See [`docs/build-and-test.md`](docs/build-and-test.md) for fuzzing, mutation testing, coverage,
 benchmarks and why each job runs where it does.
@@ -170,42 +146,23 @@ benchmarks and why each job runs where it does.
 
 `standards/rust.md` owns the general rules. Only these are project decisions:
 
-- **No `async` in the editor core**, and adding a runtime needs a design decision on the ticket. The
-  UI thread is a synchronous frame loop. **There are exactly two worker threads: one decodes
-  pictures** (`decoding.rs`, MDEDIT-156) **and one highlights fenced code** (`highlighting.rs`,
-  MDEDIT-190, which measured 169 ms for an edit on the UI thread). Load, save and the session snapshot
-  still run on the thread that draws, because MDEDIT-151 measured all four and only the decode
-  breached a target. This line once claimed a worker that did not exist — so a third needs a number
-  from a cost harness, not an argument.
+- **No `async` in the editor core**, and adding a runtime needs a design decision on the ticket. The UI thread is a synchronous frame loop. **There are exactly two worker threads: one decodes pictures** (`decoding.rs`, MDEDIT-156) **and one highlights fenced code** (`highlighting.rs`, MDEDIT-190). A third needs a number from a cost harness, not an argument.
 - **`unsafe` anywhere outside a platform crate is a review block**, not a discussion — stricter than
   the baseline's `deny` + scoped-allow. **Three** crates qualify: `mdedit-text-dwrite` for
   DirectWrite, `mdedit-menu-win` for the call that attaches a menu bar to a window, and
   `mdedit-shell-win` for COM class registration and `IDropTarget`. A **fourth** needs a reason on a
   ticket, not a `SAFETY` comment in `mdedit-app`.
 
-  **`mdedit-menu-win` is where a stray Win32 call goes**, despite its name, and that is deliberate:
-  *one Win32 call is not a reason to mint a crate.* The line is size, not subject — a *body* of
-  platform work with its own decisions (COM, DirectWrite) earns a crate; a single documented call
-  does not.
-- **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. This
-  codebase carries at least four coordinate spaces at once — source bytes, rope chars, laid-out glyph
-  positions, and block indices — and silently mixing two `usize`s is the likeliest bug class in the
-  whole project. They live in `mdedit-offsets`, which depends on nothing.
-- **A byte range is a `ByteSpan`, not a `Range`.** `Range<ByteOffset>` cannot index a `str` — the
-  orphan rule bars `impl Index<Range<ByteOffset>> for str` — so spans carry their own type and slice
-  via `ByteSpan::slice`. Converting raw offsets in or out is deliberate and confined to boundaries:
-  `pulldown-cmark` event ranges, `ropey`'s character indices, and test fixtures.
+  **`mdedit-menu-win` is where a stray Win32 call goes**, despite its name: one Win32 call is not a reason to mint a crate.
+- **Newtype every offset**: `ByteOffset`, `CharOffset`, `LineIndex`, `BlockId`, `LayoutPos`. They live in `mdedit-offsets`, which depends on nothing.
+- **A byte range is a `ByteSpan`, not a `Range`.** `Range<ByteOffset>` cannot index a `str`, so spans carry their own type and slice via `ByteSpan::slice`. Converting raw offsets in or out is deliberate and confined to boundaries: `pulldown-cmark` event ranges, `ropey`'s character indices, and test fixtures.
 
 ## Project-specific rules
 
 ### The byte-preservation invariant — the one rule that outranks everything
 
-- **The buffer is the source of truth. Never re-serialize the document.** Opening a file and saving
-  it must produce an identical byte sequence. MarkText's six-year-old
-  [#2189](https://github.com/marktext/marktext/issues/2189) is what happens if this slips.
-- Inline content is **never** serialized — it is decorated in place. Emphasis token (`*` vs `_`) and
-  hard-break style are lost by every Rust Markdown parser; we sidestep that by not rewriting those
-  bytes.
+- **The buffer is the source of truth. Never re-serialize the document.** Opening a file and saving it must produce an identical byte sequence.
+- Inline content is **never** serialized — it is decorated in place, so emphasis and hard-break style survive.
 - Only the block under the cursor may be re-serialized, and only on exit, spliced back at its span.
 - A diff that introduces a whole-document serializer needs an explicit design decision on the ticket.
 - **Three rewrites are sanctioned**, each because the user explicitly asked for it, each one `replace`
@@ -227,44 +184,17 @@ benchmarks and why each job runs where it does.
 
 ### Rendering & virtualization
 
-- **Never materialize the whole document.** Render visible blocks only; `file open → first paint` is
-  O(1), mmap plus viewport parse. Every large-file failure in the competition comes from violating
-  this.
-- **A tab is a lightweight handle until it becomes visible.** Session restore persists handles, not
-  content — Obsidian's `DeferredView` model, the only implementation in this category.
+- **Never materialize the whole document.** Render visible blocks only; `file open → first paint` is O(1), mmap plus viewport parse.
+- **A tab is a lightweight handle until it becomes visible.** Session restore persists handles, not content.
 - Make the **renderer** incremental, not the parser. Diff the block list, patch changed blocks.
-- **The layout cache is keyed by content, never by position.** `BlockId` is an index into one
-  analysis, so a cache keyed on it would serve the wrong layout for everything below an edit. The key
-  is a hash of the block's bytes plus its kind and the wrapping width. The block holding the caret is
-  cached like any other — it was not until MDEDIT-118, because reveal-on-caret made what it drew
-  depend on a caret the key does not carry.
+- **The layout cache is keyed by content, never by position.** `BlockId` is an index into one analysis, so a cache keyed on it would serve the wrong layout for everything below an edit. The key is a hash of the block's bytes plus its kind and the wrapping width. The block holding the caret is cached like any other.
 - **Preview draws no Markdown syntax at all, including under the caret** (MDEDIT-118). So a marker is
   not editable in place, and the caret steps over a concealed one rather than through its bytes.
   `Ctrl+/` is the escape hatch and the only mode that draws a marker.
-- **A concealed marker is substituted, never revealed** (MDEDIT-141). Where the marker *is* the
-  meaning — a list bullet, a number — `view::substitute` draws a stand-in rather than dropping the
-  run. Read `StyledRun::substituted` before changing what a glyph points at. A wrapped item then hangs
-  under its text by **placing** each item's layout (`list.rs`, MDEDIT-147) — the text trait did not
-  grow an indent, and the next thing wanting a per-line origin should not make it grow one either.
-- **All chrome draws after the document**, and there is no depth buffer or scissor — painter's order
-  is the whole of the answer. See [`docs/decisions/chrome.md`](docs/decisions/chrome.md), which also
-  holds the z-order rules for the panels that are hit-tested.
-- Tables and code fences are **model-backed block widgets**, not decorations. Pure decoration over a
-  linear character stream cannot do 2D layout — but **`Layout` was never a linear character stream**,
-  and MDEDIT-126 is where that was noticed. It is a `Vec<LayoutLine>` of glyphs each carrying its own
-  position and source span; the linearity is what a *text engine* hands back, not what the type
-  requires. So a table lays its cells out separately and **places** them into one layout whose lines
-  are its rows, and `draw_chunks`, `row_selection` and the layout cache all go on working unchanged.
-  The model is real — `BlockKind::Table`/`TableRow`/`TableCell` come from the parse — and the second
-  draw path and second caret model this rule was bracing for are not. **One thing did give:** `hit.rs`
-  found a row's bytes by counting newlines, sound only because wrapping *adds* rows, and a grid
-  *drops* one — so a grid hands it the row spans. A mapping, not a second hit test. MDEDIT-183 then
-  found that argument wrong for wrapping too, because wrapping adds rows **in the middle**: the
-  mapping now comes from the glyphs, and a grid's spans stay the override they were. Read
-  `crates/app/src/table.rs` before proposing one for code fences.
-- **A caret is an offset *and* an affinity** (MDEDIT-188). Where a line wraps, the end of one row and
-  the start of its continuation are one byte, so `Selection`'s head says which row it belongs to.
-  Only a point gesture sets it; everything else gets `Downstream` and is drawn where it always was.
+- **A concealed marker is substituted, never revealed** (MDEDIT-141). Where the marker *is* the meaning — a list bullet, a number — `view::substitute` draws a stand-in rather than dropping the run. Read `StyledRun::substituted` before changing what a glyph points at. A wrapped item hangs by **placing** each item's layout (`list.rs`).
+- **All chrome draws after the document**, with no depth buffer or scissor, so painter's order is the answer. Z-order rules for hit-tested panels: [`docs/decisions/chrome.md`](docs/decisions/chrome.md).
+- Tables and code fences are **model-backed block widgets**, not decorations. A table places its cells into one layout whose lines are its rows, and `hit.rs` takes a grid's row spans, not newline counts. Read `crates/app/src/table.rs` before proposing one for code fences.
+- **A caret is an offset *and* an affinity** (MDEDIT-188). Only a point gesture sets it; everything else gets `Downstream`.
 
 ### Text layer
 
@@ -273,24 +203,16 @@ benchmarks and why each job runs where it does.
   fontique resolves `script = Hani` to a single fallback family and stops
   ([parley#644](https://github.com/linebender/parley/issues/644)). A Markdown editor that cannot
   render 汉 is not shippable.
-- **Do not use parley for text layout on Windows** until `spikes/font-fallback` passes there against a
-  *released* fontique. [parley#689](https://github.com/linebender/parley/pull/689) is the fix and is
-  verified to work against its branch, but is unmerged — so there is nothing to depend on.
+- **Do not use parley for text layout on Windows** until `spikes/font-fallback` passes there against a *released* fontique. Fix tracked in [parley#689](https://github.com/linebender/parley/pull/689).
 - Pin parley to an exact version. Wrap it; don't leak its types into the editor core.
-- IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an
-  `ITextStoreACP`** — retrofitting TSF onto a buffer not designed for it is expensive.
+- IME is IMM32 via winit for v1, but **the buffer sits behind a trait that can later back an `ITextStoreACP`**.
 
 ### Windows integration
 
-- **Opening N files from Explorer must reuse one process.** A **DropTarget verb** (CLSID +
-  `LocalServer32`), not a command-line verb — those default to `MultiSelectModel=Document`, spawn one
-  process per file, and silently drop the verb past 15 items. Done on MDEDIT-61.
-- **Declare Per-Monitor DPI v2 in the manifest**, via `embed-manifest` — winit deliberately won't.
-  Re-run glyph rasterisation and hit-testing on `WM_DPICHANGED`, and use the suggested rectangle.
-- Read the dark-mode setting from the **registry**, not `ShouldAppsUseDarkMode()` (unreliable from
-  1903+). Refresh on `WM_SETTINGCHANGE` / `ImmersiveColorSet`.
-- **Per-user install. Never elevate.** Elevation breaks drag-drop from a non-elevated Explorer, and
-  the documented mitigation is one Microsoft says isn't safe.
+- **Opening N files from Explorer must reuse one process.** A **DropTarget verb** (CLSID + `LocalServer32`), not a command-line verb. Done on MDEDIT-61.
+- **Declare Per-Monitor DPI v2 in the manifest**, via `embed-manifest`. Re-run glyph rasterisation and hit-testing on `WM_DPICHANGED`, and use the suggested rectangle.
+- Read the dark-mode setting from the **registry**, not `ShouldAppsUseDarkMode()`. Refresh on `WM_SETTINGCHANGE` / `ImmersiveColorSet`.
+- **Per-user install. Never elevate.** Elevation breaks drag-drop from a non-elevated Explorer.
 
 ### Security (this project's specific threat model)
 
@@ -304,17 +226,10 @@ benchmarks and why each job runs where it does.
 
 ### Performance ([`docs/research/06-performance-targets.md`](docs/research/06-performance-targets.md))
 
-- Targets are commitments, not aspirations: cold start ≤100 ms, keystroke→pixel p50 ≤3 ms,
-  **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size. Cold start is *recorded* rather than
-  budgeted — creating a window alone exceeds it before any GPU work starts (MDEDIT-20).
-- **Measure p99 and measure on battery.** Every published editor benchmark is a mean on AC power,
-  which is the least informative condition — Emacs goes 5.3 ms → 50.5 ms on power-save.
-- **Two keystroke numbers, and the second has a floor.** The harness reports *keystroke → quads
-  ready*, which is what this process spends, and *keystroke → present*, which adds the wait for
-  vblank. Under `PresentMode::Fifo` the second cannot go below a refresh interval however fast the
-  frame was. Compare builds on the first; use the second only to confirm frames are still presented.
-- Baseline RSS is split into a floor we do not control and a budget we do: an empty wgpu window is
-  124 MB (MDEDIT-19), so the original ≤50 MB total was never reachable.
+- Targets are commitments, not aspirations: cold start ≤100 ms, keystroke→pixel p50 ≤3 ms, **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size. Cold start is *recorded* rather than budgeted (MDEDIT-20).
+- **Measure p99 and measure on battery.** Means on AC power are the least informative condition.
+- **Two keystroke numbers, and the second has a floor.** Compare builds on *keystroke → quads ready*; use *keystroke → present* only to confirm frames are still presented.
+- Baseline RSS has a floor we do not control, so the budget is what sits above it.
 - A change that regresses a target needs a number in the PR body, not an assurance.
 
 ## High-signal findings to watch for in review
@@ -328,9 +243,7 @@ benchmarks and why each job runs where it does.
 - Offsets passed as bare `usize` between coordinate spaces.
 - An updater or plugin path that loads code without signature verification.
 - `async` creeping into the editor core.
-- **A test that drives the thing it is meant to be checking.** Several here were vacuous until a
-  mutation proved it; the tooltip tests called the timer themselves and passed over a feature that
-  never fired once.
+- **A test that drives the thing it is meant to be checking.** Several here were vacuous until a mutation proved it.
 
 ## Configs
 
@@ -342,10 +255,8 @@ Vendored from the baseline tag `v1.2.0`:
 | clippy | `clippy.toml` + `[workspace.lints]` in `Cargo.toml` | `configs/clippy.toml` |
 | cargo-deny | `deny.toml` | `configs/deny.toml` |
 
-`clippy.toml` tunes lints but cannot enable them — the lint set lives in `[workspace.lints]`, copied
-from the comment block at the foot of the baseline config. Set `msrv` to match `rust-version`.
+`clippy.toml` tunes lints but cannot enable them; the lint set lives in `[workspace.lints]`. Set `msrv` to match `rust-version`.
 
-Layer enforcement needs no config: workspace crate `[dependencies]` are the allow-list and Cargo
-rejects cyclic crate deps at build time (`standards/architecture.md`).
+Layer enforcement needs no config: workspace crate `[dependencies]` are the allow-list (`standards/architecture.md`).
 
 Bump the pinned tag deliberately; re-vendor the configs when it changes.

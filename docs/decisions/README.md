@@ -42,3 +42,10 @@ a Confluence plan and a link rather than more prose here.
 
 **Keep `AGENTS.md` under 20 KB.** That is the budget the split exists to protect, and the reason to
 put a new decision here rather than there.
+
+## What works today
+
+**A working editor on Windows.** It opens, edits and saves files without changing a byte nobody
+touched; it has a window, a renderer, menus, tabs, a file pane, a scrollbar, a status bar, undo,
+inline formatting, crash recovery and a settings file. It finds, replaces and goes to a line. It does
+not run at all off Windows — there is no portable text backend, which is the first known gap.

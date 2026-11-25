@@ -64,3 +64,42 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
 - **No perf assertions.** The bench in `crates/markers/benches` measures; nothing gates a regression.
 - **CI does not run the app**, only the headless crates. There is no way to open a window on a CI
   runner, so rendering is verified by hand on Windows.
+
+## Measuring p99 and on battery
+
+- **Measure p99 and measure on battery.** Every published editor benchmark is a mean on AC power,
+  which is the least informative condition — Emacs goes 5.3 ms → 50.5 ms on power-save.
+
+## Two keystroke numbers
+
+- **Two keystroke numbers, and the second has a floor.** The harness reports *keystroke → quads
+  ready*, which is what this process spends, and *keystroke → present*, which adds the wait for
+  vblank. Under `PresentMode::Fifo` the second cannot go below a refresh interval however fast the
+  frame was. Compare builds on the first; use the second only to confirm frames are still presented.
+
+## Baseline RSS (MDEDIT-19)
+
+- Baseline RSS is split into a floor we do not control and a budget we do: an empty wgpu window is
+  124 MB (MDEDIT-19), so the original ≤50 MB total was never reachable.
+
+## MDEDIT-151 and MDEDIT-190: the worker threads
+
+- **No `async` in the editor core**, and adding a runtime needs a design decision on the ticket. The
+  UI thread is a synchronous frame loop. **There are exactly two worker threads: one decodes
+  pictures** (`decoding.rs`, MDEDIT-156) **and one highlights fenced code** (`highlighting.rs`,
+  MDEDIT-190, which measured 169 ms for an edit on the UI thread). Load, save and the session snapshot
+  still run on the thread that draws, because MDEDIT-151 measured all four and only the decode
+  breached a target. This line once claimed a worker that did not exist — so a third needs a number
+  from a cost harness, not an argument.
+
+## Never materialize the whole document
+
+- **Never materialize the whole document.** Render visible blocks only; `file open → first paint` is
+  O(1), mmap plus viewport parse. Every large-file failure in the competition comes from violating
+  this.
+
+## Performance targets: cold start is recorded
+
+- Targets are commitments, not aspirations: cold start ≤100 ms, keystroke→pixel p50 ≤3 ms,
+  **p99 ≤8.3 ms**, file open → first paint ≤50 ms at any size. Cold start is *recorded* rather than
+  budgeted — creating a window alone exceeds it before any GPU work starts (MDEDIT-20).

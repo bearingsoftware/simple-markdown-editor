@@ -596,3 +596,24 @@ argument for the DirectWrite-first path.
 - No independent third-party Tauri-vs-Electron benchmarks found.
 - No Windows/DX12-specific quality data for Vello.
 - r/rust was unreachable, so developer sentiment is HN/Lobsters only.
+
+## Baseline landing (moved from AGENTS.md)
+
+Rust landed in the baseline at `v1.2.0` ([#20](https://github.com/bearingsoftware/code-standards/pull/20),
+[#21](https://github.com/bearingsoftware/code-standards/pull/21), MDEDIT-1). Tool configs are vendored
+from that tag — see [Configs](../../AGENTS.md#configs).
+
+## Rejected stack options, with evidence
+
+Rejected, with evidence, so nobody re-proposes them: **Slint** (plain-text-only `TextEdit`, rich
+text explicitly display-only, unusable past ~5k lines, broken text rendering at fractional DPI),
+**Tauri/webview** (webview typing latency ~20–31 ms vs a ≤3 ms target; open CJK IME freeze on
+Windows), **GPUI** (unresolved GPL-contamination issue against its Apache-2.0 claim; publicly
+deprioritized by Zed), **Xilem/Vello** (alpha; Vello mandates compute shaders), **iced** (no
+per-run font size — no variable heading sizes), **tree-sitter-md** (self-disclaims correctness;
+open stack-corrupting overflow in `serialize()`).
+
+## Why the text view is ours
+
+Decided in [`docs/research/02-gui-toolkits.md`](02-gui-toolkits.md). No GUI toolkit —
+none of them has a rich-text editing widget, so the text view is ours regardless.

@@ -213,3 +213,31 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   embedded NUL). One test publishes with `serve` on an STA thread and hands off from a second thread,
   which in one process COM routes directly, as above. The decision and the bound are pure functions
   with fakes, including one that never returns.
+
+## A stray Win32 call goes in mdedit-menu-win
+
+  **`mdedit-menu-win` is where a stray Win32 call goes**, despite its name, and that is deliberate:
+  *one Win32 call is not a reason to mint a crate.* The line is size, not subject — a *body* of
+  platform work with its own decisions (COM, DirectWrite) earns a crate; a single documented call
+  does not.
+
+## Per-user install, never elevate
+
+- **Per-user install. Never elevate.** Elevation breaks drag-drop from a non-elevated Explorer, and
+  the documented mitigation is one Microsoft says isn't safe.
+
+## Opening N files from Explorer (MDEDIT-61)
+
+- **Opening N files from Explorer must reuse one process.** A **DropTarget verb** (CLSID +
+  `LocalServer32`), not a command-line verb — those default to `MultiSelectModel=Document`, spawn one
+  process per file, and silently drop the verb past 15 items. Done on MDEDIT-61.
+
+## Dark mode is read from the registry
+
+- Read the dark-mode setting from the **registry**, not `ShouldAppsUseDarkMode()` (unreliable from
+  1903+). Refresh on `WM_SETTINGCHANGE` / `ImmersiveColorSet`.
+
+## Per-Monitor DPI v2
+
+- **Declare Per-Monitor DPI v2 in the manifest**, via `embed-manifest` — winit deliberately won't.
+  Re-run glyph rasterisation and hit-testing on `WM_DPICHANGED`, and use the suggested rectangle.
