@@ -672,3 +672,43 @@ MDEDIT-80 and MDEDIT-120 manual sessions:
 3. Select several files in Explorer, drag them onto the editor, and check there is one process.
 4. Uninstall.
 5. Check the registry holds nothing the installer added.
+
+## MDEDIT-123: rendering needs a device, not a window
+
+**But rendering needs a device, not a window** (MDEDIT-123, measured). A hosted runner lays out a
+real `Editor<DirectWriteText>` frame in 3 ms and renders this project's own shader and atlas on WARP
+in 2.5 ms a frame — read
+[`docs/research/07-rendering-in-ci.md`](research/07-rendering-in-ci.md) before assuming the
+sentence above closes the question.
+
+## Tests that ask the real font
+
+**Some tests ask the real font instead of the stub**, all Windows-only: `icons.rs` (MDEDIT-92) for
+what is in a font, `table_metrics.rs` for column widths, `geometry.rs` (MDEDIT-133) for the frame as
+a whole, and a test apiece in `quotes.rs`, `images.rs` and `thematic_break.rs`. An assertion goes
+there **only if real metrics are what answer it** — three of the toolbar wave's five defects were
+cases where the stub itself was the lie — and it asserts a relation, never a magnitude, because a
+font update moves every advance in the file.
+
+## MDEDIT-182: one integration-test binary
+
+**`mdedit-app`'s integration tests are one binary**, `crates/app/tests/main.rs` (MDEDIT-182): each
+binary is a full link of the editor, and seventy-five of them made every mutant cost minutes. **A new
+test file is declared in `main.rs` or it never compiles** — `every_test_file_is_declared_here` fails
+on one that was forgotten. One file's tests: `cargo nextest run -p mdedit-app -E 'test(/^quotes::/)'`.
+
+## Layer enforcement needs no config
+
+Layer enforcement needs no config: workspace crate `[dependencies]` are the allow-list and Cargo
+rejects cyclic crate deps at build time (`standards/architecture.md`).
+
+## Tests that drive the thing they check
+
+- **A test that drives the thing it is meant to be checking.** Several here were vacuous until a
+  mutation proved it; the tooltip tests called the timer themselves and passed over a feature that
+  never fired once.
+
+## Where the lint set lives
+
+`clippy.toml` tunes lints but cannot enable them — the lint set lives in `[workspace.lints]`, copied
+from the comment block at the foot of the baseline config. Set `msrv` to match `rust-version`.

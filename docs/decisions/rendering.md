@@ -885,3 +885,52 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   and re-run through `mdedit_image::resolve` on focus; the first to resolve clears the layouts. Only
   absent files go in: a UNC or URL refusal is never retried as if it were missing. The set is
   cleared with the layouts, so it holds only what has been laid out since.
+
+## MDEDIT-126 and MDEDIT-183: tables are model-backed blocks
+
+- Tables and code fences are **model-backed block widgets**, not decorations. Pure decoration over a
+  linear character stream cannot do 2D layout — but **`Layout` was never a linear character stream**,
+  and MDEDIT-126 is where that was noticed. It is a `Vec<LayoutLine>` of glyphs each carrying its own
+  position and source span; the linearity is what a *text engine* hands back, not what the type
+  requires. So a table lays its cells out separately and **places** them into one layout whose lines
+  are its rows, and `draw_chunks`, `row_selection` and the layout cache all go on working unchanged.
+  The model is real — `BlockKind::Table`/`TableRow`/`TableCell` come from the parse — and the second
+  draw path and second caret model this rule was bracing for are not. **One thing did give:** `hit.rs`
+  found a row's bytes by counting newlines, sound only because wrapping *adds* rows, and a grid
+  *drops* one — so a grid hands it the row spans. A mapping, not a second hit test. MDEDIT-183 then
+  found that argument wrong for wrapping too, because wrapping adds rows **in the middle**: the
+  mapping now comes from the glyphs, and a grid's spans stay the override they were. Read
+  `crates/app/src/table.rs` before proposing one for code fences.
+
+## MDEDIT-188: the caret carries an affinity
+
+- **A caret is an offset *and* an affinity** (MDEDIT-188). Where a line wraps, the end of one row and
+  the start of its continuation are one byte, so `Selection`'s head says which row it belongs to.
+  Only a point gesture sets it; everything else gets `Downstream` and is drawn where it always was.
+
+## MDEDIT-118: the layout cache and reveal-on-caret
+
+- **The layout cache is keyed by content, never by position.** `BlockId` is an index into one
+  analysis, so a cache keyed on it would serve the wrong layout for everything below an edit. The key
+  is a hash of the block's bytes plus its kind and the wrapping width. The block holding the caret is
+  cached like any other — it was not until MDEDIT-118, because reveal-on-caret made what it drew
+  depend on a caret the key does not carry.
+
+## MDEDIT-141: a concealed marker is substituted
+
+- **A concealed marker is substituted, never revealed** (MDEDIT-141). Where the marker *is* the
+  meaning — a list bullet, a number — `view::substitute` draws a stand-in rather than dropping the
+  run. Read `StyledRun::substituted` before changing what a glyph points at. A wrapped item then hangs
+  under its text by **placing** each item's layout (`list.rs`, MDEDIT-147) — the text trait did not
+  grow an indent, and the next thing wanting a per-line origin should not make it grow one either.
+
+## Tabs are handles until they are visible
+
+- **A tab is a lightweight handle until it becomes visible.** Session restore persists handles, not
+  content — Obsidian's `DeferredView` model, the only implementation in this category.
+
+## Painter's order for chrome
+
+- **All chrome draws after the document**, and there is no depth buffer or scissor — painter's order
+  is the whole of the answer. See [`docs/decisions/chrome.md`](chrome.md), which also
+  holds the z-order rules for the panels that are hit-tested.

@@ -169,3 +169,15 @@ out of `AGENTS.md` when it passed 100 KB — see [the index](README.md) for why 
   and a windows-1252 file therefore fails to open — deliberately, because charset guessing is
   heuristic by nature and guessing wrong rewrites somebody's document. MDEDIT-42 answers it by
   *asking* instead: see the encoding picker below.
+
+## Inline content is never serialized
+
+- Inline content is **never** serialized — it is decorated in place. Emphasis token (`*` vs `_`) and
+  hard-break style are lost by every Rust Markdown parser; we sidestep that by not rewriting those
+  bytes.
+
+## MarkText and the byte-preservation invariant
+
+- **The buffer is the source of truth. Never re-serialize the document.** Opening a file and saving
+  it must produce an identical byte sequence. MarkText's six-year-old
+  [#2189](https://github.com/marktext/marktext/issues/2189) is what happens if this slips.
