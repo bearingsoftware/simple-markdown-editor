@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.1](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.5.0...v0.5.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **MDEDIT-207:** a scoped edit parses and splices only its region ([cf34ed1](https://github.com/bearingsoftware/simple-markdown-editor/commit/cf34ed13d6b95188a2e998e39af6c8cc28c1b9e8))
+* **MDEDIT-209:** kill a runaway mutant's test before it wedges the runner ([0ed3712](https://github.com/bearingsoftware/simple-markdown-editor/commit/0ed3712fbb4dae5b866bb0959804100927bfe643))
+* **MDEDIT-209:** kill only a test binary that holds over 3 GB ([9e41435](https://github.com/bearingsoftware/simple-markdown-editor/commit/9e41435679a97c35306a1412912233f1c360a4b8))
+* **MDEDIT-209:** raise the watchdog floor to 4 GB, trim the diagnostics ([a26b24e](https://github.com/bearingsoftware/simple-markdown-editor/commit/a26b24e0993070426c726856feb9eadaaeb1ed29))
+* **MDEDIT-209:** restore indentation of the nextest comment ([dc9a526](https://github.com/bearingsoftware/simple-markdown-editor/commit/dc9a52664a32e8e1f4f1be72d41ab902867ec66b))
+* **MDEDIT-209:** sample resources from inside the Mutate step ([e79e9c0](https://github.com/bearingsoftware/simple-markdown-editor/commit/e79e9c04fadfd9fc6a58c0b0f86bd5febe1fd3d5))
+* **MDEDIT-209:** sum the test processes, find them by exe path, rate-limit the log ([a3fa57a](https://github.com/bearingsoftware/simple-markdown-editor/commit/a3fa57af8b34ff5567229045fbb049c9d08a38d3))
+* **MDEDIT-216:** list syntax is only a marker on the line its item starts ([7cf7c2d](https://github.com/bearingsoftware/simple-markdown-editor/commit/7cf7c2d8220e00caf430f903fc8ef9b284b0d281))
+* **MDEDIT-216:** only count . and ) as list marker syntax after a digit ([30cf053](https://github.com/bearingsoftware/simple-markdown-editor/commit/30cf053d0e64ab1f471454f70e0bdc73e703b791))
+
+
+### Documentation
+
+* **FINCH-506:** trim AGENTS.md under 20 KB ([069e9c0](https://github.com/bearingsoftware/simple-markdown-editor/commit/069e9c06fe15a927781b4189a9b9858e05dff597))
+* **FINCH-506:** trim AGENTS.md under 20 KB by moving history to docs/decisions ([f5f2d38](https://github.com/bearingsoftware/simple-markdown-editor/commit/f5f2d38b9c71e52f22f5c1c7f87939f496af025d))
+
 ## [0.5.0](https://github.com/bearingsoftware/simple-markdown-editor/compare/v0.4.0...v0.5.0) (2026-11-22)
 
 
